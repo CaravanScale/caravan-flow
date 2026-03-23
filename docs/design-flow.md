@@ -1,6 +1,6 @@
 # Design: Zinc Flow — Lightweight NiFi-Inspired Flow Processing
 
-> **Status**: REQUIREMENTS COMPLETE — see `design-zinc-flow-runtime.md` for architecture and implementation design
+> **Status**: REQUIREMENTS COMPLETE — see `design-flow-runtime.md` for architecture and implementation design
 
 ## The Problem
 
@@ -24,9 +24,11 @@ NiFi is the gold standard for data flow processing but has real problems:
 
 ## What We Want
 
-**NiFi's model. Python's ecosystem. Zinc's simplicity. Cloud-native from day one.**
+**NiFi's model. JVM's performance. Zinc's simplicity. Cloud-native from day one.**
 
 A processor is a Zinc function. A pipeline connects processors with queues. Processors can be started, stopped, swapped, and scaled independently in production — without redeploying the whole pipeline.
+
+Zinc transpiles to clean Java 25, giving us the full JVM ecosystem — virtual threads for parallelism, `Channel<T>` for bounded queues, GraalVM native-image for fast startup and small binaries, and access to every Java library on Maven Central.
 
 ## Core Requirements
 
@@ -35,12 +37,12 @@ A processor is a Zinc function. A pipeline connects processors with queues. Proc
 A processor is a Zinc function that takes a FlowFile and returns one or more FlowFiles:
 
 ```zinc
-@processor
-fn enrich_order(flow: FlowFile): FlowFile {
-    var data = json.loads(flow.content)
-    data["enriched_at"] = datetime.now().isoformat()
-    data["region"] = lookup_region(data["zip_code"])
-    return flow.with_content(json.dumps(data))
+@Processor
+fn enrich_order(FlowFile flow) FlowFile {
+    var data = Json.parse(flow.content)
+    data.put("enriched_at", Instant.now().toString())
+    data.put("region", lookup_region(data.getString("zip_code")))
+    return flow.withContent(Json.toBytes(data))
 }
 ```
 
@@ -55,15 +57,15 @@ fn enrich_order(flow: FlowFile): FlowFile {
 The unit of data flowing through the pipeline. Same concept as NiFi:
 
 ```zinc
-data FlowFile {
-    id: str                    // unique identifier
-    attributes: dict[str, str] // metadata (filename, mime.type, source, etc.)
-    content: bytes             // the payload (1 byte to 100MB+)
-    provenance: list[str]      // processing history
-}
+data FlowFile(
+    String id,                       // unique identifier
+    Map<String, String> attributes,  // metadata (filename, mime.type, source, etc.)
+    byte[] content,                  // the payload (1 byte to 100MB+)
+    List<String> provenance = []     // processing history
+)
 ```
 
-- **Attributes** — small metadata dict, copied freely between processors
+- **Attributes** — small metadata map, copied freely between processors
 - **Content** — the payload, potentially large (1-8MB typical, up to 100MB+)
 - **Content by reference** — large content stored in content repository, FlowFile holds a reference (not copied between processors)
 - **Provenance** — track where data came from, what happened to it
@@ -113,7 +115,7 @@ zinc-flow processor scale enrich_order --replicas 5
 ```
 
 This implies:
-- Each processor runs as an independent process (not a thread in a monolith)
+- Each processor runs as an independent unit (not coupled to others)
 - Processors communicate via queues (not function calls)
 - Queue is the buffer — when a processor is stopped, messages accumulate
 - Swap = stop old, deploy new, start new — queue bridges the gap
@@ -134,11 +136,11 @@ When a downstream processor is slow or stopped, upstream should slow down:
 - **Circuit breaker** — if a processor fails N times, stop sending it traffic
 
 ```zinc
-@processor(retries=3, dead_letter="errors")
-fn risky_transform(flow: FlowFile): FlowFile {
+@Processor(retries = 3, deadLetter = "errors")
+fn risky_transform(FlowFile flow) FlowFile {
     // If this throws, retried 3 times, then sent to "errors" queue
     var result = external_api_call(flow.content)
-    return flow.with_content(result)
+    return flow.withContent(result)
 }
 ```
 
@@ -158,14 +160,16 @@ Built-in connectors for common data sources/sinks:
 Custom sources/sinks are just Zinc functions:
 
 ```zinc
-@source
-fn watch_directory(path: str, pattern: str = "*"): FlowFile {
-    // yield FlowFiles as files appear
-    for file in glob(path, pattern) {
-        yield FlowFile(
-            attributes={"filename": file.name, "path": str(file)},
-            content=file.read_bytes()
-        )
+@Source
+fn watch_directory(String path, String pattern = "*") FlowFile {
+    for file in Files.list(Path.of(path)) {
+        if file.toString().matches(pattern) {
+            yield FlowFile(
+                UUID.randomUUID().toString(),
+                {"filename": file.getFileName().toString(), "path": file.toString()},
+                Files.readAllBytes(file),
+            )
+        }
     }
 }
 ```
@@ -187,7 +191,7 @@ Options:
 
 ### R9 — Cloud Native
 
-- **K8s-native** — each processor is a pod (or a process in a pod)
+- **K8s-native** — each processor group is a pod (or a process in a pod)
 - **Horizontal scaling** — scale processors independently via replicas
 - **Stateless processors** — no local state dependency (state in external stores)
 - **Config as code** — pipeline definitions are `.zn` files in git
@@ -195,10 +199,11 @@ Options:
 
 ### R10 — Lightweight
 
-- **No JVM** — Python processes, small memory footprint
-- **Fast startup** — processor starts in <1 second (not 30s like NiFi)
-- **Embeddable** — can run a mini pipeline inside an existing Python app
-- **Edge-capable** — run on a Raspberry Pi, a Lambda function, or a K8s pod
+- **No NiFi bloat** — Zinc compiles to lean JVM bytecode or GraalVM native-image
+- **Fast startup** — native-image starts in <100ms (not 30s like NiFi)
+- **Embeddable** — can run a mini pipeline inside an existing JVM app
+- **Edge-capable** — native-image runs on a Raspberry Pi, a Lambda function, or a K8s pod
+- **Small footprint** — no 1GB heap requirement; minimal memory for small pipelines
 
 ---
 
@@ -209,23 +214,24 @@ Options:
 Neither NiFi's monolith nor DeltaFi's container-per-processor. The developer chooses group boundaries.
 
 - A **Processor Group** = unit of deployment (one pod, one process)
-- Within a group: threads + `queue.Queue` (in-memory, 100K+ msgs/sec)
+- Within a group: virtual threads + `Channel<T>` (in-memory, bounded queues, high throughput)
 - Between groups: NATS JetStream (serialization only at boundaries)
 - Local dev: all groups collapse into one process
+- K8s: each group becomes a Deployment with its own replica count
 
 ```
 Pod 1 (ingest-group, 1 replica):
-  [http-source] -> [parse] -> [validate]     ← threads, in-memory queues
+  [http-source] -> [parse] -> [validate]     ← virtual threads, Channel<T>
                                     |
                              NATS JetStream   ← cross-group boundary
                                     |
 Pod 2 (enrich-group, 10 replicas):            ← slow, scaled out
-  [enrich] -> [lookup]                        ← threads, in-memory queues
+  [enrich] -> [lookup]                        ← virtual threads, Channel<T>
                   |
              NATS JetStream
                   |
 Pod 3 (output-group, 2 replicas):
-  [format] -> [kafka-sink]                    ← threads, in-memory queues
+  [format] -> [kafka-sink]                    ← virtual threads, Channel<T>
 ```
 
 ```bash
@@ -234,7 +240,7 @@ zinc flow run pipeline.zn --mode distributed --nats nats://localhost:4222  # dis
 zinc flow deploy pipeline.zn --namespace prod --nats nats://nats:4222     # K8s
 ```
 
-See `design-zinc-flow-runtime.md` for full architecture details.
+See `design-flow-runtime.md` for full architecture details.
 
 ---
 
@@ -245,8 +251,8 @@ See `design-zinc-flow-runtime.md` for full architecture details.
 | **NiFi** | FlowFile model, provenance, back-pressure, processor lifecycle | JVM bloat, monolithic cluster, NAR packaging |
 | **DeltaFi** | K8s-native, plugin architecture | Docker-per-processor overhead, complexity |
 | **MiNiFi** | Lightweight footprint | Neglected, missing features |
-| **Prefect** | Python-native, decorator-based task definition | Batch-oriented, not streaming |
-| **Flink** | Exactly-once, checkpointing, watermarks | JVM, operational complexity |
+| **Prefect** | Decorator-based task definition | Batch-oriented, not streaming |
+| **Flink** | Exactly-once, checkpointing, watermarks | Operational complexity |
 | **Luigi** | Simple task dependencies | No streaming, no real-time |
 | **Temporal** | Workflow durability, replay | Too general, not data-flow specific |
 
@@ -275,60 +281,55 @@ This means passing a 4MB FlowFile between processors costs ~200 bytes (the refer
 
 ---
 
-## Research Findings (2026-03-18, updated 2026-03-19)
+## Research Findings (2026-03-18, updated 2026-03-23)
 
-### Architecture Decision: Pure Python
+### Architecture Decision: Zinc on JVM with Virtual Threads
 
-Benchmarked free-threaded Python 3.14t queue throughput vs .NET 10 (see `benchmarks/RESULTS.md`):
-- **Queue 100KB FlowFiles**: Python 100-142K msgs/sec — **2-5x faster than .NET** (refcounted bytes, zero-copy)
-- **Queue 1MB FlowFiles**: Python 30K msgs/sec (4-thread fanout) = **30 GB/s**
-- **Queue 1KB FlowFiles**: Python 88-188K msgs/sec (adequate, .NET faster at small sizes)
-- **HTTP ingress**: Python 4-6K msgs/sec at 100KB (competitive with Kestrel)
+Zinc transpiles to Java 25. This gives Zinc Flow access to the full JVM ecosystem and proven production runtime:
 
-Python dominates at typical NiFi FlowFile sizes (10KB-1MB). No need for Go/Rust runtime.
+- **Virtual threads (Project Loom)**: millions of concurrent threads with near-zero overhead — purpose-built for the worker-loop pattern where each processor consumes from a queue
+- **Channel\<T\> (ArrayBlockingQueue)**: bounded blocking queues built into Zinc — `put()` blocks when full (natural back-pressure), `take()` blocks when empty
+- **GraalVM native-image**: compiles to a standalone binary with ~100ms startup, no JVM needed at runtime — matches the "lightweight, fast startup" requirement
+- **JVM JIT compilation**: long-running processor loops get faster over time as HotSpot optimizes hot paths
+- **Proven at scale**: NiFi itself runs on the JVM and handles 10K-100K msgs/sec — Zinc Flow targets the same runtime with less bloat
 
-### Key Insight: FlowFile = list[dict] = Polars DataFrame
+NiFi's problem was never the JVM — it was the architectural bloat. Zinc Flow keeps the JVM's strengths (concurrency, ecosystem, reliability) while shedding NiFi's monolithic design.
 
-Everything maps to `list[dict]`, which Polars auto-accelerates:
+### Key Insight: Zinc Gives Us Java Without the Ceremony
+
+The ergonomic gap between NiFi processors and Zinc Flow processors:
 
 ```
-NiFi FlowFile       → dict (attributes + content)
-Batch of FlowFiles  → list[dict]
-list[dict]          → Polars DataFrame (auto, Rust engine)
+NiFi processor:     Java class + @Tags + @CapabilityDescription + PropertyDescriptor[]
+                    + AbstractProcessor + onTrigger() + ProcessSession + FlowFile API
+                    + Maven module + NAR packaging → 100+ lines of boilerplate
 
-Avro records        → list[dict] (fastavro)
-JSON array          → list[dict] (orjson/json)
-CSV rows            → list[dict] (polars.read_csv)
-Parquet             → list[dict] (polars.read_parquet)
-Database rows       → list[dict] (SQLAlchemy)
-Kafka messages      → list[dict] (confluent-kafka)
+Zinc Flow processor: @Processor fn name(FlowFile ff) FlowFile { ... } → just the logic
 ```
 
-The smart dispatch already built into Zinc auto-promotes `list[dict]` chains to Polars. Processors that filter/map/aggregate FlowFiles are automatically Polars-accelerated.
-
-FlowFile V3 binary format is only needed for NiFi wire compatibility (import/export), not for internal processing.
+Zinc's `data` classes replace Java record boilerplate. `@Processor` replaces NiFi's `AbstractProcessor` subclassing. The transpiler handles the ceremony — the developer writes the logic.
 
 ### Stack
 
 ```
-Zinc Flow (Python)      — orchestration, queues, routing, lifecycle
-Polars (Rust)           — heavy data processing inside processors
-NumPy (C)               — numeric computation
-Free-threaded Python    — real parallelism between processors
-Single binary           — zinc pack bundles everything
+Zinc Flow (JVM)         — orchestration, queues, routing, lifecycle
+Virtual Threads         — real parallelism between processors (no GIL, no thread pool sizing)
+Channel<T>              — bounded queues with natural back-pressure
+GraalVM native-image    — single binary deployment, fast startup, small footprint
+Java ecosystem          — Kafka, NATS, JDBC, Jackson, Netty — all available via Mill/Maven
 ```
 
 ## Open Questions — Resolved
 
-All resolved in `design-zinc-flow-runtime.md`. Summary:
+All resolved in `design-flow-runtime.md`. Summary:
 
 1. **Queue technology** — NATS JetStream for cross-group messaging. etcd/PostgreSQL for state. Filesystem for large content. Pluggable interface. Never Rook/Ceph.
 2. **GUI framework** — REST API first, TUI second, web UI later once validated.
-3. **Processor discovery** — Static imports for dev. Processor catalog (in state store) for prod with hot-swap via `importlib.reload()`.
+3. **Processor discovery** — Static imports for dev. Processor catalog (in state store) for prod with hot-swap via classloader (JVM mode) or queue-bridged rolling restart (native-image/K8s).
 4. **Versioning** — Processor catalog with name@version. Every flow change creates a revision with audit trail. Instant rollback.
-5. **Schema enforcement** — No. Content is opaque `bytes`. Validation is processor logic, up to the dataflow developer.
+5. **Schema enforcement** — No. Content is opaque `byte[]`. Validation is processor logic, up to the dataflow developer.
 6. **Multi-tenancy** — Namespace isolation per pipeline on shared infrastructure.
-7. **Expression language** — Zinc IS the expression language. Low-code UI: simple mode (form-based) + advanced mode (Zinc expressions validated by transpiler).
+7. **Routing language** — Two tiers: attribute-based predicates (IRS-inspired, GraalVM-safe, covers 80%) + compiled `@Processor` functions for complex logic. No runtime eval. Low-code UI maps directly to predicates.
 8. **Monitoring** — Terminal stats Phase 1, Prometheus `/metrics` Phase 2, OpenTelemetry tracing Phase 3.
 9. **State management** — External state stores (etcd, PostgreSQL). Processors are stateless from the runtime's perspective.
 10. **Ordering guarantees** — Best-effort FIFO. FlowFiles are independent units, ordering is a non-issue for typical use cases.
@@ -337,11 +338,11 @@ All resolved in `design-zinc-flow-runtime.md`. Summary:
 
 ## Implementation Phases
 
-See `design-zinc-flow-runtime.md` for detailed phase breakdown.
+See `design-flow-runtime.md` for detailed phase breakdown.
 
 ### Phase 1 — MVP (Local Dev)
-- FlowFile data class, `@flow.processor` decorator
-- LocalQueue (`queue.Queue`), ProcessorWorker (thread-based)
+- FlowFile data class, `@Processor` annotation
+- LocalQueue (`Channel<T>`), ProcessorWorker (virtual thread-based)
 - ProcessorGroup with start/stop/scale
 - Pipeline with explicit wiring (no DSL yet)
 - HTTP source, filesystem sink
@@ -355,7 +356,7 @@ See `design-zinc-flow-runtime.md` for detailed phase breakdown.
 - etcd/PostgreSQL state store (processor catalog, flow graph, audit trail)
 - REST management API (start/stop/scale/swap/config)
 - Processor catalog with hot-swap and rollback
-- Prometheus `/metrics` endpoint
+- Prometheus `/metrics` endpoint (via Micrometer)
 
 ### Phase 3 — Cloud Native
 - K8s operator: `zinc flow deploy` generates Deployments per group

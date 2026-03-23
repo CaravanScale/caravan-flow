@@ -10,6 +10,7 @@ NiFi's processor model — with Zinc's simplicity, cloud-native from day one.
 - A **pipeline** connects processors with queues
 - Processors can be started, stopped, swapped, and scaled independently in production
 - Local dev: everything in one process. K8s: each group is a Deployment.
+- Zinc transpiles to Java 25 — virtual threads, `Channel<T>`, GraalVM native-image
 
 ## Quick Start
 

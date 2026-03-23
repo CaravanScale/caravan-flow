@@ -5,9 +5,9 @@
 ## Phase 1 — MVP (Local Dev)
 
 - [ ] FlowFile data class
-- [ ] `@flow.processor` decorator
-- [ ] LocalQueue (`queue.Queue`)
-- [ ] ProcessorWorker (thread-based worker loop)
+- [ ] `@Processor` annotation
+- [ ] LocalQueue (`Channel<T>`)
+- [ ] ProcessorWorker (virtual thread-based worker loop)
 - [ ] ProcessorGroup with start/stop/scale
 - [ ] Pipeline with explicit wiring (no DSL yet)
 - [ ] HTTP source
@@ -23,7 +23,7 @@
 - [ ] etcd/PostgreSQL state store (processor catalog, flow graph, audit trail)
 - [ ] REST management API (start/stop/scale/swap/config)
 - [ ] Processor catalog with hot-swap and rollback
-- [ ] Prometheus `/metrics` endpoint
+- [ ] Prometheus `/metrics` endpoint (via Micrometer)
 
 ## Phase 3 — Cloud Native
 

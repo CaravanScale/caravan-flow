@@ -1,12 +1,12 @@
 # Design: Zinc Flow Runtime — Architecture & Implementation
 
-> **Status**: DESIGN — architecture validated by benchmarks, ready for Phase 1 implementation
+> **Status**: DESIGN — architecture validated, ready for Phase 1 implementation
 
 ## Design Principles
 
 ### Program to Interfaces, Not Implementations
 
-Every major component in Zinc Flow is defined as an interface (abstract class). Implementations are pluggable. Code depends on the interface, never on a concrete implementation.
+Every major component in Zinc Flow is defined as an interface. Implementations are pluggable. Code depends on the interface, never on a concrete implementation.
 
 This is a hard requirement — not a nice-to-have. It's what makes the system pluggable (swap NATS for Kafka), testable (mock the queue in unit tests), and evolvable (replace the content store without touching processors).
 
@@ -25,33 +25,32 @@ Processors, sources, and sinks also program to interfaces — a processor takes 
 
 ```zinc
 // Processor only depends on FlowFile and ProcessorContext — both interfaces
-@flow.processor
-fn enrich(ff: FlowFile, ctx: ProcessorContext): FlowFile {
+@Processor
+fn enrich(FlowFile ff, ProcessorContext ctx) FlowFile {
     var db = ctx.service("db")       // doesn't know if it's Postgres, MySQL, or a mock
-    var data = json.loads(ff.content) // doesn't know if content was inline or from content store
-    data["region"] = db.query(...)
-    return ff.with_content(json.dumps(data).encode())
+    var data = Json.parse(ff.content) // doesn't know if content was inline or from content store
+    data.put("region", db.query("SELECT region FROM zip WHERE code = ?", data.getString("zip")))
+    return ff.withContent(Json.toBytes(data))
 }
 ```
 
 This applies to all wiring in the runtime: `Pipeline` holds `FlowQueue` references (not `LocalQueue`), `ProcessorWorker` takes a `FlowQueue` (not `NatsQueue`), `Router` is an interface the runtime calls (not hardcoded NATS subject logic).
 
-### Dogfood Zinc — Never Fall Back to Raw Python
+### Dogfood Zinc — Never Fall Back to Raw Java
 
 Zinc Flow is written in Zinc. This is a deliberate test of the language design.
 
-When we hit something awkward or missing while building the runtime — a pattern that's clunky, a feature that's needed, a transpiler optimization that would help — **that's a signal to improve Zinc, not to drop into raw Python.**
+When we hit something awkward or missing while building the runtime — a pattern that's clunky, a feature that's needed, a transpiler optimization that would help — **that's a signal to improve Zinc, not to drop into raw Java.**
 
 Examples of things we might discover we need:
-- Interface/abstract class syntax (for the core interfaces above)
-- Decorator arguments (`@flow.processor(outputs=["a", "b"])`)
-- Generic types (`FlowQueue[FlowFile]`)
-- Async/await support (for NATS client, HTTP source)
-- Thread spawning ergonomics
-- Pattern matching on types (for `_route_output`)
-- Context manager improvements (for `with` blocks around services)
+- Methods on `data` classes (for `FlowFile.withContent()`)
+- Annotation arguments (`@Processor(outputs = ["a", "b"])`)
+- Generic interface implementations (`FlowQueue<FlowFile>`)
+- Sealed class syntax (for `ProcessorResult` — needed for GraalVM-safe exhaustive matching)
+- Pattern matching on sealed hierarchies (for `routeOutput`)
+- Builder patterns or copy-and-update for immutable types
 
-Each gap found is a language improvement tracked in `TODO.md`. The runtime is the proving ground — if Zinc can build a production data flow engine, it can build anything.
+Each gap found is a language improvement tracked as a GitHub issue on the Zinc repo. The runtime is the proving ground — if Zinc can build a production data flow engine, it can build anything.
 
 ---
 
@@ -68,80 +67,72 @@ Zinc Flow: YOU choose the group boundaries  → group fast processors, isolate s
 ### The Model
 
 - A **Processor Group** is the unit of deployment (one pod, one process)
-- Within a group: **threads + in-memory queues** (zero serialization, pointer swaps, 100K+ msgs/sec)
+- Within a group: **virtual threads + Channel\<T\>** (zero serialization, reference passing, high throughput)
 - Between groups: **NATS JetStream** (serialization only at group boundaries)
 - **Local dev**: all groups collapse into one process, everything is in-memory
 - **K8s**: each group becomes a Deployment with its own replica count
 
 ```
 Pod 1 (ingest-group, 1 replica):
-  [http-source] -> [parse] -> [validate]     ← threads, queue.Queue
+  [http-source] -> [parse] -> [validate]     ← virtual threads, Channel<T>
                                     |
                              NATS JetStream   ← cross-group boundary
                                     |
 Pod 2 (enrich-group, 10 replicas):            ← the slow one, scaled out
-  [enrich] -> [lookup]                        ← threads, queue.Queue
+  [enrich] -> [lookup]                        ← virtual threads, Channel<T>
                   |
              NATS JetStream
                   |
 Pod 3 (output-group, 2 replicas):
-  [format] -> [kafka-sink]                    ← threads, queue.Queue
+  [format] -> [kafka-sink]                    ← virtual threads, Channel<T>
 ```
 
-### Why This Works (Benchmark Evidence)
+### Why This Works
 
-| Scenario | Python 3.14t | Notes |
-|----------|-------------|-------|
-| Queue 100KB FlowFiles | 100K msgs/s (asyncio), 142K msgs/s (4-thread fanout) | Faster than .NET due to refcounted bytes |
-| Queue 1MB FlowFiles | 30K msgs/s (4-thread fanout) = **30 GB/s** | Free-threading delivers real parallelism |
-| Queue 1KB FlowFiles | 88-188K msgs/s | Adequate for control/routing messages |
-| HTTP ingress 100KB | 4-6K msgs/s | Sufficient for pipeline source/sink |
+| Feature | JVM Advantage |
+|---------|--------------|
+| **Virtual threads** | Millions of concurrent threads, near-zero overhead, purpose-built for blocking I/O and queue consumption loops |
+| **Channel\<T\>** (ArrayBlockingQueue) | Bounded blocking queue — `put()` blocks when full (back-pressure), `take()` blocks when empty. Thread-safe, zero-copy reference passing within a JVM |
+| **JIT compilation** (JVM mode) | Long-running processor loops get faster over time as HotSpot optimizes hot paths. In native-image mode, AOT compilation trades JIT warmup for instant peak performance and ~100ms startup |
+| **GraalVM native-image** | Compile to standalone binary — ~100ms startup, no JVM needed at runtime, small memory footprint |
+| **Proven at scale** | NiFi runs on the JVM and handles 10K-100K msgs/sec. Zinc Flow targets the same runtime with less architectural bloat |
 
-NiFi typically handles 10K-100K msgs/sec. Python 3.14t exceeds this at all FlowFile sizes.
+### Virtual Thread-Level Manageability
 
-### Thread-Level Manageability
-
-Threads give you everything process isolation gives you for management, because the **queue is the decoupling boundary**:
+Virtual threads give you everything process isolation gives you for management, because the **queue is the decoupling boundary**:
 
 ```zinc
 class ProcessorGroup {
-    var name: str
-    var workers: dict[str, ProcessorWorker] = {}
+    init String name
+    var Map<String, ProcessorWorker> workers = {}
 
     // Stop a processor — thread exits, items accumulate in its queue
-    fn stop_processor(proc_name: str) {
-        workers[proc_name].stop()
+    pub fn stopProcessor(String procName) {
+        workers.get(procName).stop()
     }
 
-    // Start — new thread picks up backlog from queue
-    fn start_processor(proc_name: str) {
-        workers[proc_name].start()
+    // Start — new virtual thread picks up backlog from queue
+    pub fn startProcessor(String procName) {
+        workers.get(procName).start()
     }
 
     // Swap — stop, replace function, start. Queue bridges the gap.
-    fn swap_processor(proc_name: str, new_fn: Callable) {
-        var worker = workers[proc_name]
+    pub fn swapProcessor(String procName, ProcessorFn newFn) {
+        var worker = workers.get(procName)
         worker.stop()
-        worker.thread.join()
-        worker.fn = new_fn
+        worker.awaitStop()
+        worker.setFn(newFn)
         worker.start()
     }
 
-    // Scale — multiple threads consuming from same queue
-    fn scale_processor(proc_name: str, replicas: int) {
-        workers[proc_name].set_replicas(replicas)
-    }
-
-    // Update config — swap function with new closure capturing new config
-    fn update_config(proc_name: str, config: dict) {
-        var worker = workers[proc_name]
-        worker.config = config
-        // Processor reads config on each invocation
+    // Scale — multiple virtual threads consuming from same queue
+    pub fn scaleProcessor(String procName, int replicas) {
+        workers.get(procName).setReplicas(replicas)
     }
 }
 ```
 
-The only thing you lose vs process isolation is crash protection — one native extension segfault takes down the group. But Python exceptions are caught by the worker loop and routed to DLQ.
+The only thing you lose vs process isolation is crash protection — a native library segfault takes down the JVM. But Java exceptions are caught by the worker loop and routed to DLQ.
 
 ---
 
@@ -150,52 +141,92 @@ The only thing you lose vs process isolation is crash protection — one native 
 ### FlowFile
 
 ```zinc
-data FlowFile {
-    id: str
-    attributes: dict[str, str]
-    content: bytes
-    timestamp: float
-    provenance: list[str] = []
-
-    fn with_content(new_content: bytes): FlowFile {
+data FlowFile(
+    String id,
+    Map<String, String> attributes,
+    byte[] content,
+    long timestamp,
+    List<String> provenance = []
+) {
+    pub fn withContent(byte[] newContent) FlowFile {
         return FlowFile(
-            id=id,
-            attributes=attributes,
-            content=new_content,
-            timestamp=time.time(),
-            provenance=provenance + ["transformed"],
+            id,
+            attributes,
+            newContent,
+            System.currentTimeMillis(),
+            provenance + ["transformed"]
         )
     }
 
-    fn with_attribute(key: str, value: str): FlowFile {
-        var attrs = dict(attributes)
-        attrs[key] = value
-        return FlowFile(
-            id=id,
-            attributes=attrs,
-            content=content,
-            timestamp=time.time(),
-            provenance=provenance,
-        )
+    pub fn withAttribute(String key, String value) FlowFile {
+        var attrs = HashMap(attributes)
+        attrs.put(key, value)
+        return FlowFile(id, attrs, content, System.currentTimeMillis(), provenance)
     }
 
-    fn content_size(): int = len(content)
+    pub fn contentSize() int = content.length
 }
 ```
 
-FlowFiles are **immutable** — processors return new FlowFiles. This aligns with Python's refcounted `bytes` advantage (no copies, just pointer swaps through queues).
+FlowFiles are **immutable** — processors return new FlowFiles. Within a JVM, FlowFiles passed through `Channel<T>` are reference-passed (no serialization, no copy).
+
+### ProcessorResult
+
+Processors return a `ProcessorResult` — a sealed class hierarchy that the worker loop can match exhaustively without runtime reflection. GraalVM native-image handles sealed hierarchies natively (all subtypes known at build time).
+
+```zinc
+sealed class ProcessorResult {
+    data Single(FlowFile ff)
+    data Multiple(List<FlowFile> ffs)
+    data Routed(String route, FlowFile ff)
+    data object Drop
+}
+```
+
+Processor functions return `ProcessorResult`, and Zinc sugar makes this ergonomic:
+
+```zinc
+// 1:1 — return wraps automatically
+@Processor
+fn enrich(FlowFile ff) ProcessorResult {
+    return ProcessorResult.Single(ff.withAttribute("enriched", "true"))
+}
+
+// 1:N — fan out
+@Processor
+fn split(FlowFile ff) ProcessorResult {
+    var records = Json.parseArray(ff.content)
+    return ProcessorResult.Multiple(records.map(r -> FlowFile(...)))
+}
+
+// Routing — tagged output
+@Processor
+fn validate(FlowFile ff) ProcessorResult {
+    if ff.attributes.get("id") == null {
+        return ProcessorResult.Routed("invalid", ff.withAttribute("error", "missing id"))
+    }
+    return ProcessorResult.Routed("valid", ff)
+}
+
+// Filter — drop
+@Processor
+fn filterJunk(FlowFile ff) ProcessorResult {
+    if ff.contentSize() == 0 { return ProcessorResult.Drop }
+    return ProcessorResult.Single(ff)
+}
+```
 
 ### Content Reference (Phase 2 — Large Payloads)
 
-Not needed in Phase 1. The benchmarks showed Python handles 100KB-1MB blobs through queues efficiently. Content references are for the Phase 2 distributed case where FlowFiles cross pod boundaries and you don't want to serialize 10MB through NATS.
+Not needed in Phase 1. The JVM handles byte arrays through in-memory queues efficiently. Content references are for the Phase 2 distributed case where FlowFiles cross pod boundaries and you don't want to serialize 10MB through NATS.
 
 ```zinc
-data ContentRef {
-    store: str       // "file", "nfs", "s3-compat"
-    key: str         // content identifier
-    size: int        // byte length
-    hash: str        // sha256 for dedup/integrity
-}
+data ContentRef(
+    String store,   // "file", "nfs", "s3-compat"
+    String key,     // content identifier
+    long size,      // byte length
+    String hash     // sha256 for dedup/integrity
+)
 ```
 
 When a FlowFile crosses a group boundary, the runtime decides:
@@ -218,137 +249,143 @@ NiFi uses local filesystem for its content repository and it works at scale. Kee
 
 ### Processor Definition
 
-A processor is a Zinc function decorated with `@flow.processor`:
+A processor is a Zinc function annotated with `@Processor`:
 
 ```zinc
 import flow
 
-@flow.processor
-fn enrich_order(ff: FlowFile): FlowFile {
-    var data = json.loads(ff.content)
-    data["enriched_at"] = datetime.now().isoformat()
-    data["region"] = lookup_region(data["zip_code"])
-    return ff.with_content(json.dumps(data).encode())
+@Processor
+fn enrich_order(FlowFile ff) FlowFile {
+    var data = Json.parse(ff.content)
+    data.put("enriched_at", Instant.now().toString())
+    data.put("region", lookup_region(data.getString("zip_code")))
+    return ff.withContent(Json.toBytes(data))
 }
 ```
 
 Processors can return:
 - **One FlowFile** — 1:1 transform
 - **A list of FlowFiles** — 1:N split/fan-out
-- **None** — filter/drop
+- **Null** — filter/drop
 - **A tuple of (route, FlowFile)** — routed output
 
 ```zinc
 // 1:N — split a batch into individual records
-@flow.processor
-fn split_batch(ff: FlowFile): list[FlowFile] {
-    var records = json.loads(ff.content)
-    return records.Select((r, i) ->
+@Processor
+fn split_batch(FlowFile ff) List<FlowFile> {
+    var records = Json.parseArray(ff.content)
+    return records.mapIndexed((r, i) ->
         FlowFile(
-            id=uuid4().hex,
-            attributes=ff.attributes | {"record.index": str(i)},
-            content=json.dumps(r).encode(),
-            timestamp=time.time(),
+            UUID.randomUUID().toString(),
+            ff.attributes + {"record.index": i.toString()},
+            Json.toBytes(r),
+            System.currentTimeMillis()
         )
     )
 }
 
-// Filter — return none to drop
-@flow.processor
-fn filter_valid(ff: FlowFile): FlowFile? {
-    var data = json.loads(ff.content)
-    if data.get("status") == "invalid" {
-        return none
+// Filter — return null to drop
+@Processor
+fn filter_valid(FlowFile ff) FlowFile? {
+    var data = Json.parse(ff.content)
+    if data.getString("status") == "invalid" {
+        return null
     }
     return ff
 }
 
 // Routing — return tagged outputs
-@flow.processor(outputs=["success", "failure", "retry"])
-fn validate_order(ff: FlowFile): tuple[str, FlowFile] {
-    var data = json.loads(ff.content)
-    if not data.get("order_id") {
-        return "failure", ff.with_attribute("error", "missing order_id")
+@Processor(outputs = ["success", "failure", "retry"])
+fn validate_order(FlowFile ff) (String, FlowFile) {
+    var data = Json.parse(ff.content)
+    if data.getString("order_id") == null {
+        return ("failure", ff.withAttribute("error", "missing order_id"))
     }
-    if data.get("amount", 0) <= 0 {
-        return "retry", ff.with_attribute("error", "invalid amount")
+    if data.getInt("amount", 0) <= 0 {
+        return ("retry", ff.withAttribute("error", "invalid amount"))
     }
-    return "success", ff
+    return ("success", ff)
 }
 ```
 
 ### Processor Lifecycle
 
-Each processor runs as a **worker loop** consuming from its input queue:
+Each processor runs as a **worker loop** consuming from its input queue using virtual threads:
 
 ```zinc
 class ProcessorWorker {
-    var name: str
-    var fn: Callable
-    var input_queue: FlowQueue
-    var output_queues: dict[str, FlowQueue]
-    var state: str = "stopped"  // stopped, running, paused
-    var threads: list[threading.Thread] = []
-    var config: dict = {}
-    var stats: ProcessorStats
+    init String name
+    var ProcessorFn fn
+    init FlowQueue inputQueue
+    init Map<String, FlowQueue> outputQueues
+    var String state = "stopped"  // stopped, running, paused
+    var List<Thread> threads = []
+    var Map<String, String> config = {}
+    var ProcessorStats stats = ProcessorStats()
 
-    fn start() {
+    pub fn start() {
         state = "running"
-        if len(threads) == 0 {
-            _add_thread()
+        if threads.isEmpty() {
+            addThread()
         }
     }
 
-    fn stop() {
+    pub fn stop() {
         state = "stopped"
         for t in threads {
-            t.join(timeout=5.0)
+            t.join()
         }
         threads.clear()
     }
 
-    fn set_replicas(n: int) {
-        while len(threads) < n {
-            _add_thread()
-        }
-        while len(threads) > n {
-            // Remove last thread — it will exit on next loop iteration
-            // (all threads share the state flag)
-            threads.pop()
+    pub fn awaitStop() {
+        for t in threads {
+            t.join()
         }
     }
 
-    fn _add_thread() {
-        var t = threading.Thread(target=_run_loop, name="{name}-{len(threads)}", daemon=true)
-        t.start()
-        threads.append(t)
+    pub fn setReplicas(int n) {
+        while threads.size() < n {
+            addThread()
+        }
+        while threads.size() > n {
+            threads.removeLast()
+        }
     }
 
-    fn _run_loop() {
+    fn addThread() {
+        var t = spawn {
+            runLoop()
+        }
+        threads.add(t)
+    }
+
+    fn runLoop() {
         while state == "running" {
-            var ff = input_queue.get(timeout=0.1)
-            if ff is none {
+            var ff = inputQueue.poll(100)  // 100ms timeout
+            if ff == null {
                 continue
             }
 
-            var start_time = time.perf_counter()
-            var result = _execute(ff) or {
-                _handle_failure(ff, err)
+            var startTime = System.nanoTime()
+            var result = execute(ff) or {
+                handleFailure(ff, err)
                 continue
             }
 
-            var elapsed = time.perf_counter() - start_time
-            stats.record(elapsed, ff.content_size())
-            _route_output(result)
+            var elapsed = (System.nanoTime() - startTime) / 1_000_000.0
+            stats.record(elapsed, ff.contentSize())
+            routeOutput(result)
         }
     }
 
-    fn _execute(ff: FlowFile): Any {
-        for attempt in range(config.get("max_retries", 0) + 1) {
+    fn execute(FlowFile ff) ProcessorResult {
+        var maxRetries = Integer.parseInt(config.getOrDefault("max_retries", "0"))
+        for attempt in range(maxRetries + 1) {
             var result = fn(ff) or {
-                if attempt < config.get("max_retries", 0) {
-                    var delay = config.get("retry_delay", 1.0) * (2 ** attempt)
-                    time.sleep(delay)
+                if attempt < maxRetries {
+                    var delay = Long.parseLong(config.getOrDefault("retry_delay", "1000")) * (1L << attempt)
+                    Thread.sleep(delay)
                     continue
                 }
                 raise err
@@ -357,32 +394,32 @@ class ProcessorWorker {
         }
     }
 
-    fn _route_output(result: Any) {
+    fn routeOutput(ProcessorResult result) {
         match result {
-            FlowFile ff -> {
-                output_queues["default"].put(ff)
+            ProcessorResult.Single(ff) -> {
+                outputQueues.get("default").put(ff)
             }
-            list[FlowFile] ffs -> {
+            ProcessorResult.Multiple(ffs) -> {
                 for ff in ffs {
-                    output_queues["default"].put(ff)
+                    outputQueues.get("default").put(ff)
                 }
             }
-            tuple[str, FlowFile] (route, ff) -> {
-                output_queues.get(route, output_queues["default"]).put(ff)
+            ProcessorResult.Routed(route, ff) -> {
+                outputQueues.getOrDefault(route, outputQueues.get("default")).put(ff)
             }
-            none -> {
+            ProcessorResult.Drop -> {
                 // Dropped
             }
         }
     }
 
-    fn _handle_failure(ff: FlowFile, err: Exception) {
-        stats.record_error()
-        if "dead_letter" in output_queues {
-            var dlq_ff = ff.with_attribute("error", str(err))
-                          .with_attribute("error.processor", name)
-                          .with_attribute("error.timestamp", datetime.now().isoformat())
-            output_queues["dead_letter"].put(dlq_ff)
+    fn handleFailure(FlowFile ff, Error err) {
+        stats.recordError()
+        if outputQueues.containsKey("dead_letter") {
+            var dlqFf = ff.withAttribute("error", err.toString())
+                          .withAttribute("error.processor", name)
+                          .withAttribute("error.timestamp", Instant.now().toString())
+            outputQueues.get("dead_letter").put(dlqFf)
         }
     }
 }
@@ -397,17 +434,17 @@ class ProcessorWorker {
 ```zinc
 import flow
 
-@flow.processor
-fn parse_json(ff: FlowFile): FlowFile { ... }
+@Processor
+fn parse_json(FlowFile ff) FlowFile { ... }
 
-@flow.processor
-fn validate(ff: FlowFile): FlowFile { ... }
+@Processor
+fn validate(FlowFile ff) FlowFile { ... }
 
-@flow.processor
-fn enrich(ff: FlowFile): FlowFile { ... }
+@Processor
+fn enrich(FlowFile ff) FlowFile { ... }
 
-@flow.processor
-fn format_output(ff: FlowFile): FlowFile { ... }
+@Processor
+fn format_output(FlowFile ff) FlowFile { ... }
 
 // --- Pipeline with processor groups ---
 
@@ -415,32 +452,32 @@ var pipeline = flow.Pipeline("order_processing")
 
 // Group 1: ingest (lightweight, 1 replica)
 var ingest = flow.Group("ingest") {
-    flow.source.http(port=8080)
+    flow.source.http(port = 8080)
     -> parse_json
     -> validate
 }
 
 // Group 2: enrichment (slow, needs scaling)
-var enrich_group = flow.Group("enrich", replicas=10) {
+var enrichGroup = flow.Group("enrich", replicas = 10) {
     enrich
 }
 
 // Group 3: output
-var output = flow.Group("output", replicas=2) {
+var output = flow.Group("output", replicas = 2) {
     format_output
     -> flow.sink.kafka("processed-orders")
 }
 
 // Connect groups (these become distributed queues)
-pipeline.connect(ingest, enrich_group)
-pipeline.connect(enrich_group, output)
+pipeline.connect(ingest, enrichGroup)
+pipeline.connect(enrichGroup, output)
 
 pipeline.run()
 ```
 
 ### Local Dev Mode
 
-In local dev, group boundaries are ignored — everything runs as threads in one process with in-memory queues:
+In local dev, group boundaries are ignored — everything runs as virtual threads in one process with in-memory queues:
 
 ```bash
 # Local — all groups in one process, in-memory queues
@@ -454,24 +491,24 @@ zinc flow deploy pipeline.zn --nats nats://nats:4222
 
 ```zinc
 class Pipeline {
-    var name: str
-    var groups: dict[str, ProcessorGroup] = {}
-    var group_connections: list[GroupConnection] = []
-    var mode: str = "local"  // "local" or "distributed"
+    init String name
+    var Map<String, ProcessorGroup> groups = {}
+    var List<GroupConnection> groupConnections = []
+    var String mode = "local"  // "local" or "distributed"
 
-    fn connect(source: ProcessorGroup, target: ProcessorGroup) {
-        group_connections.append(GroupConnection(source=source.name, target=target.name))
+    pub fn connect(ProcessorGroup source, ProcessorGroup target) {
+        groupConnections.add(GroupConnection(source.name, target.name))
     }
 
-    fn run() {
+    pub fn run() {
         if mode == "local" {
-            _run_local()
+            runLocal()
         } else {
-            _run_distributed()
+            runDistributed()
         }
     }
 
-    fn _run_local() {
+    fn runLocal() {
         // Collapse all groups into one process
         // All connections use in-memory queues
         print("Pipeline '{name}' starting (local mode)")
@@ -480,31 +517,31 @@ class Pipeline {
                 worker.start()
             }
         }
-        _wait_for_shutdown()
+        waitForShutdown()
     }
 
-    fn _run_distributed() {
+    fn runDistributed() {
         // Only start this process's group
         // Cross-group connections use NATS JetStream
-        var my_group = os.environ.get("ZINC_FLOW_GROUP")
-        if my_group {
-            groups[my_group].start()
+        var myGroup = System.getenv("ZINC_FLOW_GROUP")
+        if myGroup != null {
+            groups.get(myGroup).start()
         }
     }
 
-    fn status(): dict {
-        var result = {}
-        for group_name, group in groups.items() {
-            for proc_name, worker in group.workers.items() {
-                result["{group_name}/{proc_name}"] = {
+    pub fn status() Map<String, ProcessorStatus> {
+        var result = HashMap<String, ProcessorStatus>()
+        for (groupName, group) in groups {
+            for (procName, worker) in group.workers {
+                result.put("{groupName}/{procName}", {
                     "state": worker.state,
-                    "queue_depth": worker.input_queue.qsize(),
+                    "queue_depth": worker.inputQueue.size(),
                     "processed": worker.stats.count,
                     "errors": worker.stats.errors,
-                    "avg_ms": worker.stats.avg_latency_ms,
+                    "avg_ms": worker.stats.avgLatencyMs,
                     "msgs_per_sec": worker.stats.throughput,
-                    "replicas": len(worker.threads),
-                }
+                    "replicas": worker.threads.size()
+                })
             }
         }
         return result
@@ -519,83 +556,95 @@ class Pipeline {
 The queue backend is pluggable — same interface, different implementations:
 
 ```zinc
-class FlowQueue {
-    fn put(ff: FlowFile) { ... }
-    fn get(timeout: float = none): FlowFile? { ... }
-    fn qsize(): int { ... }
+interface FlowQueue {
+    fn put(FlowFile ff)
+    fn poll(long timeoutMs) FlowFile?
+    fn size() int
 }
 
-// In-memory (within a group) — benchmarked at 88-188K msgs/sec
+// In-memory (within a group) — Channel<T> backed by ArrayBlockingQueue
 class LocalQueue : FlowQueue {
-    var q: queue.Queue
+    var Channel<FlowFile> channel
 
-    fn init(maxsize: int = 10_000) {
-        q = queue.Queue(maxsize=maxsize)
+    pub fn init(int maxSize = 10_000) {
+        channel = Channel(maxSize)
     }
 
-    fn put(ff: FlowFile) {
-        q.put(ff)  // blocks when full → natural back-pressure
+    pub fn put(FlowFile ff) {
+        channel.send(ff)  // blocks when full → natural back-pressure
     }
 
-    fn get(timeout: float = none): FlowFile? {
-        return q.get(timeout=timeout) or { return none }
+    pub fn poll(long timeoutMs) FlowFile? {
+        return channel.receive(timeoutMs) or { return null }
     }
+
+    pub fn size() int = channel.size()
 }
 
 // NATS JetStream (between groups) — cross-pod communication
 class NatsQueue : FlowQueue {
-    var nc: nats.Connection
-    var js: nats.JetStream
-    var stream: str
-    var subject: str
-    var consumer_name: str
-    var sub: nats.Subscription?
+    var Connection nc
+    var JetStream js
+    init String stream
+    init String subject
+    init String consumerName
+    var JetStreamSubscription sub
 
-    fn init(nats_url: str, stream: str, subject: str, consumer_name: str) {
-        nc = nats.connect(nats_url)
-        js = nc.jetstream()
+    pub fn init(String natsUrl, String stream, String subject, String consumerName) {
+        nc = Nats.connect(natsUrl)
+        js = nc.jetStream()
 
         // Create stream if not exists
-        js.add_stream(name=stream, subjects=[subject]) or { }
+        js.addStream(StreamConfiguration.builder()
+            .name(stream)
+            .subjects(subject)
+            .build()) or { }
 
         // Create durable consumer (competing consumers for scaling)
-        sub = js.pull_subscribe(subject, durable=consumer_name)
+        sub = js.subscribe(subject, PullSubscribeOptions.builder()
+            .durable(consumerName)
+            .build())
     }
 
-    var content_store: ContentStore?  // for large payloads
+    var ContentStore? contentStore  // for large payloads
 
-    fn put(ff: FlowFile) {
-        if ff.content_size() < 256 * 1024 or content_store is none {
+    pub fn put(FlowFile ff) {
+        if ff.contentSize() < 256 * 1024 or contentStore == null {
             // Small: inline in NATS message
-            var data = serialize_flowfile(ff)
+            var data = FlowFileSerde.serialize(ff)
             js.publish(subject, data)
         } else {
             // Large: store content on shared filesystem, pass reference
             var key = "{ff.id}-content"
-            content_store.put(key, ff.content)
-            var light_ff = ff.with_content(key.encode())
-            var data = serialize_flowfile(light_ff)
-            js.publish(subject, data, headers={"Content-Ref": "true"})
+            contentStore.put(key, ff.content)
+            var lightFf = ff.withContent(key.getBytes())
+            var data = FlowFileSerde.serialize(lightFf)
+            js.publish(subject, data, Headers().add("Content-Ref", "true"))
         }
     }
 
-    fn get(timeout: float = none): FlowFile? {
-        var msgs = sub.fetch(1, timeout=timeout) or { return none }
-        if len(msgs) == 0 {
-            return none
+    pub fn poll(long timeoutMs) FlowFile? {
+        var msgs = sub.fetch(1, Duration.ofMillis(timeoutMs))
+        if msgs.isEmpty() {
+            return null
         }
-        var msg = msgs[0]
-        var ff = deserialize_flowfile(msg.data)
+        var msg = msgs.get(0)
+        var ff = FlowFileSerde.deserialize(msg.getData())
 
-        if msg.headers and msg.headers.get("Content-Ref") == "true" {
+        if msg.getHeaders() != null and msg.getHeaders().get("Content-Ref") == "true" {
             // Retrieve large content from shared filesystem
-            var key = ff.content.decode()
-            ff = ff.with_content(content_store.get(key))
-            content_store.delete(key)  // consumed, clean up
+            var key = String(ff.content)
+            ff = ff.withContent(contentStore.get(key))
+            contentStore.delete(key)  // consumed, clean up
         }
 
         msg.ack()
         return ff
+    }
+
+    pub fn size() int {
+        // NATS consumer info provides pending count
+        return sub.getConsumerInfo().getNumPending().toInt()
     }
 }
 ```
@@ -607,14 +656,14 @@ class NatsQueue : FlowQueue {
 Back-pressure propagates naturally via bounded queues:
 
 ```zinc
-data BackPressureConfig {
-    queue_depth_warn: int = 5_000      // log warning
-    queue_depth_throttle: int = 8_000  // slow upstream
-    queue_depth_block: int = 10_000    // block upstream put() call
-}
+data BackPressureConfig(
+    int queueDepthWarn = 5_000,       // log warning
+    int queueDepthThrottle = 8_000,   // slow upstream
+    int queueDepthBlock = 10_000      // block upstream put() call
+)
 ```
 
-- **Within a group**: `queue.Queue(maxsize=N)` — `put()` blocks when full. Upstream thread sleeps until downstream catches up. Zero overhead.
+- **Within a group**: `Channel<T>` is bounded — `send()` blocks when full. Upstream virtual thread sleeps until downstream catches up. Zero overhead, built into the JVM's blocking queue semantics.
 - **Between groups**: NATS JetStream stream limits. Configure max messages or max bytes on the stream. When limit is reached, NATS rejects publishes — upstream group backs off.
 
 No spill-to-disk in Phase 1. The bounded queue is sufficient — it's exactly how NiFi does it.
@@ -631,14 +680,14 @@ Inside a group, routing is local — the worker loop pushes to the right output 
 
 ```zinc
 // Processor returns a route tag
-@flow.processor(outputs=["valid", "invalid", "retry"])
-fn validate(ff: FlowFile): tuple[str, FlowFile] {
-    if not ff.attributes.get("order_id") {
-        return "invalid", ff
+@Processor(outputs = ["valid", "invalid", "retry"])
+fn validate(FlowFile ff) (String, FlowFile) {
+    if ff.attributes.get("order_id") == null {
+        return ("invalid", ff)
     }
-    return "valid", ff
+    return ("valid", ff)
 }
-// Worker loop pushes to output_queues["valid"] or output_queues["invalid"]
+// Worker loop pushes to outputQueues["valid"] or outputQueues["invalid"]
 ```
 
 This handles static routing within a group. No routing table needed — the wiring is defined when you `group.connect()`.
@@ -660,35 +709,82 @@ Examples:
 
 A **routing table** in the state store maps FlowFile attributes to NATS subjects. This table is updatable in production without redeploying processors.
 
+Routing rules use an **attribute-based predicate model** inspired by the IRS backbone service — no `eval()`, no reflection, fully GraalVM native-image compatible. Rules are data (serializable JSON), not code.
+
 ```zinc
-data RoutingRule {
-    name: str
-    condition: str        // Zinc expression evaluated against FlowFile
-    target_subject: str   // NATS subject to publish to
-    priority: int = 0     // higher priority rules evaluated first
+// Operators — enum, no reflection needed
+enum RoutingOperator {
+    EQ, NEQ, LT, GT, GTEQ, LTEQ, CONTAINS, STARTSWITH, ENDSWITH, EXISTS
 }
 
-// Example routing table (stored in state store, editable via API/TUI)
+// A single predicate: attribute + operator + value
+data RoutingPredicate(
+    String attribute,            // FlowFile attribute key
+    RoutingOperator operator,    // comparison operator
+    String value = ""            // comparison value (unused for EXISTS)
+)
+
+// Predicates can be combined with AND/OR
+enum RuleJoiner { AND, OR }
+
+data RoutingRule(
+    String name,
+    List<RoutingPredicate> predicates,   // conditions to evaluate
+    RuleJoiner joiner = RuleJoiner.AND,  // how to combine predicates
+    String targetSubject,                // NATS subject to publish to
+    int priority = 0,                    // higher priority rules evaluated first
+    boolean enabled = true               // can be toggled at runtime
+)
+
+// Example routing table (stored in state store, editable via API/CLI)
 var rules = [
     RoutingRule(
-        name="high-priority",
-        condition='ff.attributes["priority"] == "high"',
-        target_subject="zinc-flow.orders.enrich.high",
-        priority=10,
+        "high-priority",
+        [RoutingPredicate("priority", RoutingOperator.EQ, "high")],
+        RuleJoiner.AND,
+        "zinc-flow.orders.enrich.high",
+        10
     ),
     RoutingRule(
-        name="csv-files",
-        condition='ff.attributes["mime.type"] == "text/csv"',
-        target_subject="zinc-flow.orders.csv-processing.default",
-        priority=5,
+        "csv-files",
+        [RoutingPredicate("mime.type", RoutingOperator.EQ, "text/csv")],
+        RuleJoiner.AND,
+        "zinc-flow.orders.csv-processing.default",
+        5
     ),
     RoutingRule(
-        name="default",
-        condition="true",
-        target_subject="zinc-flow.orders.enrich.default",
-        priority=0,
+        "large-eu-orders",
+        [
+            RoutingPredicate("region", RoutingOperator.EQ, "eu"),
+            RoutingPredicate("amount", RoutingOperator.GT, "1000"),
+        ],
+        RuleJoiner.AND,
+        "zinc-flow.orders.eu-processing.default",
+        8
+    ),
+    RoutingRule(
+        "default",
+        [],  // empty predicates = always matches
+        RuleJoiner.AND,
+        "zinc-flow.orders.enrich.default",
+        0
     ),
 ]
+```
+
+For complex routing logic that can't be expressed as predicates (e.g., database lookups, multi-step decisions), use a `@Processor` function — compiled at build time, AOT-safe:
+
+```zinc
+@Processor(outputs = ["high", "normal", "low"])
+fn routeByBusinessLogic(FlowFile ff) ProcessorResult {
+    // Complex routing stays as compiled code, not runtime-evaluated strings
+    var amount = Integer.parseInt(ff.attributes.getOrDefault("amount", "0"))
+    var region = ff.attributes.getOrDefault("region", "unknown")
+    if amount > 10000 and region == "us-east" {
+        return ProcessorResult.Routed("high", ff)
+    }
+    return ProcessorResult.Routed("normal", ff)
+}
 ```
 
 Consumer groups subscribe with wildcards for natural scaling:
@@ -698,26 +794,50 @@ Consumer groups subscribe with wildcards for natural scaling:
 
 ### Route Evaluation
 
-The runtime evaluates routing rules when a FlowFile exits a group's last processor:
+The runtime evaluates routing rules when a FlowFile exits a group's last processor. All evaluation is simple attribute lookups and comparisons — no expression parsing, no reflection, fully AOT-compatible:
 
 ```zinc
 class Router {
-    var rules: list[RoutingRule]
+    var List<RoutingRule> rules
+    init String defaultSubject
+    init String failureSubject   // IRS-inspired: route here when no rules match
 
-    fn route(ff: FlowFile): str {
-        // Rules sorted by priority (highest first)
+    pub fn route(FlowFile ff) String {
+        // Rules sorted by priority (highest first), only enabled rules
         for rule in rules {
-            if evaluate_condition(rule.condition, ff) {
-                return rule.target_subject
+            if rule.enabled and evaluateRule(rule, ff) {
+                return rule.targetSubject
             }
         }
-        return default_subject
+        return defaultSubject
     }
 
-    fn evaluate_condition(condition: str, ff: FlowFile): bool {
-        // Condition is a Zinc expression — validated at save time by transpiler
-        // Evaluated at runtime against the FlowFile
-        return eval_zinc_expr(condition, {"ff": ff})
+    fn evaluateRule(RoutingRule rule, FlowFile ff) boolean {
+        if rule.predicates.isEmpty() { return true }  // empty = always match
+        var results = rule.predicates.map(p -> evaluatePredicate(p, ff))
+        return match rule.joiner {
+            RuleJoiner.AND -> results.allMatch(it)
+            RuleJoiner.OR  -> results.anyMatch(it)
+        }
+    }
+
+    fn evaluatePredicate(RoutingPredicate pred, FlowFile ff) boolean {
+        var attrValue = ff.attributes.get(pred.attribute)
+        if attrValue == null {
+            return pred.operator == RoutingOperator.EXISTS and false
+        }
+        return match pred.operator {
+            RoutingOperator.EQ         -> attrValue == pred.value
+            RoutingOperator.NEQ        -> attrValue != pred.value
+            RoutingOperator.CONTAINS   -> attrValue.contains(pred.value)
+            RoutingOperator.STARTSWITH -> attrValue.startsWith(pred.value)
+            RoutingOperator.ENDSWITH   -> attrValue.endsWith(pred.value)
+            RoutingOperator.EXISTS     -> true  // attribute exists
+            RoutingOperator.LT         -> attrValue.compareTo(pred.value) < 0
+            RoutingOperator.GT         -> attrValue.compareTo(pred.value) > 0
+            RoutingOperator.GTEQ       -> attrValue.compareTo(pred.value) >= 0
+            RoutingOperator.LTEQ       -> attrValue.compareTo(pred.value) <= 0
+        }
     }
 }
 ```
@@ -729,7 +849,7 @@ Routing rules live in the state store and can be changed in production:
 ```bash
 # Add a new routing rule — takes effect immediately
 zinc flow route add --name "eu-traffic" \
-    --condition 'ff.attributes["region"] == "eu"' \
+    --condition 'ff.attributes.get("region") == "eu"' \
     --target "zinc-flow.orders.eu-processing.default" \
     --priority 8
 
@@ -756,34 +876,54 @@ Three categories of cross-cutting concerns that span all processors:
 
 Processors often need shared infrastructure — database connections, HTTP clients, SSL contexts. Instead of each processor managing its own, a service registry provides shared instances.
 
+**Quarkus CDI (primary)**: In Quarkus mode, services are CDI beans injected at build time via ArC (Quarkus's build-time CDI). This is the preferred path — no reflection, fully native-image compatible, type-safe.
+
+```zinc
+// Quarkus CDI — services are injected beans, resolved at build time
+@ApplicationScoped
+class DatabaseService {
+    @Inject
+    var DataSource dataSource  // configured via application.properties
+}
+
+// Processor receives typed services via CDI injection
+@Processor
+fn enrich(FlowFile ff, @Inject DataSource db) FlowFile {
+    var result = db.query("SELECT region FROM customers WHERE id = ?", ff.attributes.get("customer_id"))
+    return ff.withAttribute("region", result.getString("region"))
+}
+```
+
+**Simple registry (fallback)**: For non-Quarkus deployments or testing, a typed service registry provides runtime lookup. Uses generics instead of `any` to stay type-safe:
+
 ```zinc
 class ServiceRegistry {
-    var services: dict[str, Any] = {}
+    var Map<String, Object> services = {}
 
-    fn register(name: str, service: Any) {
-        services[name] = service
+    pub fn <T> register(String name, T service) {
+        services.put(name, service)
     }
 
-    fn get(name: str): Any {
-        return services[name]
+    pub fn <T> get(String name, Class<T> type) T {
+        return type.cast(services.get(name))
     }
 }
 
 // Register shared services at pipeline startup
-var services = flow.ServiceRegistry()
-services.register("db", PostgresPool(url=secrets.get("DB_URL"), max_connections=10))
-services.register("http", HttpClient(timeout=30, ssl_context=secrets.get("TLS_CERT")))
-services.register("cache", RedisClient(url=secrets.get("REDIS_URL")))
+var services = ServiceRegistry()
+services.register("db", PostgresPool(secrets.get("DB_URL"), 10))
+services.register("http", HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(30)).build())
+services.register("cache", RedisClient(secrets.get("REDIS_URL")))
 ```
 
 Processors access services via their context:
 
 ```zinc
-@flow.processor
-fn enrich(ff: FlowFile, ctx: ProcessorContext): FlowFile {
-    var db = ctx.service("db")
-    var result = db.query("SELECT region FROM customers WHERE id = ?", ff.attributes["customer_id"])
-    return ff.with_attribute("region", result["region"])
+@Processor
+fn enrich(FlowFile ff, ProcessorContext ctx) FlowFile {
+    var db = ctx.service("db", DataSource.class)
+    var result = db.query("SELECT region FROM customers WHERE id = ?", ff.attributes.get("customer_id"))
+    return ff.withAttribute("region", result.getString("region"))
 }
 ```
 
@@ -798,30 +938,30 @@ Processors need configuration (API URLs, thresholds, batch sizes, feature flags)
 | Priority | Source | When it's set | Example |
 |----------|--------|--------------|---------|
 | **Highest** | State store (live overrides) | Operator changes in production via CLI/API | `zinc flow config set enrich timeout_sec 60` |
-| **Medium** | Pipeline definition | Developer sets at wiring time | `group.add_processor("enrich", enrich, config={...})` |
-| **Lowest** | Processor defaults | Developer declares in decorator | `@flow.processor(config={"timeout_sec": 30})` |
+| **Medium** | Pipeline definition | Developer sets at wiring time | `group.addProcessor("enrich", enrich, config = {...})` |
+| **Lowest** | Processor defaults | Developer declares in annotation | `@Processor(config = {"timeout_sec": 30})` |
 
 Resolution: state store override > pipeline definition > processor defaults. Secrets (`${secrets.KEY}`) resolved separately via `SecretsProvider` after config merge.
 
 ```zinc
 // Processor declares config with defaults
-@flow.processor(config={
+@Processor(config = {
     "batch_size": 100,
     "api_url": "https://api.example.com",
     "timeout_sec": 30,
     "retry_count": 3,
     "api_key": "${secrets.ENRICHMENT_API_KEY}",
 })
-fn enrich(ff: FlowFile, ctx: ProcessorContext): FlowFile {
-    var url = ctx.config["api_url"]        // resolved from 3-layer merge
-    var timeout = ctx.config["timeout_sec"]
-    var key = ctx.config["api_key"]        // resolved from secrets provider
-    var result = http_get(url, headers={"Authorization": key}, timeout=timeout)
-    return ff.with_content(result)
+fn enrich(FlowFile ff, ProcessorContext ctx) FlowFile {
+    var url = ctx.config.get("api_url")        // config values are String
+    var timeout = Integer.parseInt(ctx.config.get("timeout_sec"))
+    var key = ctx.config.get("api_key")        // resolved from secrets provider
+    var result = httpGet(url, {"Authorization": key}, timeout)
+    return ff.withContent(result)
 }
 
 // Pipeline overrides at wiring time
-group.add_processor("enrich", enrich, config={
+group.addProcessor("enrich", enrich, config = {
     "api_url": "https://api-staging.example.com",
     "batch_size": 50,
 })
@@ -857,25 +997,25 @@ Config changes are versioned in the state store — same audit trail as processo
 
 #### Implementation
 
-The `ProcessorWorker` reads config on initialization and when notified of changes. The worker doesn't need to restart — it reads `ctx.config` on each invocation, which is a reference to the merged config dict. When the state store changes, the runtime updates the dict in place (thread-safe swap of the reference).
+The `ProcessorWorker` reads config on initialization and when notified of changes. The worker doesn't need to restart — it reads `ctx.config` on each invocation, which is a reference to the merged config map. When the state store changes, the runtime swaps the reference atomically (volatile reference swap — thread-safe on the JVM).
 
 ```zinc
 class ProcessorConfig {
-    var defaults: dict[str, Any]        // from @flow.processor decorator
-    var pipeline_config: dict[str, Any] // from group.add_processor()
-    var overrides: dict[str, Any]       // from state store (live changes)
+    var Map<String, String> defaults         // from @Processor annotation
+    var Map<String, String> pipelineConfig   // from group.addProcessor()
+    var Map<String, String> overrides        // from state store (live changes)
 
-    fn resolve(secrets: SecretsProvider): dict[str, Any] {
+    pub fn resolve(SecretsProvider secrets) Map<String, String> {
         // Merge: defaults < pipeline < overrides
-        var merged = dict(defaults)
-        merged.update(pipeline_config)
-        merged.update(overrides)
+        var merged = HashMap(defaults)
+        merged.putAll(pipelineConfig)
+        merged.putAll(overrides)
 
         // Resolve ${secrets.KEY} references
-        for key, value in merged.items() {
-            if value is str and value.starts_with("${secrets.") {
-                var secret_key = value[10:-1]  // strip ${secrets. and }
-                merged[key] = secrets.get(secret_key)
+        for (key, value) in merged {
+            if value.startsWith("\${secrets.") {
+                var secretKey = value.substring(10, value.length() - 1)
+                merged.put(key, secrets.get(secretKey))
             }
         }
         return merged
@@ -890,33 +1030,33 @@ Processors need credentials — API keys, database passwords, TLS certs. These m
 A pluggable **secrets provider** resolves secret references at runtime:
 
 ```zinc
-class SecretsProvider {
-    fn get(key: str): str { ... }
+interface SecretsProvider {
+    fn get(String key) String
 }
 
 // Implementations
 class EnvSecrets : SecretsProvider {
     // Reads from environment variables — simplest, K8s-native
-    fn get(key: str): str {
-        return os.environ[key]
+    pub fn get(String key) String {
+        return System.getenv(key)
     }
 }
 
 class FileSecrets : SecretsProvider {
     // Reads from files — mounted K8s secrets
-    var base_path: str = "/var/run/secrets"
+    init String basePath = "/var/run/secrets"
 
-    fn get(key: str): str {
-        return open(os.path.join(base_path, key)).read().strip()
+    pub fn get(String key) String {
+        return Files.readString(Path.of(basePath, key)).strip()
     }
 }
 
 class VaultSecrets : SecretsProvider {
     // Reads from HashiCorp Vault
-    var client: VaultClient
+    var VaultClient client
 
-    fn get(key: str): str {
-        return client.read("secret/data/zinc-flow/{key}")["data"]["value"]
+    pub fn get(String key) String {
+        return client.read("secret/data/zinc-flow/{key}").getData().get("value")
     }
 }
 ```
@@ -924,14 +1064,14 @@ class VaultSecrets : SecretsProvider {
 Processor config references secrets with `${secrets.KEY}` syntax, resolved at startup:
 
 ```zinc
-@flow.processor(config={
+@Processor(config = {
     "api_key": "${secrets.ENRICHMENT_API_KEY}",
     "db_url": "${secrets.DB_URL}",
 })
-fn enrich(ff: FlowFile, ctx: ProcessorContext): FlowFile {
-    var key = ctx.config["api_key"]   // resolved from secrets provider
-    var result = http_get("https://api.example.com/enrich", headers={"Authorization": key})
-    return ff.with_content(result)
+fn enrich(FlowFile ff, ProcessorContext ctx) FlowFile {
+    var key = ctx.config.get("api_key")   // resolved from secrets provider
+    var result = httpGet("https://api.example.com/enrich", {"Authorization": key})
+    return ff.withContent(result)
 }
 ```
 
@@ -958,26 +1098,26 @@ Observability is **automatic** — the runtime handles it. Processors don't need
 Every FlowFile enter/exit is logged automatically by the worker loop:
 
 ```zinc
-// Inside ProcessorWorker._run_loop() — automatic, not user code
-fn _run_loop() {
+// Inside ProcessorWorker.runLoop() — automatic, not user code
+fn runLoop() {
     while state == "running" {
-        var ff = input_queue.get(timeout=0.1)
-        if ff is none { continue }
+        var ff = inputQueue.poll(100)
+        if ff == null { continue }
 
         log.debug("processor={name} action=enter flowfile={ff.id} attrs={ff.attributes}")
 
-        var start_time = time.perf_counter()
-        var result = _execute(ff) or {
+        var startTime = System.nanoTime()
+        var result = execute(ff) or {
             log.error("processor={name} action=error flowfile={ff.id} error={err}")
-            _handle_failure(ff, err)
+            handleFailure(ff, err)
             continue
         }
 
-        var elapsed = time.perf_counter() - start_time
-        log.debug("processor={name} action=exit flowfile={ff.id} elapsed_ms={elapsed*1000:.1f}")
+        var elapsed = (System.nanoTime() - startTime) / 1_000_000.0
+        log.debug("processor={name} action=exit flowfile={ff.id} elapsed_ms={elapsed}")
 
-        stats.record(elapsed, ff.content_size())
-        _route_output(result)
+        stats.record(elapsed, ff.contentSize())
+        routeOutput(result)
     }
 }
 ```
@@ -991,7 +1131,7 @@ zinc flow log-level enrich ERROR        # quiet for another
 
 #### Metrics
 
-Automatic Prometheus metrics emitted by the worker loop — zero processor code needed:
+Automatic Prometheus metrics emitted via Micrometer — zero processor code needed:
 
 ```
 # Counters
@@ -1017,9 +1157,9 @@ FlowFiles carry a trace context in their attributes as they move through the pip
 
 ```zinc
 // Automatic — runtime adds trace context to every FlowFile
-ff.attributes["trace.id"] = "abc123"
-ff.attributes["trace.span.id"] = "def456"
-ff.attributes["trace.parent.id"] = "ghi789"
+ff.attributes.put("trace.id", "abc123")
+ff.attributes.put("trace.span.id", "def456")
+ff.attributes.put("trace.parent.id", "ghi789")
 ```
 
 When a FlowFile crosses a group boundary (via NATS), the trace context propagates. OpenTelemetry exporter sends spans to Jaeger/Zipkin/etc. You can trace a single FlowFile's journey through the entire pipeline across groups and pods.
@@ -1030,12 +1170,12 @@ All three concerns (services, secrets, observability) are implemented as **inter
 
 ```zinc
 // What the developer writes — clean business logic only
-@flow.processor
-fn enrich(ff: FlowFile, ctx: ProcessorContext): FlowFile {
-    var db = ctx.service("db")
-    var data = json.loads(ff.content)
-    data["region"] = db.query("SELECT region FROM zip WHERE code = ?", data["zip"])
-    return ff.with_content(json.dumps(data).encode())
+@Processor
+fn enrich(FlowFile ff, ProcessorContext ctx) FlowFile {
+    var db = ctx.service("db", DataSource.class)
+    var data = Json.parse(ff.content)
+    data.put("region", db.query("SELECT region FROM zip WHERE code = ?", data.getString("zip")))
+    return ff.withContent(Json.toBytes(data))
 }
 
 // What the runtime wraps it with — automatic
@@ -1054,66 +1194,78 @@ The developer writes business logic. The runtime handles everything else.
 
 ## Sources and Sinks
 
-Sources produce FlowFiles into the pipeline. Sinks consume them out. Both run on their own thread within their group.
+Sources produce FlowFiles into the pipeline. Sinks consume them out. Both run on their own virtual thread within their group.
+
+Sources receive a `Channel<FlowFile>` output queue and push FlowFiles into it. No generators or `yield` needed — Java doesn't have them, and the push model is a better fit for GraalVM native-image (no coroutine/continuation machinery).
 
 ```zinc
-// HTTP source — runs its own async event loop on a thread
-@flow.source
-fn http_source(port: int = 8080, path: str = "/ingest") {
-    fn handle_post(request) {
-        var body = request.read()
-        var content_type = request.headers.get("Content-Type", "")
+// HTTP source — pushes received requests into output channel
+class HttpSource : FlowSource {
+    init int port = 8080
+    init String path = "/ingest"
 
-        if content_type == "application/flowfile-v3" {
-            var attrs, content, _ = unpackage_flowfile(body)
-            yield FlowFile(id=uuid4().hex, attributes=attrs, content=content, timestamp=time.time())
-        } else {
-            yield FlowFile(
-                id=uuid4().hex,
-                attributes={"http.method": "POST", "http.path": request.path, "mime.type": content_type},
-                content=body,
-                timestamp=time.time(),
-            )
-        }
+    pub fn start(Channel<FlowFile> output) {
+        var server = HttpServer(port)
+        server.post(path, (request) -> {
+            var body = request.body()
+            var contentType = request.header("Content-Type", "")
+
+            if contentType == "application/flowfile-v3" {
+                var (attrs, content) = FlowFileSerde.unpackage(body)
+                output.send(FlowFile(UUID.randomUUID().toString(), attrs, content, System.currentTimeMillis()))
+            } else {
+                output.send(FlowFile(
+                    UUID.randomUUID().toString(),
+                    {"http.method": "POST", "http.path": request.path(), "mime.type": contentType},
+                    body,
+                    System.currentTimeMillis()
+                ))
+            }
+        })
     }
 }
 
-// Kafka source
-@flow.source
-fn kafka_source(brokers: str, topic: str, group: str) {
-    var consumer = KafkaConsumer(brokers, topic, group)
-    for msg in consumer {
-        yield FlowFile(
-            id=uuid4().hex,
-            attributes={"kafka.topic": msg.topic, "kafka.partition": str(msg.partition), "kafka.offset": str(msg.offset)},
-            content=msg.value,
-            timestamp=time.time(),
-        )
+// Kafka source — consumes topic, pushes into output channel
+class KafkaSource : FlowSource {
+    init String brokers
+    init String topic
+    init String group
+
+    pub fn start(Channel<FlowFile> output) {
+        var consumer = KafkaConsumer(brokers, topic, group)
+        for msg in consumer {
+            output.send(FlowFile(
+                UUID.randomUUID().toString(),
+                {"kafka.topic": msg.topic(), "kafka.partition": msg.partition().toString(), "kafka.offset": msg.offset().toString()},
+                msg.value(),
+                System.currentTimeMillis()
+            ))
+        }
     }
 }
 
 // Filesystem sink
-@flow.sink
-fn file_sink(base_path: str) {
-    fn write(ff: FlowFile) {
-        var filename = ff.attributes.get("filename", ff.id)
-        var path = os.path.join(base_path, filename)
-        os.makedirs(os.path.dirname(path), exist_ok=true)
-        with f = open(path, "wb") {
-            f.write(ff.content)
-        }
+@Sink
+fn fileSink(String basePath) {
+    fn write(FlowFile ff) {
+        var filename = ff.attributes.getOrDefault("filename", ff.id)
+        var path = Path.of(basePath, filename)
+        Files.createDirectories(path.getParent())
+        Files.write(path, ff.content)
     }
 }
 
 // HTTP sink
-@flow.sink
-fn http_sink(url: str) {
-    fn send(ff: FlowFile) {
-        var headers = {"Content-Type": ff.attributes.get("mime.type", "application/octet-stream")}
-        for key, value in ff.attributes.items() {
-            headers["X-FlowFile-{key}"] = value
-        }
-        httpx.post(url, content=ff.content, headers=headers)
+@Sink
+fn httpSink(String url) {
+    var client = HttpClient.newHttpClient()
+    fn send(FlowFile ff) {
+        var request = HttpRequest.newBuilder()
+            .uri(URI.create(url))
+            .header("Content-Type", ff.attributes.getOrDefault("mime.type", "application/octet-stream"))
+            .POST(HttpRequest.BodyPublishers.ofByteArray(ff.content))
+            .build()
+        client.send(request, HttpResponse.BodyHandlers.discarding())
     }
 }
 ```
@@ -1126,21 +1278,21 @@ REST API for runtime control. Any UI (web, TUI, CLI) is a client for this.
 
 ```zinc
 class FlowAPI {
-    var pipeline: Pipeline
+    var Pipeline pipeline
 
-    fn init(pipeline: Pipeline, port: int = 8081) {
-        var app = aiohttp_server(port)
-        app.route("GET",  "/api/pipeline",                   get_pipeline)
-        app.route("GET",  "/api/groups",                     get_groups)
-        app.route("GET",  "/api/processors",                 get_processors)
-        app.route("POST", "/api/processors/{name}/start",    start_processor)
-        app.route("POST", "/api/processors/{name}/stop",     stop_processor)
-        app.route("POST", "/api/processors/{name}/scale",    scale_processor)
-        app.route("POST", "/api/processors/{name}/swap",     swap_processor)
-        app.route("POST", "/api/processors/{name}/config",   update_config)
-        app.route("GET",  "/api/queues",                     get_queues)
-        app.route("GET",  "/api/stats",                      get_stats)
-        app.route("GET",  "/api/health",                     health_check)
+    pub fn init(Pipeline pipeline, int port = 8081) {
+        var app = HttpServer(port)
+        app.get("/api/pipeline",                  getPipeline)
+        app.get("/api/groups",                    getGroups)
+        app.get("/api/processors",                getProcessors)
+        app.post("/api/processors/{name}/start",  startProcessor)
+        app.post("/api/processors/{name}/stop",   stopProcessor)
+        app.post("/api/processors/{name}/scale",  scaleProcessor)
+        app.post("/api/processors/{name}/swap",   swapProcessor)
+        app.post("/api/processors/{name}/config",  updateConfig)
+        app.get("/api/queues",                    getQueues)
+        app.get("/api/stats",                     getStats)
+        app.get("/api/health",                    healthCheck)
     }
 }
 ```
@@ -1178,7 +1330,7 @@ zinc flow queues                                    # queue depths
 
 **Answer: Pluggable. NATS JetStream for messaging. Separate tools for state and content.**
 
-- **Within groups**: always `queue.Queue` (in-memory, no choice needed)
+- **Within groups**: always `Channel<T>` (in-memory, no choice needed)
 - **Between groups**: NATS JetStream for message transport
 
 | Concern | Tool | Why |
@@ -1188,7 +1340,7 @@ zinc flow queues                                    # queue depths
 | **Large content** (FlowFiles > 256KB crossing groups) | Filesystem (local/NFS) | Zero dependencies, proven (NiFi uses filesystem too). Pluggable interface for future S3-compatible options (SeaweedFS, RustFS, Garage, etc.) |
 
 Why not all-in-one NATS:
-- NATS KV is experimental in Python client, no read-your-writes guarantee, max 64 history entries per key
+- NATS KV has no read-your-writes guarantee, max 64 history entries per key
 - NATS Object Store has broken listing at scale (3.5+ sec per item)
 - Jepsen found write loss under coordinated failures (2-min flush interval)
 - Single point of failure if NATS handles messaging + state + content
@@ -1201,7 +1353,7 @@ Why NATS JetStream for messaging specifically:
 - **Consumer groups** — competing consumers for scaling processor groups across pods
 - **At-least-once AND exactly-once** — configurable per stream
 - **Cloud-native** — designed for K8s, automatic clustering
-- **Good Python client** — `nats-py` with async support
+- **Good Java client** — `io.nats:jnats` with full JetStream support
 
 Redis Streams and Kafka available as pluggable alternatives for teams that already have them.
 
@@ -1225,13 +1377,13 @@ For local development, processors are Zinc functions imported explicitly. Fast i
 ```zinc
 // pipeline.zn
 import flow
-from processors.enrichment import enrich_order
-from processors.validation import validate_order
+import processors.enrichment.enrich_order
+import processors.validation.validate_order
 
 var pipeline = flow.Pipeline("orders")
 var group = flow.Group("main")
-group.add_processor("validate", validate_order)
-group.add_processor("enrich", enrich_order)
+group.addProcessor("validate", validate_order)
+group.addProcessor("enrich", enrich_order)
 ```
 
 #### Prod Mode — Processor Catalog
@@ -1259,13 +1411,19 @@ Pipeline definition in prod references catalog entries, not imports:
 
 ```zinc
 var group = flow.Group("main")
-group.add_processor("validate", "validate_order@1.0")   // resolved from catalog
-group.add_processor("enrich", "enrich_order@2.1")        // swappable without redeploy
+group.addProcessor("validate", "validate_order@1.0")   // resolved from catalog
+group.addProcessor("enrich", "enrich_order@2.1")        // swappable without redeploy
 ```
 
 #### Hot-Swap Mechanics
 
-Under the hood, swap is: stop worker thread → `importlib.reload()` the new module → start worker thread. The queue bridges the gap — items accumulate during the swap, new version picks them up.
+Hot-swap mechanics differ by deployment mode:
+
+**JVM mode (dev/staging)** — classloader-based swap within the same process. Stop worker virtual thread → load new class via isolated classloader → start worker virtual thread. The queue bridges the gap — items accumulate during the swap, new version picks them up. Fast iteration, no process restart.
+
+**Native-image mode (prod/K8s)** — queue-bridged rolling restart. GraalVM native-image uses a closed-world assumption (all classes known at build time), and Quarkus eliminates runtime reflection — so classloader tricks don't work. Instead, swap triggers a rolling Deployment update: old pod drains, new pod (with new processor binary) starts. NATS buffers messages during the ~100ms gap. From the operator's perspective the `zinc flow processor swap` command is identical — only the underlying mechanism changes.
+
+This is actually simpler and more reliable in production than classloader hot-swap. It's the same pattern K8s rolling updates use, and it means the native-image binary is fully AOT-compiled with no reflection overhead.
 
 ```bash
 # Swap in production — zero downtime
@@ -1303,7 +1461,7 @@ This solves NiFi's Achilles heel: live graph changes are powerful but dangerous 
 
 The processor catalog stores:
 - **Processor metadata**: name, version, description, input/output schemas, config schema
-- **Processor code**: module path or package reference (the actual `.zn` files)
+- **Processor code**: module path or package reference (the actual `.zn` files or compiled `.class` files)
 - **Flow graph**: current processor wiring, group assignments, connection routes
 - **Revision history**: every change with who/when/why/what
 
@@ -1313,20 +1471,20 @@ All stored in the state store (etcd or PostgreSQL). Phase 1 uses local filesyste
 
 **Answer: No. The framework does not enforce content schemas.**
 
-FlowFile content is `bytes`. The framework doesn't know or care what's inside — JSON, CSV, Avro, Parquet, binary, images, whatever. Content is opaque to the runtime.
+FlowFile content is `byte[]`. The framework doesn't know or care what's inside — JSON, CSV, Avro, Parquet, binary, images, whatever. Content is opaque to the runtime.
 
 Validation is the dataflow developer's responsibility. They add validation processors where needed:
 
 ```zinc
-@flow.processor(outputs=["valid", "invalid"])
-fn validate_json_schema(ff: FlowFile): tuple[str, FlowFile] {
-    var data = json.loads(ff.content) or {
-        return "invalid", ff.with_attribute("error", "not valid JSON")
+@Processor(outputs = ["valid", "invalid"])
+fn validateJsonSchema(FlowFile ff) (String, FlowFile) {
+    var data = Json.parse(ff.content) or {
+        return ("invalid", ff.withAttribute("error", "not valid JSON"))
     }
-    if "id" not in data or "type" not in data {
-        return "invalid", ff.with_attribute("error", "missing required fields")
+    if data.get("id") == null or data.get("type") == null {
+        return ("invalid", ff.withAttribute("error", "missing required fields"))
     }
-    return "valid", ff
+    return ("valid", ff)
 }
 ```
 
@@ -1342,58 +1500,66 @@ No multi-tenant auth/isolation in Phase 1. If you need it, run separate NATS ser
 
 ### Q7: Expression language for routing?
 
-**Answer: Zinc IS the expression language. No separate DSL.**
+**Answer: Two tiers — predicate-based rules for operators, compiled Zinc code for complex logic. No runtime eval.**
 
-NiFi needs SpEL because processors are configured via XML/UI. SpEL is terrible — no validation, no autocomplete, cryptic errors, impossible to debug.
+NiFi needs SpEL because processors are configured via XML/UI. SpEL is terrible — no validation, no autocomplete, cryptic errors, impossible to debug. But runtime `eval()` of any kind (SpEL, MVEL, Zinc expressions) is incompatible with GraalVM native-image's closed-world assumption.
 
-Zinc already has a parser and type checker. We use Zinc expressions directly and provide real tooling on top.
+Zinc Flow uses a two-tier approach inspired by the IRS backbone service:
 
-#### Developer mode — full Zinc code
+#### Tier 1: Attribute-based predicates (80% of routing)
 
-Developers write routing logic as Zinc processors:
+Routing rules are **data, not code** — serializable JSON, storable in state store, editable via CLI/API/UI. Evaluated by the `Router` using simple attribute lookups and enum-based operators. No reflection, no eval, fully AOT-compatible.
 
 ```zinc
-@flow.processor(outputs=["high", "normal", "low"])
-fn route_by_priority(ff: FlowFile): tuple[str, FlowFile] {
-    var priority = ff.attributes.get("priority", "normal")
-    return priority, ff
+// Predicate: attribute + operator + value
+RoutingRule("high-priority",
+    [RoutingPredicate("priority", RoutingOperator.EQ, "high")],
+    RuleJoiner.AND,
+    "zinc-flow.orders.enrich.high",
+    10)
+```
+
+Operators: `EQ`, `NEQ`, `LT`, `GT`, `GTEQ`, `LTEQ`, `CONTAINS`, `STARTSWITH`, `ENDSWITH`, `EXISTS`. Rules can be combined with `AND`/`OR` joiners. Covers the vast majority of routing decisions.
+
+#### Tier 2: Compiled Zinc processors (20% — complex logic)
+
+For routing that needs database lookups, multi-step decisions, or arithmetic — use a `@Processor` function. It's compiled at build time, AOT-safe, and can do anything:
+
+```zinc
+@Processor(outputs = ["high", "normal", "low"])
+fn routeByPriority(FlowFile ff) ProcessorResult {
+    var priority = ff.attributes.getOrDefault("priority", "normal")
+    return ProcessorResult.Routed(priority, ff)
 }
 ```
 
-#### Low-code UI — two modes
+#### Low-code UI
 
-**Simple mode** — form-based, no code. Covers 80% of use cases:
+The UI maps directly to predicates — each form row is a `RoutingPredicate`:
 
 ```
 Route where:  [attribute ▼] [filename]  [contains ▼]  [.csv]   → route "csv_path"
               [attribute ▼] [priority]  [equals ▼]    [high]   → route "urgent"
               [otherwise]                               → route "default"
-
-Set attribute: [key] processed_at  [value] {now()}
 ```
 
-**Advanced mode** — Zinc expression for the 20% that need logic:
+No expression parsing needed. The form serializes directly to `RoutingRule` JSON. Validation is trivial — the operator enum constrains what's valid.
 
-```zinc
-ff.attributes["amount"].to_int() > 1000 and ff.attributes["region"] == "us-east"
-```
+#### Why this is better than SpEL / MVEL / eval
 
-The UI validates advanced expressions in real-time by running them through the Zinc transpiler — syntax errors, type errors, unknown attributes all caught before save. Autocomplete for `ff.attributes["..."]` based on what upstream processors are known to produce.
-
-#### Why this is better than SpEL
-
-- **Same language** the developer already knows — no separate DSL to learn
-- **Full parser/type checker** validates expressions before they hit production
-- **Autocomplete** is possible because we control the toolchain
-- **Real error messages** — not `EL1008E: Property or field 'x' cannot be found`
-- **Testable** — expressions are Zinc code, you can unit test them
+- **GraalVM native-image compatible** — no reflection, no dynamic class loading, no expression parsing
+- **Serializable** — rules are JSON data, storable in state store, versionable, diffable
+- **Simple to implement** — the `Router` is ~50 lines of attribute lookups, not a parser
+- **Predictable performance** — O(rules × predicates) string comparisons, no compilation overhead
+- **Complex logic stays compiled** — `@Processor` functions are AOT-compiled, type-checked, testable
+- **IRS-proven** — this predicate model ran in production at enterprise scale
 
 ### Q8: Monitoring — Prometheus? OpenTelemetry?
 
-**Answer: Prometheus metrics export. Phase 2.**
+**Answer: Prometheus metrics export via Micrometer. Phase 2.**
 
 - Phase 1: Stats printed to terminal (msgs/sec, queue depth, errors)
-- Phase 2: `/metrics` endpoint in Prometheus exposition format. Standard counters/gauges:
+- Phase 2: `/metrics` endpoint in Prometheus exposition format via Micrometer. Standard counters/gauges:
   - `zinc_flow_processed_total{processor="name"}` — counter
   - `zinc_flow_errors_total{processor="name"}` — counter
   - `zinc_flow_queue_depth{queue="name"}` — gauge
@@ -1409,14 +1575,14 @@ OpenTelemetry tracing (trace a FlowFile through the pipeline) is Phase 3 — nic
 Stateful processors (dedup, windowed aggregation, counters) read/write state to an external store:
 
 ```zinc
-@flow.processor
-fn dedup(ff: FlowFile): FlowFile? {
+@Processor
+fn dedup(FlowFile ff) FlowFile? {
     var key = ff.attributes.get("dedup.key")
-    var seen = state_store.get("dedup:seen:{key}")
-    if seen is not none {
-        return none  // drop duplicate
+    var seen = stateStore.get("dedup:seen:{key}")
+    if seen != null {
+        return null  // drop duplicate
     }
-    state_store.put("dedup:seen:{key}", "1")
+    stateStore.put("dedup:seen:{key}", "1")
     return ff
 }
 ```
@@ -1429,8 +1595,8 @@ This is the same pattern Flink uses (state backends) and it's what makes horizon
 
 **Answer: Best-effort FIFO within a group. Keyed ordering between groups.**
 
-- **Within a group (single replica)**: FIFO guaranteed — `queue.Queue` is FIFO, single consumer thread.
-- **Within a group (multiple replicas)**: best-effort — multiple threads compete for items. Order is not guaranteed across threads.
+- **Within a group (single replica)**: FIFO guaranteed — `Channel<T>` is FIFO, single consumer thread.
+- **Within a group (multiple replicas)**: best-effort — multiple virtual threads compete for items. Order is not guaranteed across threads.
 - **Between groups**: NATS JetStream is FIFO within a stream. For keyed ordering, use subject-based routing (e.g., `orders.{region}`) so related messages go to the same subject and are consumed in order.
 
 For most data pipeline workloads, best-effort ordering is fine. If a processor needs strict ordering (e.g., CDC events), run it with 1 replica or use keyed partitioning.
@@ -1442,7 +1608,7 @@ For most data pipeline workloads, best-effort ordering is fine. If a processor n
 ```
 zinc-flow/
     flow/
-        __init__.zn          # @processor, @source, @sink decorators, Pipeline, Group
+        init.zn              # @Processor, @Source, @Sink annotations, Pipeline, Group
         flowfile.zn          # FlowFile data class
         pipeline.zn          # Pipeline, ProcessorGroup, Connection
         worker.zn            # ProcessorWorker, run loop
@@ -1455,11 +1621,11 @@ zinc-flow/
         stats.zn             # ProcessorStats, throughput tracking
         serialization.zn     # FlowFile serialization for cross-group transport
         test/
-            __init__.zn      # @flow.test decorator, assertions
+            init.zn          # @FlowTest annotation, assertions
             harness.zn       # PipelineHarness — in-memory test pipeline
             mocks.zn         # MockSource, MockSink, MockServiceRegistry, MockSecretsProvider
         sources/
-            http.zn          # HTTP source (aiohttp)
+            http.zn          # HTTP source (Vert.x/Quarkus)
             kafka.zn         # Kafka consumer source
             filesystem.zn    # Directory watcher source
         sinks/
@@ -1497,7 +1663,7 @@ Testing grows with the system — each vertical gets tests as it's built. No big
 | **Queue** | Queue behavior | Put/get, backpressure, ordering, thread safety | When queue is built |
 | **Routing** | Routing rules | Assert FlowFile matches correct route | When routing is built |
 | **Integration** | Mini pipeline end-to-end | Spin up in-memory pipeline, push FlowFiles, assert output | When pipeline wiring works |
-| **Performance** | Throughput/latency regression | Benchmarks with known baselines (we already have these) | Before each release |
+| **Performance** | Throughput/latency regression | Benchmarks with known baselines | Before each release |
 
 ### Test Harness — `zinc flow test`
 
@@ -1507,39 +1673,39 @@ Built-in test runner that understands FlowFile pipelines:
 import flow.test
 
 // Unit test — test a processor in isolation
-@flow.test
+@FlowTest
 fn test_parse_json() {
     var input = FlowFile(
-        id="test-1",
-        attributes={"source": "test"},
-        content='{"type": "order", "id": 123}'.encode(),
-        timestamp=0.0,
+        "test-1",
+        {"source": "test"},
+        "{\"type\": \"order\", \"id\": 123}".getBytes(),
+        0L
     )
 
     var output = parse_json(input)
 
-    assert output.attributes["record_type"] == "order"
-    assert "id" in json.loads(output.content)
+    assert output.attributes.get("record_type") == "order"
+    assert Json.parse(output.content).containsKey("id")
 }
 
 // Unit test — test routing
-@flow.test
+@FlowTest
 fn test_validate_routes_invalid() {
     var input = FlowFile(
-        id="test-2",
-        attributes={},
-        content='{"no_id": true}'.encode(),
-        timestamp=0.0,
+        "test-2",
+        {},
+        "{\"no_id\": true}".getBytes(),
+        0L
     )
 
-    var route, output = validate(input)
+    var (route, output) = validate(input)
 
     assert route == "invalid"
-    assert output.attributes["error"] == "missing required fields"
+    assert output.attributes.get("error") == "missing required fields"
 }
 
 // Integration test — test a mini pipeline
-@flow.test
+@FlowTest
 fn test_ingest_pipeline() {
     var harness = flow.test.PipelineHarness()
 
@@ -1547,76 +1713,76 @@ fn test_ingest_pipeline() {
     var source = flow.test.MockSource()
     var sink = flow.test.MockSink()
 
-    harness.add_source(source)
-    harness.add_processor("parse", parse_json)
-    harness.add_processor("validate", validate)
-    harness.add_sink("output", sink, route="valid")
+    harness.addSource(source)
+    harness.addProcessor("parse", parse_json)
+    harness.addProcessor("validate", validate)
+    harness.addSink("output", sink, route = "valid")
     harness.connect("source", "parse")
     harness.connect("parse", "validate")
-    harness.connect("validate", "output", route="valid")
+    harness.connect("validate", "output", route = "valid")
 
     // Push test data and run
     source.send(FlowFile(
-        id="test-3",
-        attributes={},
-        content='{"id": 1, "type": "order"}'.encode(),
-        timestamp=0.0,
+        "test-3",
+        {},
+        "{\"id\": 1, \"type\": \"order\"}".getBytes(),
+        0L
     ))
 
-    harness.run_until_idle(timeout=5.0)
+    harness.runUntilIdle(timeout = 5000L)
 
     // Assert what came out
-    assert len(sink.received) == 1
-    assert sink.received[0].attributes["record_type"] == "order"
+    assert sink.received.size() == 1
+    assert sink.received.get(0).attributes.get("record_type") == "order"
 }
 
 // Queue test — verify backpressure
-@flow.test
+@FlowTest
 fn test_queue_backpressure() {
-    var q = LocalQueue(maxsize=5)
+    var q = LocalQueue(maxSize = 5)
 
     // Fill the queue
     for i in range(5) {
-        q.put(FlowFile(id="ff-{i}", attributes={}, content=b"x", timestamp=0.0))
+        q.put(FlowFile("ff-{i}", {}, "x".getBytes(), 0L))
     }
 
-    assert q.qsize() == 5
+    assert q.size() == 5
 
-    // Next put should block (or timeout)
-    var result = q.put_nowait(FlowFile(id="ff-6", attributes={}, content=b"x", timestamp=0.0))
-    assert result is none  // queue full, rejected
+    // Next put should block (or timeout via offer)
+    var accepted = q.offer(FlowFile("ff-6", {}, "x".getBytes(), 0L), 100L)
+    assert accepted == false  // queue full, rejected
 }
 
 // Routing rule test
-@flow.test
+@FlowTest
 fn test_routing_rules() {
-    var router = Router(rules=[
-        RoutingRule(name="high", condition='ff.attributes["priority"] == "high"', target_subject="enrich.high", priority=10),
-        RoutingRule(name="default", condition="true", target_subject="enrich.default", priority=0),
+    var router = Router(rules = [
+        RoutingRule("high", "ff.attributes.get(\"priority\") == \"high\"", "enrich.high", 10),
+        RoutingRule("default", "true", "enrich.default", 0),
     ])
 
-    var high_ff = FlowFile(id="1", attributes={"priority": "high"}, content=b"", timestamp=0.0)
-    var low_ff = FlowFile(id="2", attributes={"priority": "low"}, content=b"", timestamp=0.0)
+    var highFf = FlowFile("1", {"priority": "high"}, "".getBytes(), 0L)
+    var lowFf = FlowFile("2", {"priority": "low"}, "".getBytes(), 0L)
 
-    assert router.route(high_ff) == "enrich.high"
-    assert router.route(low_ff) == "enrich.default"
+    assert router.route(highFf) == "enrich.high"
+    assert router.route(lowFf) == "enrich.default"
 }
 
 // Performance test — verify throughput hasn't regressed
-@flow.test(performance=true)
+@FlowTest(performance = true)
 fn test_queue_throughput() {
-    var q = LocalQueue(maxsize=10_000)
-    var ff = FlowFile(id="perf", attributes={}, content=os.urandom(10 * 1024), timestamp=0.0)
+    var q = LocalQueue(maxSize = 10_000)
+    var ff = FlowFile("perf", {}, Random().nextBytes(10 * 1024), 0L)
 
-    var start = time.perf_counter()
+    var start = System.nanoTime()
     for i in range(50_000) {
         q.put(ff)
-        q.get()
+        q.poll(0)
     }
-    var elapsed = time.perf_counter() - start
-    var msgs_per_sec = 50_000 / elapsed
+    var elapsed = (System.nanoTime() - start) / 1_000_000_000.0
+    var msgsPerSec = 50_000.0 / elapsed
 
-    assert msgs_per_sec > 50_000, "Queue throughput regression: {msgs_per_sec} msgs/sec"
+    assert msgsPerSec > 50_000, "Queue throughput regression: {msgsPerSec} msgs/sec"
 }
 ```
 
@@ -1645,25 +1811,25 @@ The `flow.test` module provides:
 ```zinc
 class MockSource {
     // Programmatically inject FlowFiles into a pipeline
-    fn send(ff: FlowFile) { ... }
-    fn send_batch(ffs: list[FlowFile]) { ... }
+    pub fn send(FlowFile ff) { ... }
+    pub fn sendBatch(List<FlowFile> ffs) { ... }
 }
 
 class MockSink {
     // Capture FlowFiles that exit a pipeline
-    var received: list[FlowFile] = []
-    fn reset() { received.clear() }
+    pub var List<FlowFile> received = []
+    pub fn reset() { received.clear() }
 }
 
 class PipelineHarness {
     // Spin up an in-memory pipeline for testing
     // All queues are LocalQueue, no external dependencies
-    fn add_source(source: MockSource) { ... }
-    fn add_processor(name: str, fn: Callable) { ... }
-    fn add_sink(name: str, sink: MockSink, route: str = "default") { ... }
-    fn connect(source: str, target: str, route: str = "default") { ... }
-    fn run_until_idle(timeout: float = 5.0) { ... }
-    fn run_for(seconds: float) { ... }
+    pub fn addSource(MockSource source) { ... }
+    pub fn addProcessor(String name, ProcessorFn fn) { ... }
+    pub fn addSink(String name, MockSink sink, String route = "default") { ... }
+    pub fn connect(String source, String target, String route = "default") { ... }
+    pub fn runUntilIdle(long timeout = 5000L) { ... }
+    pub fn runFor(long millis) { ... }
 }
 
 class MockServiceRegistry : ServiceRegistry {
@@ -1672,8 +1838,8 @@ class MockServiceRegistry : ServiceRegistry {
 
 class MockSecretsProvider : SecretsProvider {
     // Return test secrets without Vault/env/file
-    var secrets: dict[str, str] = {}
-    fn get(key: str): str { return secrets[key] }
+    var Map<String, String> secrets = {}
+    pub fn get(String key) String { return secrets.get(key) }
 }
 ```
 
@@ -1689,16 +1855,16 @@ Each phase is broken into verticals. Tests are built alongside each vertical —
 
 | Vertical | Build | Test |
 |----------|-------|------|
-| **1a. FlowFile** | `data FlowFile` with `with_content()`, `with_attribute()` | Unit: create, transform, immutability |
-| **1b. Processor** | `@flow.processor` decorator, return types (single, list, none, routed) | Unit: processor in/out, all return types, error handling |
+| **1a. FlowFile** | `data FlowFile` with `withContent()`, `withAttribute()` | Unit: create, transform, immutability |
+| **1b. Processor** | `@Processor` annotation, return types (single, list, null, routed) | Unit: processor in/out, all return types, error handling |
 | **1c. Queue** | `FlowQueue` interface, `LocalQueue` implementation | Unit: put/get, thread safety, backpressure, ordering |
-| **1d. Worker** | `ProcessorWorker` — thread-based consumer loop, retry, DLQ | Unit: consume from queue, route output, retry logic, DLQ |
-| **1e. Group** | `ProcessorGroup` — start/stop/scale workers | Unit: lifecycle, scaling threads |
+| **1d. Worker** | `ProcessorWorker` — virtual thread-based consumer loop, retry, DLQ | Unit: consume from queue, route output, retry logic, DLQ |
+| **1e. Group** | `ProcessorGroup` — start/stop/scale workers | Unit: lifecycle, scaling virtual threads |
 | **1f. Pipeline** | `Pipeline` — connect groups, run all workers in local mode | Integration: multi-processor pipeline end-to-end |
 | **1g. Source/Sink** | HTTP source, filesystem sink | Integration: POST a FlowFile, verify it reaches disk |
 | **1h. CLI** | `zinc flow run pipeline.zn` | E2E: run a pipeline, POST data, check output files |
 | **1i. Stats** | Terminal stats (msgs/sec, queue depth, errors) | Manual verification |
-| **1j. Performance** | Throughput baselines | Performance: assert no regression from benchmarks |
+| **1j. Performance** | Throughput baselines | Performance: assert no regression |
 
 **Not in Phase 1**: Pipeline DSL (`->` syntax), distributed queues, content store, management REST API, K8s deploy, hot-swap, Prometheus metrics.
 
@@ -1714,7 +1880,7 @@ Each phase is broken into verticals. Tests are built alongside each vertical —
 | **2f. Routing** | `Router` with NATS subject-based routing, routing table in state store | Unit: rule evaluation. Integration: dynamic rule changes |
 | **2g. REST API** | Management API (start/stop/scale/swap/config) | Integration: API calls, verify pipeline state changes |
 | **2h. Secrets** | `SecretsProvider` chain (env, file, Vault) | Unit: resolution, fallback chain |
-| **2i. Observability** | Prometheus `/metrics`, structured logging | Integration: verify metrics emitted, log format |
+| **2i. Observability** | Prometheus `/metrics` via Micrometer, structured logging | Integration: verify metrics emitted, log format |
 | **2j. Back-pressure** | NATS stream limits, cross-group backpressure | Integration: fill queue, verify upstream slows |
 | **2k. Docker Compose** | `zinc flow deploy` generates Compose for multi-group | E2E: deploy, send data, verify cross-group routing |
 
@@ -1745,45 +1911,45 @@ Each phase is broken into verticals. Tests are built alongside each vertical —
 ```zinc
 import flow
 
-@flow.processor
-fn parse_json(ff: FlowFile): FlowFile {
-    var data = json.loads(ff.content)
-    return ff.with_attribute("record_type", data.get("type", "unknown"))
-              .with_content(json.dumps(data, indent=2).encode())
+@Processor
+fn parse_json(FlowFile ff) FlowFile {
+    var data = Json.parse(ff.content)
+    return ff.withAttribute("record_type", data.getOrDefault("type", "unknown").toString())
+              .withContent(Json.toPrettyBytes(data))
 }
 
-@flow.processor
-fn add_timestamp(ff: FlowFile): FlowFile {
-    return ff.with_attribute("processed_at", datetime.now().isoformat())
+@Processor
+fn add_timestamp(FlowFile ff) FlowFile {
+    return ff.withAttribute("processed_at", Instant.now().toString())
 }
 
-@flow.processor(outputs=["valid", "invalid"])
-fn validate(ff: FlowFile): tuple[str, FlowFile] {
-    var data = json.loads(ff.content)
-    if "id" in data and "type" in data {
-        return "valid", ff
+@Processor(outputs = ["valid", "invalid"])
+fn validate(FlowFile ff) (String, FlowFile) {
+    var data = Json.parse(ff.content)
+    if data.containsKey("id") and data.containsKey("type") {
+        return ("valid", ff)
     }
-    return "invalid", ff.with_attribute("error", "missing required fields")
+    return ("invalid", ff.withAttribute("error", "missing required fields"))
 }
 
 // Phase 1 — explicit wiring (no DSL yet)
 var pipeline = flow.Pipeline("ingest")
 
 var group = flow.Group("main")
-group.add_source(flow.sources.http(port=8080, path="/data"))
-group.add_processor("parse", parse_json)
-group.add_processor("timestamp", add_timestamp)
-group.add_processor("validate", validate)
-group.add_sink("valid_out", flow.sinks.filesystem("/data/output/valid/"), route="valid")
-group.add_sink("invalid_out", flow.sinks.filesystem("/data/output/invalid/"), route="invalid")
+group.addSource(flow.sources.http(port = 8080, path = "/data"))
+group.addProcessor("parse", parse_json)
+group.addProcessor("timestamp", add_timestamp)
+group.addProcessor("validate", validate)
+group.addSink("valid_out", flow.sinks.filesystem("/data/output/valid/"), route = "valid")
+group.addSink("invalid_out", flow.sinks.filesystem("/data/output/invalid/"), route = "invalid")
 
 group.connect("source", "parse")
 group.connect("parse", "timestamp")
 group.connect("timestamp", "validate")
-group.connect("validate", "valid_out", route="valid")
-group.connect("validate", "invalid_out", route="invalid")
+group.connect("validate", "valid_out", route = "valid")
+group.connect("validate", "invalid_out", route = "invalid")
 
-pipeline.add_group(group)
+pipeline.addGroup(group)
 pipeline.run()
 ```
 
@@ -1791,9 +1957,9 @@ pipeline.run()
 $ zinc flow run ingest.zn
 Pipeline 'ingest' starting (local mode)...
   [main/http-source]   listening on :8080/data
-  [main/parse]         running (1 thread)
-  [main/timestamp]     running (1 thread)
-  [main/validate]      running (1 thread)
+  [main/parse]         running (1 virtual thread)
+  [main/timestamp]     running (1 virtual thread)
+  [main/validate]      running (1 virtual thread)
   [main/valid_out]     writing to /data/output/valid/
   [main/invalid_out]   writing to /data/output/invalid/
 
