@@ -18,7 +18,7 @@ class LocalQueue : FlowQueue {
 
     pub fn put(FlowFile ff) {
         channel.put(ff) or {
-            return Error("queue put interrupted")
+            return Error(err)
         }
     }
 
