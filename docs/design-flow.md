@@ -261,6 +261,7 @@ See `design-flow-runtime.md` for full architecture details.
 | **Flink** | Exactly-once, checkpointing, watermarks | Operational complexity |
 | **Luigi** | Simple task dependencies | No streaming, no real-time |
 | **Temporal** | Workflow durability, replay | Too general, not data-flow specific |
+| **Camel** | EIP vocabulary (Splitter, Aggregator, ContentBasedRouter), uniform connector model (Component → Endpoint → Consumer/Producer), nuanced error handling (per-exception routing, redelivery policies) | Runtime expression languages (Simple/SpEL), XML/YAML DSL, library-mode coupling (no independent scaling) |
 
 ---
 
