@@ -23,7 +23,7 @@ class LocalQueue : FlowQueue {
     }
 
     pub fn poll(long timeoutMs): FlowFile {
-        FlowFile result = channel.poll(timeoutMs, TimeUnit.MILLISECONDS) or {
+        var result = channel.poll(timeoutMs, TimeUnit.MILLISECONDS) or {
             return null
         }
         return result
