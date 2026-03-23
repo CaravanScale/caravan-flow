@@ -1,4 +1,14 @@
-name: zinc-flow
-version: 0.1.0
+# zinc-flow — Zinc Flow project (Mill build)
+# Docs: https://mill-build.org/mill/index.html
+#
+# Commands (via zinc CLI or Mill directly):
+#   zinc build src/            compile (transpile + mill compile)
+#   zinc run src/main.zn       run (transpile + mill run)
+#   zinc build --native src/   GraalVM native binary (mill nativeImage)
 
-dependencies: []
+extends: JavaModule
+jvmVersion: 25
+
+# Maven Central dependencies
+mvnDeps: []
+  # - com.google.code.gson:gson:2.11.0

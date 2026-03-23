@@ -1,6 +1,33 @@
-// Zinc Flow — entry point
-// TODO: Phase 1 implementation
+// Zinc Flow — FlowFile smoke test
 
 fn main() {
-    print("Zinc Flow — not yet implemented")
+    // Create a FlowFile
+    var ff = FlowFile(
+        "test-1",
+        {"source": "test", "type": "json"},
+        "hello world".getBytes(),
+        System.currentTimeMillis(),
+        []
+    )
+
+    print("id: {ff.id()}")
+    print("content size: {ff.contentSize()}")
+    print("source: {ff.attributes().get("source")}")
+
+    // Test withAttribute — original should be unchanged
+    var ff2 = ff.withAttribute("enriched", "true")
+    print("ff2 enriched: {ff2.attributes().get("enriched")}")
+    print("ff1 enriched: {ff.attributes().get("enriched")}")
+
+    // Test withContent
+    var ff3 = ff.withContent("new content".getBytes())
+    print("ff3 size: {ff3.contentSize()}")
+    print("ff1 size: {ff.contentSize()}")
+
+    // Test withProvenance
+    var ff4 = ff.withProvenance("parsed")
+    print("ff4 provenance: {ff4.provenance()}")
+    print("ff1 provenance: {ff.provenance()}")
+
+    print("FlowFile OK")
 }

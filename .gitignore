@@ -5,3 +5,5 @@ out/
 *.jar
 .idea/
 .vscode/
+# Generated Java files (from zinc transpiler)
+src/**/*.java
