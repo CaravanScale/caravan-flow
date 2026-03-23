@@ -1,0 +1,35 @@
+// FlowQueue — interface for message passing between processors.
+// LocalQueue uses Channel<FlowFile> (ArrayBlockingQueue) for in-process queues.
+
+import java.util.concurrent.TimeUnit
+
+interface FlowQueue {
+    fn put(FlowFile ff)
+    fn poll(long timeoutMs): FlowFile
+    fn size(): int
+}
+
+class LocalQueue : FlowQueue {
+    var Channel<FlowFile> channel
+
+    init(int capacity) {
+        channel = Channel(capacity)
+    }
+
+    pub fn put(FlowFile ff) {
+        channel.put(ff) or {
+            return Error("queue put interrupted")
+        }
+    }
+
+    pub fn poll(long timeoutMs): FlowFile {
+        FlowFile result = channel.poll(timeoutMs, TimeUnit.MILLISECONDS) or {
+            return null
+        }
+        return result
+    }
+
+    pub fn size(): int {
+        return channel.size()
+    }
+}

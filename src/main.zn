@@ -1,43 +1,35 @@
-// Zinc Flow — B2 smoke test: ProcessorResult + ProcessorFn
+// Zinc Flow — B3 smoke test: FlowQueue + LocalQueue
 
 fn main() {
-    var ff = FlowFile(
-        "test-1",
-        {"type": "order"},
-        "hello".getBytes(),
-        System.currentTimeMillis(),
-        []
-    )
+    var q = LocalQueue(10)
 
-    // Test Single result
-    var single = Single(ff)
-    print("single: {single}")
+    // Create test FlowFiles
+    var ff1 = FlowFile("ff-1", {"order": "1"}, "data1".getBytes(), System.currentTimeMillis(), [])
+    var ff2 = FlowFile("ff-2", {"order": "2"}, "data2".getBytes(), System.currentTimeMillis(), [])
+    var ff3 = FlowFile("ff-3", {"order": "3"}, "data3".getBytes(), System.currentTimeMillis(), [])
 
-    // Test Multiple result
-    var multi = Multiple([ff, ff.withAttribute("copy", "true")])
-    print("multiple: {multi}")
+    // Test put and size
+    q.put(ff1)
+    q.put(ff2)
+    q.put(ff3)
+    print("size after 3 puts: {q.size()}")
 
-    // Test Routed result
-    var routed = Routed("valid", ff)
-    print("routed: {routed}")
+    // Test poll — should return in FIFO order
+    var out1 = q.poll(100)
+    print("poll 1: {out1.id()}")
 
-    // Test Drop result
-    var drop = Drop()
-    print("drop: {drop}")
+    var out2 = q.poll(100)
+    print("poll 2: {out2.id()}")
 
-    // Test pattern matching on ProcessorResult
-    ProcessorResult result = Single(ff)
-    match result {
-        case Single(f) {
-            print("matched Single, id={f.id()}")
-        }
-        case Drop() {
-            print("matched Drop")
-        }
-        case _ {
-            print("other")
-        }
-    }
+    print("size after 2 polls: {q.size()}")
 
-    print("ProcessorResult OK")
+    // Poll remaining
+    var out3 = q.poll(100)
+    print("poll 3: {out3.id()}")
+
+    // Poll empty queue — should return null after timeout
+    var empty = q.poll(50)
+    print("poll empty: {empty}")
+
+    print("LocalQueue OK")
 }
