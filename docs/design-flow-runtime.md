@@ -26,7 +26,7 @@ Processors, sources, and sinks also program to interfaces — a processor takes 
 ```zinc
 // Processor only depends on FlowFile and ProcessorContext — both interfaces
 @Processor
-fn enrich(FlowFile ff, ProcessorContext ctx) FlowFile {
+fn enrich(FlowFile ff, ProcessorContext ctx): FlowFile {
     var db = ctx.service("db")       // doesn't know if it's Postgres, MySQL, or a mock
     var data = Json.parse(ff.content) // doesn't know if content was inline or from content store
     data.put("region", db.query("SELECT region FROM zip WHERE code = ?", data.getString("zip")))
@@ -148,7 +148,7 @@ data FlowFile(
     long timestamp,
     List<String> provenance = []
 ) {
-    pub fn withContent(byte[] newContent) FlowFile {
+    pub fn withContent(byte[] newContent): FlowFile {
         return FlowFile(
             id,
             attributes,
@@ -158,13 +158,13 @@ data FlowFile(
         )
     }
 
-    pub fn withAttribute(String key, String value) FlowFile {
+    pub fn withAttribute(String key, String value): FlowFile {
         var attrs = HashMap(attributes)
         attrs.put(key, value)
         return FlowFile(id, attrs, content, System.currentTimeMillis(), provenance)
     }
 
-    pub fn contentSize() int = content.length
+    pub fn contentSize(): int = content.length
 }
 ```
 
@@ -183,36 +183,45 @@ sealed class ProcessorResult {
 }
 ```
 
-Processor functions return `ProcessorResult`, and Zinc sugar makes this ergonomic:
+Developers don't write `ProcessorResult` directly. The `@Processor` annotation tells the transpiler to auto-wrap the return value based on the declared return type:
+
+| Declared return type | Transpiler wraps as |
+|---|---|
+| `FlowFile` | `ProcessorResult.Single(ff)` |
+| `List<FlowFile>` | `ProcessorResult.Multiple(ffs)` |
+| `FlowFile?` | `ProcessorResult.Single(ff)` or `ProcessorResult.Drop` (if null) |
+| `(String, FlowFile)` | `ProcessorResult.Routed(route, ff)` |
+
+The worker loop always receives `ProcessorResult` — one type to match, exhaustive and GraalVM-safe.
 
 ```zinc
-// 1:1 — return wraps automatically
+// 1:1 — developer returns FlowFile, transpiler wraps as Single
 @Processor
-fn enrich(FlowFile ff) ProcessorResult {
-    return ProcessorResult.Single(ff.withAttribute("enriched", "true"))
+fn enrich(FlowFile ff): FlowFile {
+    return ff.withAttribute("enriched", "true")
 }
 
-// 1:N — fan out
+// 1:N — developer returns List, transpiler wraps as Multiple
 @Processor
-fn split(FlowFile ff) ProcessorResult {
+fn split(FlowFile ff): List<FlowFile> {
     var records = Json.parseArray(ff.content)
-    return ProcessorResult.Multiple(records.map(r -> FlowFile(...)))
+    return records.map(r -> FlowFile(...))
 }
 
-// Routing — tagged output
+// Routing — developer returns tuple, transpiler wraps as Routed
 @Processor
-fn validate(FlowFile ff) ProcessorResult {
+fn validate(FlowFile ff): (String, FlowFile) {
     if ff.attributes.get("id") == null {
-        return ProcessorResult.Routed("invalid", ff.withAttribute("error", "missing id"))
+        return ("invalid", ff.withAttribute("error", "missing id"))
     }
-    return ProcessorResult.Routed("valid", ff)
+    return ("valid", ff)
 }
 
-// Filter — drop
+// Filter — developer returns nullable, transpiler wraps as Single or Drop
 @Processor
-fn filterJunk(FlowFile ff) ProcessorResult {
-    if ff.contentSize() == 0 { return ProcessorResult.Drop }
-    return ProcessorResult.Single(ff)
+fn filterJunk(FlowFile ff): FlowFile? {
+    if ff.contentSize() == 0 { return null }
+    return ff
 }
 ```
 
@@ -255,7 +264,7 @@ A processor is a Zinc function annotated with `@Processor`:
 import flow
 
 @Processor
-fn enrich_order(FlowFile ff) FlowFile {
+fn enrich_order(FlowFile ff): FlowFile {
     var data = Json.parse(ff.content)
     data.put("enriched_at", Instant.now().toString())
     data.put("region", lookup_region(data.getString("zip_code")))
@@ -272,7 +281,7 @@ Processors can return:
 ```zinc
 // 1:N — split a batch into individual records
 @Processor
-fn split_batch(FlowFile ff) List<FlowFile> {
+fn split_batch(FlowFile ff): List<FlowFile> {
     var records = Json.parseArray(ff.content)
     return records.mapIndexed((r, i) ->
         FlowFile(
@@ -286,7 +295,7 @@ fn split_batch(FlowFile ff) List<FlowFile> {
 
 // Filter — return null to drop
 @Processor
-fn filter_valid(FlowFile ff) FlowFile? {
+fn filter_valid(FlowFile ff): FlowFile? {
     var data = Json.parse(ff.content)
     if data.getString("status") == "invalid" {
         return null
@@ -296,7 +305,7 @@ fn filter_valid(FlowFile ff) FlowFile? {
 
 // Routing — return tagged outputs
 @Processor(outputs = ["success", "failure", "retry"])
-fn validate_order(FlowFile ff) (String, FlowFile) {
+fn validate_order(FlowFile ff): (String, FlowFile) {
     var data = Json.parse(ff.content)
     if data.getString("order_id") == null {
         return ("failure", ff.withAttribute("error", "missing order_id"))
@@ -379,16 +388,16 @@ class ProcessorWorker {
         }
     }
 
-    fn execute(FlowFile ff) ProcessorResult {
+    fn execute(FlowFile ff): ProcessorResult {
         var maxRetries = Integer.parseInt(config.getOrDefault("max_retries", "0"))
-        for attempt in range(maxRetries + 1) {
+        for attempt in 0..=maxRetries {
             var result = fn(ff) or {
                 if attempt < maxRetries {
                     var delay = Long.parseLong(config.getOrDefault("retry_delay", "1000")) * (1L << attempt)
                     Thread.sleep(delay)
                     continue
                 }
-                raise err
+                return Error(err)
             }
             return result
         }
@@ -435,16 +444,16 @@ class ProcessorWorker {
 import flow
 
 @Processor
-fn parse_json(FlowFile ff) FlowFile { ... }
+fn parse_json(FlowFile ff): FlowFile { ... }
 
 @Processor
-fn validate(FlowFile ff) FlowFile { ... }
+fn validate(FlowFile ff): FlowFile { ... }
 
 @Processor
-fn enrich(FlowFile ff) FlowFile { ... }
+fn enrich(FlowFile ff): FlowFile { ... }
 
 @Processor
-fn format_output(FlowFile ff) FlowFile { ... }
+fn format_output(FlowFile ff): FlowFile { ... }
 
 // --- Pipeline with processor groups ---
 
@@ -529,7 +538,7 @@ class Pipeline {
         }
     }
 
-    pub fn status() Map<String, ProcessorStatus> {
+    pub fn status(): Map<String, ProcessorStatus> {
         var result = HashMap<String, ProcessorStatus>()
         for (groupName, group) in groups {
             for (procName, worker) in group.workers {
@@ -558,8 +567,8 @@ The queue backend is pluggable — same interface, different implementations:
 ```zinc
 interface FlowQueue {
     fn put(FlowFile ff)
-    fn poll(long timeoutMs) FlowFile?
-    fn size() int
+    fn poll(long timeoutMs): FlowFile?
+    fn size(): int
 }
 
 // In-memory (within a group) — Channel<T> backed by ArrayBlockingQueue
@@ -574,11 +583,11 @@ class LocalQueue : FlowQueue {
         channel.send(ff)  // blocks when full → natural back-pressure
     }
 
-    pub fn poll(long timeoutMs) FlowFile? {
+    pub fn poll(long timeoutMs): FlowFile? {
         return channel.receive(timeoutMs) or { return null }
     }
 
-    pub fn size() int = channel.size()
+    pub fn size(): int = channel.size()
 }
 
 // NATS JetStream (between groups) — cross-pod communication
@@ -623,7 +632,7 @@ class NatsQueue : FlowQueue {
         }
     }
 
-    pub fn poll(long timeoutMs) FlowFile? {
+    pub fn poll(long timeoutMs): FlowFile? {
         var msgs = sub.fetch(1, Duration.ofMillis(timeoutMs))
         if msgs.isEmpty() {
             return null
@@ -642,7 +651,7 @@ class NatsQueue : FlowQueue {
         return ff
     }
 
-    pub fn size() int {
+    pub fn size(): int {
         // NATS consumer info provides pending count
         return sub.getConsumerInfo().getNumPending().toInt()
     }
@@ -681,7 +690,7 @@ Inside a group, routing is local — the worker loop pushes to the right output 
 ```zinc
 // Processor returns a route tag
 @Processor(outputs = ["valid", "invalid", "retry"])
-fn validate(FlowFile ff) (String, FlowFile) {
+fn validate(FlowFile ff): (String, FlowFile) {
     if ff.attributes.get("order_id") == null {
         return ("invalid", ff)
     }
@@ -776,7 +785,7 @@ For complex routing logic that can't be expressed as predicates (e.g., database 
 
 ```zinc
 @Processor(outputs = ["high", "normal", "low"])
-fn routeByBusinessLogic(FlowFile ff) ProcessorResult {
+fn routeByBusinessLogic(FlowFile ff): ProcessorResult {
     // Complex routing stays as compiled code, not runtime-evaluated strings
     var amount = Integer.parseInt(ff.attributes.getOrDefault("amount", "0"))
     var region = ff.attributes.getOrDefault("region", "unknown")
@@ -802,7 +811,7 @@ class Router {
     init String defaultSubject
     init String failureSubject   // IRS-inspired: route here when no rules match
 
-    pub fn route(FlowFile ff) String {
+    pub fn route(FlowFile ff): String {
         // Rules sorted by priority (highest first), only enabled rules
         for rule in rules {
             if rule.enabled and evaluateRule(rule, ff) {
@@ -812,7 +821,7 @@ class Router {
         return defaultSubject
     }
 
-    fn evaluateRule(RoutingRule rule, FlowFile ff) boolean {
+    fn evaluateRule(RoutingRule rule, FlowFile ff): boolean {
         if rule.predicates.isEmpty() { return true }  // empty = always match
         var results = rule.predicates.map(p -> evaluatePredicate(p, ff))
         return match rule.joiner {
@@ -821,7 +830,7 @@ class Router {
         }
     }
 
-    fn evaluatePredicate(RoutingPredicate pred, FlowFile ff) boolean {
+    fn evaluatePredicate(RoutingPredicate pred, FlowFile ff): boolean {
         var attrValue = ff.attributes.get(pred.attribute)
         if attrValue == null {
             return pred.operator == RoutingOperator.EXISTS and false
@@ -888,7 +897,7 @@ class DatabaseService {
 
 // Processor receives typed services via CDI injection
 @Processor
-fn enrich(FlowFile ff, @Inject DataSource db) FlowFile {
+fn enrich(FlowFile ff, @Inject DataSource db): FlowFile {
     var result = db.query("SELECT region FROM customers WHERE id = ?", ff.attributes.get("customer_id"))
     return ff.withAttribute("region", result.getString("region"))
 }
@@ -920,7 +929,7 @@ Processors access services via their context:
 
 ```zinc
 @Processor
-fn enrich(FlowFile ff, ProcessorContext ctx) FlowFile {
+fn enrich(FlowFile ff, ProcessorContext ctx): FlowFile {
     var db = ctx.service("db", DataSource.class)
     var result = db.query("SELECT region FROM customers WHERE id = ?", ff.attributes.get("customer_id"))
     return ff.withAttribute("region", result.getString("region"))
@@ -952,7 +961,7 @@ Resolution: state store override > pipeline definition > processor defaults. Sec
     "retry_count": 3,
     "api_key": "${secrets.ENRICHMENT_API_KEY}",
 })
-fn enrich(FlowFile ff, ProcessorContext ctx) FlowFile {
+fn enrich(FlowFile ff, ProcessorContext ctx): FlowFile {
     var url = ctx.config.get("api_url")        // config values are String
     var timeout = Integer.parseInt(ctx.config.get("timeout_sec"))
     var key = ctx.config.get("api_key")        // resolved from secrets provider
@@ -1005,7 +1014,7 @@ class ProcessorConfig {
     var Map<String, String> pipelineConfig   // from group.addProcessor()
     var Map<String, String> overrides        // from state store (live changes)
 
-    pub fn resolve(SecretsProvider secrets) Map<String, String> {
+    pub fn resolve(SecretsProvider secrets): Map<String, String> {
         // Merge: defaults < pipeline < overrides
         var merged = HashMap(defaults)
         merged.putAll(pipelineConfig)
@@ -1031,13 +1040,13 @@ A pluggable **secrets provider** resolves secret references at runtime:
 
 ```zinc
 interface SecretsProvider {
-    fn get(String key) String
+    fn get(String key): String
 }
 
 // Implementations
 class EnvSecrets : SecretsProvider {
     // Reads from environment variables — simplest, K8s-native
-    pub fn get(String key) String {
+    pub fn get(String key): String {
         return System.getenv(key)
     }
 }
@@ -1046,7 +1055,7 @@ class FileSecrets : SecretsProvider {
     // Reads from files — mounted K8s secrets
     init String basePath = "/var/run/secrets"
 
-    pub fn get(String key) String {
+    pub fn get(String key): String {
         return Files.readString(Path.of(basePath, key)).strip()
     }
 }
@@ -1055,7 +1064,7 @@ class VaultSecrets : SecretsProvider {
     // Reads from HashiCorp Vault
     var VaultClient client
 
-    pub fn get(String key) String {
+    pub fn get(String key): String {
         return client.read("secret/data/zinc-flow/{key}").getData().get("value")
     }
 }
@@ -1068,7 +1077,7 @@ Processor config references secrets with `${secrets.KEY}` syntax, resolved at st
     "api_key": "${secrets.ENRICHMENT_API_KEY}",
     "db_url": "${secrets.DB_URL}",
 })
-fn enrich(FlowFile ff, ProcessorContext ctx) FlowFile {
+fn enrich(FlowFile ff, ProcessorContext ctx): FlowFile {
     var key = ctx.config.get("api_key")   // resolved from secrets provider
     var result = httpGet("https://api.example.com/enrich", {"Authorization": key})
     return ff.withContent(result)
@@ -1171,7 +1180,7 @@ All three concerns (services, secrets, observability) are implemented as **inter
 ```zinc
 // What the developer writes — clean business logic only
 @Processor
-fn enrich(FlowFile ff, ProcessorContext ctx) FlowFile {
+fn enrich(FlowFile ff, ProcessorContext ctx): FlowFile {
     var db = ctx.service("db", DataSource.class)
     var data = Json.parse(ff.content)
     data.put("region", db.query("SELECT region FROM zip WHERE code = ?", data.getString("zip")))
@@ -1477,7 +1486,7 @@ Validation is the dataflow developer's responsibility. They add validation proce
 
 ```zinc
 @Processor(outputs = ["valid", "invalid"])
-fn validateJsonSchema(FlowFile ff) (String, FlowFile) {
+fn validateJsonSchema(FlowFile ff): (String, FlowFile) {
     var data = Json.parse(ff.content) or {
         return ("invalid", ff.withAttribute("error", "not valid JSON"))
     }
@@ -1527,7 +1536,7 @@ For routing that needs database lookups, multi-step decisions, or arithmetic —
 
 ```zinc
 @Processor(outputs = ["high", "normal", "low"])
-fn routeByPriority(FlowFile ff) ProcessorResult {
+fn routeByPriority(FlowFile ff): ProcessorResult {
     var priority = ff.attributes.getOrDefault("priority", "normal")
     return ProcessorResult.Routed(priority, ff)
 }
@@ -1576,7 +1585,7 @@ Stateful processors (dedup, windowed aggregation, counters) read/write state to 
 
 ```zinc
 @Processor
-fn dedup(FlowFile ff) FlowFile? {
+fn dedup(FlowFile ff): FlowFile? {
     var key = ff.attributes.get("dedup.key")
     var seen = stateStore.get("dedup:seen:{key}")
     if seen != null {
@@ -1742,7 +1751,7 @@ fn test_queue_backpressure() {
     var q = LocalQueue(maxSize = 5)
 
     // Fill the queue
-    for i in range(5) {
+    for i in 0..5 {
         q.put(FlowFile("ff-{i}", {}, "x".getBytes(), 0L))
     }
 
@@ -1757,8 +1766,20 @@ fn test_queue_backpressure() {
 @FlowTest
 fn test_routing_rules() {
     var router = Router(rules = [
-        RoutingRule("high", "ff.attributes.get(\"priority\") == \"high\"", "enrich.high", 10),
-        RoutingRule("default", "true", "enrich.default", 0),
+        RoutingRule(
+            "high",
+            [RoutingPredicate("priority", RoutingOperator.EQ, "high")],
+            RuleJoiner.AND,
+            "enrich.high",
+            10
+        ),
+        RoutingRule(
+            "default",
+            [],
+            RuleJoiner.AND,
+            "enrich.default",
+            0
+        ),
     ])
 
     var highFf = FlowFile("1", {"priority": "high"}, "".getBytes(), 0L)
@@ -1775,7 +1796,7 @@ fn test_queue_throughput() {
     var ff = FlowFile("perf", {}, Random().nextBytes(10 * 1024), 0L)
 
     var start = System.nanoTime()
-    for i in range(50_000) {
+    for i in 0..50_000 {
         q.put(ff)
         q.poll(0)
     }
@@ -1839,7 +1860,7 @@ class MockServiceRegistry : ServiceRegistry {
 class MockSecretsProvider : SecretsProvider {
     // Return test secrets without Vault/env/file
     var Map<String, String> secrets = {}
-    pub fn get(String key) String { return secrets.get(key) }
+    pub fn get(String key): String { return secrets.get(key) }
 }
 ```
 
@@ -1912,19 +1933,19 @@ Each phase is broken into verticals. Tests are built alongside each vertical —
 import flow
 
 @Processor
-fn parse_json(FlowFile ff) FlowFile {
+fn parse_json(FlowFile ff): FlowFile {
     var data = Json.parse(ff.content)
     return ff.withAttribute("record_type", data.getOrDefault("type", "unknown").toString())
               .withContent(Json.toPrettyBytes(data))
 }
 
 @Processor
-fn add_timestamp(FlowFile ff) FlowFile {
+fn add_timestamp(FlowFile ff): FlowFile {
     return ff.withAttribute("processed_at", Instant.now().toString())
 }
 
 @Processor(outputs = ["valid", "invalid"])
-fn validate(FlowFile ff) (String, FlowFile) {
+fn validate(FlowFile ff): (String, FlowFile) {
     var data = Json.parse(ff.content)
     if data.containsKey("id") and data.containsKey("type") {
         return ("valid", ff)

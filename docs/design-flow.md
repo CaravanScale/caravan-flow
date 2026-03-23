@@ -38,7 +38,7 @@ A processor is a Zinc function that takes a FlowFile and returns one or more Flo
 
 ```zinc
 @Processor
-fn enrich_order(FlowFile flow) FlowFile {
+fn enrich_order(FlowFile flow): FlowFile {
     var data = Json.parse(flow.content)
     data.put("enriched_at", Instant.now().toString())
     data.put("region", lookup_region(data.getString("zip_code")))
@@ -137,7 +137,7 @@ When a downstream processor is slow or stopped, upstream should slow down:
 
 ```zinc
 @Processor(retries = 3, deadLetter = "errors")
-fn risky_transform(FlowFile flow) FlowFile {
+fn risky_transform(FlowFile flow): FlowFile {
     // If this throws, retried 3 times, then sent to "errors" queue
     var result = external_api_call(flow.content)
     return flow.withContent(result)
@@ -161,14 +161,20 @@ Custom sources/sinks are just Zinc functions:
 
 ```zinc
 @Source
-fn watch_directory(String path, String pattern = "*") FlowFile {
-    for file in Files.list(Path.of(path)) {
-        if file.toString().matches(pattern) {
-            yield FlowFile(
-                UUID.randomUUID().toString(),
-                {"filename": file.getFileName().toString(), "path": file.toString()},
-                Files.readAllBytes(file),
-            )
+class DirectoryWatcher : FlowSource {
+    init String path
+    init String pattern = "*"
+
+    pub fn start(Channel<FlowFile> output) {
+        for file in Files.list(Path.of(path)) {
+            if file.toString().matches(pattern) {
+                output.send(FlowFile(
+                    UUID.randomUUID().toString(),
+                    {"filename": file.getFileName().toString(), "path": file.toString()},
+                    Files.readAllBytes(file),
+                    System.currentTimeMillis()
+                ))
+            }
         }
     }
 }
@@ -304,7 +310,7 @@ NiFi processor:     Java class + @Tags + @CapabilityDescription + PropertyDescri
                     + AbstractProcessor + onTrigger() + ProcessSession + FlowFile API
                     + Maven module + NAR packaging → 100+ lines of boilerplate
 
-Zinc Flow processor: @Processor fn name(FlowFile ff) FlowFile { ... } → just the logic
+Zinc Flow processor: @Processor fn name(FlowFile ff): FlowFile { ... } → just the logic
 ```
 
 Zinc's `data` classes replace Java record boilerplate. `@Processor` replaces NiFi's `AbstractProcessor` subclassing. The transpiler handles the ceremony — the developer writes the logic.
