@@ -1,35 +1,52 @@
-// Zinc Flow — B3 smoke test: FlowQueue + LocalQueue
+// Zinc Flow — B4 smoke test: ProcessorWorker
+
+import java.util.HashMap
 
 fn main() {
-    var q = LocalQueue(10)
+    // Create queues
+    var input = LocalQueue(100)
+    var output = LocalQueue(100)
+    var dlq = LocalQueue(100)
 
-    // Create test FlowFiles
-    var ff1 = FlowFile("ff-1", {"order": "1"}, "data1".getBytes(), System.currentTimeMillis(), [])
-    var ff2 = FlowFile("ff-2", {"order": "2"}, "data2".getBytes(), System.currentTimeMillis(), [])
-    var ff3 = FlowFile("ff-3", {"order": "3"}, "data3".getBytes(), System.currentTimeMillis(), [])
+    // Output queues map
+    Map<String, FlowQueue> outputs = HashMap()
+    outputs.put("default", output)
+    outputs.put("dead_letter", dlq)
 
-    // Test put and size
-    q.put(ff1)
-    q.put(ff2)
-    q.put(ff3)
-    print("size after 3 puts: {q.size()}")
+    // Simple processor that adds a timestamp attribute
+    ProcessorFn addTimestamp = (ff) -> {
+        return Single(ff.withAttribute("processed", "true"))
+    }
 
-    // Test poll — should return in FIFO order
-    var out1 = q.poll(100)
-    print("poll 1: {out1.id()}")
+    // Create and start worker
+    var worker = ProcessorWorker("test-worker", addTimestamp, input, outputs)
+    worker.start()
 
-    var out2 = q.poll(100)
-    print("poll 2: {out2.id()}")
+    // Feed some FlowFiles
+    input.put(FlowFile("ff-1", {}, "data1".getBytes(), System.currentTimeMillis(), []))
+    input.put(FlowFile("ff-2", {}, "data2".getBytes(), System.currentTimeMillis(), []))
+    input.put(FlowFile("ff-3", {}, "data3".getBytes(), System.currentTimeMillis(), []))
 
-    print("size after 2 polls: {q.size()}")
+    // Wait for processing
+    Thread.sleep(500)
 
-    // Poll remaining
-    var out3 = q.poll(100)
-    print("poll 3: {out3.id()}")
+    // Check output
+    print("output size: {output.size()}")
 
-    // Poll empty queue — should return null after timeout
-    var empty = q.poll(50)
-    print("poll empty: {empty}")
+    var out1 = output.poll(100)
+    print("out1 id: {out1.id()}")
+    print("out1 processed: {out1.attributes().get("processed")}")
 
-    print("LocalQueue OK")
+    var out2 = output.poll(100)
+    print("out2 id: {out2.id()}")
+
+    var out3 = output.poll(100)
+    print("out3 id: {out3.id()}")
+
+    // Stop worker
+    worker.stop()
+    Thread.sleep(200)
+    print("state: {worker.getState()}")
+
+    print("ProcessorWorker OK")
 }
