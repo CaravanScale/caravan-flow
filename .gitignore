@@ -1,0 +1,7 @@
+out/
+.mill/
+.zinc/
+*.class
+*.jar
+.idea/
+.vscode/

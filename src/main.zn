@@ -1,0 +1,6 @@
+// Zinc Flow — entry point
+// TODO: Phase 1 implementation
+
+fn main() {
+    print("Zinc Flow — not yet implemented")
+}
