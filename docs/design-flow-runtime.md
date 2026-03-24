@@ -24,13 +24,19 @@ Core interfaces:
 Processors, sources, and sinks also program to interfaces — a processor takes a `FlowFile` and returns a `FlowFile`. It never knows whether the queue is in-memory or NATS, whether content is on local disk or NFS, whether secrets come from env vars or Vault.
 
 ```zinc
-// Processor only depends on FlowFile and ProcessorContext — both interfaces
-@Processor
-fn enrich(FlowFile ff, ProcessorContext ctx): FlowFile {
-    var db = ctx.service("db")       // doesn't know if it's Postgres, MySQL, or a mock
-    var data = Json.parse(ff.content) // doesn't know if content was inline or from content store
-    data.put("region", db.query("SELECT region FROM zip WHERE code = ?", data.getString("zip")))
-    return ff.withContent(Json.toBytes(data))
+// Processor only depends on FlowFile — it doesn't know queue, content store, or secret details
+class EnrichProcessor : ProcessorFn {
+    init DataSource db
+
+    init(DataSource db) {
+        this.db = db
+    }
+
+    pub fn process(FlowFile ff): ProcessorResult {
+        var data = Json.parse(ff.content) // doesn't know if content was inline or from content store
+        data.put("region", db.query("SELECT region FROM zip WHERE code = ?", data.getString("zip")))
+        return new Single(ff.withContent(Json.toBytes(data)))
+    }
 }
 ```
 
@@ -44,7 +50,7 @@ When we hit something awkward or missing while building the runtime — a patter
 
 Examples of things we might discover we need:
 - Methods on `data` classes (for `FlowFile.withContent()`)
-- Annotation arguments (`@Processor(outputs = ["a", "b"])`)
+- Named output declarations in pipeline wiring
 - Generic interface implementations (`FlowQueue<FlowFile>`)
 - Sealed class syntax (for `ProcessorResult` — needed for GraalVM-safe exhaustive matching)
 - Pattern matching on sealed hierarchies (for `routeOutput`)
@@ -183,45 +189,39 @@ sealed class ProcessorResult {
 }
 ```
 
-Developers don't write `ProcessorResult` directly. The `@Processor` annotation tells the transpiler to auto-wrap the return value based on the declared return type:
+Processors return `ProcessorResult` explicitly. The sealed class hierarchy makes the return type clear — no magic wrapping, no transpiler tricks. The developer chooses which variant to return:
 
-| Declared return type | Transpiler wraps as |
-|---|---|
-| `FlowFile` | `ProcessorResult.Single(ff)` |
-| `List<FlowFile>` | `ProcessorResult.Multiple(ffs)` |
-| `FlowFile?` | `ProcessorResult.Single(ff)` or `ProcessorResult.Drop` (if null) |
-| `(String, FlowFile)` | `ProcessorResult.Routed(route, ff)` |
+- `new Single(ff)` — 1:1 transform
+- `new Multiple(list)` — 1:N split/fan-out
+- `new Routed("name", ff)` — route to a named output
+- `new Drop()` — filter/discard
 
 The worker loop always receives `ProcessorResult` — one type to match, exhaustive and GraalVM-safe.
 
 ```zinc
-// 1:1 — developer returns FlowFile, transpiler wraps as Single
-@Processor
-fn enrich(FlowFile ff): FlowFile {
-    return ff.withAttribute("enriched", "true")
+// 1:1 — explicitly return Single
+ProcessorFn enrich = (ff) -> {
+    return new Single(ff.withAttribute("enriched", "true"))
 }
 
-// 1:N — developer returns List, transpiler wraps as Multiple
-@Processor
-fn split(FlowFile ff): List<FlowFile> {
+// 1:N — explicitly return Multiple
+ProcessorFn split = (ff) -> {
     var records = Json.parseArray(ff.content)
-    return records.map(r -> FlowFile(...))
+    return new Multiple(records.map(r -> FlowFile(...)))
 }
 
-// Routing — developer returns tuple, transpiler wraps as Routed
-@Processor
-fn validate(FlowFile ff): (String, FlowFile) {
+// Routing — explicitly return Routed
+ProcessorFn validate = (ff) -> {
     if ff.attributes.get("id") == null {
-        return ("invalid", ff.withAttribute("error", "missing id"))
+        return new Routed("invalid", ff.withAttribute("error", "missing id"))
     }
-    return ("valid", ff)
+    return new Routed("valid", ff)
 }
 
-// Filter — developer returns nullable, transpiler wraps as Single or Drop
-@Processor
-fn filterJunk(FlowFile ff): FlowFile? {
-    if ff.contentSize() == 0 { return null }
-    return ff
+// Filter — explicitly return Single or Drop
+ProcessorFn filterJunk = (ff) -> {
+    if ff.contentSize() == 0 { return new Drop() }
+    return new Single(ff)
 }
 ```
 
@@ -258,62 +258,59 @@ NiFi uses local filesystem for its content repository and it works at scale. Kee
 
 ### Processor Definition
 
-A processor is a Zinc function annotated with `@Processor`:
+A processor is a function that implements `ProcessorFn` — either as a lambda or a class. It takes a `FlowFile` and returns a `ProcessorResult`:
 
 ```zinc
 import flow
 
-@Processor
-fn enrich_order(FlowFile ff): FlowFile {
+// Simple processor as a lambda
+ProcessorFn enrich_order = (ff) -> {
     var data = Json.parse(ff.content)
     data.put("enriched_at", Instant.now().toString())
     data.put("region", lookup_region(data.getString("zip_code")))
-    return ff.withContent(Json.toBytes(data))
+    return new Single(ff.withContent(Json.toBytes(data)))
 }
 ```
 
-Processors can return:
-- **One FlowFile** — 1:1 transform
-- **A list of FlowFiles** — 1:N split/fan-out
-- **Null** — filter/drop
-- **A tuple of (route, FlowFile)** — routed output
+Processors return `ProcessorResult` explicitly:
+- `new Single(ff)` — 1:1 transform
+- `new Multiple(list)` — 1:N split/fan-out
+- `new Drop()` — filter/discard
+- `new Routed("name", ff)` — route to a named output
 
 ```zinc
 // 1:N — split a batch into individual records
-@Processor
-fn split_batch(FlowFile ff): List<FlowFile> {
+ProcessorFn split_batch = (ff) -> {
     var records = Json.parseArray(ff.content)
-    return records.mapIndexed((r, i) ->
+    return new Multiple(records.mapIndexed((r, i) ->
         FlowFile(
             UUID.randomUUID().toString(),
             ff.attributes + {"record.index": i.toString()},
             Json.toBytes(r),
             System.currentTimeMillis()
         )
-    )
+    ))
 }
 
-// Filter — return null to drop
-@Processor
-fn filter_valid(FlowFile ff): FlowFile? {
+// Filter — return Drop to discard
+ProcessorFn filter_valid = (ff) -> {
     var data = Json.parse(ff.content)
     if data.getString("status") == "invalid" {
-        return null
+        return new Drop()
     }
-    return ff
+    return new Single(ff)
 }
 
-// Routing — return tagged outputs
-@Processor(outputs = ["success", "failure", "retry"])
-fn validate_order(FlowFile ff): (String, FlowFile) {
+// Routing — named outputs declared in pipeline wiring, processor returns Routed
+ProcessorFn validate_order = (ff) -> {
     var data = Json.parse(ff.content)
     if data.getString("order_id") == null {
-        return ("failure", ff.withAttribute("error", "missing order_id"))
+        return new Routed("failure", ff.withAttribute("error", "missing order_id"))
     }
     if data.getInt("amount", 0) <= 0 {
-        return ("retry", ff.withAttribute("error", "invalid amount"))
+        return new Routed("retry", ff.withAttribute("error", "invalid amount"))
     }
-    return ("success", ff)
+    return new Routed("success", ff)
 }
 ```
 
@@ -443,17 +440,13 @@ class ProcessorWorker {
 ```zinc
 import flow
 
-@Processor
-fn parse_json(FlowFile ff): FlowFile { ... }
+ProcessorFn parse_json = (ff) -> { ... }
 
-@Processor
-fn validate(FlowFile ff): FlowFile { ... }
+ProcessorFn validate = (ff) -> { ... }
 
-@Processor
-fn enrich(FlowFile ff): FlowFile { ... }
+ProcessorFn enrich = (ff) -> { ... }
 
-@Processor
-fn format_output(FlowFile ff): FlowFile { ... }
+ProcessorFn format_output = (ff) -> { ... }
 
 // --- Pipeline with processor groups ---
 
@@ -688,13 +681,12 @@ Routing determines which queue a FlowFile goes to after a processor finishes wit
 Inside a group, routing is local — the worker loop pushes to the right output queue based on the processor's return value. Fast, no network, no serialization.
 
 ```zinc
-// Processor returns a route tag
-@Processor(outputs = ["valid", "invalid", "retry"])
-fn validate(FlowFile ff): (String, FlowFile) {
+// Processor returns a Routed result — named outputs declared in pipeline wiring
+ProcessorFn validate = (ff) -> {
     if ff.attributes.get("order_id") == null {
-        return ("invalid", ff)
+        return new Routed("invalid", ff)
     }
-    return ("valid", ff)
+    return new Routed("valid", ff)
 }
 // Worker loop pushes to outputQueues["valid"] or outputQueues["invalid"]
 ```
@@ -781,18 +773,18 @@ var rules = [
 ]
 ```
 
-For complex routing logic that can't be expressed as predicates (e.g., database lookups, multi-step decisions), use a `@Processor` function — compiled at build time, AOT-safe:
+For complex routing logic that can't be expressed as predicates (e.g., database lookups, multi-step decisions), use a processor function — compiled at build time, AOT-safe. Named outputs are declared in the pipeline wiring:
 
 ```zinc
-@Processor(outputs = ["high", "normal", "low"])
-fn routeByBusinessLogic(FlowFile ff): ProcessorResult {
+// Named outputs ["high", "normal", "low"] declared in pipeline wiring
+ProcessorFn routeByBusinessLogic = (ff) -> {
     // Complex routing stays as compiled code, not runtime-evaluated strings
     var amount = Integer.parseInt(ff.attributes.getOrDefault("amount", "0"))
     var region = ff.attributes.getOrDefault("region", "unknown")
     if amount > 10000 and region == "us-east" {
-        return ProcessorResult.Routed("high", ff)
+        return new Routed("high", ff)
     }
-    return ProcessorResult.Routed("normal", ff)
+    return new Routed("normal", ff)
 }
 ```
 
@@ -885,25 +877,7 @@ Three categories of cross-cutting concerns that span all processors:
 
 Processors often need shared infrastructure — database connections, HTTP clients, SSL contexts. Instead of each processor managing its own, a service registry provides shared instances.
 
-**Quarkus CDI (primary)**: In Quarkus mode, services are CDI beans injected at build time via ArC (Quarkus's build-time CDI). This is the preferred path — no reflection, fully native-image compatible, type-safe.
-
-```zinc
-// Quarkus CDI — services are injected beans, resolved at build time
-@ApplicationScoped
-class DatabaseService {
-    @Inject
-    var DataSource dataSource  // configured via application.properties
-}
-
-// Processor receives typed services via CDI injection
-@Processor
-fn enrich(FlowFile ff, @Inject DataSource db): FlowFile {
-    var result = db.query("SELECT region FROM customers WHERE id = ?", ff.attributes.get("customer_id"))
-    return ff.withAttribute("region", result.getString("region"))
-}
-```
-
-**Simple registry (fallback)**: For non-Quarkus deployments or testing, a typed service registry provides runtime lookup. Uses generics instead of `any` to stay type-safe:
+**Service Registry**: A typed service registry provides shared instances to processors. Services are registered at startup in the wiring code and accessed via the registry or passed directly via constructor injection. No DI container — all wiring is explicit and readable:
 
 ```zinc
 class ServiceRegistry {
@@ -925,15 +899,27 @@ services.register("http", HttpClient.newBuilder().connectTimeout(Duration.ofSeco
 services.register("cache", RedisClient(secrets.get("REDIS_URL")))
 ```
 
-Processors access services via their context:
+Processors access services via constructor injection or the registry:
 
 ```zinc
-@Processor
-fn enrich(FlowFile ff, ProcessorContext ctx): FlowFile {
-    var db = ctx.service("db", DataSource.class)
-    var result = db.query("SELECT region FROM customers WHERE id = ?", ff.attributes.get("customer_id"))
-    return ff.withAttribute("region", result.getString("region"))
+// Constructor injection — preferred for processors that need services
+class EnrichProcessor : ProcessorFn {
+    init DataSource db
+
+    init(DataSource db) {
+        this.db = db
+    }
+
+    pub fn process(FlowFile ff): ProcessorResult {
+        var result = db.query("SELECT region FROM customers WHERE id = ?", ff.attributes.get("customer_id"))
+        return new Single(ff.withAttribute("region", result.getString("region")))
+    }
 }
+
+// Wiring — services passed explicitly at construction time
+var db = PostgresPool(secrets.get("DB_URL"), 10)
+var enrichProcessor = new EnrichProcessor(db)
+group.addProcessor("enrich", enrichProcessor)
 ```
 
 Services are shared across all processors in a group (same process, same connection pool). Between groups, each group has its own service instances.
@@ -948,31 +934,33 @@ Processors need configuration (API URLs, thresholds, batch sizes, feature flags)
 |----------|--------|--------------|---------|
 | **Highest** | State store (live overrides) | Operator changes in production via CLI/API | `zinc flow config set enrich timeout_sec 60` |
 | **Medium** | Pipeline definition | Developer sets at wiring time | `group.addProcessor("enrich", enrich, config = {...})` |
-| **Lowest** | Processor defaults | Developer declares in annotation | `@Processor(config = {"timeout_sec": 30})` |
+| **Lowest** | Processor defaults | Developer sets in ProcessorGroup | `ProcessorGroup("name", fn).withConfig({"timeout_sec": "30"})` |
 
 Resolution: state store override > pipeline definition > processor defaults. Secrets (`${secrets.KEY}`) resolved separately via `SecretsProvider` after config merge.
 
 ```zinc
-// Processor declares config with defaults
-@Processor(config = {
-    "batch_size": 100,
-    "api_url": "https://api.example.com",
-    "timeout_sec": 30,
-    "retry_count": 3,
-    "api_key": "${secrets.ENRICHMENT_API_KEY}",
-})
-fn enrich(FlowFile ff, ProcessorContext ctx): FlowFile {
+// Processor uses config passed via ProcessorContext
+ProcessorFn enrich = (ff, ctx) -> {
     var url = ctx.config.get("api_url")        // config values are String
     var timeout = Integer.parseInt(ctx.config.get("timeout_sec"))
     var key = ctx.config.get("api_key")        // resolved from secrets provider
     var result = httpGet(url, {"Authorization": key}, timeout)
-    return ff.withContent(result)
+    return new Single(ff.withContent(result))
 }
+
+// Config defaults set in ProcessorGroup wiring
+group.addProcessor("enrich", enrich, config = {
+    "batch_size": "100",
+    "api_url": "https://api.example.com",
+    "timeout_sec": "30",
+    "retry_count": "3",
+    "api_key": "${secrets.ENRICHMENT_API_KEY}",
+})
 
 // Pipeline overrides at wiring time
 group.addProcessor("enrich", enrich, config = {
     "api_url": "https://api-staging.example.com",
-    "batch_size": 50,
+    "batch_size": "50",
 })
 ```
 
@@ -1010,7 +998,7 @@ The `ProcessorWorker` reads config on initialization and when notified of change
 
 ```zinc
 class ProcessorConfig {
-    var Map<String, String> defaults         // from @Processor annotation
+    var Map<String, String> defaults         // from ProcessorGroup config
     var Map<String, String> pipelineConfig   // from group.addProcessor()
     var Map<String, String> overrides        // from state store (live changes)
 
@@ -1073,14 +1061,17 @@ class VaultSecrets : SecretsProvider {
 Processor config references secrets with `${secrets.KEY}` syntax, resolved at startup:
 
 ```zinc
-@Processor(config = {
+// Config with secret references set in ProcessorGroup wiring
+group.addProcessor("enrich", enrich, config = {
     "api_key": "${secrets.ENRICHMENT_API_KEY}",
     "db_url": "${secrets.DB_URL}",
 })
-fn enrich(FlowFile ff, ProcessorContext ctx): FlowFile {
+
+// Processor reads resolved config at runtime
+ProcessorFn enrich = (ff, ctx) -> {
     var key = ctx.config.get("api_key")   // resolved from secrets provider
     var result = httpGet("https://api.example.com/enrich", {"Authorization": key})
-    return ff.withContent(result)
+    return new Single(ff.withContent(result))
 }
 ```
 
@@ -1179,17 +1170,22 @@ All three concerns (services, secrets, observability) are implemented as **inter
 
 ```zinc
 // What the developer writes — clean business logic only
-@Processor
-fn enrich(FlowFile ff, ProcessorContext ctx): FlowFile {
-    var db = ctx.service("db", DataSource.class)
-    var data = Json.parse(ff.content)
-    data.put("region", db.query("SELECT region FROM zip WHERE code = ?", data.getString("zip")))
-    return ff.withContent(Json.toBytes(data))
+class EnrichProcessor : ProcessorFn {
+    init DataSource db
+
+    init(DataSource db) {
+        this.db = db
+    }
+
+    pub fn process(FlowFile ff): ProcessorResult {
+        var data = Json.parse(ff.content)
+        data.put("region", db.query("SELECT region FROM zip WHERE code = ?", data.getString("zip")))
+        return new Single(ff.withContent(Json.toBytes(data)))
+    }
 }
 
-// What the runtime wraps it with — automatic
+// What the runtime wraps it with — automatic (via ProcessorWorker)
 //   → resolve secrets into config
-//   → inject services via ctx
 //   → log enter/exit
 //   → emit metrics
 //   → propagate trace context
@@ -1253,28 +1249,41 @@ class KafkaSource : FlowSource {
     }
 }
 
-// Filesystem sink
-@Sink
-fn fileSink(String basePath) {
-    fn write(FlowFile ff) {
+// Filesystem sink — implements ProcessorFn, config via constructor
+class FileSink : ProcessorFn {
+    init String basePath
+
+    init(String basePath) {
+        this.basePath = basePath
+    }
+
+    pub fn process(FlowFile ff): ProcessorResult {
         var filename = ff.attributes.getOrDefault("filename", ff.id)
         var path = Path.of(basePath, filename)
         Files.createDirectories(path.getParent())
         Files.write(path, ff.content)
+        return new Drop()
     }
 }
 
-// HTTP sink
-@Sink
-fn httpSink(String url) {
-    var client = HttpClient.newHttpClient()
-    fn send(FlowFile ff) {
+// HTTP sink — implements ProcessorFn, config via constructor
+class HttpSink : ProcessorFn {
+    init String url
+    init HttpClient client
+
+    init(String url) {
+        this.url = url
+        this.client = HttpClient.newHttpClient()
+    }
+
+    pub fn process(FlowFile ff): ProcessorResult {
         var request = HttpRequest.newBuilder()
             .uri(URI.create(url))
             .header("Content-Type", ff.attributes.getOrDefault("mime.type", "application/octet-stream"))
             .POST(HttpRequest.BodyPublishers.ofByteArray(ff.content))
             .build()
         client.send(request, HttpResponse.BodyHandlers.discarding())
+        return new Drop()
     }
 }
 ```
@@ -1430,7 +1439,7 @@ Hot-swap mechanics differ by deployment mode:
 
 **JVM mode (dev/staging)** — classloader-based swap within the same process. Stop worker virtual thread → load new class via isolated classloader → start worker virtual thread. The queue bridges the gap — items accumulate during the swap, new version picks them up. Fast iteration, no process restart.
 
-**Native-image mode (prod/K8s)** — queue-bridged rolling restart. GraalVM native-image uses a closed-world assumption (all classes known at build time), and Quarkus eliminates runtime reflection — so classloader tricks don't work. Instead, swap triggers a rolling Deployment update: old pod drains, new pod (with new processor binary) starts. NATS buffers messages during the ~100ms gap. From the operator's perspective the `zinc flow processor swap` command is identical — only the underlying mechanism changes.
+**Native-image mode (prod/K8s)** — queue-bridged rolling restart. GraalVM native-image uses a closed-world assumption (all classes known at build time), so classloader tricks don't work. Instead, swap triggers a rolling Deployment update: old pod drains, new pod (with new processor binary) starts. NATS buffers messages during the ~100ms gap. From the operator's perspective the `zinc flow processor swap` command is identical — only the underlying mechanism changes.
 
 This is actually simpler and more reliable in production than classloader hot-swap. It's the same pattern K8s rolling updates use, and it means the native-image binary is fully AOT-compiled with no reflection overhead.
 
@@ -1485,15 +1494,15 @@ FlowFile content is `byte[]`. The framework doesn't know or care what's inside �
 Validation is the dataflow developer's responsibility. They add validation processors where needed:
 
 ```zinc
-@Processor(outputs = ["valid", "invalid"])
-fn validateJsonSchema(FlowFile ff): (String, FlowFile) {
+// Named outputs ["valid", "invalid"] declared in pipeline wiring
+ProcessorFn validateJsonSchema = (ff) -> {
     var data = Json.parse(ff.content) or {
-        return ("invalid", ff.withAttribute("error", "not valid JSON"))
+        return new Routed("invalid", ff.withAttribute("error", "not valid JSON"))
     }
     if data.get("id") == null or data.get("type") == null {
-        return ("invalid", ff.withAttribute("error", "missing required fields"))
+        return new Routed("invalid", ff.withAttribute("error", "missing required fields"))
     }
-    return ("valid", ff)
+    return new Routed("valid", ff)
 }
 ```
 
@@ -1532,13 +1541,13 @@ Operators: `EQ`, `NEQ`, `LT`, `GT`, `GTEQ`, `LTEQ`, `CONTAINS`, `STARTSWITH`, `E
 
 #### Tier 2: Compiled Zinc processors (20% — complex logic)
 
-For routing that needs database lookups, multi-step decisions, or arithmetic — use a `@Processor` function. It's compiled at build time, AOT-safe, and can do anything:
+For routing that needs database lookups, multi-step decisions, or arithmetic — use a processor function. It's compiled at build time, AOT-safe, and can do anything. Named outputs are declared in the pipeline wiring:
 
 ```zinc
-@Processor(outputs = ["high", "normal", "low"])
-fn routeByPriority(FlowFile ff): ProcessorResult {
+// Named outputs ["high", "normal", "low"] declared in pipeline wiring
+ProcessorFn routeByPriority = (ff) -> {
     var priority = ff.attributes.getOrDefault("priority", "normal")
-    return ProcessorResult.Routed(priority, ff)
+    return new Routed(priority, ff)
 }
 ```
 
@@ -1560,7 +1569,7 @@ No expression parsing needed. The form serializes directly to `RoutingRule` JSON
 - **Serializable** — rules are JSON data, storable in state store, versionable, diffable
 - **Simple to implement** — the `Router` is ~50 lines of attribute lookups, not a parser
 - **Predictable performance** — O(rules × predicates) string comparisons, no compilation overhead
-- **Complex logic stays compiled** — `@Processor` functions are AOT-compiled, type-checked, testable
+- **Complex logic stays compiled** — `ProcessorFn` implementations are AOT-compiled, type-checked, testable
 - **IRS-proven** — this predicate model ran in production at enterprise scale
 
 ### Q8: Monitoring — Prometheus? OpenTelemetry?
@@ -1584,15 +1593,22 @@ OpenTelemetry tracing (trace a FlowFile through the pipeline) is Phase 3 — nic
 Stateful processors (dedup, windowed aggregation, counters) read/write state to an external store:
 
 ```zinc
-@Processor
-fn dedup(FlowFile ff): FlowFile? {
-    var key = ff.attributes.get("dedup.key")
-    var seen = stateStore.get("dedup:seen:{key}")
-    if seen != null {
-        return null  // drop duplicate
+class DedupProcessor : ProcessorFn {
+    init StateStore stateStore
+
+    init(StateStore stateStore) {
+        this.stateStore = stateStore
     }
-    stateStore.put("dedup:seen:{key}", "1")
-    return ff
+
+    pub fn process(FlowFile ff): ProcessorResult {
+        var key = ff.attributes.get("dedup.key")
+        var seen = stateStore.get("dedup:seen:{key}")
+        if seen != null {
+            return new Drop()  // drop duplicate
+        }
+        stateStore.put("dedup:seen:{key}", "1")
+        return new Single(ff)
+    }
 }
 ```
 
@@ -1617,7 +1633,7 @@ For most data pipeline workloads, best-effort ordering is fine. If a processor n
 ```
 zinc-flow/
     flow/
-        init.zn              # @Processor, @Source, @Sink annotations, Pipeline, Group
+        init.zn              # ProcessorFn interface, Pipeline, Group
         flowfile.zn          # FlowFile data class
         pipeline.zn          # Pipeline, ProcessorGroup, Connection
         worker.zn            # ProcessorWorker, run loop
@@ -1630,11 +1646,11 @@ zinc-flow/
         stats.zn             # ProcessorStats, throughput tracking
         serialization.zn     # FlowFile serialization for cross-group transport
         test/
-            init.zn          # @FlowTest annotation, assertions
+            init.zn          # FlowTest helpers, assertions
             harness.zn       # PipelineHarness — in-memory test pipeline
             mocks.zn         # MockSource, MockSink, MockServiceRegistry, MockSecretsProvider
         sources/
-            http.zn          # HTTP source (Vert.x/Quarkus)
+            http.zn          # HTTP source (Javalin)
             kafka.zn         # Kafka consumer source
             filesystem.zn    # Directory watcher source
         sinks/
@@ -1877,7 +1893,7 @@ Each phase is broken into verticals. Tests are built alongside each vertical —
 | Vertical | Build | Test |
 |----------|-------|------|
 | **1a. FlowFile** | `data FlowFile` with `withContent()`, `withAttribute()` | Unit: create, transform, immutability |
-| **1b. Processor** | `@Processor` annotation, return types (single, list, null, routed) | Unit: processor in/out, all return types, error handling |
+| **1b. Processor** | `ProcessorFn` interface, return types (Single, Multiple, Drop, Routed) | Unit: processor in/out, all return types, error handling |
 | **1c. Queue** | `FlowQueue` interface, `LocalQueue` implementation | Unit: put/get, thread safety, backpressure, ordering |
 | **1d. Worker** | `ProcessorWorker` — virtual thread-based consumer loop, retry, DLQ | Unit: consume from queue, route output, retry logic, DLQ |
 | **1e. Group** | `ProcessorGroup` — start/stop/scale workers | Unit: lifecycle, scaling virtual threads |
@@ -1932,25 +1948,23 @@ Each phase is broken into verticals. Tests are built alongside each vertical —
 ```zinc
 import flow
 
-@Processor
-fn parse_json(FlowFile ff): FlowFile {
+ProcessorFn parse_json = (ff) -> {
     var data = Json.parse(ff.content)
-    return ff.withAttribute("record_type", data.getOrDefault("type", "unknown").toString())
-              .withContent(Json.toPrettyBytes(data))
+    return new Single(ff.withAttribute("record_type", data.getOrDefault("type", "unknown").toString())
+              .withContent(Json.toPrettyBytes(data)))
 }
 
-@Processor
-fn add_timestamp(FlowFile ff): FlowFile {
-    return ff.withAttribute("processed_at", Instant.now().toString())
+ProcessorFn add_timestamp = (ff) -> {
+    return new Single(ff.withAttribute("processed_at", Instant.now().toString()))
 }
 
-@Processor(outputs = ["valid", "invalid"])
-fn validate(FlowFile ff): (String, FlowFile) {
+// Named outputs ["valid", "invalid"] declared in pipeline wiring below
+ProcessorFn validate = (ff) -> {
     var data = Json.parse(ff.content)
     if data.containsKey("id") and data.containsKey("type") {
-        return ("valid", ff)
+        return new Routed("valid", ff)
     }
-    return ("invalid", ff.withAttribute("error", "missing required fields"))
+    return new Routed("invalid", ff.withAttribute("error", "missing required fields"))
 }
 
 // Phase 1 — explicit wiring (no DSL yet)

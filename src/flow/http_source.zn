@@ -1,23 +1,32 @@
-// HttpSource — Micronaut HTTP controller that feeds FlowFiles into a pipeline.
+// HttpSource — HTTP route handler that feeds FlowFiles into a pipeline.
 // POST /flow with a request body creates a FlowFile and puts it on the output queue.
+// Routes are registered explicitly on the Javalin app — no annotations, no magic.
 
-import io.micronaut.http.annotation.Controller
-import io.micronaut.http.annotation.Post
-import io.micronaut.http.HttpResponse
+import io.javalin.Javalin
+import io.javalin.http.Context
 
-@Controller("/flow")
 class HttpSource {
-    FlowQueue outputQueue = null
+    init Javalin app
+    init FlowQueue outputQueue
 
-    pub fn setOutputQueue(FlowQueue queue) {
-        outputQueue = queue
+    init(Javalin app, FlowQueue outputQueue) {
+        this.app = app
+        this.outputQueue = outputQueue
+        registerRoutes()
     }
 
-    @Post
-    pub fn ingest(String body): HttpResponse<String> {
+    fn registerRoutes() {
+        app.post("/flow", (ctx) -> {
+            ingest(ctx)
+        })
+    }
+
+    fn ingest(Context ctx) {
         var id = java.util.UUID.randomUUID().toString()
+        var body = ctx.body()
         var ff = new FlowFile(id, {}, body.getBytes(), System.currentTimeMillis(), [])
         outputQueue.put(ff)
-        return HttpResponse.accepted().body("accepted: {id}")
+        ctx.status(202)
+        ctx.result("accepted: {id}")
     }
 }

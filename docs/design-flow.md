@@ -34,15 +34,14 @@ Zinc transpiles to clean Java 25, giving us the full JVM ecosystem — virtual t
 
 ### R1 — Processor Model
 
-A processor is a Zinc function that takes a FlowFile and returns one or more FlowFiles:
+A processor is a Zinc function that takes a FlowFile and returns a ProcessorResult:
 
 ```zinc
-@Processor
-fn enrich_order(FlowFile flow): FlowFile {
+ProcessorFn enrich_order = (flow) -> {
     var data = Json.parse(flow.content)
     data.put("enriched_at", Instant.now().toString())
     data.put("region", lookup_region(data.getString("zip_code")))
-    return flow.withContent(Json.toBytes(data))
+    return new Single(flow.withContent(Json.toBytes(data)))
 }
 ```
 
@@ -136,12 +135,15 @@ When a downstream processor is slow or stopped, upstream should slow down:
 - **Circuit breaker** — if a processor fails N times, stop sending it traffic
 
 ```zinc
-@Processor(retries = 3, deadLetter = "errors")
-fn risky_transform(FlowFile flow): FlowFile {
-    // If this throws, retried 3 times, then sent to "errors" queue
+// Processor function — retries and dead letter are configured in ProcessorGroup wiring
+ProcessorFn risky_transform = (flow) -> {
     var result = external_api_call(flow.content)
-    return flow.withContent(result)
+    return new Single(flow.withContent(result))
 }
+
+// Wiring: retries and dead letter configured at the group level
+pipeline.addGroup(new ProcessorGroup("risky-transform", risky_transform)
+    .withRetry(3, 1000))
 ```
 
 ### R7 — Sources and Sinks
@@ -157,23 +159,31 @@ Built-in connectors for common data sources/sinks:
 | **Database** | JDBC query, CDC |
 | **MQTT** | IoT message broker |
 
-Custom sources/sinks are just Zinc functions:
+Custom sources/sinks are plain Zinc classes with constructor injection:
 
 ```zinc
-@Source
-class DirectoryWatcher : FlowSource {
+class DirectoryWatcher {
     init String path
-    init String pattern = "*"
+    init String pattern
+    init FlowQueue outputQueue
 
-    pub fn start(Channel<FlowFile> output) {
+    init(String path, String pattern, FlowQueue outputQueue) {
+        this.path = path
+        this.pattern = pattern
+        this.outputQueue = outputQueue
+    }
+
+    pub fn start() {
         for file in Files.list(Path.of(path)) {
             if file.toString().matches(pattern) {
-                output.send(FlowFile(
+                var ff = new FlowFile(
                     UUID.randomUUID().toString(),
                     {"filename": file.getFileName().toString(), "path": file.toString()},
                     Files.readAllBytes(file),
-                    System.currentTimeMillis()
-                ))
+                    System.currentTimeMillis(),
+                    []
+                )
+                outputQueue.put(ff)
             }
         }
     }
@@ -311,10 +321,10 @@ NiFi processor:     Java class + @Tags + @CapabilityDescription + PropertyDescri
                     + AbstractProcessor + onTrigger() + ProcessSession + FlowFile API
                     + Maven module + NAR packaging → 100+ lines of boilerplate
 
-Zinc Flow processor: @Processor fn name(FlowFile ff): FlowFile { ... } → just the logic
+Zinc Flow processor: ProcessorFn name = (ff) -> { ... } → just the logic
 ```
 
-Zinc's `data` classes replace Java record boilerplate. `@Processor` replaces NiFi's `AbstractProcessor` subclassing. The transpiler handles the ceremony — the developer writes the logic.
+Zinc's `data` classes replace Java record boilerplate. `ProcessorFn` interface replaces NiFi's `AbstractProcessor` subclassing. The transpiler handles the ceremony — the developer writes the logic.
 
 ### Stack
 
@@ -336,7 +346,7 @@ All resolved in `design-flow-runtime.md`. Summary:
 4. **Versioning** — Processor catalog with name@version. Every flow change creates a revision with audit trail. Instant rollback.
 5. **Schema enforcement** — No. Content is opaque `byte[]`. Validation is processor logic, up to the dataflow developer.
 6. **Multi-tenancy** — Namespace isolation per pipeline on shared infrastructure.
-7. **Routing language** — Two tiers: attribute-based predicates (IRS-inspired, GraalVM-safe, covers 80%) + compiled `@Processor` functions for complex logic. No runtime eval. Low-code UI maps directly to predicates.
+7. **Routing language** — Two tiers: attribute-based predicates (IRS-inspired, GraalVM-safe, covers 80%) + compiled `ProcessorFn` implementations for complex logic. No runtime eval. Low-code UI maps directly to predicates.
 8. **Monitoring** — Terminal stats Phase 1, Prometheus `/metrics` Phase 2, OpenTelemetry tracing Phase 3.
 9. **State management** — External state stores (etcd, PostgreSQL). Processors are stateless from the runtime's perspective.
 10. **Ordering guarantees** — Best-effort FIFO. FlowFiles are independent units, ordering is a non-issue for typical use cases.
@@ -348,7 +358,7 @@ All resolved in `design-flow-runtime.md`. Summary:
 See `design-flow-runtime.md` for detailed phase breakdown.
 
 ### Phase 1 — MVP (Local Dev)
-- FlowFile data class, `@Processor` annotation
+- FlowFile data class, ProcessorFn interface
 - LocalQueue (`Channel<T>`), ProcessorWorker (virtual thread-based)
 - ProcessorGroup with start/stop/scale
 - Pipeline with explicit wiring (no DSL yet)

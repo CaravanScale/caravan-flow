@@ -1,7 +1,7 @@
-// Zinc Flow — B6: Micronaut HTTP Source + File Sink pipeline
+// Zinc Flow — entry point
+// All wiring is explicit: read top-to-bottom to see how the system is assembled.
 
-import io.micronaut.runtime.Micronaut
-import io.micronaut.context.ApplicationContext
+import io.javalin.Javalin
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -14,16 +14,16 @@ fn main() {
         return new Single(ff.withAttribute("processed", "true"))
     }
 
-    // Build pipeline: addTimestamp → fileSink
+    // Build pipeline: addTimestamp -> fileSink
     var pipeline = new Pipeline()
     pipeline.addGroup(new ProcessorGroup("add-timestamp", addTimestamp))
     pipeline.addGroup(new ProcessorGroup("file-sink", new FileSink("/tmp/zinc-flow-out")))
     pipeline.start()
 
-    // Start Micronaut and wire the HTTP source to the pipeline input
-    var ctx = Micronaut.run(args)
-    var source = ctx.getBean(HttpSource.class)
-    source.setOutputQueue(pipeline.getInput())
+    // Create HTTP server and wire source to pipeline input
+    var app = Javalin.create()
+    var source = new HttpSource(app, pipeline.getInput())
+    app.start(8080)
 
     print("Zinc Flow running on http://localhost:8080/flow")
     print("POST data to /flow, output written to /tmp/zinc-flow-out/")

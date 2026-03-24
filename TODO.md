@@ -5,7 +5,7 @@
 ## Phase 1 — MVP (Local Dev)
 
 - [ ] FlowFile data class
-- [ ] `@Processor` annotation
+- [ ] ProcessorFn interface (constructor-injected, no annotations)
 - [ ] LocalQueue (`Channel<T>`)
 - [ ] ProcessorWorker (virtual thread-based worker loop)
 - [ ] ProcessorGroup with start/stop/scale
