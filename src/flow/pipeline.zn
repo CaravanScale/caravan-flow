@@ -1,0 +1,72 @@
+// Pipeline — connects ProcessorGroups in a linear chain.
+// Auto-creates inter-group queues, shared DLQ, and manages worker lifecycle.
+
+import java.util.HashMap
+
+class Pipeline {
+    List<ProcessorGroup> groups = []
+    List<ProcessorWorker> workers = []
+    List<LocalQueue> queues = []
+
+    pub fn addGroup(ProcessorGroup group): Pipeline {
+        groups.add(group)
+        return this
+    }
+
+    pub fn start() {
+        // Create N+1 queues for N groups: input → g1 → q → g2 → ... → output
+        var capacity = 100
+        for i in 0..=groups.size() {
+            if i < groups.size() {
+                capacity = groups.get(i).getQueueCapacity()
+            }
+            queues.add(new LocalQueue(capacity))
+        }
+
+        // Shared DLQ
+        var dlq = new LocalQueue(1000)
+        queues.add(dlq)
+
+        // Wire each group: input=queues[i], output=queues[i+1], dlq=last queue
+        for i in 0..groups.size() {
+            var group = groups.get(i)
+            Map<String, FlowQueue> outputs = new HashMap()
+            outputs.put("default", queues.get(i + 1))
+            outputs.put("dead_letter", dlq)
+
+            var worker = new ProcessorWorker(group.getName(), group.getProcessor(), queues.get(i), outputs)
+            worker.setMaxRetries(group.getMaxRetries())
+            worker.setRetryDelayMs(group.getRetryDelayMs())
+            worker.setReplicas(group.getReplicas())
+            workers.add(worker)
+        }
+
+        // Start all workers
+        for worker in workers {
+            worker.start()
+        }
+    }
+
+    pub fn stop() {
+        for worker in workers {
+            worker.stop()
+        }
+    }
+
+    pub fn getInput(): FlowQueue {
+        var q = queues.get(0)
+        return q
+    }
+
+    pub fn getOutput(): FlowQueue {
+        // Output is the queue after the last group (index = groups.size())
+        var q = queues.get(groups.size())
+        return q
+    }
+
+    pub fn getDlq(): FlowQueue {
+        // DLQ is the last queue added
+        var q = queues.get(queues.size() - 1)
+        return q
+    }
+}

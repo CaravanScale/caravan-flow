@@ -1,0 +1,32 @@
+// ProcessorGroup — config wrapper for a processor in a pipeline.
+// Holds name, processor function, and tuning parameters (replicas, retry, queue capacity).
+
+class ProcessorGroup {
+    init String name
+    init ProcessorFn processor
+    pub int replicas = 1
+    pub int maxRetries = 0
+    pub long retryDelayMs = 1000
+    pub int queueCapacity = 100
+
+    init(String name, ProcessorFn processor) {
+        this.name = name
+        this.processor = processor
+    }
+
+    pub fn withReplicas(int n): ProcessorGroup {
+        replicas = n
+        return this
+    }
+
+    pub fn withRetry(int max, long delayMs): ProcessorGroup {
+        maxRetries = max
+        retryDelayMs = delayMs
+        return this
+    }
+
+    pub fn withQueueCapacity(int capacity): ProcessorGroup {
+        queueCapacity = capacity
+        return this
+    }
+}

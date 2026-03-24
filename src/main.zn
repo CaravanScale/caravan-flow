@@ -1,52 +1,46 @@
-// Zinc Flow — B4 smoke test: ProcessorWorker
-
-import java.util.HashMap
+// Zinc Flow — B5 smoke test: Pipeline with two processor groups
 
 fn main() {
-    // Create queues
-    var input = new LocalQueue(100)
-    var output = new LocalQueue(100)
-    var dlq = new LocalQueue(100)
-
-    // Output queues map
-    Map<String, FlowQueue> outputs = new HashMap()
-    outputs.put("default", output)
-    outputs.put("dead_letter", dlq)
-
-    // Simple processor that adds a timestamp attribute
+    // Processor 1: add a "processed" attribute
     ProcessorFn addTimestamp = (ff) -> {
         return new Single(ff.withAttribute("processed", "true"))
     }
 
-    // Create and start worker
-    var worker = new ProcessorWorker("test-worker", addTimestamp, input, outputs)
-    worker.start()
+    // Processor 2: uppercase the content
+    ProcessorFn toUpper = (ff) -> {
+        var upper = new String(ff.content()).toUpperCase()
+        return new Single(ff.withContent(upper.getBytes()))
+    }
 
-    // Feed some FlowFiles
-    input.put(new FlowFile("ff-1", {}, "data1".getBytes(), System.currentTimeMillis(), []))
-    input.put(new FlowFile("ff-2", {}, "data2".getBytes(), System.currentTimeMillis(), []))
-    input.put(new FlowFile("ff-3", {}, "data3".getBytes(), System.currentTimeMillis(), []))
+    // Build pipeline: addTimestamp → toUpper
+    var pipeline = new Pipeline()
+    pipeline.addGroup(new ProcessorGroup("add-timestamp", addTimestamp))
+    pipeline.addGroup(new ProcessorGroup("to-upper", toUpper))
+    pipeline.start()
+
+    // Feed data
+    var input = pipeline.getInput()
+    input.put(new FlowFile("ff-1", {}, "hello".getBytes(), System.currentTimeMillis(), []))
+    input.put(new FlowFile("ff-2", {}, "world".getBytes(), System.currentTimeMillis(), []))
+    input.put(new FlowFile("ff-3", {}, "zinc".getBytes(), System.currentTimeMillis(), []))
 
     // Wait for processing
     Thread.sleep(500)
 
-    // Check output
+    // Read output
+    var output = pipeline.getOutput()
     print("output size: {output.size()}")
 
     var out1 = output.poll(100)
-    print("out1 id: {out1.id()}")
     print("out1 processed: {out1.attributes().get("processed")}")
+    print("out1 content: {new String(out1.content())}")
 
     var out2 = output.poll(100)
-    print("out2 id: {out2.id()}")
+    print("out2 content: {new String(out2.content())}")
 
     var out3 = output.poll(100)
-    print("out3 id: {out3.id()}")
+    print("out3 content: {new String(out3.content())}")
 
-    // Stop worker
-    worker.stop()
-    Thread.sleep(200)
-    print("state: {worker.getState()}")
-
-    print("ProcessorWorker OK")
+    pipeline.stop()
+    print("Pipeline OK")
 }
