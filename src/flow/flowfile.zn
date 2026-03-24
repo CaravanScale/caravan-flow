@@ -16,7 +16,7 @@ data FlowFile(
     }
 
     pub fn withAttribute(String key, String value): FlowFile {
-        var attrs = HashMap(attributes)
+        var attrs = new HashMap(attributes)
         attrs.put(key, value)
         return FlowFile(id, attrs, content, System.currentTimeMillis(), provenance)
     }
@@ -26,7 +26,7 @@ data FlowFile(
     }
 
     pub fn withProvenance(String entry): FlowFile {
-        var prov = ArrayList(provenance)
+        var prov = new ArrayList(provenance)
         prov.add(entry)
         return FlowFile(id, attributes, content, timestamp, prov)
     }

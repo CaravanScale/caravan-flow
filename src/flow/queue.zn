@@ -13,7 +13,7 @@ class LocalQueue : FlowQueue {
     var Channel<FlowFile> channel
 
     init(int capacity) {
-        channel = Channel(capacity)
+        channel = new Channel(capacity)
     }
 
     pub fn put(FlowFile ff) {

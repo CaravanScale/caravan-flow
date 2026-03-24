@@ -10,7 +10,7 @@ class ProcessorWorker {
     init FlowQueue inputQueue
     init Map<String, FlowQueue> outputQueues
     String state = "stopped"
-    List<Thread> threads = ArrayList()
+    List<Thread> threads = new ArrayList()
     pub int maxRetries = 0
     pub long retryDelayMs = 1000
 

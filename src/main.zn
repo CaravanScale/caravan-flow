@@ -4,12 +4,12 @@ import java.util.HashMap
 
 fn main() {
     // Create queues
-    var input = LocalQueue(100)
-    var output = LocalQueue(100)
-    var dlq = LocalQueue(100)
+    var input = new LocalQueue(100)
+    var output = new LocalQueue(100)
+    var dlq = new LocalQueue(100)
 
     // Output queues map
-    Map<String, FlowQueue> outputs = HashMap()
+    Map<String, FlowQueue> outputs = new HashMap()
     outputs.put("default", output)
     outputs.put("dead_letter", dlq)
 
@@ -19,7 +19,7 @@ fn main() {
     }
 
     // Create and start worker
-    var worker = ProcessorWorker("test-worker", addTimestamp, input, outputs)
+    var worker = new ProcessorWorker("test-worker", addTimestamp, input, outputs)
     worker.start()
 
     // Feed some FlowFiles
