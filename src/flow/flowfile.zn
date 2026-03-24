@@ -12,13 +12,13 @@ data FlowFile(
     List<String> provenance
 ) {
     pub fn withContent(byte[] newContent): FlowFile {
-        return FlowFile(id, attributes, newContent, System.currentTimeMillis(), provenance)
+        return new FlowFile(id, attributes, newContent, System.currentTimeMillis(), provenance)
     }
 
     pub fn withAttribute(String key, String value): FlowFile {
         var attrs = new HashMap(attributes)
         attrs.put(key, value)
-        return FlowFile(id, attrs, content, System.currentTimeMillis(), provenance)
+        return new FlowFile(id, attrs, content, System.currentTimeMillis(), provenance)
     }
 
     pub fn contentSize(): int {
@@ -28,6 +28,6 @@ data FlowFile(
     pub fn withProvenance(String entry): FlowFile {
         var prov = new ArrayList(provenance)
         prov.add(entry)
-        return FlowFile(id, attributes, content, timestamp, prov)
+        return new FlowFile(id, attributes, content, timestamp, prov)
     }
 }
