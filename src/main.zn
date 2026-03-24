@@ -1,47 +1,30 @@
-// Zinc Flow — B5 smoke test: Pipeline with two processor groups
+// Zinc Flow — B6: Micronaut HTTP Source + File Sink pipeline
+
+import io.micronaut.runtime.Micronaut
+import io.micronaut.context.ApplicationContext
+import java.nio.file.Files
+import java.nio.file.Path
 
 fn main() {
-    // Processor 1: add a "processed" attribute
+    // Ensure output directory exists
+    Files.createDirectories(Path.of("/tmp/zinc-flow-out"))
+
+    // Processor: tag with processed attribute
     ProcessorFn addTimestamp = (ff) -> {
         return new Single(ff.withAttribute("processed", "true"))
     }
 
-    // Processor 2: uppercase the content
-    ProcessorFn toUpper = (ff) -> {
-        var upper = new String(ff.content()).toUpperCase()
-        return new Single(ff.withContent(upper.getBytes()))
-    }
-
-    // Build pipeline: addTimestamp → toUpper
+    // Build pipeline: addTimestamp → fileSink
     var pipeline = new Pipeline()
     pipeline.addGroup(new ProcessorGroup("add-timestamp", addTimestamp))
-    pipeline.addGroup(new ProcessorGroup("to-upper", toUpper))
+    pipeline.addGroup(new ProcessorGroup("file-sink", new FileSink("/tmp/zinc-flow-out")))
     pipeline.start()
 
-    // Feed data
-    var input = pipeline.getInput()
-    input.put(new FlowFile("ff-1", {}, "hello".getBytes(), System.currentTimeMillis(), []))
-    input.put(new FlowFile("ff-2", {}, "world".getBytes(), System.currentTimeMillis(), []))
-    input.put(new FlowFile("ff-3", {}, "zinc".getBytes(), System.currentTimeMillis(), []))
+    // Start Micronaut and wire the HTTP source to the pipeline input
+    var ctx = Micronaut.run(args)
+    var source = ctx.getBean(HttpSource.class)
+    source.setOutputQueue(pipeline.getInput())
 
-    // Wait for processing
-    Thread.sleep(500)
-
-    // Read output
-    var output = pipeline.getOutput()
-    print("output size: {output.size()}")
-
-    var out1 = output.poll(100)
-    print("out1 processed: {out1.attributes().get("processed")}")
-    print("out1 content: {new String(out1.content())}")
-
-    var out2 = output.poll(100)
-    print("out2 content: {new String(out2.content())}")
-
-    var out3 = output.poll(100)
-    print("out3 content: {new String(out3.content())}")
-
-    pipeline.stop()
-    Thread.sleep(200)
-    print("Pipeline OK")
+    print("Zinc Flow running on http://localhost:8080/flow")
+    print("POST data to /flow, output written to /tmp/zinc-flow-out/")
 }

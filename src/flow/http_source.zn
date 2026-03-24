@@ -1,0 +1,23 @@
+// HttpSource — Micronaut HTTP controller that feeds FlowFiles into a pipeline.
+// POST /flow with a request body creates a FlowFile and puts it on the output queue.
+
+import io.micronaut.http.annotation.Controller
+import io.micronaut.http.annotation.Post
+import io.micronaut.http.HttpResponse
+
+@Controller("/flow")
+class HttpSource {
+    FlowQueue outputQueue = null
+
+    pub fn setOutputQueue(FlowQueue queue) {
+        outputQueue = queue
+    }
+
+    @Post
+    pub fn ingest(String body): HttpResponse<String> {
+        var id = java.util.UUID.randomUUID().toString()
+        var ff = new FlowFile(id, {}, body.getBytes(), System.currentTimeMillis(), [])
+        outputQueue.put(ff)
+        return HttpResponse.accepted().body("accepted: {id}")
+    }
+}
