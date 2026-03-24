@@ -4,10 +4,10 @@
 class ProcessorGroup {
     init String name
     init ProcessorFn processor
-    pub int replicas = 1
-    pub int maxRetries = 0
-    pub long retryDelayMs = 1000
-    pub int queueCapacity = 100
+    readonly int replicas = 1
+    readonly int maxRetries = 0
+    readonly long retryDelayMs = 1000
+    readonly int queueCapacity = 100
 
     init(String name, ProcessorFn processor) {
         this.name = name

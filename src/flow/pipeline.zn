@@ -34,9 +34,7 @@ class Pipeline {
             outputs.put("default", queues.get(i + 1))
             outputs.put("dead_letter", dlq)
 
-            var worker = new ProcessorWorker(group.getName(), group.getProcessor(), queues.get(i), outputs)
-            worker.setMaxRetries(group.getMaxRetries())
-            worker.setRetryDelayMs(group.getRetryDelayMs())
+            var worker = new ProcessorWorker(group.getName(), group.getProcessor(), queues.get(i), outputs, group.getMaxRetries(), group.getRetryDelayMs())
             worker.setReplicas(group.getReplicas())
             workers.add(worker)
         }

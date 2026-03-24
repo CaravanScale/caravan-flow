@@ -9,16 +9,18 @@ class ProcessorWorker {
     init ProcessorFn processor
     init FlowQueue inputQueue
     init Map<String, FlowQueue> outputQueues
+    init int maxRetries
+    init long retryDelayMs
     String state = "stopped"
     List<Thread> threads = new ArrayList()
-    pub int maxRetries = 0
-    pub long retryDelayMs = 1000
 
-    init(String name, ProcessorFn processor, FlowQueue inputQueue, Map<String, FlowQueue> outputQueues) {
+    init(String name, ProcessorFn processor, FlowQueue inputQueue, Map<String, FlowQueue> outputQueues, int maxRetries, long retryDelayMs) {
         this.name = name
         this.processor = processor
         this.inputQueue = inputQueue
         this.outputQueues = outputQueues
+        this.maxRetries = maxRetries
+        this.retryDelayMs = retryDelayMs
     }
 
     pub fn start() {

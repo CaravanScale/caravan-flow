@@ -42,5 +42,6 @@ fn main() {
     print("out3 content: {new String(out3.content())}")
 
     pipeline.stop()
+    Thread.sleep(200)
     print("Pipeline OK")
 }
