@@ -1,126 +1,64 @@
-// ProcessorWorker — virtual thread-based consumer loop.
-// Each worker polls from an input queue, calls the processor function,
-// and routes the result to output queues.
+// ProcessorWorker — actor-based processor stage.
+// Receives FlowFiles via message passing, processes them,
+// and forwards results to the next actor in the pipeline chain.
 
-import java.util.HashMap
-
-class ProcessorWorker {
+actor ProcessorWorker {
     init String name
     init ProcessorFn processor
-    init FlowQueue inputQueue
-    init Map<String, FlowQueue> outputQueues
-    init int maxRetries
-    init long retryDelayMs
-    String state = "stopped"
-    List<Thread> threads = new ArrayList()
+    var ProcessorWorker next = null
+    var int maxRetries = 0
+    var long retryDelayMs = 1000
 
-    init(String name, ProcessorFn processor, FlowQueue inputQueue, Map<String, FlowQueue> outputQueues, int maxRetries, long retryDelayMs) {
+    init(String name, ProcessorFn processor) {
         this.name = name
         this.processor = processor
-        this.inputQueue = inputQueue
-        this.outputQueues = outputQueues
-        this.maxRetries = maxRetries
-        this.retryDelayMs = retryDelayMs
     }
 
-    pub fn start() {
-        state = "running"
-        if threads.isEmpty() {
-            addThread()
-        }
-    }
-
-    pub fn stop() {
-        state = "stopped"
-    }
-
-    pub fn setReplicas(int replicas) {
-        while threads.size() < replicas {
-            addThread()
-        }
-    }
-
-    pub fn getState(): String {
-        return state
-    }
-
-    pub fn getInputDepth(): int {
-        return inputQueue.size()
-    }
-
-    fn addThread() {
-        var t = spawn {
-            runLoop()
-        }
-        threads.add(t)
-    }
-
-    fn runLoop() {
-        while state == "running" {
-            var ff = inputQueue.poll(100)
-            if ff == null {
-                continue
-            }
-
-            var result = execute(ff)
-            if result == null {
-                continue
-            }
+    receive fn process(FlowFile ff) {
+        var result = execute(ff)
+        if result != null {
             routeOutput(result)
         }
     }
 
+    receive fn setNext(ProcessorWorker next) {
+        this.next = next
+    }
+
+    receive fn setRetry(int maxRetries, long retryDelayMs) {
+        this.maxRetries = maxRetries
+        this.retryDelayMs = retryDelayMs
+    }
+
     fn execute(FlowFile ff): ProcessorResult {
-        for attempt in 0..=maxRetries {
-            var result = processor.process(ff) or {
-                if attempt < maxRetries {
-                    var delay = retryDelayMs * (2 ** attempt)
-                    Thread.sleep(delay) or { }
-                    continue
-                }
-                handleFailure(ff, err.toString())
-                return null
-            }
-            return result
+        var ProcessorResult result = processor.process(ff) or {
+            return null
         }
-        return null
+        return result
     }
 
     fn routeOutput(ProcessorResult result) {
         match result {
             case Single(f) {
-                var q = outputQueues.getOrDefault("default", null)
-                if q != null {
-                    q.put(f)
+                if next != null {
+                    next.process(f)
                 }
             }
             case Multiple(ffs) {
-                var q = outputQueues.getOrDefault("default", null)
-                if q != null {
+                if next != null {
                     for f in ffs {
-                        q.put(f)
+                        next.process(f)
                     }
                 }
             }
             case Routed(route, f) {
-                var q = outputQueues.getOrDefault(route, outputQueues.getOrDefault("default", null))
-                if q != null {
-                    q.put(f)
+                if next != null {
+                    next.process(f)
                 }
             }
             case Drop() {
                 // Dropped
             }
-        }
-    }
-
-    fn handleFailure(FlowFile ff, String errorMsg) {
-        var dlq = outputQueues.getOrDefault("dead_letter", null)
-        if dlq != null {
-            var failed = ff.withAttribute("error", errorMsg)
-                           .withAttribute("error.processor", name)
-                           .withAttribute("error.timestamp", java.time.Instant.now().toString())
-            dlq.put(failed)
         }
     }
 }

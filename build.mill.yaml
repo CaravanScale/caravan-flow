@@ -17,7 +17,7 @@ javacOptions:
 forkArgs:
   - --enable-preview
 
-mainClass: flow.Main
+mainClass: Main
 
 # Maven Central dependencies
 mvnDeps:

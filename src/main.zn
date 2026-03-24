@@ -20,9 +20,9 @@ fn main() {
     pipeline.addGroup(new ProcessorGroup("file-sink", new FileSink("/tmp/zinc-flow-out")))
     pipeline.start()
 
-    // Create HTTP server and wire source to pipeline input
+    // Create HTTP server and wire source to first pipeline actor
     var app = Javalin.create()
-    var source = new HttpSource(app, pipeline.getInput())
+    var source = new HttpSource(app, pipeline.getFirstWorker())
     app.start(8080)
 
     print("Zinc Flow running on http://localhost:8080/flow")
