@@ -33,10 +33,18 @@ class Pipeline {
     }
 
     pub fn stop() {
-        // Shutdown all workers — reverse order for clean drain
         for i in (workers.size() - 1)..=0 {
             workers.get(i).stop()
         }
+    }
+
+    pub fn isHealthy(): boolean {
+        for worker in workers {
+            if worker.hasFailed() {
+                return false
+            }
+        }
+        return true
     }
 
     pub fn getFirstWorker(): ProcessorWorker {

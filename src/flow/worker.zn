@@ -1,5 +1,8 @@
 // ProcessorWorker — virtual thread worker that processes FlowFiles from a queue.
 // Receives FlowFiles via a Channel, processes them, and forwards results downstream.
+// spawn returns a CompletableFuture for error propagation and status checks.
+
+import java.util.concurrent.CompletableFuture
 
 class ProcessorWorker {
     init String name
@@ -9,6 +12,7 @@ class ProcessorWorker {
     var long retryDelayMs = 1000
     var Channel<FlowFile> inbox = new Channel<FlowFile>(1024)
     var boolean running = false
+    var CompletableFuture<Void> future = null
 
     init(String name, ProcessorFn processor) {
         this.name = name
@@ -17,7 +21,7 @@ class ProcessorWorker {
 
     pub fn start() {
         running = true
-        spawn {
+        future = spawn {
             while running {
                 var ff = inbox.take() or { return }
                 var result = execute(ff)
@@ -25,6 +29,8 @@ class ProcessorWorker {
                     routeOutput(result)
                 }
             }
+        } or {
+            System.err.println("[{name}] worker crashed: {err}")
         }
     }
 
@@ -43,6 +49,14 @@ class ProcessorWorker {
 
     pub fn stop() {
         running = false
+    }
+
+    pub fn isAlive(): boolean {
+        return future != null and !future.isDone()
+    }
+
+    pub fn hasFailed(): boolean {
+        return future != null and future.isCompletedExceptionally()
     }
 
     fn execute(FlowFile ff): ProcessorResult {
