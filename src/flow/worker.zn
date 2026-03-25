@@ -1,33 +1,48 @@
-// ProcessorWorker — actor-based processor stage.
-// Receives FlowFiles via message passing, processes them,
-// and forwards results to the next actor in the pipeline chain.
+// ProcessorWorker — virtual thread worker that processes FlowFiles from a queue.
+// Receives FlowFiles via a Channel, processes them, and forwards results downstream.
 
-actor ProcessorWorker {
+class ProcessorWorker {
     init String name
     init ProcessorFn processor
     var ProcessorWorker next = null
     var int maxRetries = 0
     var long retryDelayMs = 1000
+    var Channel<FlowFile> inbox = new Channel<FlowFile>(1024)
+    var boolean running = false
 
     init(String name, ProcessorFn processor) {
         this.name = name
         this.processor = processor
     }
 
-    receive fn process(FlowFile ff) {
-        var result = execute(ff)
-        if result != null {
-            routeOutput(result)
+    pub fn start() {
+        running = true
+        spawn {
+            while running {
+                var ff = inbox.take() or { return }
+                var result = execute(ff)
+                if result != null {
+                    routeOutput(result)
+                }
+            }
         }
     }
 
-    receive fn setNext(ProcessorWorker next) {
+    pub fn send(FlowFile ff) {
+        inbox.put(ff) or { }
+    }
+
+    pub fn setNext(ProcessorWorker next) {
         this.next = next
     }
 
-    receive fn setRetry(int maxRetries, long retryDelayMs) {
+    pub fn setRetry(int maxRetries, long retryDelayMs) {
         this.maxRetries = maxRetries
         this.retryDelayMs = retryDelayMs
+    }
+
+    pub fn stop() {
+        running = false
     }
 
     fn execute(FlowFile ff): ProcessorResult {
@@ -41,19 +56,19 @@ actor ProcessorWorker {
         match result {
             case Single(f) {
                 if next != null {
-                    next.process(f)
+                    next.send(f)
                 }
             }
             case Multiple(ffs) {
                 if next != null {
                     for f in ffs {
-                        next.process(f)
+                        next.send(f)
                     }
                 }
             }
             case Routed(route, f) {
                 if next != null {
-                    next.process(f)
+                    next.send(f)
                 }
             }
             case Drop() {

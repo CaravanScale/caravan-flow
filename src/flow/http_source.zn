@@ -1,5 +1,5 @@
 // HttpSource — HTTP route handler that feeds FlowFiles into a pipeline.
-// POST /flow with a request body creates a FlowFile and sends it to the first actor.
+// POST /flow with a request body creates a FlowFile and sends it to the first worker.
 // Routes are registered explicitly on the Javalin app — no annotations, no magic.
 
 import io.javalin.Javalin
@@ -25,7 +25,7 @@ class HttpSource {
         var id = java.util.UUID.randomUUID().toString()
         var body = ctx.body()
         var ff = new FlowFile(id, {}, body.getBytes(), System.currentTimeMillis(), [])
-        target.process(ff)
+        target.send(ff)
         ctx.status(202)
         ctx.result("accepted: {id}")
     }
