@@ -7,3 +7,11 @@ out/
 .vscode/
 # Generated Java files (from zinc transpiler)
 src/**/*.java
+
+# Build artifacts
+dist/
+zincflow
+*.so
+
+# GraalVM native-image config output
+native-image-config/
