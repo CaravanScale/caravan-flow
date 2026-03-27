@@ -9,13 +9,18 @@ fn main() {
     // Ensure output directory exists
     Files.createDirectories(Path.of("/tmp/zinc-flow-out"))
 
+    // Error handler — only main wires this
+    ErrorHandler onError = (name, err) -> {
+        System.err.println("[{name}] worker crashed: {err}")
+    }
+
     // Processor: tag with processed attribute
     ProcessorFn addTimestamp = (ff) -> {
         return new Single(ff.withAttribute("processed", "true"))
     }
 
     // Build pipeline: addTimestamp -> fileSink
-    var pipeline = new Pipeline()
+    var pipeline = new Pipeline(onError)
     pipeline.addGroup(new ProcessorGroup("add-timestamp", addTimestamp))
     pipeline.addGroup(new ProcessorGroup("file-sink", new FileSink("/tmp/zinc-flow-out")))
     pipeline.start()

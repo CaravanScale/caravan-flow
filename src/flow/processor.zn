@@ -14,3 +14,10 @@ sealed class ProcessorResult {
 interface ProcessorFn {
     fn process(FlowFile ff): ProcessorResult
 }
+
+// ErrorHandler — called when a worker crashes.
+// Injected by Pipeline so error handling is testable and configurable.
+
+interface ErrorHandler {
+    fn onError(String workerName, Throwable err)
+}

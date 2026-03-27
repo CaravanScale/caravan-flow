@@ -5,6 +5,13 @@
 class Pipeline {
     List<ProcessorGroup> groups = []
     List<ProcessorWorker> workers = []
+    var ErrorHandler errorHandler = null
+
+    init() {}
+
+    init(ErrorHandler errorHandler) {
+        this.errorHandler = errorHandler
+    }
 
     pub fn addGroup(ProcessorGroup group): Pipeline {
         groups.add(group)
@@ -17,6 +24,9 @@ class Pipeline {
             var worker = new ProcessorWorker(group.getName(), group.getProcessor())
             if group.getMaxRetries() > 0 {
                 worker.setRetry(group.getMaxRetries(), group.getRetryDelayMs())
+            }
+            if errorHandler != null {
+                worker.setErrorHandler(errorHandler)
             }
             workers.add(worker)
         }

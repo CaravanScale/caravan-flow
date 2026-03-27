@@ -13,10 +13,15 @@ class ProcessorWorker {
     var Channel<FlowFile> inbox = new Channel<FlowFile>(1024)
     var boolean running = false
     var CompletableFuture<Void> future = null
+    var ErrorHandler errorHandler = null
 
     init(String name, ProcessorFn processor) {
         this.name = name
         this.processor = processor
+    }
+
+    pub fn setErrorHandler(ErrorHandler handler) {
+        this.errorHandler = handler
     }
 
     pub fn start() {
@@ -30,7 +35,9 @@ class ProcessorWorker {
                 }
             }
         } or {
-            System.err.println("[{name}] worker crashed: {err}")
+            if errorHandler != null {
+                errorHandler.onError(name, err)
+            }
         }
     }
 
