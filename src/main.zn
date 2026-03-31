@@ -1,35 +1,95 @@
-// Zinc Flow — entry point
-// All wiring is explicit: read top-to-bottom to see how the system is assembled.
+// Zinc Flow — lightweight data flow engine
+// NiFi's processor model with Go's concurrency primitives.
 
-import io.javalin.Javalin
-import java.nio.file.Files
-import java.nio.file.Path
+import os
+import fmt
+
+// --- FlowFile ----------------------------------------------------------------
+
+data FlowFile(String id, String content, int timestamp)
+
+// --- Processor interface -----------------------------------------------------
+
+interface ProcessorFn {
+    fn process(FlowFile ff): FlowFile
+}
+
+// --- Processors --------------------------------------------------------------
+
+class AddAttribute : ProcessorFn {
+    String key
+    String value
+
+    init(String key, String value) {
+        this.key = key
+        this.value = value
+    }
+
+    pub fn process(FlowFile ff): FlowFile {
+        var tagged = ff.content + "\n[" + key + "=" + value + "]"
+        return FlowFile(ff.id, tagged, ff.timestamp)
+    }
+}
+
+class FileSink : ProcessorFn {
+    String outputDir
+
+    init(String outputDir) {
+        this.outputDir = outputDir
+    }
+
+    pub fn process(FlowFile ff): FlowFile {
+        var path = outputDir + "/" + ff.id + ".out"
+        fmt.Println("  sink: writing " + path)
+        os.WriteFile(path, ff.content.toBytes(), 0644)
+        return ff
+    }
+}
+
+// --- Main --------------------------------------------------------------------
 
 fn main() {
-    // Ensure output directory exists
-    Files.createDirectories(Path.of("/tmp/zinc-flow-out"))
+    os.MkdirAll("/tmp/zinc-flow-out", 0755)
 
-    // Error handler — only main wires this
-    ErrorHandler onError = (name, err) -> {
-        System.err.println("[{name}] worker crashed: {err}")
+    // Typed channels between stages
+    var ch1 = Channel<FlowFile>(1024)
+    var ch2 = Channel<FlowFile>(1024)
+    var ch3 = Channel<FlowFile>(1024)
+
+    // Stage 1: add-attribute processor (goroutine)
+    var addAttr = AddAttribute("processed", "true")
+    spawn {
+        while true {
+            var ff = ch1.recv()
+            var result = addAttr.process(ff)
+            ch2.send(result)
+        }
     }
 
-    // Processor: tag with processed attribute
-    ProcessorFn addTimestamp = (ff) -> {
-        return new Single(ff.withAttribute("processed", "true"))
+    // Stage 2: file-sink processor (goroutine)
+    var sink = FileSink("/tmp/zinc-flow-out")
+    spawn {
+        while true {
+            var ff = ch2.recv()
+            var result = sink.process(ff)
+            ch3.send(result)
+        }
     }
 
-    // Build pipeline: addTimestamp -> fileSink
-    var pipeline = new Pipeline(onError)
-    pipeline.addGroup(new ProcessorGroup("add-timestamp", addTimestamp))
-    pipeline.addGroup(new ProcessorGroup("file-sink", new FileSink("/tmp/zinc-flow-out")))
-    pipeline.start()
+    // Send test FlowFiles
+    print("Zinc Flow pipeline started")
+    for i in 1..4 {
+        var id = "ff-" + str(i)
+        var ff = FlowFile(id, "hello zinc flow " + str(i), 0)
+        print("  sending: {id}")
+        ch1.send(ff)
+    }
 
-    // Create HTTP server and wire source to first pipeline worker
-    var app = Javalin.create()
-    var source = new HttpSource(app, pipeline.getFirstWorker())
-    app.start(8080)
+    // Wait for all to complete
+    for i in 1..4 {
+        var done = ch3.recv()
+        print("  done: {done}")
+    }
 
-    print("Zinc Flow running on http://localhost:8080/flow")
-    print("POST data to /flow, output written to /tmp/zinc-flow-out/")
+    print("All FlowFiles processed — check /tmp/zinc-flow-out/")
 }

@@ -15,3 +15,5 @@ zincflow
 
 # GraalVM native-image config output
 native-image-config/
+zinc-flow
+zinc-out/
