@@ -1,5 +1,14 @@
+// ProcessorResult — sealed type for processor output routing.
+// Worker loop uses match to route each variant.
+
+sealed class ProcessorResult {
+    data Single(FlowFile ff)
+    data Multiple(List<FlowFile> ffs)
+    data Routed(String route, FlowFile ff)
+    data Dropped(String reason)
+}
+
 // ProcessorFn — the interface every processor implements.
-// Returns the processed FlowFile, or null to drop it.
 interface ProcessorFn {
-    fn process(FlowFile ff): FlowFile
+    fn process(FlowFile ff): ProcessorResult
 }

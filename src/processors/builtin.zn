@@ -14,12 +14,13 @@ class AddAttribute : core.ProcessorFn {
         this.value = value
     }
 
-    pub fn process(core.FlowFile ff): core.FlowFile {
-        return core.withAttribute(ff, key, value)
+    pub fn process(core.FlowFile ff): core.ProcessorResult {
+        var tagged = core.withAttribute(ff, key, value)
+        return core.Single(tagged)
     }
 }
 
-// FileSink — writes FlowFile content to disk.
+// FileSink — writes FlowFile content to disk. Returns Dropped (terminal).
 class FileSink : core.ProcessorFn {
     String outputDir
 
@@ -27,10 +28,10 @@ class FileSink : core.ProcessorFn {
         this.outputDir = outputDir
     }
 
-    pub fn process(core.FlowFile ff): core.FlowFile {
+    pub fn process(core.FlowFile ff): core.ProcessorResult {
         var path = outputDir + "/" + ff.id + ".out"
         os.WriteFile(path, ff.content.toBytes(), 0644)
-        return ff
+        return core.Dropped("written to " + path)
     }
 }
 
@@ -42,8 +43,8 @@ class LogProcessor : core.ProcessorFn {
         this.prefix = prefix
     }
 
-    pub fn process(core.FlowFile ff): core.FlowFile {
+    pub fn process(core.FlowFile ff): core.ProcessorResult {
         fmt.Println("  [{prefix}] {ff.id}: {ff.content}")
-        return ff
+        return core.Single(ff)
     }
 }

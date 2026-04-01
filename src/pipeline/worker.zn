@@ -1,10 +1,9 @@
 // Pipeline worker — goroutine loop that runs a processor on FlowFiles.
+// Routes output based on ProcessorResult variant using type-switch match.
 
 import core
-import time
 
 // workerRun is the goroutine loop for a processor stage.
-// Reads from inputCh, calls the processor, sends result to outputCh.
 fn workerRun(
     String name,
     core.ProcessorFn processor,
@@ -14,6 +13,27 @@ fn workerRun(
     while true {
         var ff = inputCh.recv()
         var result = processor.process(ff)
-        outputCh.send(result)
+        routeResult(result, outputCh)
+    }
+}
+
+// routeResult dispatches a ProcessorResult to the appropriate output.
+fn routeResult(core.ProcessorResult result, Channel<core.FlowFile> outputCh) {
+    match result {
+        case core.Single(ff) {
+            outputCh.send(ff)
+        }
+        case core.Multiple(ffs) {
+            for f in ffs {
+                outputCh.send(f)
+            }
+        }
+        case core.Routed(_, ff) {
+            // TODO: named output routing
+            outputCh.send(ff)
+        }
+        case core.Dropped(_) {
+            // discard
+        }
     }
 }
