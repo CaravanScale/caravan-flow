@@ -1,0 +1,17 @@
+// Pipeline wiring — connects processors via typed channels.
+
+import core
+
+// buildStage spawns a worker goroutine for a processor.
+// Returns the input channel to feed FlowFiles into this stage.
+fn buildStage(
+    String name,
+    core.ProcessorFn processor,
+    Channel<core.FlowFile> outputCh
+): Channel<core.FlowFile> {
+    var inputCh = Channel<core.FlowFile>(1024)
+    spawn {
+        workerRun(name, processor, inputCh, outputCh)
+    }
+    return inputCh
+}

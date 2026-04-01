@@ -1,0 +1,5 @@
+// ProcessorFn — the interface every processor implements.
+// Returns the processed FlowFile, or null to drop it.
+interface ProcessorFn {
+    fn process(FlowFile ff): FlowFile
+}

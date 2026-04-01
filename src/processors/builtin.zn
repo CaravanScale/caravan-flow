@@ -1,0 +1,49 @@
+// Built-in processors — standard processors shipped with zinc-flow.
+
+import core
+import os
+import fmt
+
+// AddAttribute — tags a FlowFile with a key=value attribute.
+class AddAttribute : core.ProcessorFn {
+    String key
+    String value
+
+    init(String key, String value) {
+        this.key = key
+        this.value = value
+    }
+
+    pub fn process(core.FlowFile ff): core.FlowFile {
+        return core.withAttribute(ff, key, value)
+    }
+}
+
+// FileSink — writes FlowFile content to disk.
+class FileSink : core.ProcessorFn {
+    String outputDir
+
+    init(String outputDir) {
+        this.outputDir = outputDir
+    }
+
+    pub fn process(core.FlowFile ff): core.FlowFile {
+        var path = outputDir + "/" + ff.id + ".out"
+        os.WriteFile(path, ff.content.toBytes(), 0644)
+        return ff
+    }
+}
+
+// LogProcessor — prints the FlowFile and passes it through.
+class LogProcessor : core.ProcessorFn {
+    String prefix
+
+    init(String prefix) {
+        this.prefix = prefix
+    }
+
+    pub fn process(core.FlowFile ff): core.FlowFile {
+        fmt.Println("  [{prefix}] {ff.id}: {ff.content}")
+        return ff
+    }
+}

@@ -1,0 +1,23 @@
+// FlowFile — the unit of data flowing through a pipeline.
+
+import fmt
+import time
+
+data FlowFile(
+    String id,
+    Map<String, String> attributes,
+    String content,
+    int timestamp
+)
+
+// Generate a unique FlowFile ID
+fn flowFileId(): String {
+    return fmt.Sprintf("ff-%d", time.Now().UnixNano())
+}
+
+// Create a copy with an additional attribute
+fn withAttribute(FlowFile ff, String key, String value): FlowFile {
+    var attrs = ff.attributes
+    attrs[key] = value
+    return FlowFile(ff.id, attrs, ff.content, ff.timestamp)
+}

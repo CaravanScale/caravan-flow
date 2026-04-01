@@ -1,95 +1,36 @@
 // Zinc Flow — lightweight data flow engine
-// NiFi's processor model with Go's concurrency primitives.
+// Demo pipeline: source → tag → log → sink
 
+import core
+import pipeline
+import processors
 import os
-import fmt
-
-// --- FlowFile ----------------------------------------------------------------
-
-data FlowFile(String id, String content, int timestamp)
-
-// --- Processor interface -----------------------------------------------------
-
-interface ProcessorFn {
-    fn process(FlowFile ff): FlowFile
-}
-
-// --- Processors --------------------------------------------------------------
-
-class AddAttribute : ProcessorFn {
-    String key
-    String value
-
-    init(String key, String value) {
-        this.key = key
-        this.value = value
-    }
-
-    pub fn process(FlowFile ff): FlowFile {
-        var tagged = ff.content + "\n[" + key + "=" + value + "]"
-        return FlowFile(ff.id, tagged, ff.timestamp)
-    }
-}
-
-class FileSink : ProcessorFn {
-    String outputDir
-
-    init(String outputDir) {
-        this.outputDir = outputDir
-    }
-
-    pub fn process(FlowFile ff): FlowFile {
-        var path = outputDir + "/" + ff.id + ".out"
-        fmt.Println("  sink: writing " + path)
-        os.WriteFile(path, ff.content.toBytes(), 0644)
-        return ff
-    }
-}
-
-// --- Main --------------------------------------------------------------------
+import time
 
 fn main() {
     os.MkdirAll("/tmp/zinc-flow-out", 0755)
 
-    // Typed channels between stages
-    var ch1 = Channel<FlowFile>(1024)
-    var ch2 = Channel<FlowFile>(1024)
-    var ch3 = Channel<FlowFile>(1024)
+    // Build a processing chain: tag → log → sink
+    // Each stage runs as a goroutine, connected by typed channels.
+    var resultCh = Channel<core.FlowFile>(1024)
 
-    // Stage 1: add-attribute processor (goroutine)
-    var addAttr = AddAttribute("processed", "true")
-    spawn {
-        while true {
-            var ff = ch1.recv()
-            var result = addAttr.process(ff)
-            ch2.send(result)
-        }
-    }
-
-    // Stage 2: file-sink processor (goroutine)
-    var sink = FileSink("/tmp/zinc-flow-out")
-    spawn {
-        while true {
-            var ff = ch2.recv()
-            var result = sink.process(ff)
-            ch3.send(result)
-        }
-    }
+    // Build stages from last to first (each feeds into the next)
+    var sinkCh = pipeline.buildStage("sink", processors.FileSink("/tmp/zinc-flow-out"), resultCh)
+    var logCh = pipeline.buildStage("log", processors.LogProcessor("flow"), sinkCh)
+    var tagCh = pipeline.buildStage("tag", processors.AddAttribute("env", "dev"), logCh)
 
     // Send test FlowFiles
     print("Zinc Flow pipeline started")
     for i in 1..4 {
-        var id = "ff-" + str(i)
-        var ff = FlowFile(id, "hello zinc flow " + str(i), 0)
-        print("  sending: {id}")
-        ch1.send(ff)
+        var id = core.flowFileId()
+        Map<String, String> attrs = {}
+        var ff = core.FlowFile(id, attrs, "hello zinc-flow " + str(i), int(time.Now().Unix()))
+        print("  sending: {ff.id}")
+        tagCh.send(ff)
     }
 
-    // Wait for all to complete
-    for i in 1..4 {
-        var done = ch3.recv()
-        print("  done: {done}")
-    }
+    // Wait for processing to complete
+    time.Sleep(500 * time.Millisecond)
 
     print("All FlowFiles processed — check /tmp/zinc-flow-out/")
 }
