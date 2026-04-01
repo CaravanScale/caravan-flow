@@ -130,7 +130,7 @@ class ProcessorWorker {
     String name
     var ProcessorFn fn
     var input = Channel<FlowFile>(10000)
-    var outputs = Map<String, Channel<FlowFile>>{}
+    var routeTable = Map<RouteKey, Channel<FlowFile>>{}  // shared, owned by ProcessorGroup
     var running = false
     var replicas = 1
     var stats = ProcessorStats()
@@ -155,6 +155,13 @@ class ProcessorWorker {
         replicas = n
     }
 
+    // Drain remaining items from input channel (used during removal)
+    pub fn drain() {
+        while len(input) > 0 {
+            input.recv()  // discard, or forward to DLQ
+        }
+    }
+
     fn runLoop() {
         while running {
             var ff = input.recv()
@@ -169,43 +176,107 @@ class ProcessorWorker {
         }
     }
 
+    // Route output via the shared routing table.
+    // The table is owned by ProcessorGroup and can be mutated at any time
+    // (reroute, splice). The worker reads it on each send — no restart needed.
     fn routeOutput(ProcessorResult result) {
         match result {
             case Single(ff) {
-                outputs.get("default").send(ff)
+                outputChan("default").send(ff)
             }
             case Multiple(ffs) {
                 for ff in ffs {
-                    outputs.get("default").send(ff)
+                    outputChan("default").send(ff)
                 }
             }
             case Routed(route, ff) {
-                outputs.getOrDefault(route, outputs.get("default")).send(ff)
+                outputChan(route).send(ff)
             }
             case Drop {
                 // discard
             }
         }
     }
+
+    // Look up the output channel from the routing table.
+    // This indirection is what makes live rerouting possible —
+    // the channel pointer can change between calls.
+    fn outputChan(String output): Channel<FlowFile> {
+        var key = RouteKey(name, output)
+        if routeTable.containsKey(key) {
+            return routeTable.get(key)
+        }
+        // Fallback to default output
+        return routeTable.get(RouteKey(name, "default"))
+    }
 }
+```
+
+### ProcessorRegistry
+
+All available processor types register at startup. Live graph mutation picks from this registry — no new code at runtime.
+
+```zinc
+class ProcessorRegistry {
+    var factories = Map<String, Fn<(), ProcessorFn>>{}
+
+    pub fn register(String name, Fn<(), ProcessorFn> factory) {
+        factories.put(name, factory)
+    }
+
+    pub fn create(String name): ProcessorFn {
+        var factory = factories.get(name)
+        return factory()
+    }
+
+    pub fn list(): List<String> {
+        return factories.keys()
+    }
+}
+```
+
+Usage at startup:
+```zinc
+var registry = ProcessorRegistry()
+registry.register("enrich", () -> Enrich())
+registry.register("validate", () -> ValidateOrder())
+registry.register("filter-empty", () -> FilterEmpty())
+registry.register("split-lines", () -> SplitLines())
 ```
 
 ### ProcessorGroup
 
+Owns the routing table. All graph mutations go through ProcessorGroup under a mutex — upstream processors never pause.
+
 ```zinc
+// RouteKey: (processor-name, output-name) → target channel
+data RouteKey(String processor, String output)
+
 class ProcessorGroup {
     String name
     var workers = Map<String, ProcessorWorker>{}
+    var routes = Map<RouteKey, Channel<FlowFile>>{}  // the routing table
+    var registry = ProcessorRegistry()
+    // var mu = sync.Mutex{}  — protects routes during mutation
+
+    // --- Build-time wiring ---
 
     pub fn addProcessor(String name, ProcessorFn fn) {
         workers.put(name, ProcessorWorker(name, fn))
     }
 
     pub fn connect(String from, String to) {
-        var source = workers.get(from)
-        var target = workers.get(to)
-        source.outputs.put("default", target.input)
+        connect(from, "default", to)
     }
+
+    pub fn connect(String from, String output, String to) {
+        var target = workers.get(to)
+        routes.put(RouteKey(from, output), target.input)
+        // Worker reads from routes table, not direct channel refs
+        workers.get(from).routeTable = routes
+    }
+
+    // --- Lifecycle ---
 
     pub fn start() {
         for (_, worker) in workers {
@@ -235,6 +306,59 @@ class ProcessorGroup {
         var worker = workers.get(name)
         worker.stop()
         worker.fn = newFn
+        worker.start()
+    }
+
+    // --- Live graph mutation (single-pod safe) ---
+
+    // Add a new processor from the registry and wire it in
+    pub fn addLive(String name, String registryKey) {
+        // mu.Lock(); defer mu.Unlock()
+        var fn = registry.create(registryKey)
+        var worker = ProcessorWorker(name, fn)
+        workers.put(name, worker)
+        worker.routeTable = routes
+        worker.start()
+    }
+
+    // Remove a processor: stop it, drain its input, clean up routes
+    pub fn removeLive(String name) {
+        // mu.Lock(); defer mu.Unlock()
+        var worker = workers.get(name)
+        worker.stop()
+        // Drain remaining items to DLQ or discard
+        worker.drain()
+        // Remove all routes that reference this processor
+        for key in routes {
+            if key.processor == name {
+                routes.remove(key)
+            }
+        }
+        workers.remove(name)
+    }
+
+    // Reroute: change where a processor sends its output
+    // Upstream never stops — sees new target on next send()
+    pub fn reroute(String from, String output, String newTarget) {
+        // mu.Lock(); defer mu.Unlock()
+        var target = workers.get(newTarget)
+        routes.put(RouteKey(from, output), target.input)
+    }
+
+    // Splice: insert a new processor between two existing ones
+    pub fn splice(String between, String and, String newName, String registryKey) {
+        // mu.Lock(); defer mu.Unlock()
+        var fn = registry.create(registryKey)
+        var worker = ProcessorWorker(newName, fn)
+        workers.put(newName, worker)
+        worker.routeTable = routes
+
+        // Point upstream's output to new processor's input
+        routes.put(RouteKey(between, "default"), worker.input)
+        // Point new processor's output to downstream's input
+        var downstream = workers.get(and)
+        routes.put(RouteKey(newName, "default"), downstream.input)
+
         worker.start()
     }
 }
@@ -492,6 +616,7 @@ class FlowAPI {
     Pipeline pipeline
 
     pub fn start(int port) {
+        // Existing lifecycle endpoints
         http.HandleFunc("/api/pipeline", getPipeline)
         http.HandleFunc("/api/processors", getProcessors)
         http.HandleFunc("/api/processors/start", startProcessor)
@@ -500,6 +625,15 @@ class FlowAPI {
         http.HandleFunc("/api/queues", getQueues)
         http.HandleFunc("/api/stats", getStats)
         http.HandleFunc("/api/health", healthCheck)
+
+        // Live graph mutation endpoints
+        http.HandleFunc("/api/registry", listRegistry)            // GET: available processor types
+        http.HandleFunc("/api/graph/add", addProcessor)           // POST: {name, registryKey, group}
+        http.HandleFunc("/api/graph/remove", removeProcessor)     // POST: {name, group}
+        http.HandleFunc("/api/graph/reroute", rerouteProcessor)   // POST: {from, output, newTarget, group}
+        http.HandleFunc("/api/graph/splice", spliceProcessor)     // POST: {between, and, newName, registryKey, group}
+        http.HandleFunc("/api/graph", getGraph)                   // GET: current graph topology
+
         http.ListenAndServe(":{port}", nil)
     }
 }
@@ -523,6 +657,15 @@ zinc flow processor stop enrich                     # stop a processor
 zinc flow processor start enrich                    # start it
 zinc flow processor scale enrich --replicas 4       # scale within group
 zinc flow queues                                    # channel depths
+
+# Live graph mutation (Phase 2)
+zinc flow registry                                  # list available processor types
+zinc flow graph                                     # show current topology
+zinc flow graph add my-filter --type filter-empty   # add processor from registry
+zinc flow graph connect enrich my-filter             # wire enrich → my-filter
+zinc flow graph reroute enrich --to my-filter        # redirect enrich output
+zinc flow graph splice enrich sink --type validate   # insert between two processors
+zinc flow graph remove my-filter                     # drain and remove
 ```
 
 ---

@@ -106,12 +106,36 @@ Critical requirement — must be able to in production:
 - **Stop** a processor (stop consuming, let channel buffer)
 - **Swap** a processor (replace implementation, zero downtime)
 - **Scale** a processor (add/remove goroutines)
+- **Add** a new processor to the running graph
+- **Remove** a processor from the graph (drain, then disconnect)
+- **Reroute** an output from one processor to a different downstream processor
 
 This implies:
 - Each processor runs as an independent goroutine (not coupled to others)
 - Processors communicate via channels (not function calls)
 - Channel is the buffer — when a processor is stopped, messages accumulate
 - Swap = stop old goroutine, start new goroutine with new ProcessorFn — channel bridges the gap
+
+#### Live Graph Mutation (Single-Pod)
+
+In the single-pod case, all processors share one process. You can't deploy new code — the binary is fixed. So "add a processor" means **instantiate from a registry**, not load new code. This is the NiFi model: processors are pre-installed, the graph is configuration.
+
+**Processor Registry**: All available `ProcessorFn` implementations register at startup. Adding a processor at runtime picks from the registry by name and wires it into the graph.
+
+**Channel Indirection**: Processors don't hold direct channel references. Instead, the `ProcessorGroup` owns a routing table mapping `(processor, output-name) → channel`. The worker loop reads from this table on each send. Rerouting = swap the channel pointer in the table under a mutex. Upstream never pauses — it sees the new target on its next `send()`.
+
+**Graph mutation operations** (all atomic under a single mutex):
+
+| Operation | Steps |
+|-----------|-------|
+| **Add processor** | Create worker from registry → create input channel → update routing table → start worker |
+| **Remove processor** | Stop worker → drain input channel (forward to DLQ or next) → remove from routing table |
+| **Reroute** | Lock routing table → swap target channel → unlock. Zero downtime — upstream goroutines see new target on next send |
+| **Splice** (insert between two processors) | Create new worker → point A's output to new worker's input → point new worker's output to B's input → start new worker |
+
+**Why this works in-process**: Go channels are goroutine-safe. A channel reference can be swapped atomically (pointer-sized write). The mutex protects the routing table, not the channels themselves. Upstream goroutines that are blocked on `send()` will complete into whichever channel was current when they entered the send — this is safe because the old channel is drained before being discarded.
+
+**Constraint**: only processors compiled into the binary are available. For truly dynamic processors (user-defined at runtime), Phase 3 adds Wasm-based processor plugins — but that's a separate concern from graph mutation.
 
 ### R5 — Back-Pressure
 
