@@ -4,26 +4,31 @@
 
 ## Phase 1 — MVP (Local Dev)
 
-- [ ] FlowFile data class
-- [ ] ProcessorFn interface (constructor-injected, no annotations)
-- [ ] LocalQueue (`Channel<T>`)
-- [ ] ProcessorWorker (virtual thread-based worker loop)
+- [x] FlowFile data class
+- [x] ProcessorFn interface
+- [x] LocalQueue (typed `Channel<FlowFile>`)
+- [x] Basic processor worker loop (goroutine)
+- [x] Filesystem sink (FileSink)
+- [x] AddAttribute processor
+- [ ] ProcessorWorker class (lifecycle: start/stop, stats, error handling)
 - [ ] ProcessorGroup with start/stop/scale
-- [ ] Pipeline with explicit wiring (no DSL yet)
-- [ ] HTTP source
-- [ ] Filesystem sink
-- [ ] CLI: `zinc flow run pipeline.zn`
+- [ ] Pipeline class with explicit wiring
+- [ ] ProcessorResult sealed class (Single, Multiple, Routed, Drop)
+- [ ] HTTP source (function-as-handler — unblocked, see httpserver.zn)
+- [ ] Back-pressure via bounded channels
+- [ ] CLI: `zinc run .` (already works) + terminal stats
 - [ ] Terminal stats (msgs/sec, queue depth, errors)
 
 ## Phase 2 — Production Ready
 
 - [ ] Pipeline DSL with `->` chaining and group definitions
-- [ ] NATS JetStream for cross-group messaging
+- [ ] NATS JetStream for cross-group messaging (Go client: `nats-io/nats.go`)
 - [ ] Filesystem content store for large FlowFiles crossing groups
-- [ ] etcd/PostgreSQL state store (processor catalog, flow graph, audit trail)
-- [ ] REST management API (start/stop/scale/swap/config)
+- [ ] State store (etcd or PostgreSQL) for flow graph, config, audit trail
+- [ ] REST management API (start/stop/scale/swap/config) via `net/http`
 - [ ] Processor catalog with hot-swap and rollback
-- [ ] Prometheus `/metrics` endpoint (via Micrometer)
+- [ ] Prometheus `/metrics` endpoint
+- [ ] Router with attribute-based predicates
 
 ## Phase 3 — Cloud Native
 
@@ -39,4 +44,4 @@
 - [ ] Role-based access control on management API
 - [ ] Audit logging
 - [ ] Multi-pipeline management
-- [ ] Low-code web UI with Zinc expression validation
+- [ ] Low-code web UI
