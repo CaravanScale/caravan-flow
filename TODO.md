@@ -12,13 +12,14 @@ Core runtime — single process, in-memory channels, everything works with `zinc
 - [x] Basic processor worker loop (goroutine)
 - [x] Filesystem sink (FileSink)
 - [x] AddAttribute processor
-- [ ] ProcessorResult sealed class (Single, Multiple, Routed, Drop)
-- [ ] ProcessorWorker class (lifecycle: start/stop, stats, error handling)
-- [ ] ProcessorGroup with start/stop/scale/swap
-- [ ] Pipeline class with explicit wiring (`group.connect(from, to)`)
+- [x] LogProcessor
+- [x] ProcessorResult sealed class (Single, Multiple, Routed, Dropped) with type-switch match
+- [x] ProcessorWorker class (start/stop, per-processor stats)
+- [x] ProcessorGroup with add/connect/start/stop/swap/status
+- [x] Pipeline class with explicit wiring (`group.connect(from, to)`)
+- [x] Back-pressure via bounded channels (natural from Go channel semantics)
+- [x] Subpackage structure: core/, pipeline/, processors/
 - [ ] ProcessorRegistry (register processor types at startup)
-- [ ] Routing table indirection (workers read from shared route table, not direct channel refs)
-- [ ] Back-pressure via bounded channels (natural from Go channel semantics)
 - [ ] Dead letter queue channel for failed FlowFiles
 - [ ] HTTP source (function-as-handler)
 - [ ] CLI: `zinc run .` (already works) + terminal stats
