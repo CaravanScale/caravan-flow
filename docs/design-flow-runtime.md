@@ -567,6 +567,44 @@ data RoutingRule(
 )
 ```
 
+### Cross-Group Live Graph Mutation
+
+Each processor group watches a config key in the state store (NATS KV or etcd) for its routing config. When the management API updates the config, the group picks up the new subjects dynamically — no restart.
+
+```zinc
+// Each group holds its outbound subject config, watched for live changes
+class GroupRouter {
+    String groupName
+    var subjects = Map<String, String>{}  // output-name → NATS subject
+    // var watcher: watches state store for changes to this group's config
+
+    pub fn publishSubject(String output): String {
+        return subjects.getOrDefault(output, "zinc-flow.{groupName}.default")
+    }
+
+    // Called by state store watcher when config changes
+    pub fn onConfigChange(Map<String, String> newSubjects) {
+        subjects = newSubjects
+        // Next publish() call uses the new subject — no restart needed
+    }
+}
+```
+
+Cross-pod graph mutation flow:
+
+```
+1. Operator calls: POST /api/graph/reroute {from: "enrich", subject: "zinc-flow.orders.audit-in"}
+2. Management API writes new config to state store
+3. "enrich" group's GroupRouter picks up the change via watcher
+4. Next FlowFile published by "enrich" goes to the new subject
+5. The new consumer (audit group) is already subscribed and starts processing
+```
+
+JetStream guarantees during transitions:
+- **No message loss**: unacked messages stay in the stream, redelivered to new consumers
+- **No ordering issues**: per-subject ordering preserved within a single consumer
+- **Backlog handling**: if the new consumer isn't ready yet, messages buffer in the stream up to the configured limit (back-pressure propagates to the producer via NATS reject)
+
 ---
 
 ## Cross-Cutting Concerns

@@ -137,6 +137,39 @@ In the single-pod case, all processors share one process. You can't deploy new c
 
 **Constraint**: only processors compiled into the binary are available. For truly dynamic processors (user-defined at runtime), Phase 3 adds Wasm-based processor plugins — but that's a separate concern from graph mutation.
 
+#### Live Graph Mutation (Cross-Pod)
+
+Cross-pod is simpler than single-pod. Processor groups already communicate via NATS JetStream subjects — there are no direct channel references to manage. The boundary is serialization, and NATS handles the routing.
+
+| Operation | How it works |
+|-----------|-------------|
+| **Add group** | Deploy a new pod that subscribes to NATS subjects. Upstream doesn't know or care — it publishes to a subject, NATS delivers. |
+| **Remove group** | Unsubscribe from NATS subjects, drain in-flight messages (JetStream acks), scale pod to zero. Upstream buffers in the stream until a new consumer appears. |
+| **Reroute** | Change the publish subject on the upstream group. NATS subject is just a string in the routing config — update it and the next message goes to the new target. |
+| **Scale** | Add pod replicas. NATS consumer groups distribute messages across consumers automatically — competing consumers pattern. |
+| **Splice** | Deploy new pod subscribed to upstream's subject. Change new pod's publish subject to downstream's subject. Update upstream to publish to new pod's subject. Three config changes, zero downtime. |
+
+**Why cross-pod is easy**: NATS JetStream decouples producers and consumers completely. The producer publishes to a subject string. The consumer subscribes to a subject string. Neither knows the other exists. Rerouting is literally changing a string. JetStream provides:
+
+- **Buffering during transitions**: messages accumulate in the stream if no consumer is ready (equivalent to the channel buffer in single-pod)
+- **At-least-once delivery**: ack-based consumption means no message loss during reroutes
+- **Consumer groups**: multiple pods consuming the same subject get automatic load balancing
+
+**Coordination**: A central state store (etcd or the NATS KV store itself) holds the authoritative graph topology. The management API updates the state store, and each pod watches for changes to its group's routing config. No restart needed — pods pick up new subjects dynamically.
+
+```
+Example: splice "audit" processor between "enrich" and "sink" groups
+
+Before:  enrich --[zinc-flow.orders.enriched]--> sink
+After:   enrich --[zinc-flow.orders.audit-in]--> audit --[zinc-flow.orders.enriched]--> sink
+
+Steps:
+1. Deploy audit pod, subscribing to zinc-flow.orders.audit-in
+2. Configure audit to publish to zinc-flow.orders.enriched
+3. Update enrich group's publish subject: enriched → audit-in
+4. Done. JetStream buffers any in-flight messages during the switchover.
+```
+
 ### R5 — Back-Pressure
 
 When a downstream processor is slow or stopped, upstream should slow down:
