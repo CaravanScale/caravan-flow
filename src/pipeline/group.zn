@@ -14,8 +14,7 @@ class ProcessorGroup {
     }
 
     pub fn addProcessor(String procName, core.ProcessorFn processor) {
-        var w = ProcessorWorker(procName)
-        workers[procName] = w
+        workers[procName] = ProcessorWorker(procName)
         processorFns[procName] = processor
         order = append(order, procName)
     }
