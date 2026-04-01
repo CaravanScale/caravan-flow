@@ -44,7 +44,7 @@ class LogProcessor : core.ProcessorFn {
     }
 
     pub fn process(core.FlowFile ff): core.ProcessorResult {
-        fmt.Println("  [{prefix}] {ff.id}: {string(ff.content)}")
+        fmt.Println("  [{prefix}] {ff.id} {ff.attributes}")
         return core.Single(ff)
     }
 }
