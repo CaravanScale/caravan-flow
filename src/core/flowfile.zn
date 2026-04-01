@@ -6,7 +6,7 @@ import time
 data FlowFile(
     String id,
     Map<String, String> attributes,
-    String content,
+    byte[] content,
     int timestamp
 )
 

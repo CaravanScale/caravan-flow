@@ -31,7 +31,8 @@ fn main() {
     for i in 1..4 {
         var id = core.flowFileId()
         Map<String, String> attrs = {}
-        var ff = core.FlowFile(id, attrs, "hello zinc-flow " + str(i), int(time.Now().Unix()))
+        var content = "hello zinc-flow " + str(i)
+        var ff = core.FlowFile(id, attrs, content.toBytes(), int(time.Now().Unix()))
         fmt.Println("  sending: {ff.id}")
         inputCh.send(ff)
     }
