@@ -1,0 +1,37 @@
+// Pipeline — top-level container. Owns groups, manages lifecycle.
+
+import fmt
+
+class Pipeline {
+    String name
+    var groups = List<ProcessorGroup>[]
+
+    init(String name) {
+        this.name = name
+    }
+
+    pub fn addGroup(ProcessorGroup group) {
+        groups = append(groups, group)
+    }
+
+    pub fn start() {
+        fmt.Println("Pipeline '{name}' starting")
+        for g in groups {
+            g.start()
+        }
+    }
+
+    pub fn stop() {
+        for g in groups {
+            g.stop()
+        }
+        fmt.Println("Pipeline '{name}' stopped")
+    }
+
+    pub fn status() {
+        fmt.Println("Pipeline: {name}")
+        for g in groups {
+            g.status()
+        }
+    }
+}

@@ -1,36 +1,44 @@
 // Zinc Flow — lightweight data flow engine
-// Demo pipeline: source → tag → log → sink
+// Demo: tag → log → sink pipeline using ProcessorGroup
 
 import core
 import pipeline
 import processors
 import os
 import time
+import fmt
 
 fn main() {
     os.MkdirAll("/tmp/zinc-flow-out", 0755)
 
-    // Build a processing chain: tag → log → sink
-    // Each stage runs as a goroutine, connected by typed channels.
-    var resultCh = Channel<core.FlowFile>(1024)
+    // Build processor group with named stages
+    var group = pipeline.ProcessorGroup("ingest")
+    group.addProcessor("tag", processors.AddAttribute("env", "dev"))
+    group.addProcessor("log", processors.LogProcessor("flow"))
+    group.addProcessor("sink", processors.FileSink("/tmp/zinc-flow-out"))
 
-    // Build stages from last to first (each feeds into the next)
-    var sinkCh = pipeline.buildStage("sink", processors.FileSink("/tmp/zinc-flow-out"), resultCh)
-    var logCh = pipeline.buildStage("log", processors.LogProcessor("flow"), sinkCh)
-    var tagCh = pipeline.buildStage("tag", processors.AddAttribute("env", "dev"), logCh)
+    // Wire: tag → log → sink
+    group.connect("tag", "log")
+    group.connect("log", "sink")
 
-    // Send test FlowFiles
-    print("Zinc Flow pipeline started")
+    // Create pipeline and start
+    var p = pipeline.Pipeline("demo")
+    p.addGroup(group)
+    p.start()
+
+    // Feed FlowFiles into the first processor
+    var inputCh = group.getInput("tag")
     for i in 1..4 {
         var id = core.flowFileId()
         Map<String, String> attrs = {}
         var ff = core.FlowFile(id, attrs, "hello zinc-flow " + str(i), int(time.Now().Unix()))
-        print("  sending: {ff.id}")
-        tagCh.send(ff)
+        fmt.Println("  sending: {ff.id}")
+        inputCh.send(ff)
     }
 
-    // Wait for processing to complete
+    // Wait for processing
     time.Sleep(500 * time.Millisecond)
 
-    print("All FlowFiles processed — check /tmp/zinc-flow-out/")
+    p.stop()
+    p.status()
 }

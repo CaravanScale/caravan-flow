@@ -1,19 +1,53 @@
-// Pipeline worker — goroutine loop that runs a processor on FlowFiles.
-// Routes output based on ProcessorResult variant using type-switch match.
+// ProcessorWorker — wraps a ProcessorFn with lifecycle, stats, and routing.
 
 import core
+import fmt
+import time
+import sync
 
-// workerRun is the goroutine loop for a processor stage.
-fn workerRun(
-    String name,
-    core.ProcessorFn processor,
-    Channel<core.FlowFile> inputCh,
-    Channel<core.FlowFile> outputCh
-) {
-    while true {
-        var ff = inputCh.recv()
-        var result = processor.process(ff)
-        routeResult(result, outputCh)
+class ProcessorWorker {
+    String name
+    var input = Channel<core.FlowFile>(10000)
+    var output = Channel<core.FlowFile>(10000)
+    var stopCh = Channel<bool>(1)
+    var running = false
+    var processed = 0
+    var errors = 0
+    var totalNs = 0
+
+    init(String name) {
+        this.name = name
+    }
+
+    pub fn start(core.ProcessorFn processor) {
+        running = true
+        spawn {
+            runLoop(processor)
+        }
+    }
+
+    pub fn stop() {
+        running = false
+    }
+
+    pub fn stats(): String {
+        var avgUs = 0
+        if processed > 0 {
+            avgUs = totalNs / processed / 1000
+        }
+        return fmt.Sprintf("%s: processed=%d errors=%d avg=%dus", name, processed, errors, avgUs)
+    }
+
+    fn runLoop(core.ProcessorFn processor) {
+        while running {
+            var ff = input.recv()
+            var startTime = time.Now()
+            var result = processor.process(ff)
+            var elapsed = int(time.Since(startTime).Nanoseconds())
+            processed = processed + 1
+            totalNs = totalNs + elapsed
+            routeResult(result, output)
+        }
     }
 }
 
@@ -29,7 +63,6 @@ fn routeResult(core.ProcessorResult result, Channel<core.FlowFile> outputCh) {
             }
         }
         case core.Routed(_, ff) {
-            // TODO: named output routing
             outputCh.send(ff)
         }
         case core.Dropped(_) {

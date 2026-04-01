@@ -1,17 +1,62 @@
-// Pipeline wiring — connects processors via typed channels.
+// ProcessorGroup — owns workers, wiring, and lifecycle.
 
 import core
+import fmt
 
-// buildStage spawns a worker goroutine for a processor.
-// Returns the input channel to feed FlowFiles into this stage.
-fn buildStage(
-    String name,
-    core.ProcessorFn processor,
-    Channel<core.FlowFile> outputCh
-): Channel<core.FlowFile> {
-    var inputCh = Channel<core.FlowFile>(1024)
-    spawn {
-        workerRun(name, processor, inputCh, outputCh)
+class ProcessorGroup {
+    String name
+    var workers = Map<String, ProcessorWorker>{}
+    var processorFns = Map<String, core.ProcessorFn>{}
+    var order = List<String>[]
+
+    init(String name) {
+        this.name = name
     }
-    return inputCh
+
+    pub fn addProcessor(String procName, core.ProcessorFn processor) {
+        var w = ProcessorWorker(procName)
+        workers[procName] = w
+        processorFns[procName] = processor
+        order = append(order, procName)
+    }
+
+    pub fn connect(String fromName, String toName) {
+        var source = workers[fromName]
+        var target = workers[toName]
+        source.output = target.input
+    }
+
+    pub fn start() {
+        for wn in order {
+            workers[wn].start(processorFns[wn])
+        }
+    }
+
+    pub fn stop() {
+        for wn in order {
+            workers[wn].stop()
+        }
+    }
+
+    pub fn swapProcessor(String procName, core.ProcessorFn newFn) {
+        var w = workers[procName]
+        w.stop()
+        processorFns[procName] = newFn
+        w.start(newFn)
+    }
+
+    pub fn getInput(String procName): Channel<core.FlowFile> {
+        return workers[procName].input
+    }
+
+    pub fn getOutput(String procName): Channel<core.FlowFile> {
+        return workers[procName].output
+    }
+
+    pub fn status() {
+        fmt.Println("Group: {name}")
+        for wn in order {
+            fmt.Println("  {workers[wn].stats()}")
+        }
+    }
 }
