@@ -1,3 +1,5 @@
+// zinc-flow fabric — viper config + slog logging + IRS router
+
 import stdlib.config
 import stdlib.logging
 import log.slog
@@ -5,25 +7,46 @@ import fabric.router
 import fabric.model
 
 fn main() {
-    var cfg = config.load("config.properties")
-    logging.setup(cfg)
+    // Load YAML config with defaults
+    var cfg = config.Config()
+    cfg.setDefault("server.port", 8080)
+    cfg.setDefault("logging.level", "INFO")
+    cfg.setDefault("logging.handler", "text")
+    cfg.setDefault("logging.output", "stdout")
+    cfg.load("config", "yaml", ".")
 
-    slog.Info("zinc-flow starting", "port", cfg.getString("server.port", "8080"))
+    // Setup structured logging
+    var lm = logging.LogManager()
+    lm.setup(cfg)
 
+    var port = cfg.getInt("server.port")
+    slog.Info("zinc-flow starting", "port", port)
+
+    // Setup IRS router
     var engine = router.RulesEngine()
     var rule = router.RoutingRule(
         "all",
         router.BaseRule("type", router.EXISTS, ""),
-        router.Destination("http://localhost:9091/process", "http"),
+        router.Destination("http://localhost:" + str(port) + "/process", "http"),
         true
     )
     engine.addOrReplaceRuleset("main", List<router.RoutingRule>[rule])
+    slog.Info("router configured", "rulesets", len(engine.getRulesetNames()))
 
+    // Create and route a FlowFile
     Map<String, String> attrs = {"type": "order", "priority": "high"}
-    var ff = model.createFlowFile("test", attrs)
+    var ff = model.createFlowFile("test-data", attrs)
     var dests = engine.getDestinations(ff.attributes)
 
     slog.Info("routed", "flowfile", ff.id, "destinations", len(dests))
-    slog.Debug("flowfile details", "attributes", ff.attributes)
+    for d in dests {
+        slog.Info("destination", "endpoint", d.endpoint)
+    }
+
+    // Show config values
+    slog.Info("config",
+        "content.threshold", cfg.getInt("content.threshold"),
+        "content.dir", cfg.getString("content.dir"))
+
     slog.Info("done")
 }
