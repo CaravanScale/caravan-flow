@@ -1,0 +1,56 @@
+// HTTP Delivery Adapter — delivers FlowFiles to processor endpoints via HTTP POST.
+// Returns raw response bytes for the fabric to interpret.
+
+import fabric.model
+import net.http
+import encoding.json
+import bytes
+import io
+import fmt
+
+// DeliveryResult — outcome of delivering a FlowFile to a processor.
+data DeliveryResult(
+    boolean success,
+    int statusCode,
+    byte[] body,
+    String error
+)
+
+// deliver sends a FlowFile to a processor endpoint via HTTP POST.
+fn deliver(String endpoint, model.FlowFile ff): DeliveryResult {
+    // Serialize FlowFile to JSON
+    var payload = json.Marshal(ff) or {
+        return DeliveryResult(false, 0, "".toBytes(), "marshal error")
+    }
+
+    // POST to processor endpoint
+    var resp = http.Post(endpoint, "application/json", bytes.NewBuffer(payload)) or {
+        return DeliveryResult(false, 0, "".toBytes(), "http error")
+    }
+
+    // Read response body
+    var body = io.ReadAll(resp.Body) or {
+        return DeliveryResult(false, resp.StatusCode, "".toBytes(), "read error")
+    }
+    resp.Body.Close()
+
+    // Check HTTP status
+    if resp.StatusCode == 429 {
+        return DeliveryResult(false, 429, "".toBytes(), "backpressure")
+    }
+    if resp.StatusCode >= 400 {
+        return DeliveryResult(false, resp.StatusCode, body, fmt.Sprintf("http %d", resp.StatusCode))
+    }
+
+    return DeliveryResult(true, resp.StatusCode, body, "")
+}
+
+// deliverToAll delivers a FlowFile to multiple endpoints (fan-out).
+fn deliverToAll(List<String> endpoints, model.FlowFile ff): List<DeliveryResult> {
+    var results = List<DeliveryResult>[]
+    for endpoint in endpoints {
+        var result = deliver(endpoint, ff)
+        results = append(results, result)
+    }
+    return results
+}

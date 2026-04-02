@@ -1,0 +1,33 @@
+// ProcessorResult — what processors return after processing a FlowFile.
+// Serialized as JSON in the HTTP response body.
+
+// ResultType indicates the kind of processor output.
+enum ResultType {
+    SINGLE,
+    MULTIPLE,
+    DROPPED
+}
+
+// ProcessorResult — the response from a processor.
+// For SINGLE: flowFile is set, flowFiles is empty.
+// For MULTIPLE: flowFiles is set, flowFile is zero.
+// For DROPPED: reason explains why.
+data ProcessorResult(
+    ResultType resultType,
+    FlowFile flowFile,
+    List<FlowFile> flowFiles,
+    String reason
+)
+
+// Helper constructors for processors.
+fn singleResult(FlowFile ff): ProcessorResult {
+    return ProcessorResult(SINGLE, ff, List<FlowFile>[], "")
+}
+
+fn multipleResult(List<FlowFile> ffs): ProcessorResult {
+    return ProcessorResult(MULTIPLE, FlowFile("", Map<String, String>{}, "", 0), ffs, "")
+}
+
+fn droppedResult(String reason): ProcessorResult {
+    return ProcessorResult(DROPPED, FlowFile("", Map<String, String>{}, "", 0), List<FlowFile>[], reason)
+}
