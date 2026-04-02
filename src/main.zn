@@ -1,45 +1,29 @@
-// zinc-flow fabric — config + slog-based logging
-
 import stdlib.config
 import stdlib.logging
 import log.slog
 import fabric.router
 import fabric.model
-import fmt
 
 fn main() {
-    // Load config
     var cfg = config.load("config.properties")
-    var port = cfg.getString("server.port", "8080")
+    logging.setup(cfg)
 
-    // Setup structured logging
-    var handler = cfg.getString("logging.handler", "text")
-    var output = cfg.getString("logging.output", "stdout")
-    logging.setupSimple(handler, output)
+    slog.Info("zinc-flow starting", "port", cfg.getString("server.port", "8080"))
 
-    slog.Info("zinc-flow starting", "port", port)
-
-    // Setup IRS router
     var engine = router.RulesEngine()
     var rule = router.RoutingRule(
-        "all-to-processor",
+        "all",
         router.BaseRule("type", router.EXISTS, ""),
-        router.Destination("http://localhost:" + port + "/process", "http"),
+        router.Destination("http://localhost:9091/process", "http"),
         true
     )
     engine.addOrReplaceRuleset("main", List<router.RoutingRule>[rule])
-    slog.Info("router configured", "rulesets", len(engine.getRulesetNames()))
 
-    // Create and route a FlowFile
     Map<String, String> attrs = {"type": "order", "priority": "high"}
-    var ff = model.createFlowFile("test-data", attrs)
-    slog.Debug("created flowfile", "id", ff.id)
+    var ff = model.createFlowFile("test", attrs)
+    var dests = engine.getDestinations(ff.attributes)
 
-    var destinations = engine.getDestinations(ff.attributes)
-    slog.Info("routed", "destinations", len(destinations))
-    for d in destinations {
-        slog.Info("destination", "endpoint", d.endpoint)
-    }
-
+    slog.Info("routed", "flowfile", ff.id, "destinations", len(dests))
+    slog.Debug("flowfile details", "attributes", ff.attributes)
     slog.Info("done")
 }
