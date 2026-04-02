@@ -1,0 +1,51 @@
+// Processor Registry — maps processor names to factory functions.
+// The fabric binary has all processor types compiled in.
+// The flow graph config references processors by name.
+
+import core
+import log.slog
+
+// ProcessorFactory creates a configured ProcessorFn instance.
+type ProcessorFactory = Fn<(Map<String, String>), core.ProcessorFn>
+
+// ProcessorInfo describes a registered processor type.
+data ProcessorInfo(
+    String name,
+    String description,
+    List<String> configKeys
+)
+
+// Registry holds all available processor types.
+class Registry {
+    var factories = Map<String, ProcessorFactory>{}
+    var info = Map<String, ProcessorInfo>{}
+
+    init() {}
+
+    // register adds a processor type to the registry.
+    pub fn register(ProcessorInfo pinfo, ProcessorFactory factory) {
+        factories[pinfo.name] = factory
+        info[pinfo.name] = pinfo
+    }
+
+    // create instantiates a processor by name with the given config.
+    pub fn create(String name, Map<String, String> config): core.ProcessorFn {
+        var factory = factories[name]
+        return factory(config)
+    }
+
+    // has checks if a processor type is registered.
+    pub fn has(String name): boolean {
+        return factories.containsKey(name)
+    }
+
+    // list returns all registered processor names.
+    pub fn list(): List<ProcessorInfo> {
+        var result = List<ProcessorInfo>[]
+        var names = info.keys()
+        for n in names {
+            result = append(result, info[n])
+        }
+        return result
+    }
+}

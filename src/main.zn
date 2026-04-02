@@ -1,13 +1,12 @@
-// zinc-flow fabric — viper config + slog logging + IRS router
+// zinc-flow fabric — config + logging + IRS router
 
 import stdlib.config
 import stdlib.logging
-import log.slog
 import fabric.router
 import fabric.model
 
 fn main() {
-    // Load YAML config with defaults
+    // Load config
     var cfg = config.Config()
     cfg.setDefault("server.port", 8080)
     cfg.setDefault("logging.level", "INFO")
@@ -15,38 +14,37 @@ fn main() {
     cfg.setDefault("logging.output", "stdout")
     cfg.load("config", "yaml", ".")
 
-    // Setup structured logging
+    // Setup logging from config
     var lm = logging.LogManager()
     lm.setup(cfg)
 
     var port = cfg.getInt("server.port")
-    slog.Info("zinc-flow starting", "port", port)
+    logging.info("zinc-flow starting", "port", port)
 
     // Setup IRS router
     var engine = router.RulesEngine()
     var rule = router.RoutingRule(
         "all",
         router.BaseRule("type", router.EXISTS, ""),
-        router.Destination("http://localhost:" + str(port) + "/process", "http"),
+        router.Destination("add-attribute", "local"),
         true
     )
     engine.addOrReplaceRuleset("main", List<router.RoutingRule>[rule])
-    slog.Info("router configured", "rulesets", len(engine.getRulesetNames()))
+    logging.info("router configured", "rulesets", len(engine.getRulesetNames()))
 
     // Create and route a FlowFile
     Map<String, String> attrs = {"type": "order", "priority": "high"}
     var ff = model.createFlowFile("test-data", attrs)
     var dests = engine.getDestinations(ff.attributes)
 
-    slog.Info("routed", "flowfile", ff.id, "destinations", len(dests))
+    logging.info("routed", "flowfile", ff.id, "destinations", len(dests))
     for d in dests {
-        slog.Info("destination", "endpoint", d.endpoint)
+        logging.info("destination", "processor", d.endpoint)
     }
 
-    // Show config values
-    slog.Info("config",
+    logging.info("config",
         "content.threshold", cfg.getInt("content.threshold"),
         "content.dir", cfg.getString("content.dir"))
 
-    slog.Info("done")
+    logging.info("done")
 }
