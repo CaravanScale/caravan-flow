@@ -11,12 +11,12 @@ data FlowFile(
 )
 
 // Generate a unique FlowFile ID
-fn flowFileId(): String {
+pub fn flowFileId(): String {
     return fmt.Sprintf("ff-%d", time.Now().UnixNano())
 }
 
 // Create a copy with an additional attribute
-fn withAttribute(FlowFile ff, String key, String value): FlowFile {
+pub fn withAttribute(FlowFile ff, String key, String value): FlowFile {
     var attrs = ff.attributes
     attrs[key] = value
     return FlowFile(ff.id, attrs, ff.content, ff.timestamp)

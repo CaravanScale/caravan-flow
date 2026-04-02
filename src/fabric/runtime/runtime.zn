@@ -86,31 +86,40 @@ class Fabric {
 
     // process routes a FlowFile through the graph.
     pub fn process(core.FlowFile ff) {
+        routeWithVisited(ff, Map<String, bool>{})
+    }
+
+    // routeWithVisited routes a FlowFile, skipping already-visited processors to prevent cycles.
+    fn routeWithVisited(core.FlowFile ff, Map<String, bool> visited) {
         var destinations = engine.getDestinations(ff.attributes)
         for dest in destinations {
+            if visited.containsKey(dest.endpoint) {
+                continue
+            }
             if procs.containsKey(dest.endpoint) {
                 var proc = procs[dest.endpoint]
+                visited[dest.endpoint] = true
                 var result = proc.process(ff)
-                routeResult(result)
+                handleResult(result, visited)
             } else {
                 logging.warn("no processor for destination", "dest", dest.endpoint)
             }
         }
     }
 
-    // routeResult handles a ProcessorResult.
-    fn routeResult(core.ProcessorResult result) {
+    // handleResult routes processor output through the graph.
+    fn handleResult(core.ProcessorResult result, Map<String, bool> visited) {
         match result {
             case core.Single(ff) {
-                process(ff)
+                routeWithVisited(ff, visited)
             }
             case core.Multiple(ffs) {
                 for f in ffs {
-                    process(f)
+                    routeWithVisited(f, visited)
                 }
             }
             case core.Routed(_, ff) {
-                process(ff)
+                routeWithVisited(ff, visited)
             }
             case core.Dropped(reason) {
                 logging.debug("flowfile dropped", "reason", reason)

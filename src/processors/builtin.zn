@@ -6,7 +6,7 @@ import stdlib.logging
 import os
 
 // registerBuiltins registers all built-in processors with the registry.
-fn registerBuiltins(registry.Registry reg) {
+pub fn registerBuiltins(registry.Registry reg) {
     reg.register(
         registry.ProcessorInfo("add-attribute", "Adds key=value attribute to FlowFiles", List<String>["key", "value"]),
         AddAttributeFactory
