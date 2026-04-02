@@ -1,58 +1,46 @@
-// zinc-flow fabric — end-to-end test
-// 1. Start add-attribute processor as a subprocess
-// 2. Create a FlowFile
-// 3. Route it through the IRS rules engine
-// 4. Deliver to the processor via HTTP
-// 5. Print the result
+// zinc-flow fabric — testing stdlib integration
 
+import stdlib.config
+import stdlib.logging
 import fabric.router
 import fabric.model
-import fabric.delivery
-import os.exec
-import time
 import fmt
 
 fn main() {
-    // 1. Start the add-attribute processor on port 9091
-    var proc = exec.Command("./processors/add-attribute/zinc-out/add-attribute", "9091")
-    proc.Start() or {
-        fmt.Println("failed to start processor")
-        return
-    }
-    // Give it time to start
-    time.Sleep(1 * time.Second)
-    fmt.Println("Processor started")
+    // Load config
+    var cfg = config.load("config.properties")
+    var port = cfg.getString("server.port", "8080")
+    var logLevel = cfg.getString("logging.level", "INFO")
 
-    // 2. Create a FlowFile
-    Map<String, String> attrs = {"type": "order", "priority": "high"}
-    var ff = model.createFlowFile("order-data-123", attrs)
-    fmt.Println("FlowFile: {ff.id}")
+    // Setup logger
+    var logger = logging.Logger("fabric", logging.levelFromString(logLevel))
+    logger.info("zinc-flow starting on port {port}")
 
-    // 3. Setup IRS router with rules
+    // Setup IRS router
     var engine = router.RulesEngine()
     var rule = router.RoutingRule(
         "all-to-processor",
         router.BaseRule("type", router.EXISTS, ""),
-        router.Destination("http://localhost:9091/process", "http"),
+        router.Destination("http://localhost:" + port + "/process", "http"),
         true
     )
     engine.addOrReplaceRuleset("main", List<router.RoutingRule>[rule])
+    logger.info("Router configured with {len(engine.getRulesetNames())} ruleset(s)")
 
-    // 4. Route and deliver
+    // Create and route a FlowFile
+    Map<String, String> attrs = {"type": "order", "priority": "high"}
+    var ff = model.createFlowFile("test-data", attrs)
+    logger.debug("Created FlowFile {ff.id}")
+
     var destinations = engine.getDestinations(ff.attributes)
-    fmt.Println("Routing to {len(destinations)} destination(s)")
-
-    for dest in destinations {
-        var result = delivery.deliver(dest.endpoint, ff)
-        if result.success {
-            fmt.Println("Delivery: success (HTTP {result.statusCode})")
-            fmt.Println("Response body: {string(result.body)}")
-        } else {
-            fmt.Println("Delivery: failed ({result.error})")
-        }
+    logger.info("Routed to {len(destinations)} destination(s)")
+    for d in destinations {
+        logger.info("  -> {d.endpoint}")
     }
 
-    // 5. Cleanup
-    proc.Process.Kill()
-    fmt.Println("Done")
+    // Show config dump
+    fmt.Println("Config:")
+    cfg.dump()
+
+    logger.info("Done")
 }
