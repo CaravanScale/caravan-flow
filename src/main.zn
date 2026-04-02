@@ -1,45 +1,52 @@
-// Zinc Flow — lightweight data flow engine
-// Demo: tag → log → sink pipeline using ProcessorGroup
+// Test: IRS Router rule model and evaluation engine
 
-import core
-import pipeline
-import processors
-import os
-import time
+import fabric.router
 import fmt
 
 fn main() {
-    os.MkdirAll("/tmp/zinc-flow-out", 0755)
+    var engine = router.RulesEngine()
 
-    // Build processor group with named stages
-    var group = pipeline.ProcessorGroup("ingest")
-    group.addProcessor("tag", processors.AddAttribute("env", "dev"))
-    group.addProcessor("log", processors.LogProcessor("flow"))
-    group.addProcessor("sink", processors.FileSink("/tmp/zinc-flow-out"))
+    // Create a simple rule: type == "order" → send to enrichment
+    var rule1 = router.RoutingRule(
+        "orders-to-enrich",
+        router.BaseRule("type", router.EQ, "order"),
+        router.Destination("http://localhost:8081/process", "http"),
+        true
+    )
 
-    // Wire: tag → log → sink
-    group.connect("tag", "log")
-    group.connect("log", "sink")
+    // Create a catch-all rule: EXISTS type → send to default
+    var rule2 = router.RoutingRule(
+        "catch-all",
+        router.BaseRule("type", router.EXISTS, ""),
+        router.Destination("http://localhost:8082/process", "http"),
+        true
+    )
 
-    // Create pipeline and start
-    var p = pipeline.Pipeline("demo")
-    p.addGroup(group)
-    p.start()
+    engine.addOrReplaceRuleset("main", List<router.RoutingRule>[rule1, rule2])
 
-    // Feed FlowFiles into the first processor
-    var inputCh = group.getInput("tag")
-    for i in 1..4 {
-        var id = core.flowFileId()
-        Map<String, String> attrs = {}
-        var content = "hello zinc-flow " + str(i)
-        var ff = core.FlowFile(id, attrs, content.toBytes(), int(time.Now().Unix()))
-        fmt.Println("  sending: {ff.id}")
-        inputCh.send(ff)
+    // Test: FlowFile with type=order should match both rules (fan-out)
+    Map<String, String> attrs = {"type": "order", "source": "api"}
+    var dests = engine.getDestinations(attrs)
+    fmt.Println("Destinations for type=order:")
+    for d in dests {
+        fmt.Println("  -> {d.endpoint} ({d.adapterType})")
     }
 
-    // Wait for processing
-    time.Sleep(500 * time.Millisecond)
+    // Test: FlowFile with type=log should only match catch-all
+    Map<String, String> attrs2 = {"type": "log"}
+    var dests2 = engine.getDestinations(attrs2)
+    fmt.Println("Destinations for type=log:")
+    for d in dests2 {
+        fmt.Println("  -> {d.endpoint} ({d.adapterType})")
+    }
 
-    p.stop()
-    p.status()
+    // Test: toggle the orders rule off
+    engine.toggleRule("main", "orders-to-enrich")
+    var dests3 = engine.getDestinations(attrs)
+    fmt.Println("After toggle (type=order):")
+    for d in dests3 {
+        fmt.Println("  -> {d.endpoint} ({d.adapterType})")
+    }
+
+    fmt.Println("Rulesets: {engine.getRulesetNames()}")
 }
