@@ -2,29 +2,35 @@
 
 import core
 import fabric.registry
+import stdlib.logging
 import os
-import log.slog
 
 // registerBuiltins registers all built-in processors with the registry.
 fn registerBuiltins(registry.Registry reg) {
     reg.register(
         registry.ProcessorInfo("add-attribute", "Adds key=value attribute to FlowFiles", List<String>["key", "value"]),
-        (Map<String, String> config) -> {
-            return AddAttribute(config["key"], config["value"])
-        }
+        AddAttributeFactory
     )
     reg.register(
         registry.ProcessorInfo("file-sink", "Writes FlowFile content to disk", List<String>["outputDir"]),
-        (Map<String, String> config) -> {
-            return FileSink(config["outputDir"])
-        }
+        FileSinkFactory
     )
     reg.register(
-        registry.ProcessorInfo("log", "Logs FlowFile attributes and passes through", List<String>["prefix"]),
-        (Map<String, String> config) -> {
-            return LogProcessor(config["prefix"])
-        }
+        registry.ProcessorInfo("log", "Logs FlowFile and passes through", List<String>["prefix"]),
+        LogProcessorFactory
     )
+}
+
+fn AddAttributeFactory(Map<String, String> config): core.ProcessorFn {
+    return AddAttribute(config["key"], config["value"])
+}
+
+fn FileSinkFactory(Map<String, String> config): core.ProcessorFn {
+    return FileSink(config["outputDir"])
+}
+
+fn LogProcessorFactory(Map<String, String> config): core.ProcessorFn {
+    return LogProcessor(config["prefix"])
 }
 
 // AddAttribute — tags a FlowFile with a key=value attribute.
@@ -67,7 +73,7 @@ class LogProcessor : core.ProcessorFn {
     }
 
     pub fn process(core.FlowFile ff): core.ProcessorResult {
-        slog.Info("flowfile", "processor", prefix, "id", ff.id, "attributes", ff.attributes)
+        logging.info("flowfile", "processor", prefix, "id", ff.id, "attributes", ff.attributes)
         return core.Single(ff)
     }
 }

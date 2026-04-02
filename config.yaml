@@ -7,10 +7,57 @@ logging:
   handler: text
   output: stdout
 
-router:
-  failure:
-    queue: dlq
-
 content:
   threshold: 262144
   dir: /tmp/zinc-flow/content
+
+# Flow graph: defines active processor instances and routing rules
+flow:
+  processors:
+    - name: tag-env
+      type: add-attribute
+      config:
+        key: env
+        value: dev
+
+    - name: tag-source
+      type: add-attribute
+      config:
+        key: source
+        value: api
+
+    - name: logger
+      type: log
+      config:
+        prefix: flow
+
+    - name: sink
+      type: file-sink
+      config:
+        outputDir: /tmp/zinc-flow/output
+
+  routes:
+    - name: tag-all
+      condition:
+        attribute: type
+        operator: EXISTS
+      destination: tag-env
+
+    - name: after-tag-env
+      condition:
+        attribute: env
+        operator: EQ
+        value: dev
+      destination: tag-source
+
+    - name: after-tag-source
+      condition:
+        attribute: source
+        operator: EXISTS
+      destination: logger
+
+    - name: after-log
+      condition:
+        attribute: source
+        operator: EXISTS
+      destination: sink

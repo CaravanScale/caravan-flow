@@ -1,9 +1,14 @@
-// zinc-flow fabric — config + logging + IRS router
+// zinc-flow — data flow engine
+// Fabric loads processors + routing from config, processes FlowFiles in-process.
 
 import stdlib.config
 import stdlib.logging
-import fabric.router
-import fabric.model
+import core
+import fabric.registry
+import fabric.runtime
+import processors
+import os
+import time
 
 fn main() {
     // Load config
@@ -14,37 +19,35 @@ fn main() {
     cfg.setDefault("logging.output", "stdout")
     cfg.load("config", "yaml", ".")
 
-    // Setup logging from config
+    // Setup logging
     var lm = logging.LogManager()
     lm.setup(cfg)
 
-    var port = cfg.getInt("server.port")
-    logging.info("zinc-flow starting", "port", port)
+    logging.info("zinc-flow starting")
 
-    // Setup IRS router
-    var engine = router.RulesEngine()
-    var rule = router.RoutingRule(
-        "all",
-        router.BaseRule("type", router.EXISTS, ""),
-        router.Destination("add-attribute", "local"),
-        true
-    )
-    engine.addOrReplaceRuleset("main", List<router.RoutingRule>[rule])
-    logging.info("router configured", "rulesets", len(engine.getRulesetNames()))
+    // Create processor registry and register built-ins
+    var reg = registry.Registry()
+    processors.registerBuiltins(reg)
+    logging.info("registry loaded", "processors", len(reg.list()))
 
-    // Create and route a FlowFile
-    Map<String, String> attrs = {"type": "order", "priority": "high"}
-    var ff = model.createFlowFile("test-data", attrs)
-    var dests = engine.getDestinations(ff.attributes)
+    // Create fabric and load flow graph from config
+    var fabric = runtime.Fabric(reg)
+    fabric.loadFlow(cfg)
+    fabric.status()
 
-    logging.info("routed", "flowfile", ff.id, "destinations", len(dests))
-    for d in dests {
-        logging.info("destination", "processor", d.endpoint)
+    // Create output directory
+    os.MkdirAll("/tmp/zinc-flow/output", 0755)
+
+    // Feed test FlowFiles
+    logging.info("sending test FlowFiles")
+    for i in 1..4 {
+        var id = core.flowFileId()
+        Map<String, String> attrs = {"type": "order"}
+        var content = "order-data-" + str(i)
+        var ff = core.FlowFile(id, attrs, content.toBytes(), int(time.Now().Unix()))
+        logging.info("sending", "id", id)
+        fabric.process(ff)
     }
-
-    logging.info("config",
-        "content.threshold", cfg.getInt("content.threshold"),
-        "content.dir", cfg.getString("content.dir"))
 
     logging.info("done")
 }
