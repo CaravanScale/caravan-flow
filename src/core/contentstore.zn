@@ -58,7 +58,7 @@ class FileContentStore : ContentStore {
 
     fn generateClaimId(): String {
         claimCounter = claimCounter + 1
-        return "claim-{Now().UnixNano()}-{claimCounter}"
+        return "claim-${Now().UnixNano()}-${claimCounter}"
     }
 }
 

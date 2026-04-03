@@ -30,7 +30,7 @@ class Fabric {
         // Read processor definitions
         var i = 0
         while true {
-            var prefix = "flow.processors.{i}"
+            var prefix = "flow.processors.${i}"
             var nameKey = prefix + ".name"
             if !cfg.has(nameKey) {
                 break
@@ -56,7 +56,7 @@ class Fabric {
         var r = 0
         var rules = List<RoutingRule>[]
         while true {
-            var prefix = "flow.routes.{r}"
+            var prefix = "flow.routes.${r}"
             var nameKey = prefix + ".name"
             if !cfg.has(nameKey) {
                 break

@@ -267,7 +267,7 @@ fn testProcessorFileSink() {
         case Single(_) { print("  FAIL: expected dropped, got single") }
         case Multiple(_) { print("  FAIL: expected dropped, got multiple") }
         case Routed(_, _) { print("  FAIL: expected dropped, got routed") }
-        case Failure(reason, _) { print("  FAIL: unexpected failure: {reason}") }
+        case Failure(reason, _) { print("  FAIL: unexpected failure: ${reason}") }
     }
 }
 
@@ -283,7 +283,7 @@ fn testProcessorJsonToRecords() {
         case Single(out) {
             assertTrue("content is records", isRecord(out.content))
         }
-        case Failure(reason, _) { print("  FAIL: {reason}") }
+        case Failure(reason, _) { print("  FAIL: ${reason}") }
         case Dropped(_) { print("  FAIL: unexpected dropped") }
         case Multiple(_) { print("  FAIL: unexpected multiple") }
         case Routed(_, _) { print("  FAIL: unexpected routed") }
@@ -316,7 +316,7 @@ fn testProcessorRecordsToJson() {
             var jsonStr = string(resolved.data)
             assertTrue("json contains Bob", jsonStr.contains("Bob"))
         }
-        case Failure(reason, _) { print("  FAIL: {reason}") }
+        case Failure(reason, _) { print("  FAIL: ${reason}") }
         case Dropped(_) { print("  FAIL: unexpected dropped") }
         case Multiple(_) { print("  FAIL: unexpected multiple") }
         case Routed(_, _) { print("  FAIL: unexpected routed") }
@@ -357,13 +357,13 @@ fn testProcessorJsonRoundtrip() {
                 case Single(recordsFF) {
                     assertTrue("step2 is records", isRecord(recordsFF.content))
                 }
-                case Failure(reason, _) { print("  FAIL step2: {reason}") }
+                case Failure(reason, _) { print("  FAIL step2: ${reason}") }
                 case Dropped(_) { print("  FAIL step2: dropped") }
                 case Multiple(_) { print("  FAIL step2: multiple") }
                 case Routed(_, _) { print("  FAIL step2: routed") }
             }
         }
-        case Failure(reason, _) { print("  FAIL step1: {reason}") }
+        case Failure(reason, _) { print("  FAIL step1: ${reason}") }
         case Dropped(_) { print("  FAIL step1: dropped") }
         case Multiple(_) { print("  FAIL step1: multiple") }
         case Routed(_, _) { print("  FAIL step1: routed") }

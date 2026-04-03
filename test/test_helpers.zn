@@ -11,58 +11,45 @@ pub fn testServices(): ServiceProvider {
 // assertEqual prints PASS or FAIL for a string comparison.
 pub fn assertEqual(String label, String actual, String expected) {
     if actual == expected {
-        print("  PASS: {label}")
+        print("  PASS: ${label}")
     } else {
-        print("  FAIL: {label} — expected '{expected}', got '{actual}'")
+        print("  FAIL: ${label} — expected '${expected}', got '${actual}'")
     }
 }
 
 // assertTrue prints PASS or FAIL for a boolean check.
 pub fn assertTrue(String label, bool value) {
     if value {
-        print("  PASS: {label}")
+        print("  PASS: ${label}")
     } else {
-        print("  FAIL: {label} — expected true")
+        print("  FAIL: ${label} — expected true")
     }
 }
 
 // assertFalse prints PASS or FAIL for a boolean check.
 pub fn assertFalse(String label, bool value) {
     if !value {
-        print("  PASS: {label}")
+        print("  PASS: ${label}")
     } else {
-        print("  FAIL: {label} — expected false")
+        print("  FAIL: ${label} — expected false")
     }
 }
 
 // assertIntEqual prints PASS or FAIL for an int comparison.
 pub fn assertIntEqual(String label, int actual, int expected) {
     if actual == expected {
-        print("  PASS: {label}")
+        print("  PASS: ${label}")
     } else {
-        print("  FAIL: {label} — expected {expected}, got {actual}")
+        print("  FAIL: ${label} — expected ${expected}, got ${actual}")
     }
 }
 
-// JSON test data builders — braces in string literals trigger Zinc interpolation,
-// so we build JSON by inserting brace bytes directly.
+// JSON test data — single-quoted strings are literal (no interpolation).
 
-// Returns: [{"name": "Alice", "amount": 42}]
 pub fn testJsonArray(): byte[] {
-    var buf = byte[1]
-    buf[0] = byte(123)
-    var l = string(buf)
-    buf[0] = byte(125)
-    var r = string(buf)
-    return ("[" + l + "\"name\": \"Alice\", \"amount\": 42" + r + "]").toBytes()
+    return '[{"name": "Alice", "amount": 42}]'.toBytes()
 }
 
-// Returns: [{"city": "Portland"}]
 pub fn testJsonGeo(): byte[] {
-    var buf = byte[1]
-    buf[0] = byte(123)
-    var l = string(buf)
-    buf[0] = byte(125)
-    var r = string(buf)
-    return ("[" + l + "\"city\": \"Portland\"" + r + "]").toBytes()
+    return '[{"city": "Portland"}]'.toBytes()
 }

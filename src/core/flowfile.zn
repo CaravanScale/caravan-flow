@@ -12,7 +12,7 @@ data FlowFile(
 
 // Generate a unique FlowFile ID.
 pub fn flowFileId(): String {
-    return "ff-{Now().UnixNano()}"
+    return "ff-${Now().UnixNano()}"
 }
 
 // Create a new FlowFile with raw byte content and current timestamp.

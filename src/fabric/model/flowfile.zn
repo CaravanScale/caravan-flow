@@ -57,7 +57,7 @@ pub fn packMultiple(List<FlowFile> flowfiles, List<byte[]> contents): byte[] {
 pub fn unpackFlowFile(byte[] data, int offset): V3Result {
     var magic = "NiFiFF3".toBytes()
     if !bytes.Equal(data[offset:offset + V3_MAGIC_LEN], magic) {
-        return V3Result(FlowFile("", Map<String, String>{}, Raw(byte[0]), 0), offset, "invalid FlowFile V3 magic at offset {offset}")
+        return V3Result(FlowFile("", Map<String, String>{}, Raw(byte[0]), 0), offset, "invalid FlowFile V3 magic at offset ${offset}")
     }
     var pos = offset + V3_MAGIC_LEN
 
