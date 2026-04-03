@@ -43,3 +43,26 @@ pub fn assertIntEqual(String label, int actual, int expected) {
         print("  FAIL: {label} — expected {expected}, got {actual}")
     }
 }
+
+// JSON test data builders — braces in string literals trigger Zinc interpolation,
+// so we build JSON by inserting brace bytes directly.
+
+// Returns: [{"name": "Alice", "amount": 42}]
+pub fn testJsonArray(): byte[] {
+    var buf = byte[1]
+    buf[0] = byte(123)
+    var l = string(buf)
+    buf[0] = byte(125)
+    var r = string(buf)
+    return ("[" + l + "\"name\": \"Alice\", \"amount\": 42" + r + "]").toBytes()
+}
+
+// Returns: [{"city": "Portland"}]
+pub fn testJsonGeo(): byte[] {
+    var buf = byte[1]
+    buf[0] = byte(123)
+    var l = string(buf)
+    buf[0] = byte(125)
+    var r = string(buf)
+    return ("[" + l + "\"city\": \"Portland\"" + r + "]").toBytes()
+}

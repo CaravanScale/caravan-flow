@@ -52,6 +52,14 @@ fn main() {
     HandleFunc("/ingest", httpSource.handler)
     HandleFunc("/health", httpSource.healthHandler)
 
+    // Start periodic stats reporter
+    spawn {
+        while true {
+            Sleep(30 * Second)
+            fab.status()
+        }
+    }
+
     // Start HTTP server
     var port = cfg.getString("server.port")
     logging.info("listening", "port", port)

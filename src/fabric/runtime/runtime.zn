@@ -15,6 +15,9 @@ class Fabric {
     var processorNames = List<String>[]
     var dlq = Channel<FlowFile>(1000)
     var dlqCount = 0
+    var processedCount = 0
+    var droppedCount = 0
+    var failureCount = 0
 
     init(Registry reg, ServiceProvider services) {
         this.reg = reg
@@ -80,6 +83,7 @@ class Fabric {
 
     // process routes a FlowFile through the graph.
     pub fn process(FlowFile ff) {
+        processedCount = processedCount + 1
         routeWithVisited(ff, Map<String, bool>{})
     }
 
@@ -126,9 +130,11 @@ class Fabric {
                 routeWithVisited(ff, visited)
             }
             case Dropped(reason) {
+                droppedCount = droppedCount + 1
                 logging.debug("flowfile dropped", "reason", reason)
             }
             case Failure(reason, ff) {
+                failureCount = failureCount + 1
                 logging.error("flowfile failure — routing to DLQ", "reason", reason, "id", ff.id)
                 dlq.send(ff)
                 dlqCount = dlqCount + 1
@@ -141,6 +147,9 @@ class Fabric {
         logging.info("fabric status",
             "processors", len(processorNames),
             "rulesets", len(engine.getRulesetNames()),
+            "processed", processedCount,
+            "dropped", droppedCount,
+            "failures", failureCount,
             "dlq", dlqCount)
     }
 }
