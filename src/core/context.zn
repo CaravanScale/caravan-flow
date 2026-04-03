@@ -1,6 +1,7 @@
 // Provider — interface for shared infrastructure resources.
 // Everything is a provider: content storage, config, credentials,
-// connections, SSL contexts. Processors look up what they need by name.
+// connections, SSL contexts, logging. Processors look up what they
+// need by name.
 interface Provider {
     fn getName(): String
     fn getType(): String
@@ -10,13 +11,9 @@ interface Provider {
 }
 
 // ProcessorContext — the central context for zinc-flow.
-// Just a bag of providers. Config, credentials, content storage, connections —
-// all are providers looked up by name. Processor factories receive a child
-// context with processor-specific config (the only non-provider state).
+// Just a bag of providers. Nothing else.
 class ProcessorContext {
     var providers = Map<String, Provider>{}
-    var processorConfig = Map<String, String>{}
-    var processorName = ""
 
     init() {}
 
@@ -66,35 +63,5 @@ class ProcessorContext {
                 p.disable()
             }
         }
-    }
-
-    // --- Processor-specific config ---
-    // This is the only non-provider state. It comes from the flow config
-    // (the processor's config section) and is set via forProcessor().
-
-    pub fn getConfig(String key): String {
-        if !processorConfig.containsKey(key) {
-            return Error("config key '${key}' not found for processor '${processorName}'")
-        }
-        return processorConfig[key]
-    }
-
-    pub fn getConfigOrDefault(String key, String defaultValue): String {
-        if processorConfig.containsKey(key) {
-            return processorConfig[key]
-        }
-        return defaultValue
-    }
-
-    // --- Child context ---
-    // Creates a view for a specific processor. Providers are shared,
-    // processor config is layered on.
-
-    pub fn forProcessor(String name, Map<String, String> procConfig): ProcessorContext {
-        var child = ProcessorContext()
-        child.providers = providers
-        child.processorConfig = procConfig
-        child.processorName = name
-        return child
     }
 }
