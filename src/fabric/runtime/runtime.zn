@@ -122,6 +122,91 @@ class Fabric {
         return stats
     }
 
+    // addProcessor creates a processor from the registry and adds it to the fabric.
+    // Returns true if successful, false if the type is unknown or name already exists.
+    pub fn addProcessor(String name, String typeName, Map<String, String> config): bool {
+        if procs.containsKey(name) {
+            logging.warn("processor already exists", "name", name)
+            return false
+        }
+        if !reg.has(typeName) {
+            logging.warn("unknown processor type", "type", typeName)
+            return false
+        }
+        var proc = reg.create(typeName, config, services)
+        procs[name] = proc
+        processorNames = append(processorNames, name)
+        logging.info("processor added", "name", name, "type", typeName)
+        return true
+    }
+
+    // removeProcessor removes a processor from the fabric.
+    // Returns true if the processor was found and removed.
+    pub fn removeProcessor(String name): bool {
+        if !procs.containsKey(name) {
+            return false
+        }
+        procs.delete(name)
+        var updated = List<String>[]
+        for n in processorNames {
+            if n != name {
+                updated = append(updated, n)
+            }
+        }
+        processorNames = updated
+        logging.info("processor removed", "name", name)
+        return true
+    }
+
+    // addRoute adds a routing rule to the default "flow" ruleset.
+    pub fn addRoute(String name, String attr, String op, String value, String dest) {
+        var operator = parseOperator(op)
+        var condition = BaseRule(attr, operator, value)
+        var destination = Destination(dest, "local")
+        var rule = RoutingRule(name, condition, destination, true)
+
+        // Get existing rules and append
+        var existing = engine.getAllRules()
+        existing = append(existing, rule)
+        engine.addOrReplaceRuleset("flow", existing)
+        logging.info("route added", "name", name, "destination", dest)
+    }
+
+    // removeRoute removes a routing rule by name from the "flow" ruleset.
+    pub fn removeRoute(String name): bool {
+        var existing = engine.getAllRules()
+        var updated = List<RoutingRule>[]
+        var found = false
+        for r in existing {
+            if r.name == name {
+                found = true
+            } else {
+                updated = append(updated, r)
+            }
+        }
+        if found {
+            engine.addOrReplaceRuleset("flow", updated)
+            logging.info("route removed", "name", name)
+        }
+        return found
+    }
+
+    // toggleRoute enables or disables a routing rule by name.
+    pub fn toggleRoute(String name): bool {
+        var existing = engine.getAllRules()
+        var found = false
+        for r in existing {
+            if r.name == name {
+                found = true
+            }
+        }
+        if found {
+            engine.toggleRule("flow", name)
+            logging.info("route toggled", "name", name)
+        }
+        return found
+    }
+
     // routeWithVisited routes a FlowFile, skipping already-visited processors to prevent cycles.
     fn routeWithVisited(FlowFile ff, Map<String, bool> visited) {
         var destinations = engine.getDestinations(ff.attributes)

@@ -1,7 +1,8 @@
-// Management API — read-only REST endpoints for monitoring zinc-flow.
+// Management API — REST endpoints for monitoring and controlling zinc-flow.
 // All responses are JSON. Mounted under /api/ in main.zn.
 
 import net.http
+import io
 import encoding.json
 import fabric.runtime
 import fabric.registry
@@ -85,6 +86,195 @@ class ApiHandler {
         result["count"] = fab.getDlqCount()
         writeJson(w, result)
     }
+
+    // POST /api/processors — add a processor
+    // Body: {"name": "my-proc", "type": "add-attribute", "config": {"key": "env", "value": "prod"}}
+    pub fn addProcessorHandler(ResponseWriter w, Request r) {
+        if r.Method != "POST" {
+            writeError(w, 405, "method not allowed")
+            return
+        }
+        var body = readBody(r)
+        if body == null {
+            writeError(w, 400, "failed to read body")
+            return
+        }
+        var req = Map<String, Object>{}
+        json.Unmarshal(body, req) or {
+            writeError(w, 400, "invalid json")
+            return
+        }
+        var name = strVal(req, "name")
+        var typeName = strVal(req, "type")
+        if name == "" || typeName == "" {
+            writeError(w, 400, "name and type are required")
+            return
+        }
+        var config = Map<String, String>{}
+        if req.containsKey("config") {
+            var rawConfig = Map<String, String>{}
+            var configBytes = json.Marshal(req["config"]) or { byte[0] }
+            json.Unmarshal(configBytes, rawConfig) or {}
+            var keys = rawConfig.keys()
+            for k in keys {
+                config[k] = rawConfig[k]
+            }
+        }
+        var ok = fab.addProcessor(name, typeName, config)
+        if !ok {
+            writeError(w, 409, "processor already exists or unknown type")
+            return
+        }
+        w.WriteHeader(201)
+        writeJson(w, Map<String, Object>{"status": "created", "name": name})
+    }
+
+    // DELETE /api/processors — remove a processor
+    // Body: {"name": "my-proc"}
+    pub fn removeProcessorHandler(ResponseWriter w, Request r) {
+        if r.Method != "DELETE" {
+            writeError(w, 405, "method not allowed")
+            return
+        }
+        var body = readBody(r)
+        if body == null {
+            writeError(w, 400, "failed to read body")
+            return
+        }
+        var req = Map<String, Object>{}
+        json.Unmarshal(body, req) or {
+            writeError(w, 400, "invalid json")
+            return
+        }
+        var name = strVal(req, "name")
+        if name == "" {
+            writeError(w, 400, "name is required")
+            return
+        }
+        var ok = fab.removeProcessor(name)
+        if !ok {
+            writeError(w, 404, "processor not found")
+            return
+        }
+        writeJson(w, Map<String, Object>{"status": "removed", "name": name})
+    }
+
+    // POST /api/routes — add a routing rule
+    // Body: {"name": "my-route", "attribute": "type", "operator": "EQ", "value": "order", "destination": "proc-1"}
+    pub fn addRouteHandler(ResponseWriter w, Request r) {
+        if r.Method != "POST" {
+            writeError(w, 405, "method not allowed")
+            return
+        }
+        var body = readBody(r)
+        if body == null {
+            writeError(w, 400, "failed to read body")
+            return
+        }
+        var req = Map<String, Object>{}
+        json.Unmarshal(body, req) or {
+            writeError(w, 400, "invalid json")
+            return
+        }
+        var name = strVal(req, "name")
+        var attr = strVal(req, "attribute")
+        var op = strVal(req, "operator")
+        var val = strVal(req, "value")
+        var dest = strVal(req, "destination")
+        if name == "" || attr == "" || op == "" || dest == "" {
+            writeError(w, 400, "name, attribute, operator, and destination are required")
+            return
+        }
+        fab.addRoute(name, attr, op, val, dest)
+        w.WriteHeader(201)
+        writeJson(w, Map<String, Object>{"status": "created", "name": name})
+    }
+
+    // DELETE /api/routes — remove a routing rule
+    // Body: {"name": "my-route"}
+    pub fn removeRouteHandler(ResponseWriter w, Request r) {
+        if r.Method != "DELETE" {
+            writeError(w, 405, "method not allowed")
+            return
+        }
+        var body = readBody(r)
+        if body == null {
+            writeError(w, 400, "failed to read body")
+            return
+        }
+        var req = Map<String, Object>{}
+        json.Unmarshal(body, req) or {
+            writeError(w, 400, "invalid json")
+            return
+        }
+        var name = strVal(req, "name")
+        if name == "" {
+            writeError(w, 400, "name is required")
+            return
+        }
+        var ok = fab.removeRoute(name)
+        if !ok {
+            writeError(w, 404, "route not found")
+            return
+        }
+        writeJson(w, Map<String, Object>{"status": "removed", "name": name})
+    }
+
+    // PUT /api/routes/toggle — toggle a routing rule enabled/disabled
+    // Body: {"name": "my-route"}
+    pub fn toggleRouteHandler(ResponseWriter w, Request r) {
+        if r.Method != "PUT" {
+            writeError(w, 405, "method not allowed")
+            return
+        }
+        var body = readBody(r)
+        if body == null {
+            writeError(w, 400, "failed to read body")
+            return
+        }
+        var req = Map<String, Object>{}
+        json.Unmarshal(body, req) or {
+            writeError(w, 400, "invalid json")
+            return
+        }
+        var name = strVal(req, "name")
+        if name == "" {
+            writeError(w, 400, "name is required")
+            return
+        }
+        var ok = fab.toggleRoute(name)
+        if !ok {
+            writeError(w, 404, "route not found")
+            return
+        }
+        writeJson(w, Map<String, Object>{"status": "toggled", "name": name})
+    }
+}
+
+// readBody reads the full request body, returning null on failure.
+fn readBody(Request r): byte[] {
+    var body = ReadAll(r.Body) or {
+        return null
+    }
+    r.Body.Close()
+    return body
+}
+
+// strVal extracts a string value from a map, returning "" if missing.
+fn strVal(Map<String, Object> m, String key): String {
+    if m.containsKey(key) {
+        return str(m[key])
+    }
+    return ""
+}
+
+// writeError writes a JSON error response.
+fn writeError(ResponseWriter w, int status, String msg) {
+    w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(status)
+    var result = Map<String, Object>{"error": msg}
+    var body = json.Marshal(result) or { '{"error":"unknown"}'.toBytes() }
+    w.Write(body)
 }
 
 // writeJson serializes data to JSON and writes it as the HTTP response.
