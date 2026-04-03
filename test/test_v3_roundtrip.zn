@@ -1,0 +1,53 @@
+// Test: V3 FlowFile pack/unpack roundtrip
+
+import core
+import fabric.model
+
+fn main() {
+    // Create a FlowFile
+    Map<String, String> attrs = {"filename": "test.txt", "type": "document"}
+    var ff = createFlowFile("Hello, NiFi!".toBytes(), attrs)
+
+    // Pack to V3 binary
+    var resolved = resolve(FileContentStore("/tmp/zinc-flow-test/content"), ff.content)
+    var packed = packFlowFile(ff, resolved.data)
+    print("packed size: {len(packed)}")
+    print("packed starts with NiFiFF3: {string(packed[0:7]) == "NiFiFF3"}")
+
+    // Unpack from V3 binary
+    var result = unpackFlowFile(packed, 0)
+    print("unpack error: {result.errorMsg == ""}")
+    print("unpack id starts with ff-: {result.ff.id.startsWith("ff-")}")
+
+    // Verify attributes survived roundtrip
+    print("filename: {result.ff.attributes["filename"]}")
+    print("type: {result.ff.attributes["type"]}")
+
+    // Verify content survived roundtrip
+    match result.ff.content {
+        case Raw(bytes) {
+            print("content: {string(bytes)}")
+        }
+        case Records(_, _) {
+            print("unexpected records")
+        }
+        case Claim(_, _) {
+            print("unexpected claim")
+        }
+    }
+
+    // Pack multiple
+    var ff2 = createFlowFile("Second file".toBytes(), Map<String, String>{"index": "2"})
+    var resolved2 = resolve(FileContentStore("/tmp/zinc-flow-test/content"), ff2.content)
+    var multi = packMultiple(
+        List<FlowFile>[ff, ff2],
+        List<byte[]>[resolved.data, resolved2.data]
+    )
+    print("multi packed size: {len(multi)}")
+
+    // Unpack all
+    var all = unpackAll(multi)
+    print("unpacked count: {len(all)}")
+
+    print("test_v3_roundtrip OK")
+}

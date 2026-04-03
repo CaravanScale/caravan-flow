@@ -62,6 +62,37 @@ class FileContentStore : ContentStore {
     }
 }
 
+// MemoryContentStore — in-memory content store. No filesystem.
+// Useful for testing, dev mode, and small-payload processing.
+class MemoryContentStore : ContentStore {
+    var data = Map<String, byte[]>{}
+    var counter = 0
+
+    init() {}
+
+    pub fn store(byte[] content): String {
+        counter = counter + 1
+        var id = "mem-claim-" + str(counter)
+        data[id] = content
+        return id
+    }
+
+    pub fn retrieve(String claimId): byte[] {
+        if data.containsKey(claimId) {
+            return data[claimId]
+        }
+        return byte[0]
+    }
+
+    pub fn delete(String claimId) {
+        delete(data, claimId)
+    }
+
+    pub fn exists(String claimId): bool {
+        return data.containsKey(claimId)
+    }
+}
+
 // maybeOffload checks content size and offloads to the store if needed.
 pub fn maybeOffload(ContentStore store, byte[] data): Content {
     if len(data) > CONTENT_CLAIM_THRESHOLD {

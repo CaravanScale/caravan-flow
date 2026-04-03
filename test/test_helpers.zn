@@ -1,0 +1,45 @@
+// Test helpers — assertion utilities for zinc-flow tests.
+// MemoryContentStore is in core/contentstore.zn (production code, not test-only).
+
+import core
+
+// testServices creates a ServiceProvider backed by MemoryContentStore.
+pub fn testServices(): ServiceProvider {
+    return ServiceProvider(MemoryContentStore())
+}
+
+// assertEqual prints PASS or FAIL for a string comparison.
+pub fn assertEqual(String label, String actual, String expected) {
+    if actual == expected {
+        print("  PASS: {label}")
+    } else {
+        print("  FAIL: {label} — expected '{expected}', got '{actual}'")
+    }
+}
+
+// assertTrue prints PASS or FAIL for a boolean check.
+pub fn assertTrue(String label, bool value) {
+    if value {
+        print("  PASS: {label}")
+    } else {
+        print("  FAIL: {label} — expected true")
+    }
+}
+
+// assertFalse prints PASS or FAIL for a boolean check.
+pub fn assertFalse(String label, bool value) {
+    if !value {
+        print("  PASS: {label}")
+    } else {
+        print("  FAIL: {label} — expected false")
+    }
+}
+
+// assertIntEqual prints PASS or FAIL for an int comparison.
+pub fn assertIntEqual(String label, int actual, int expected) {
+    if actual == expected {
+        print("  PASS: {label}")
+    } else {
+        print("  FAIL: {label} — expected {expected}, got {actual}")
+    }
+}

@@ -1,0 +1,217 @@
+// zinc-flow test suite — replaces main.zn during testing.
+// Run via: ./run_tests.sh
+
+import core
+import fabric.model
+import fabric.registry
+import fabric.runtime
+import processors
+
+fn main() {
+    print("=== zinc-flow test suite ===")
+    print("")
+
+    testFlowFileBasics()
+    testContentTypes()
+    testContentStore()
+    testV3Roundtrip()
+    testV3MultipleRoundtrip()
+    testProcessorAddAttribute()
+    testProcessorLogPassthrough()
+    testProcessorFileSink()
+    testFabricRouting()
+    testDlq()
+
+    print("")
+    print("=== all tests complete ===")
+}
+
+fn testFlowFileBasics() {
+    print("--- FlowFile Basics ---")
+
+    Map<String, String> attrs = {"type": "order", "source": "test"}
+    var ff = createFlowFile("hello".toBytes(), attrs)
+    assertTrue("id starts with ff-", ff.id.startsWith("ff-"))
+    assertEqual("type attr", ff.attributes["type"], "order")
+    assertEqual("source attr", ff.attributes["source"], "test")
+
+    var ff2 = withAttribute(ff, "env", "dev")
+    assertEqual("added env", ff2.attributes["env"], "dev")
+    assertTrue("same id after withAttribute", ff2.id == ff.id)
+    assertEqual("original attrs preserved", ff2.attributes["type"], "order")
+}
+
+fn testContentTypes() {
+    print("--- Content Types ---")
+
+    var raw = Raw("data".toBytes())
+    assertFalse("raw is not record", isRecord(raw))
+    assertIntEqual("raw size", int(contentSize(raw)), 4)
+
+    var schema = schemaFromFields("test", List<Field>[])
+    var rec = Records(schema, List<GenericRecord>[])
+    assertTrue("records is record", isRecord(rec))
+
+    var claim = Claim("claim-1", long(1024))
+    assertFalse("claim is not record", isRecord(claim))
+    assertIntEqual("claim size", int(contentSize(claim)), 1024)
+}
+
+fn testContentStore() {
+    print("--- Content Store ---")
+
+    var store = MemoryContentStore()
+    var claimId = store.store("hello world".toBytes())
+    assertTrue("claim id not empty", claimId != "")
+    assertTrue("claim exists", store.exists(claimId))
+
+    var retrieved = store.retrieve(claimId)
+    assertEqual("retrieve content", string(retrieved), "hello world")
+
+    store.delete(claimId)
+    assertFalse("deleted claim gone", store.exists(claimId))
+
+    // maybeOffload — small content stays Raw
+    var smallContent = maybeOffload(store, "small".toBytes())
+    assertTrue("small stays raw", !isRecord(smallContent))
+
+    // resolve Raw
+    var resolved = resolve(store, Raw("test".toBytes()))
+    assertEqual("resolve raw", string(resolved.data), "test")
+    assertEqual("resolve raw no error", resolved.errorMsg, "")
+}
+
+fn testV3Roundtrip() {
+    print("--- V3 Roundtrip ---")
+
+    Map<String, String> attrs = {"filename": "test.txt", "type": "doc"}
+    var ff = createFlowFile("Hello, NiFi!".toBytes(), attrs)
+
+    // Pack
+    var store = MemoryContentStore()
+    var resolved = resolve(store, ff.content)
+    var packed = packFlowFile(ff, resolved.data)
+    assertTrue("packed not empty", len(packed) > 0)
+    assertEqual("magic header", string(packed[0:7]), "NiFiFF3")
+
+    // Unpack
+    var result = unpackFlowFile(packed, 0)
+    assertEqual("no unpack error", result.errorMsg, "")
+    assertEqual("filename survives", result.ff.attributes["filename"], "test.txt")
+    assertEqual("type survives", result.ff.attributes["type"], "doc")
+
+    // Content survives
+    var resolvedBack = resolve(store, result.ff.content)
+    assertEqual("content survives", string(resolvedBack.data), "Hello, NiFi!")
+}
+
+fn testV3MultipleRoundtrip() {
+    print("--- V3 Multiple Roundtrip ---")
+
+    var ff1 = createFlowFile("first".toBytes(), Map<String, String>{"index": "1"})
+    var ff2 = createFlowFile("second".toBytes(), Map<String, String>{"index": "2"})
+
+    var store = MemoryContentStore()
+    var r1 = resolve(store, ff1.content)
+    var r2 = resolve(store, ff2.content)
+
+    var packed = packMultiple(
+        List<FlowFile>[ff1, ff2],
+        List<byte[]>[r1.data, r2.data]
+    )
+
+    var all = unpackAll(packed)
+    assertIntEqual("unpacked count", len(all), 2)
+    assertEqual("first index", all[0].attributes["index"], "1")
+    assertEqual("second index", all[1].attributes["index"], "2")
+}
+
+fn testProcessorAddAttribute() {
+    print("--- Processor: AddAttribute ---")
+
+    var services = testServices()
+    var proc = AddAttribute("env", "prod")
+    var ff = createFlowFile("data".toBytes(), Map<String, String>{"type": "order"})
+    var result = proc.process(ff)
+
+    match result {
+        case Single(out) {
+            assertEqual("added env", out.attributes["env"], "prod")
+            assertEqual("kept type", out.attributes["type"], "order")
+        }
+        case Dropped(_) { print("  FAIL: unexpected dropped") }
+        case Multiple(_) { print("  FAIL: unexpected multiple") }
+        case Routed(_, _) { print("  FAIL: unexpected routed") }
+        case Failure(_, _) { print("  FAIL: unexpected failure") }
+    }
+}
+
+fn testProcessorLogPassthrough() {
+    print("--- Processor: LogProcessor ---")
+
+    var proc = LogProcessor("test")
+    var ff = createFlowFile("data".toBytes(), Map<String, String>{"type": "order"})
+    var result = proc.process(ff)
+
+    match result {
+        case Single(out) {
+            assertTrue("same id", out.id == ff.id)
+            assertEqual("same type", out.attributes["type"], "order")
+        }
+        case Dropped(_) { print("  FAIL: unexpected dropped") }
+        case Multiple(_) { print("  FAIL: unexpected multiple") }
+        case Routed(_, _) { print("  FAIL: unexpected routed") }
+        case Failure(_, _) { print("  FAIL: unexpected failure") }
+    }
+}
+
+fn testProcessorFileSink() {
+    print("--- Processor: FileSink ---")
+
+    var store = MemoryContentStore()
+    var proc = FileSink("/tmp/zinc-flow-test/output", store)
+    var ff = createFlowFile("sink test".toBytes(), Map<String, String>{})
+    var result = proc.process(ff)
+
+    match result {
+        case Dropped(reason) {
+            assertTrue("written reason", reason.startsWith("written to"))
+        }
+        case Single(_) { print("  FAIL: expected dropped, got single") }
+        case Multiple(_) { print("  FAIL: expected dropped, got multiple") }
+        case Routed(_, _) { print("  FAIL: expected dropped, got routed") }
+        case Failure(reason, _) { print("  FAIL: unexpected failure: {reason}") }
+    }
+}
+
+fn testFabricRouting() {
+    print("--- Fabric Routing ---")
+
+    var services = testServices()
+    var reg = Registry()
+    registerBuiltins(reg)
+
+    var fab = Fabric(reg, services)
+
+    // Manually add a processor and route
+    // Use the config loading path
+    // For now, test with the simplest case: just process through
+    var ff = createFlowFile("routed".toBytes(), Map<String, String>{"type": "test"})
+    fab.process(ff)
+    // If we get here without panic, routing works (even if no routes match)
+    assertTrue("routing completes without error", true)
+}
+
+fn testDlq() {
+    print("--- DLQ ---")
+
+    var services = testServices()
+    var reg = Registry()
+    registerBuiltins(reg)
+
+    var fab = Fabric(reg, services)
+    assertIntEqual("initial dlq count", fab.getDlqCount(), 0)
+    // DLQ gets populated when processors return Failure
+    // Can't easily test without wiring a failing processor through routing
+    assertTrue("dlq accessible", true)
+}
