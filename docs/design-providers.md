@@ -75,22 +75,25 @@ class ProcessorContext {
     pub fn getConfig(String key): String
     pub fn getConfigOrDefault(String key, String defaultValue): String
 
-    // Provider lookup — everything goes through this
-    pub fn getProvider(String name): Provider
+    // Provider lookup — returns error if not found
+    pub fn getProvider(String name): Provider or Error
 
-    // Credentials
-    pub fn getCredential(String name): String
+    // Required config — returns error if key missing
+    pub fn requireConfig(String key): String or Error
+
+    // Credentials — returns error if not found
+    pub fn getCredential(String name): String or Error
 
     // Logging (named logger for this processor)
     pub fn log(): Logger
 }
 ```
 
-No `getContentStore()` shortcut. Processors that need content storage look up their provider by name:
+No `getContentStore()` shortcut. Processors that need content storage look up their provider by name, using `or` for error handling:
 
 ```zinc
 fn FileSinkFactory(ProcessorContext ctx): ProcessorFn {
-    var contentProvider = ctx.getProvider(ctx.getConfig("content-provider"))
+    var contentProvider = ctx.getProvider(ctx.requireConfig("content-provider") or { return error }) or { return error }
     var outputDir = ctx.getConfig("output_dir")
     return FileSink(outputDir, contentProvider)
 }
@@ -98,15 +101,31 @@ fn FileSinkFactory(ProcessorContext ctx): ProcessorFn {
 
 ### ProcessorFn Change
 
-Processor factories receive ProcessorContext instead of raw config + ServiceProvider:
+Processor factories return `(ProcessorFn, Error)` — creation can fail if required providers or config are missing:
 
 ```zinc
 // Current:
 type ProcessorFactory = Fn<(Map<String, String>, ServiceProvider), ProcessorFn>
 
 // New:
-type ProcessorFactory = Fn<(ProcessorContext), ProcessorFn>
+type ProcessorFactory = Fn<(ProcessorContext), ProcessorFn or Error>
 ```
+
+Fabric uses `or` at flow loading time — missing provider or config is fatal:
+```zinc
+var proc = reg.create(typeName, context) or {
+    logging.error("failed to create processor", "name", name, "error", err)
+    panic("zinc-flow cannot start: ${err}")
+}
+```
+
+**Two failure modes:**
+
+1. **Startup failures** (missing provider, bad config, provider won't enable) — zinc-flow refuses to start. All or nothing. These are configuration errors.
+
+2. **Data flow failures** (processor can't handle a FlowFile) — FlowFile routes to DLQ via `Failure(reason, ff)`. System keeps running. These are runtime data errors handled by the routing engine.
+
+Provider/config errors are always category 1. The flow either starts fully configured or doesn't start at all.
 
 ### ServiceProvider Redesign
 
@@ -120,8 +139,8 @@ class ServiceProvider {
 
     init() {}
 
-    // Providers
-    pub fn getProvider(String name): Provider
+    // Providers — error if not found
+    pub fn getProvider(String name): Provider or Error
     pub fn addProvider(Provider provider)
     pub fn removeProvider(String name)
     pub fn listProviders(): List<Provider>
@@ -130,15 +149,16 @@ class ServiceProvider {
 
     // Config (flat key-value, loaded from YAML + env)
     pub fn getConfig(String key): String
+    pub fn getConfigOrDefault(String key, String defaultValue): String
     pub fn setConfig(String key, String value)
 
-    // Credentials (separate, never logged)
-    pub fn getCredential(String name): String
+    // Credentials — error if not found
+    pub fn getCredential(String name): String or Error
     pub fn setCredential(String name, String value)
 }
 ```
 
-No ContentStore field. No special constructor. Just a registry.
+No ContentStore field. No special constructor. Just a registry. Lookups that can fail return errors — callers use `or` to handle.
 
 ### Provider Registry
 
@@ -199,40 +219,18 @@ Config hierarchy (highest priority wins):
 
 ### How Processors Use Providers
 
+All lookups use `or` — missing provider/config returns error, which propagates up to Fabric and stops startup.
+
 ```zinc
 // FileSink uses content provider for resolving claims
-class FileSink : ProcessorFn {
-    String outputDir
-    FileContentProvider contentProvider
-
-    init(String outputDir, FileContentProvider contentProvider) { ... }
-
-    pub fn process(FlowFile ff): ProcessorResult {
-        var resolved = contentProvider.resolve(ff.content)
-        // ... write to disk
-    }
-}
-
 fn FileSinkFactory(ProcessorContext ctx): ProcessorFn {
-    var contentProvider = ctx.getProvider(ctx.getConfig("content-provider"))
-    var outputDir = ctx.getConfig("output_dir")
+    var contentProvider = ctx.getProvider("content") or { return error }
+    var outputDir = ctx.requireConfig("output_dir") or { return error }
     return FileSink(outputDir, contentProvider)
 }
 
 // PutNats uses NATS provider for shared connection
-class PutNats : ProcessorFn {
-    NatsProvider natsProvider
-    String subject
-
-    init(NatsProvider natsProvider, String subject) { ... }
-
-    pub fn process(FlowFile ff): ProcessorResult {
-        var conn = natsProvider.getConnection()
-        // ... serialize and publish
-    }
-}
-
-fn PutNatsFactory(ProcessorContext ctx): ProcessorFn {
+fn PutNatsFactory(ProcessorContext ctx): ProcessorFn or Error {
     var natsProvider = ctx.getProvider(ctx.getConfig("provider"))
     var subject = ctx.getConfig("subject")
     return PutNats(natsProvider, subject)
