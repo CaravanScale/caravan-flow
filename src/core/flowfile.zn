@@ -1,6 +1,5 @@
 // FlowFile — the unit of data flowing through a pipeline.
 
-import fmt
 import time
 
 data FlowFile(
@@ -12,7 +11,7 @@ data FlowFile(
 
 // Generate a unique FlowFile ID
 pub fn flowFileId(): String {
-    return fmt.Sprintf("ff-%d", time.Now().UnixNano())
+    return "ff-{Now().UnixNano()}"
 }
 
 // Create a copy with an additional attribute

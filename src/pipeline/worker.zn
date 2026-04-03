@@ -1,25 +1,25 @@
 // ProcessorWorker — wraps a ProcessorFn with lifecycle, stats, and routing.
 
 import core
-import fmt
 import time
-import sync
 
 class ProcessorWorker {
     String name
-    var input = Channel<core.FlowFile>(10000)
-    var output = Channel<core.FlowFile>(10000)
+    var input = Channel<FlowFile>(1)
+    var output = Channel<FlowFile>(1)
     var stopCh = Channel<bool>(1)
     var running = false
     var processed = 0
     var errors = 0
     var totalNs = 0
 
-    init(String name) {
+    init(String name, int bufferSize = 1024) {
         this.name = name
+        this.input = Channel<FlowFile>(bufferSize)
+        this.output = Channel<FlowFile>(bufferSize)
     }
 
-    pub fn start(core.ProcessorFn processor) {
+    pub fn start(ProcessorFn processor) {
         running = true
         spawn {
             runLoop(processor)
@@ -35,15 +35,15 @@ class ProcessorWorker {
         if processed > 0 {
             avgUs = totalNs / processed / 1000
         }
-        return fmt.Sprintf("%s: processed=%d errors=%d avg=%dus", name, processed, errors, avgUs)
+        return "{name}: processed={processed} errors={errors} avg={avgUs}us"
     }
 
-    fn runLoop(core.ProcessorFn processor) {
+    fn runLoop(ProcessorFn processor) {
         while running {
             var ff = input.recv()
-            var startTime = time.Now()
+            var startTime = Now()
             var result = processor.process(ff)
-            var elapsed = int(time.Since(startTime).Nanoseconds())
+            var elapsed = int(Since(startTime).Nanoseconds())
             processed = processed + 1
             totalNs = totalNs + elapsed
             routeResult(result, output)
@@ -52,20 +52,20 @@ class ProcessorWorker {
 }
 
 // routeResult dispatches a ProcessorResult to the appropriate output.
-fn routeResult(core.ProcessorResult result, Channel<core.FlowFile> outputCh) {
+fn routeResult(ProcessorResult result, Channel<FlowFile> outputCh) {
     match result {
-        case core.Single(ff) {
+        case Single(ff) {
             outputCh.send(ff)
         }
-        case core.Multiple(ffs) {
+        case Multiple(ffs) {
             for f in ffs {
                 outputCh.send(f)
             }
         }
-        case core.Routed(_, ff) {
+        case Routed(_, ff) {
             outputCh.send(ff)
         }
-        case core.Dropped(_) {
+        case Dropped(_) {
             // discard
         }
     }

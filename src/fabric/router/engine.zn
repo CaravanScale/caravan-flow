@@ -2,8 +2,6 @@
 // Thread-safe: writes use mutex, reads are concurrent-safe.
 
 import sync.Mutex
-import strings
-import fmt
 
 // RulesEngine — holds rulesets and evaluates FlowFiles against them.
 class RulesEngine {
@@ -106,13 +104,13 @@ fn evaluateBase(String attribute, Operator operator, String value, Map<String, S
             return actual != value
         }
         case CONTAINS {
-            return strings.Contains(actual, value)
+            return actual.contains(value)
         }
         case STARTSWITH {
-            return strings.HasPrefix(actual, value)
+            return actual.startsWith(value)
         }
         case ENDSWITH {
-            return strings.HasSuffix(actual, value)
+            return actual.endsWith(value)
         }
         case GT {
             return actual > value

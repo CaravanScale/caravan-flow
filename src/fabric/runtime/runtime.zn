@@ -5,18 +5,17 @@ import stdlib.logging
 import core
 import fabric.registry
 import fabric.router
-import fmt
 
 // Fabric is the main runtime.
 class Fabric {
-    registry.Registry reg
-    router.RulesEngine engine
-    var procs = Map<String, core.ProcessorFn>{}
+    Registry reg
+    RulesEngine engine
+    var procs = Map<String, ProcessorFn>{}
     var processorNames = List<String>[]
 
-    init(registry.Registry reg) {
+    init(Registry reg) {
         this.reg = reg
-        this.engine = router.RulesEngine()
+        this.engine = RulesEngine()
     }
 
     // loadFlow reads the flow graph from config and instantiates everything.
@@ -24,7 +23,7 @@ class Fabric {
         // Read processor definitions
         var i = 0
         while true {
-            var prefix = fmt.Sprintf("flow.processors.%d", i)
+            var prefix = "flow.processors.{i}"
             var nameKey = prefix + ".name"
             if !cfg.has(nameKey) {
                 break
@@ -32,17 +31,8 @@ class Fabric {
             var name = cfg.getString(nameKey)
             var typeName = cfg.getString(prefix + ".type")
 
-            // Build config map for this processor from nested keys
-            Map<String, String> procConfig = {}
-            var configPrefix = prefix + ".config."
-            // Check common config keys
-            List<String> knownKeys = ["key", "value", "prefix", "outputDir", "port", "host", "path", "format"]
-            for k in knownKeys {
-                var fullKey = configPrefix + k
-                if cfg.has(fullKey) {
-                    procConfig[k] = cfg.getString(fullKey)
-                }
-            }
+            // Build config map for this processor from config sub-tree
+            var procConfig = cfg.getStringMap(prefix + ".config")
 
             if reg.has(typeName) {
                 var proc = reg.create(typeName, procConfig)
@@ -57,9 +47,9 @@ class Fabric {
 
         // Read routing rules
         var r = 0
-        var rules = List<router.RoutingRule>[]
+        var rules = List<RoutingRule>[]
         while true {
-            var prefix = fmt.Sprintf("flow.routes.%d", r)
+            var prefix = "flow.routes.{r}"
             var nameKey = prefix + ".name"
             if !cfg.has(nameKey) {
                 break
@@ -71,10 +61,10 @@ class Fabric {
             var dest = cfg.getString(prefix + ".destination")
 
             var operator = parseOperator(op)
-            var condition = router.BaseRule(attr, operator, val)
-            var destination = router.Destination(dest, "local")
+            var condition = BaseRule(attr, operator, val)
+            var destination = Destination(dest, "local")
 
-            rules = append(rules, router.RoutingRule(ruleName, condition, destination, true))
+            rules = append(rules, RoutingRule(ruleName, condition, destination, true))
             r = r + 1
         }
 
@@ -85,12 +75,12 @@ class Fabric {
     }
 
     // process routes a FlowFile through the graph.
-    pub fn process(core.FlowFile ff) {
+    pub fn process(FlowFile ff) {
         routeWithVisited(ff, Map<String, bool>{})
     }
 
     // routeWithVisited routes a FlowFile, skipping already-visited processors to prevent cycles.
-    fn routeWithVisited(core.FlowFile ff, Map<String, bool> visited) {
+    fn routeWithVisited(FlowFile ff, Map<String, bool> visited) {
         var destinations = engine.getDestinations(ff.attributes)
         for dest in destinations {
             if visited.containsKey(dest.endpoint) {
@@ -108,7 +98,7 @@ class Fabric {
     }
 
     // handleResult routes processor output through the graph.
-    fn handleResult(core.ProcessorResult result, Map<String, bool> visited) {
+    fn handleResult(ProcessorResult result, Map<String, bool> visited) {
         match result {
             case core.Single(ff) {
                 routeWithVisited(ff, visited)
@@ -135,28 +125,28 @@ class Fabric {
     }
 }
 
-// parseOperator converts a string to a router.Operator.
-fn parseOperator(String op): router.Operator {
+// parseOperator converts a string to an Operator.
+fn parseOperator(String op): Operator {
     if op == "EQ" || op == "eq" {
-        return router.EQ
+        return EQ
     }
     if op == "NEQ" || op == "neq" {
-        return router.NEQ
+        return NEQ
     }
     if op == "CONTAINS" || op == "contains" {
-        return router.CONTAINS
+        return CONTAINS
     }
     if op == "STARTSWITH" || op == "startswith" {
-        return router.STARTSWITH
+        return STARTSWITH
     }
     if op == "ENDSWITH" || op == "endswith" {
-        return router.ENDSWITH
+        return ENDSWITH
     }
     if op == "GT" || op == "gt" {
-        return router.GT
+        return GT
     }
     if op == "LT" || op == "lt" {
-        return router.LT
+        return LT
     }
-    return router.EXISTS
+    return EXISTS
 }

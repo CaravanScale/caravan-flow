@@ -6,35 +6,35 @@ import stdlib.logging
 import os
 
 // registerBuiltins registers all built-in processors with the registry.
-pub fn registerBuiltins(registry.Registry reg) {
+pub fn registerBuiltins(Registry reg) {
     reg.register(
-        registry.ProcessorInfo("add-attribute", "Adds key=value attribute to FlowFiles", List<String>["key", "value"]),
+        ProcessorInfo("add-attribute", "Adds key=value attribute to FlowFiles", List<String>["key", "value"]),
         AddAttributeFactory
     )
     reg.register(
-        registry.ProcessorInfo("file-sink", "Writes FlowFile content to disk", List<String>["outputDir"]),
+        ProcessorInfo("file-sink", "Writes FlowFile content to disk", List<String>["output_dir"]),
         FileSinkFactory
     )
     reg.register(
-        registry.ProcessorInfo("log", "Logs FlowFile and passes through", List<String>["prefix"]),
+        ProcessorInfo("log", "Logs FlowFile and passes through", List<String>["prefix"]),
         LogProcessorFactory
     )
 }
 
-fn AddAttributeFactory(Map<String, String> config): core.ProcessorFn {
+fn AddAttributeFactory(Map<String, String> config): ProcessorFn {
     return AddAttribute(config["key"], config["value"])
 }
 
-fn FileSinkFactory(Map<String, String> config): core.ProcessorFn {
-    return FileSink(config["outputDir"])
+fn FileSinkFactory(Map<String, String> config): ProcessorFn {
+    return FileSink(config["output_dir"])
 }
 
-fn LogProcessorFactory(Map<String, String> config): core.ProcessorFn {
+fn LogProcessorFactory(Map<String, String> config): ProcessorFn {
     return LogProcessor(config["prefix"])
 }
 
 // AddAttribute — tags a FlowFile with a key=value attribute.
-class AddAttribute : core.ProcessorFn {
+class AddAttribute : ProcessorFn {
     String key
     String value
 
@@ -43,37 +43,37 @@ class AddAttribute : core.ProcessorFn {
         this.value = value
     }
 
-    pub fn process(core.FlowFile ff): core.ProcessorResult {
-        var tagged = core.withAttribute(ff, key, value)
-        return core.Single(tagged)
+    pub fn process(FlowFile ff): ProcessorResult {
+        var tagged = withAttribute(ff, key, value)
+        return Single(tagged)
     }
 }
 
 // FileSink — writes FlowFile content to disk. Returns Dropped (terminal).
-class FileSink : core.ProcessorFn {
+class FileSink : ProcessorFn {
     String outputDir
 
     init(String outputDir) {
         this.outputDir = outputDir
     }
 
-    pub fn process(core.FlowFile ff): core.ProcessorResult {
+    pub fn process(FlowFile ff): ProcessorResult {
         var path = outputDir + "/" + ff.id + ".out"
-        os.WriteFile(path, ff.content, 0644)
-        return core.Dropped("written to " + path)
+        WriteFile(path, ff.content, 0644)
+        return Dropped("written to " + path)
     }
 }
 
 // LogProcessor — logs the FlowFile and passes it through.
-class LogProcessor : core.ProcessorFn {
+class LogProcessor : ProcessorFn {
     String prefix
 
     init(String prefix) {
         this.prefix = prefix
     }
 
-    pub fn process(core.FlowFile ff): core.ProcessorResult {
+    pub fn process(FlowFile ff): ProcessorResult {
         logging.info("flowfile", "processor", prefix, "id", ff.id, "attributes", ff.attributes)
-        return core.Single(ff)
+        return Single(ff)
     }
 }

@@ -26,27 +26,31 @@ fn main() {
     logging.info("zinc-flow starting")
 
     // Create processor registry and register built-ins
-    var reg = registry.Registry()
-    processors.registerBuiltins(reg)
+    var reg = Registry()
+    registerBuiltins(reg)
     logging.info("registry loaded", "processors", len(reg.list()))
 
     // Create fabric and load flow graph from config
-    var fabric = runtime.Fabric(reg)
-    fabric.loadFlow(cfg)
-    fabric.status()
+    var fab = Fabric(reg)
+    fab.loadFlow(cfg)
+    fab.status()
 
-    // Create output directory
-    os.MkdirAll("/tmp/zinc-flow/output", 0755)
+    // Create output directory from config
+    var outputDir = cfg.getString("content.dir")
+    if outputDir == "" {
+        outputDir = "/tmp/zinc-flow/output"
+    }
+    MkdirAll(outputDir, 0755)
 
     // Feed test FlowFiles
     logging.info("sending test FlowFiles")
     for i in 1..4 {
-        var id = core.flowFileId()
+        var id = flowFileId()
         Map<String, String> attrs = {"type": "order"}
-        var content = "order-data-" + str(i)
-        var ff = core.FlowFile(id, attrs, content.toBytes(), int(time.Now().Unix()))
+        var content = "order-data-{i}"
+        var ff = FlowFile(id, attrs, content.toBytes(), int(Now().Unix()))
         logging.info("sending", "id", id)
-        fabric.process(ff)
+        fab.process(ff)
     }
 
     logging.info("done")

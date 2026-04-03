@@ -3,10 +3,9 @@
 // The flow graph config references processors by name.
 
 import core
-import log.slog
 
 // ProcessorFactory creates a configured ProcessorFn instance.
-type ProcessorFactory = Fn<(Map<String, String>), core.ProcessorFn>
+type ProcessorFactory = Fn<(Map<String, String>), ProcessorFn>
 
 // ProcessorInfo describes a registered processor type.
 data ProcessorInfo(
@@ -29,7 +28,7 @@ class Registry {
     }
 
     // create instantiates a processor by name with the given config.
-    pub fn create(String name, Map<String, String> config): core.ProcessorFn {
+    pub fn create(String name, Map<String, String> config): ProcessorFn {
         var factory = factories[name]
         return factory(config)
     }

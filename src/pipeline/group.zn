@@ -1,19 +1,18 @@
 // ProcessorGroup — owns workers, wiring, and lifecycle.
 
 import core
-import fmt
 
 class ProcessorGroup {
     String name
     var workers = Map<String, ProcessorWorker>{}
-    var processorFns = Map<String, core.ProcessorFn>{}
+    var processorFns = Map<String, ProcessorFn>{}
     var order = List<String>[]
 
     init(String name) {
         this.name = name
     }
 
-    pub fn addProcessor(String procName, core.ProcessorFn processor) {
+    pub fn addProcessor(String procName, ProcessorFn processor) {
         workers[procName] = ProcessorWorker(procName)
         processorFns[procName] = processor
         order = append(order, procName)
@@ -37,25 +36,25 @@ class ProcessorGroup {
         }
     }
 
-    pub fn swapProcessor(String procName, core.ProcessorFn newFn) {
+    pub fn swapProcessor(String procName, ProcessorFn newFn) {
         var w = workers[procName]
         w.stop()
         processorFns[procName] = newFn
         w.start(newFn)
     }
 
-    pub fn getInput(String procName): Channel<core.FlowFile> {
+    pub fn getInput(String procName): Channel<FlowFile> {
         return workers[procName].input
     }
 
-    pub fn getOutput(String procName): Channel<core.FlowFile> {
+    pub fn getOutput(String procName): Channel<FlowFile> {
         return workers[procName].output
     }
 
     pub fn status() {
-        fmt.Println("Group: {name}")
+        print("Group: {name}")
         for wn in order {
-            fmt.Println("  {workers[wn].stats()}")
+            print("  {workers[wn].stats()}")
         }
     }
 }

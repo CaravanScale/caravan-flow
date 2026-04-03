@@ -6,7 +6,6 @@ import net.http
 import encoding.json
 import bytes
 import io
-import fmt
 
 // DeliveryResult — outcome of delivering a FlowFile to a processor.
 data DeliveryResult(
@@ -17,19 +16,19 @@ data DeliveryResult(
 )
 
 // deliver sends a FlowFile to a processor endpoint via HTTP POST.
-fn deliver(String endpoint, model.FlowFile ff): DeliveryResult {
+fn deliver(String endpoint, FlowFile ff): DeliveryResult {
     // Serialize FlowFile to JSON
-    var payload = json.Marshal(ff) or {
+    var payload = Marshal(ff) or {
         return DeliveryResult(false, 0, "".toBytes(), "marshal error")
     }
 
     // POST to processor endpoint
-    var resp = http.Post(endpoint, "application/json", bytes.NewBuffer(payload)) or {
+    var resp = Post(endpoint, "application/json", NewBuffer(payload)) or {
         return DeliveryResult(false, 0, "".toBytes(), "http error")
     }
 
     // Read response body
-    var body = io.ReadAll(resp.Body) or {
+    var body = ReadAll(resp.Body) or {
         return DeliveryResult(false, resp.StatusCode, "".toBytes(), "read error")
     }
     resp.Body.Close()
@@ -39,14 +38,14 @@ fn deliver(String endpoint, model.FlowFile ff): DeliveryResult {
         return DeliveryResult(false, 429, "".toBytes(), "backpressure")
     }
     if resp.StatusCode >= 400 {
-        return DeliveryResult(false, resp.StatusCode, body, fmt.Sprintf("http %d", resp.StatusCode))
+        return DeliveryResult(false, resp.StatusCode, body, "http {resp.StatusCode}")
     }
 
     return DeliveryResult(true, resp.StatusCode, body, "")
 }
 
 // deliverToAll delivers a FlowFile to multiple endpoints (fan-out).
-fn deliverToAll(List<String> endpoints, model.FlowFile ff): List<DeliveryResult> {
+fn deliverToAll(List<String> endpoints, FlowFile ff): List<DeliveryResult> {
     var results = List<DeliveryResult>[]
     for endpoint in endpoints {
         var result = deliver(endpoint, ff)

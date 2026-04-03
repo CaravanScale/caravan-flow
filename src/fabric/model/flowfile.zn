@@ -1,7 +1,6 @@
 // FlowFile — the unit of data flowing through the fabric.
 // Serialized as JSON over HTTP between fabric and processors.
 
-import fmt
 import time
 
 data FlowFile(
@@ -13,8 +12,8 @@ data FlowFile(
 
 // Create a new FlowFile with a unique ID and current timestamp.
 fn createFlowFile(String content, Map<String, String> attributes): FlowFile {
-    var id = fmt.Sprintf("ff-%d", time.Now().UnixNano())
-    return FlowFile(id, attributes, content, int(time.Now().Unix()))
+    var id = "ff-{Now().UnixNano()}"
+    return FlowFile(id, attributes, content, int(Now().Unix()))
 }
 
 // Create a copy with an additional attribute.

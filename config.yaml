@@ -34,7 +34,7 @@ flow:
     - name: sink
       type: file-sink
       config:
-        outputDir: /tmp/zinc-flow/output
+        output_dir: /tmp/zinc-flow/output
 
   routes:
     - name: tag-all
