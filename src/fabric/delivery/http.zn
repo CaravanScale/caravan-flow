@@ -1,9 +1,9 @@
-// HTTP Delivery Adapter — delivers FlowFiles to processor endpoints via HTTP POST.
-// Returns raw response bytes for the fabric to interpret.
+// HTTP Delivery Adapter — delivers FlowFiles to external processor endpoints.
+// Supports both JSON and NiFi FlowFile V3 binary wire format.
 
+import core
 import fabric.model
 import net.http
-import encoding.json
 import bytes
 import io
 
@@ -12,43 +12,71 @@ data DeliveryResult(
     boolean success,
     int statusCode,
     byte[] body,
-    String error
+    String errorMsg
 )
 
-// deliver sends a FlowFile to a processor endpoint via HTTP POST.
-fn deliver(String endpoint, FlowFile ff): DeliveryResult {
-    // Serialize FlowFile to JSON
-    var payload = Marshal(ff) or {
-        return DeliveryResult(false, 0, "".toBytes(), "marshal error")
+// deliverJson sends a FlowFile as JSON to a processor endpoint via HTTP POST.
+pub fn deliverJson(String endpoint, FlowFile ff, ContentStore store): DeliveryResult {
+    var resolved = resolve(store, ff.content)
+    if resolved.errorMsg != "" {
+        return DeliveryResult(false, 0, byte[0], resolved.errorMsg)
     }
 
-    // POST to processor endpoint
+    var jsonBody = '{"id":"' + ff.id + '","content_size":' + str(len(resolved.data)) + '}'
+    var payload = jsonBody.toBytes()
+
     var resp = Post(endpoint, "application/json", NewBuffer(payload)) or {
-        return DeliveryResult(false, 0, "".toBytes(), "http error")
+        return DeliveryResult(false, 0, byte[0], "http error")
     }
 
-    // Read response body
-    var body = ReadAll(resp.Body) or {
-        return DeliveryResult(false, resp.StatusCode, "".toBytes(), "read error")
+    var respBody = ReadAll(resp.Body) or {
+        return DeliveryResult(false, resp.StatusCode, byte[0], "read error")
     }
     resp.Body.Close()
 
-    // Check HTTP status
     if resp.StatusCode == 429 {
-        return DeliveryResult(false, 429, "".toBytes(), "backpressure")
+        return DeliveryResult(false, 429, byte[0], "backpressure")
     }
     if resp.StatusCode >= 400 {
-        return DeliveryResult(false, resp.StatusCode, body, "http {resp.StatusCode}")
+        return DeliveryResult(false, resp.StatusCode, respBody, "http " + str(resp.StatusCode))
     }
 
-    return DeliveryResult(true, resp.StatusCode, body, "")
+    return DeliveryResult(true, resp.StatusCode, respBody, "")
+}
+
+// deliverV3 sends a FlowFile as NiFi FlowFile V3 binary to a processor endpoint.
+pub fn deliverV3(String endpoint, FlowFile ff, ContentStore store): DeliveryResult {
+    var resolved = resolve(store, ff.content)
+    if resolved.errorMsg != "" {
+        return DeliveryResult(false, 0, byte[0], resolved.errorMsg)
+    }
+
+    var packed = packFlowFile(ff, resolved.data)
+
+    var resp = Post(endpoint, "application/octet-stream", NewBuffer(packed)) or {
+        return DeliveryResult(false, 0, byte[0], "http error")
+    }
+
+    var respBody = ReadAll(resp.Body) or {
+        return DeliveryResult(false, resp.StatusCode, byte[0], "read error")
+    }
+    resp.Body.Close()
+
+    if resp.StatusCode == 429 {
+        return DeliveryResult(false, 429, byte[0], "backpressure")
+    }
+    if resp.StatusCode >= 400 {
+        return DeliveryResult(false, resp.StatusCode, respBody, "http " + str(resp.StatusCode))
+    }
+
+    return DeliveryResult(true, resp.StatusCode, respBody, "")
 }
 
 // deliverToAll delivers a FlowFile to multiple endpoints (fan-out).
-fn deliverToAll(List<String> endpoints, FlowFile ff): List<DeliveryResult> {
+pub fn deliverToAll(List<String> endpoints, FlowFile ff, ContentStore store): List<DeliveryResult> {
     var results = List<DeliveryResult>[]
     for endpoint in endpoints {
-        var result = deliver(endpoint, ff)
+        var result = deliverV3(endpoint, ff, store)
         results = append(results, result)
     }
     return results

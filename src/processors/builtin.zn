@@ -19,6 +19,14 @@ pub fn registerBuiltins(Registry reg) {
         ProcessorInfo("log", "Logs FlowFile and passes through", List<String>["prefix"]),
         LogProcessorFactory
     )
+    reg.register(
+        ProcessorInfo("json-to-records", "Parses JSON content into Avro records", List<String>["schema_name"]),
+        JsonToRecordsFactory
+    )
+    reg.register(
+        ProcessorInfo("records-to-json", "Serializes Avro records back to JSON", List<String>[]),
+        RecordsToJsonFactory
+    )
 }
 
 fn AddAttributeFactory(Map<String, String> config, ServiceProvider services): ProcessorFn {
@@ -31,6 +39,20 @@ fn FileSinkFactory(Map<String, String> config, ServiceProvider services): Proces
 
 fn LogProcessorFactory(Map<String, String> config, ServiceProvider services): ProcessorFn {
     return LogProcessor(config["prefix"])
+}
+
+fn JsonToRecordsFactory(Map<String, String> config, ServiceProvider services): ProcessorFn {
+    // Build a simple schema from config — fields are comma-separated
+    // e.g. schema_name=order, fields=name:STRING,amount:INT
+    var schemaName = config["schema_name"]
+    if schemaName == "" {
+        schemaName = "default"
+    }
+    return JsonToRecords(schemaName, services.getContentStore())
+}
+
+fn RecordsToJsonFactory(Map<String, String> config, ServiceProvider services): ProcessorFn {
+    return RecordsToJson()
 }
 
 // AddAttribute — tags a FlowFile with a key=value attribute.
@@ -82,5 +104,72 @@ class LogProcessor : ProcessorFn {
     pub fn process(FlowFile ff): ProcessorResult {
         logging.info("flowfile", "processor", prefix, "id", ff.id, "attributes", ff.attributes)
         return Single(ff)
+    }
+}
+
+// JsonToRecords — parses Raw JSON content into Avro Records.
+// If content is already Records, passes through unchanged.
+class JsonToRecords : ProcessorFn {
+    String schemaName
+    ContentStore store
+
+    init(String schemaName, ContentStore store) {
+        this.schemaName = schemaName
+        this.store = store
+    }
+
+    pub fn process(FlowFile ff): ProcessorResult {
+        match ff.content {
+            case Raw(bytes) {
+                return parseJson(ff, bytes)
+            }
+            case Claim(_, _) {
+                var resolved = resolve(store, ff.content)
+                if resolved.errorMsg != "" {
+                    return Failure(resolved.errorMsg, ff)
+                }
+                return parseJson(ff, resolved.data)
+            }
+            case Records(_, _) {
+                // Already records — pass through
+                return Single(ff)
+            }
+        }
+    }
+
+    fn parseJson(FlowFile ff, byte[] data): ProcessorResult {
+        // Infer schema from first JSON object (schema-on-read)
+        var schema = schemaFromFields(schemaName, List<Field>[])
+        var reader = JsonRecordReader()
+        var records = reader.read(data, schema)
+        if len(records) == 0 {
+            return Failure("no records parsed from JSON", ff)
+        }
+        var updated = withContent(ff, Records(schema, records))
+        return Single(updated)
+    }
+}
+
+// RecordsToJson — serializes Avro Records content back to JSON bytes.
+// If content is already Raw, passes through unchanged.
+class RecordsToJson : ProcessorFn {
+
+    init() {}
+
+    pub fn process(FlowFile ff): ProcessorResult {
+        match ff.content {
+            case Records(schema, records) {
+                var writer = JsonRecordWriter()
+                var bytes = writer.write(records, schema)
+                var updated = withContent(ff, Raw(bytes))
+                return Single(updated)
+            }
+            case Raw(_) {
+                return Single(ff)
+            }
+            case Claim(_, _) {
+                return Single(ff)
+            }
+        }
     }
 }

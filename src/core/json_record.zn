@@ -1,0 +1,60 @@
+// JSON RecordReader/RecordWriter — converts between JSON arrays and Avro GenericRecords.
+// JSON is the most common interchange format; this is the first reader/writer implementation.
+
+import encoding.json
+
+// JsonRecordReader parses a JSON array of objects into GenericRecords.
+class JsonRecordReader : RecordReader {
+
+    init() {}
+
+    pub fn read(byte[] data, Schema schema): List<GenericRecord> {
+        // Parse JSON into list of maps
+        var rawList = List<Map<String, Object>>[]
+        json.Unmarshal(data, rawList) or {
+            return List<GenericRecord>[]
+        }
+
+        // Convert each map to a GenericRecord using the schema
+        var records = List<GenericRecord>[]
+        for raw in rawList {
+            var record = GenericRecord(schema)
+            for f in schema.fields {
+                if raw.containsKey(f.name) {
+                    record.setField(f.name, raw[f.name])
+                } else if f.defaultValue != null {
+                    record.setField(f.name, f.defaultValue)
+                }
+            }
+            records = append(records, record)
+        }
+        return records
+    }
+}
+
+// JsonRecordWriter serializes GenericRecords to a JSON array of objects.
+class JsonRecordWriter : RecordWriter {
+
+    init() {}
+
+    pub fn write(List<GenericRecord> records, Schema schema): byte[] {
+        // Convert each record to a map
+        var rawList = List<Map<String, Object>>[]
+        for record in records {
+            var raw = Map<String, Object>{}
+            for f in schema.fields {
+                var val = record.getField(f.name)
+                if val != null {
+                    raw[f.name] = val
+                }
+            }
+            rawList = append(rawList, raw)
+        }
+
+        // Serialize to JSON
+        var result = json.Marshal(rawList) or {
+            return byte[0]
+        }
+        return result
+    }
+}
