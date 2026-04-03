@@ -1,6 +1,6 @@
 // Provider — interface for shared infrastructure resources.
-// Providers are named, typed, and lifecycle-managed. Processors reference
-// them by name. Examples: content storage, NATS connections, SSL contexts.
+// Everything is a provider: content storage, config, credentials,
+// connections, SSL contexts. Processors look up what they need by name.
 interface Provider {
     fn getName(): String
     fn getType(): String
@@ -10,13 +10,11 @@ interface Provider {
 }
 
 // ProcessorContext — the central context for zinc-flow.
-// Loads providers from config, holds them by name, provides config and
-// credential access. Processor factories receive a view of this with
-// their processor-specific config layered on top.
+// Just a bag of providers. Config, credentials, content storage, connections —
+// all are providers looked up by name. Processor factories receive a child
+// context with processor-specific config (the only non-provider state).
 class ProcessorContext {
     var providers = Map<String, Provider>{}
-    var config = Map<String, String>{}
-    var credentials = Map<String, String>{}
     var processorConfig = Map<String, String>{}
     var processorName = ""
 
@@ -70,55 +68,31 @@ class ProcessorContext {
         }
     }
 
-    // --- Config ---
+    // --- Processor-specific config ---
+    // This is the only non-provider state. It comes from the flow config
+    // (the processor's config section) and is set via forProcessor().
 
     pub fn getConfig(String key): String {
-        // Processor-specific config takes precedence
-        if processorConfig.containsKey(key) {
-            return processorConfig[key]
+        if !processorConfig.containsKey(key) {
+            return Error("config key '${key}' not found for processor '${processorName}'")
         }
-        if config.containsKey(key) {
-            return config[key]
-        }
-        return Error("config key '${key}' not found")
+        return processorConfig[key]
     }
 
     pub fn getConfigOrDefault(String key, String defaultValue): String {
         if processorConfig.containsKey(key) {
             return processorConfig[key]
         }
-        if config.containsKey(key) {
-            return config[key]
-        }
         return defaultValue
     }
 
-    pub fn setConfig(String key, String value) {
-        config[key] = value
-    }
-
-    // --- Credentials ---
-
-    pub fn getCredential(String name): String {
-        if !credentials.containsKey(name) {
-            return Error("credential not found: ${name}")
-        }
-        return credentials[name]
-    }
-
-    pub fn setCredential(String name, String value) {
-        credentials[name] = value
-    }
-
-    // --- Processor-specific view ---
-    // Creates a child context for a specific processor, with its own config
-    // layered on top of the global context. Providers and credentials are shared.
+    // --- Child context ---
+    // Creates a view for a specific processor. Providers are shared,
+    // processor config is layered on.
 
     pub fn forProcessor(String name, Map<String, String> procConfig): ProcessorContext {
         var child = ProcessorContext()
         child.providers = providers
-        child.config = config
-        child.credentials = credentials
         child.processorConfig = procConfig
         child.processorName = name
         return child

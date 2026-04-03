@@ -41,29 +41,37 @@ Examples: FileContentProvider, MemoryContentProvider, NatsProvider, SSLProvider.
 
 ### ProcessorContext
 
-The central context for zinc-flow. Holds providers, config, credentials. Created once at startup, loaded from config. Processor factories receive a child view with processor-specific config layered on top.
+Just a bag of providers. Config, credentials, content storage, connections — all are providers. The only non-provider state is processor-specific config from the flow definition.
 
 ```zinc
 class ProcessorContext {
     var providers = Map<String, Provider>{}
-    var config = Map<String, String>{}
-    var credentials = Map<String, String>{}
     var processorConfig = Map<String, String>{}
     var processorName = ""
 
     // Provider lookup — error if not found or not enabled
-    pub fn getProvider(String name): Provider  // or error
+    pub fn getProvider(String name): Provider  // or Error
 
-    // Config — processor-specific takes precedence over global
-    pub fn getConfig(String key): String       // or error
+    // Processor-specific config from flow definition
+    pub fn getConfig(String key): String       // or Error
     pub fn getConfigOrDefault(String key, String defaultValue): String
-
-    // Credentials — error if not found
-    pub fn getCredential(String name): String  // or error
 
     // Create child context for a specific processor
     pub fn forProcessor(String name, Map<String, String> procConfig): ProcessorContext
 }
+```
+
+Config and credentials are providers too — they come from whatever source is configured:
+
+```yaml
+providers:
+  - name: config
+    type: yaml-config       # or env-config, etcd-config, etc.
+    config:
+      path: config.yaml
+
+  - name: secrets
+    type: env-credentials   # or vault, aws-secrets, k8s-secrets, etc.
 ```
 
 ### Error Handling
@@ -71,8 +79,10 @@ class ProcessorContext {
 All lookups that can fail return errors via Zinc's `or` pattern:
 
 ```zinc
-var provider = ctx.getProvider("content") or { return error }
-var subject = ctx.getConfig("subject") or { return error }
+var provider = ctx.getProvider("content") or { return Error(err) }
+var subject = ctx.getConfig("subject") or { return Error(err) }
+var secrets = ctx.getProvider("secrets") or { return Error(err) }
+var apiKey = secrets.get("api-key") or { return Error(err) }
 ```
 
 **Two failure modes:**
