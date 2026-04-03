@@ -48,7 +48,7 @@ fn main() {
         var id = flowFileId()
         Map<String, String> attrs = {"type": "order"}
         var content = "order-data-{i}"
-        var ff = FlowFile(id, attrs, content.toBytes(), int(Now().Unix()))
+        var ff = FlowFile(id, attrs, Raw(content.toBytes()), int(Now().Unix()))
         logging.info("sending", "id", id)
         fab.process(ff)
     }

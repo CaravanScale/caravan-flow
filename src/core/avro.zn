@@ -1,0 +1,64 @@
+// Avro types — local definitions for zinc-flow's internal record format.
+// Mirrors Apache Avro's Schema, GenericRecord, and Field concepts.
+// Can be backed by goavro/hamba on the Go side via zinc.toml import aliases.
+
+// FieldType — Avro logical field types.
+enum FieldType {
+    NULL,
+    BOOLEAN,
+    INT,
+    LONG,
+    FLOAT,
+    DOUBLE,
+    STRING,
+    BYTES,
+    ARRAY,
+    MAP,
+    RECORD,
+    ENUM,
+    UNION
+}
+
+// Field — a named, typed column in a schema.
+data Field(
+    String name,
+    FieldType fieldType,
+    Object defaultValue
+)
+
+// Schema — ordered list of fields with a name.
+data Schema(
+    String name,
+    List<Field> fields
+)
+
+// GenericRecord — a schema-aware row of data.
+// Backed by a map of field name → value.
+class GenericRecord {
+    Schema schema
+    var values = Map<String, Object>{}
+
+    init(Schema schema) {
+        this.schema = schema
+    }
+
+    pub fn put(String field, Object value) {
+        values[field] = value
+    }
+
+    pub fn get(String field): Object {
+        if values.containsKey(field) {
+            return values[field]
+        }
+        return null
+    }
+
+    pub fn getSchema(): Schema {
+        return schema
+    }
+}
+
+// schemaFromFields creates a Schema from a name and field list.
+pub fn schemaFromFields(String name, List<Field> fields): Schema {
+    return Schema(name, fields)
+}

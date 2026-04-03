@@ -1,33 +1,32 @@
-// ProcessorResult — what processors return after processing a FlowFile.
-// Serialized as JSON in the HTTP response body.
+// ProcessorResult serialization — JSON helpers for HTTP delivery.
+// Internally we use the core.ProcessorResult sealed class everywhere.
+// This module only handles JSON ser/deser for external processor HTTP endpoints.
 
-// ResultType indicates the kind of processor output.
-enum ResultType {
-    SINGLE,
-    MULTIPLE,
-    DROPPED
-}
+import core
+import encoding.json
 
-// ProcessorResult — the response from a processor.
-// For SINGLE: flowFile is set, flowFiles is empty.
-// For MULTIPLE: flowFiles is set, flowFile is zero.
-// For DROPPED: reason explains why.
-data ProcessorResult(
-    ResultType resultType,
-    FlowFile flowFile,
-    List<FlowFile> flowFiles,
-    String reason
-)
-
-// Helper constructors for processors.
-fn singleResult(FlowFile ff): ProcessorResult {
-    return ProcessorResult(SINGLE, ff, List<FlowFile>[], "")
-}
-
-fn multipleResult(List<FlowFile> ffs): ProcessorResult {
-    return ProcessorResult(MULTIPLE, FlowFile("", Map<String, String>{}, "", 0), ffs, "")
-}
-
-fn droppedResult(String reason): ProcessorResult {
-    return ProcessorResult(DROPPED, FlowFile("", Map<String, String>{}, "", 0), List<FlowFile>[], reason)
+// serializeResult converts a core ProcessorResult to JSON bytes for HTTP response.
+pub fn serializeResult(ProcessorResult result): byte[] {
+    match result {
+        case Single(ff) {
+            var m = Map<String, Object>{"type": "single", "id": ff.id, "attributes": ff.attributes}
+            return json.Marshal(m)
+        }
+        case Multiple(ffs) {
+            var ids = List<String>[]
+            for f in ffs {
+                ids = append(ids, f.id)
+            }
+            var m = Map<String, Object>{"type": "multiple", "count": len(ffs)}
+            return json.Marshal(m)
+        }
+        case Dropped(reason) {
+            var m = Map<String, Object>{"type": "dropped", "reason": reason}
+            return json.Marshal(m)
+        }
+        case Routed(route, ff) {
+            var m = Map<String, Object>{"type": "routed", "route": route, "id": ff.id}
+            return json.Marshal(m)
+        }
+    }
 }

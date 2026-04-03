@@ -50,6 +50,7 @@ class AddAttribute : ProcessorFn {
 }
 
 // FileSink — writes FlowFile content to disk. Returns Dropped (terminal).
+// Resolves Raw content to bytes; Claims must be resolved before reaching here.
 class FileSink : ProcessorFn {
     String outputDir
 
@@ -59,7 +60,17 @@ class FileSink : ProcessorFn {
 
     pub fn process(FlowFile ff): ProcessorResult {
         var path = outputDir + "/" + ff.id + ".out"
-        WriteFile(path, ff.content, 0644)
+        match ff.content {
+            case Raw(bytes) {
+                WriteFile(path, bytes, 0644)
+            }
+            case Records(_, _) {
+                WriteFile(path, "records".toBytes(), 0644)
+            }
+            case Claim(claimId, _) {
+                WriteFile(path, "claim:{claimId}".toBytes(), 0644)
+            }
+        }
         return Dropped("written to " + path)
     }
 }

@@ -1,22 +1,40 @@
 // FlowFile — the unit of data flowing through a pipeline.
+// Attributes travel inline. Content is one of: Raw bytes, Avro Records, or a Claim reference.
 
 import time
 
 data FlowFile(
     String id,
     Map<String, String> attributes,
-    byte[] content,
+    Content content,
     int timestamp
 )
 
-// Generate a unique FlowFile ID
+// Generate a unique FlowFile ID.
 pub fn flowFileId(): String {
     return "ff-{Now().UnixNano()}"
 }
 
-// Create a copy with an additional attribute
+// Create a new FlowFile with raw byte content and current timestamp.
+pub fn createFlowFile(byte[] data, Map<String, String> attributes): FlowFile {
+    var id = flowFileId()
+    return FlowFile(id, attributes, Raw(data), int(Now().Unix()))
+}
+
+// Create a new FlowFile with Avro records as content.
+pub fn createRecordFlowFile(Schema schema, List<GenericRecord> rows, Map<String, String> attributes): FlowFile {
+    var id = flowFileId()
+    return FlowFile(id, attributes, Records(schema, rows), int(Now().Unix()))
+}
+
+// Create a copy with an additional attribute.
 pub fn withAttribute(FlowFile ff, String key, String value): FlowFile {
     var attrs = ff.attributes
     attrs[key] = value
     return FlowFile(ff.id, attrs, ff.content, ff.timestamp)
+}
+
+// Create a copy with new content.
+pub fn withContent(FlowFile ff, Content content): FlowFile {
+    return FlowFile(ff.id, ff.attributes, content, ff.timestamp)
 }

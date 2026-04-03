@@ -1,0 +1,48 @@
+// Record — Avro-based record types for zinc-flow.
+// We speak Avro internally: GenericRecord is the universal record currency
+// between processors. No custom record format — Avro IS the format.
+
+// RecordReader parses byte content into Avro GenericRecords.
+interface RecordReader {
+    fn read(byte[] data, Schema schema): List<GenericRecord>
+}
+
+// RecordWriter serializes Avro GenericRecords back to bytes.
+interface RecordWriter {
+    fn write(List<GenericRecord> records, Schema schema): byte[]
+}
+
+// RecordProcessor operates on individual Avro records.
+// Processors that implement this get records passed directly —
+// no deserialize/serialize between chained record processors.
+interface RecordProcessor {
+    fn processRecord(GenericRecord record, Schema schema): GenericRecord
+}
+
+// newRecord creates a new GenericRecord from a schema and field values.
+pub fn newRecord(Schema schema, Map<String, Object> values): GenericRecord {
+    var record = GenericRecord(schema)
+    for key, value in values {
+        record.put(key, value)
+    }
+    return record
+}
+
+// getField safely retrieves a field value as a String.
+pub fn getField(GenericRecord record, String field): String {
+    var val = record.get(field)
+    if val == null {
+        return ""
+    }
+    return str(val)
+}
+
+// withField returns a copy of the record with a field set.
+pub fn withField(GenericRecord record, String field, Object value): GenericRecord {
+    var copy = GenericRecord(record.getSchema())
+    for f in record.getSchema().getFields() {
+        copy.put(f.name(), record.get(f.name()))
+    }
+    copy.put(field, value)
+    return copy
+}

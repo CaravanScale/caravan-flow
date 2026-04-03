@@ -1,0 +1,90 @@
+// ContentStore — interface and filesystem implementation for large content.
+// Content exceeding CONTENT_CLAIM_THRESHOLD (256KB) is offloaded here.
+// FlowFile carries a Claim reference; actual bytes live in the store.
+
+import os
+import time
+
+// ContentStore — store and retrieve content by claim ID.
+interface ContentStore {
+    fn store(byte[] data): String        // returns claim ID
+    fn retrieve(String claimId): byte[]  // returns content bytes
+    fn delete(String claimId)
+    fn exists(String claimId): bool
+}
+
+// FileContentStore — filesystem-backed content store.
+class FileContentStore : ContentStore {
+    String baseDir
+    var claimCounter = 0
+
+    init(String baseDir) {
+        this.baseDir = baseDir
+        MkdirAll(baseDir, 0755)
+    }
+
+    pub fn store(byte[] data): String {
+        var claimId = generateClaimId()
+        var path = claimPath(claimId)
+        WriteFile(path, data, 0644)
+        return claimId
+    }
+
+    pub fn retrieve(String claimId): byte[] {
+        var path = claimPath(claimId)
+        return ReadFile(path)
+    }
+
+    pub fn delete(String claimId) {
+        var path = claimPath(claimId)
+        Remove(path)
+    }
+
+    pub fn exists(String claimId): bool {
+        var path = claimPath(claimId)
+        var _, err = Stat(path)
+        return err == null
+    }
+
+    fn claimPath(String claimId): String {
+        var prefix = claimId[0:2]
+        var dir = baseDir + "/" + prefix
+        MkdirAll(dir, 0755)
+        return dir + "/" + claimId
+    }
+
+    fn generateClaimId(): String {
+        claimCounter = claimCounter + 1
+        return "claim-{Now().UnixNano()}-{claimCounter}"
+    }
+}
+
+// maybeOffload checks content size and offloads to the store if needed.
+pub fn maybeOffload(ContentStore store, byte[] data): Content {
+    if len(data) > CONTENT_CLAIM_THRESHOLD {
+        var claimId = store.store(data)
+        return Claim(claimId, long(len(data)))
+    }
+    return Raw(data)
+}
+
+// ResolveResult — outcome of resolving content to bytes.
+data ResolveResult(
+    byte[] data,
+    String error
+)
+
+// resolve retrieves the raw bytes for any Content variant.
+pub fn resolve(ContentStore store, Content c): ResolveResult {
+    match c {
+        case Raw(bytes) {
+            return ResolveResult(bytes, "")
+        }
+        case Claim(claimId, _) {
+            return ResolveResult(store.retrieve(claimId), "")
+        }
+        case Records(_, _) {
+            return ResolveResult(List<byte>[], "cannot resolve Records to raw bytes — use a RecordWriter")
+        }
+    }
+}

@@ -1,0 +1,45 @@
+// Content — sealed type representing FlowFile payload.
+// Raw bytes for small inline content, Avro records for structured data,
+// Claim reference for large content offloaded to the content store.
+
+// Threshold for offloading content to the content store.
+const CONTENT_CLAIM_THRESHOLD = 256 * 1024  // 256KB
+
+sealed class Content {
+    // Raw binary content, inline (≤256KB).
+    data Raw(byte[] bytes)
+
+    // Parsed structured content — Avro records with schema.
+    // Passed between record-aware processors without ser/deser.
+    data Records(Schema schema, List<GenericRecord> rows)
+
+    // Large content offloaded to the content store.
+    data Claim(String claimId, long size)
+}
+
+// contentSize returns the logical size of the content.
+pub fn contentSize(Content c): long {
+    match c {
+        case Raw(bytes) {
+            return long(len(bytes))
+        }
+        case Records(_, rows) {
+            return long(len(rows))  // row count, not byte size
+        }
+        case Claim(_, size) {
+            return size
+        }
+    }
+}
+
+// isRecord returns true if content is in parsed Avro form.
+pub fn isRecord(Content c): bool {
+    match c {
+        case Records(_, _) {
+            return true
+        }
+        case _ {
+            return false
+        }
+    }
+}
