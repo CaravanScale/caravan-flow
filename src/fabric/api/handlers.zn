@@ -1,0 +1,130 @@
+// Management API — read-only REST endpoints for monitoring zinc-flow.
+// All responses are JSON. Mounted under /api/ in main.zn.
+
+import net.http
+import encoding.json
+import fabric.runtime
+import fabric.registry
+import fabric.router
+
+// ApiHandler holds a reference to the fabric for serving API requests.
+class ApiHandler {
+    Fabric fab
+
+    init(Fabric fab) {
+        this.fab = fab
+    }
+
+    // GET /api/stats — aggregate processing statistics
+    pub fn statsHandler(ResponseWriter w, Request r) {
+        var stats = fab.getStats()
+        writeJson(w, stats)
+    }
+
+    // GET /api/processors — list active processor names
+    pub fn processorsHandler(ResponseWriter w, Request r) {
+        var names = fab.getProcessorNames()
+        writeJson(w, names)
+    }
+
+    // GET /api/registry — list available processor types
+    pub fn registryHandler(ResponseWriter w, Request r) {
+        var reg = fab.getRegistry()
+        var infos = reg.list()
+        var result = List<Map<String, Object>>[]
+        for info in infos {
+            var entry = Map<String, Object>{}
+            entry["name"] = info.name
+            entry["description"] = info.description
+            entry["configKeys"] = info.configKeys
+            result = append(result, entry)
+        }
+        writeJson(w, result)
+    }
+
+    // GET /api/routes — list all routing rules
+    pub fn routesHandler(ResponseWriter w, Request r) {
+        var engine = fab.getEngine()
+        var rules = engine.getAllRules()
+        var result = List<Map<String, Object>>[]
+        for rule in rules {
+            var entry = Map<String, Object>{}
+            entry["name"] = rule.name
+            entry["enabled"] = rule.enabled
+            entry["destination"] = rule.destination.endpoint
+            entry["condition"] = formatCondition(rule.condition)
+            result = append(result, entry)
+        }
+        writeJson(w, result)
+    }
+
+    // GET /api/flow — full flow graph (processors + routes)
+    pub fn flowHandler(ResponseWriter w, Request r) {
+        var flow = Map<String, Object>{}
+        flow["processors"] = fab.getProcessorNames()
+
+        var engine = fab.getEngine()
+        var rules = engine.getAllRules()
+        var routes = List<Map<String, Object>>[]
+        for rule in rules {
+            var entry = Map<String, Object>{}
+            entry["name"] = rule.name
+            entry["enabled"] = rule.enabled
+            entry["destination"] = rule.destination.endpoint
+            entry["condition"] = formatCondition(rule.condition)
+            routes = append(routes, entry)
+        }
+        flow["routes"] = routes
+        flow["stats"] = fab.getStats()
+        writeJson(w, flow)
+    }
+
+    // GET /api/dlq — DLQ status
+    pub fn dlqHandler(ResponseWriter w, Request r) {
+        var result = Map<String, Object>{}
+        result["count"] = fab.getDlqCount()
+        writeJson(w, result)
+    }
+}
+
+// writeJson serializes data to JSON and writes it as the HTTP response.
+fn writeJson(ResponseWriter w, Object data) {
+    var body = json.Marshal(data) or {
+        w.WriteHeader(500)
+        w.Write('{"error":"json marshal failed"}'.toBytes())
+        return
+    }
+    w.Header().Set("Content-Type", "application/json")
+    w.Write(body)
+}
+
+// formatCondition converts a RuleType to a human-readable string.
+fn formatCondition(RuleType condition): String {
+    match condition {
+        case BaseRule(attr, op, val) {
+            return "${attr} ${formatOp(op)} ${val}"
+        }
+        case CompositeRule(left, joiner, right) {
+            var joinStr = "AND"
+            match joiner {
+                case OR { joinStr = "OR" }
+            }
+            return "(${formatCondition(left)} ${joinStr} ${formatCondition(right)})"
+        }
+    }
+    return "unknown"
+}
+
+fn formatOp(Operator op): String {
+    match op {
+        case EQ { return "==" }
+        case NEQ { return "!=" }
+        case CONTAINS { return "contains" }
+        case STARTSWITH { return "startsWith" }
+        case ENDSWITH { return "endsWith" }
+        case EXISTS { return "exists" }
+        case GT { return ">" }
+        case LT { return "<" }
+    }
+    return "?"
+}

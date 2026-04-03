@@ -45,6 +45,19 @@ class RulesEngine {
         return rulesets.keys()
     }
 
+    // Get all rules across all rulesets.
+    pub fn getAllRules(): List<RoutingRule> {
+        var result = List<RoutingRule>[]
+        var names = rulesets.keys()
+        for name in names {
+            var rules = rulesets[name]
+            for r in rules {
+                result = append(result, r)
+            }
+        }
+        return result
+    }
+
     // Evaluate all rulesets against a set of attributes.
     // Returns all matching destinations (fan-out).
     pub fn getDestinations(Map<String, String> attributes): List<Destination> {

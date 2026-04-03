@@ -97,6 +97,31 @@ class Fabric {
         return dlqCount
     }
 
+    // getProcessorNames returns the names of all active processors.
+    pub fn getProcessorNames(): List<String> {
+        return processorNames
+    }
+
+    // getRegistry returns the processor registry.
+    pub fn getRegistry(): Registry {
+        return reg
+    }
+
+    // getEngine returns the routing engine.
+    pub fn getEngine(): RulesEngine {
+        return engine
+    }
+
+    // getStats returns processing counters.
+    pub fn getStats(): Map<String, int> {
+        var stats = Map<String, int>{}
+        stats["processed"] = processedCount
+        stats["dropped"] = droppedCount
+        stats["failures"] = failureCount
+        stats["dlq"] = dlqCount
+        return stats
+    }
+
     // routeWithVisited routes a FlowFile, skipping already-visited processors to prevent cycles.
     fn routeWithVisited(FlowFile ff, Map<String, bool> visited) {
         var destinations = engine.getDestinations(ff.attributes)

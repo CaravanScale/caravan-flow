@@ -8,6 +8,7 @@ import core
 import fabric.registry
 import fabric.runtime
 import fabric.source
+import fabric.api
 import processors
 import os
 import time
@@ -51,6 +52,15 @@ fn main() {
     var httpSource = HttpSource(fab)
     HandleFunc("/ingest", httpSource.handler)
     HandleFunc("/health", httpSource.healthHandler)
+
+    // Setup management API
+    var api = ApiHandler(fab)
+    HandleFunc("/api/flow", api.flowHandler)
+    HandleFunc("/api/processors", api.processorsHandler)
+    HandleFunc("/api/routes", api.routesHandler)
+    HandleFunc("/api/registry", api.registryHandler)
+    HandleFunc("/api/stats", api.statsHandler)
+    HandleFunc("/api/dlq", api.dlqHandler)
 
     // Start periodic stats reporter
     spawn {
