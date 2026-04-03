@@ -74,7 +74,7 @@ pub fn maybeOffload(ContentStore store, byte[] data): Content {
 // ResolveResult — outcome of resolving content to bytes.
 data ResolveResult(
     byte[] data,
-    String error
+    String errorMsg
 )
 
 // resolve retrieves the raw bytes for any Content variant.

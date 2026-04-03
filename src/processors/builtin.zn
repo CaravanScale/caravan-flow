@@ -21,15 +21,15 @@ pub fn registerBuiltins(Registry reg) {
     )
 }
 
-fn AddAttributeFactory(Map<String, String> config): ProcessorFn {
+fn AddAttributeFactory(Map<String, String> config, ServiceProvider services): ProcessorFn {
     return AddAttribute(config["key"], config["value"])
 }
 
-fn FileSinkFactory(Map<String, String> config): ProcessorFn {
-    return FileSink(config["output_dir"])
+fn FileSinkFactory(Map<String, String> config, ServiceProvider services): ProcessorFn {
+    return FileSink(config["output_dir"], services.getContentStore())
 }
 
-fn LogProcessorFactory(Map<String, String> config): ProcessorFn {
+fn LogProcessorFactory(Map<String, String> config, ServiceProvider services): ProcessorFn {
     return LogProcessor(config["prefix"])
 }
 
@@ -50,27 +50,23 @@ class AddAttribute : ProcessorFn {
 }
 
 // FileSink — writes FlowFile content to disk. Returns Dropped (terminal).
-// Resolves Raw content to bytes; Claims must be resolved before reaching here.
+// Resolves all Content variants to bytes using the ContentStore.
 class FileSink : ProcessorFn {
     String outputDir
+    ContentStore store
 
-    init(String outputDir) {
+    init(String outputDir, ContentStore store) {
         this.outputDir = outputDir
+        this.store = store
     }
 
     pub fn process(FlowFile ff): ProcessorResult {
         var path = outputDir + "/" + ff.id + ".out"
-        match ff.content {
-            case Raw(bytes) {
-                WriteFile(path, bytes, 0o644)
-            }
-            case Records(_, _) {
-                WriteFile(path, "records".toBytes(), 0o644)
-            }
-            case Claim(claimId, _) {
-                WriteFile(path, "claim:{claimId}".toBytes(), 0o644)
-            }
+        var resolved = resolve(store, ff.content)
+        if resolved.errorMsg != "" {
+            return Failure(resolved.errorMsg, ff)
         }
+        WriteFile(path, resolved.data, 0o644)
         return Dropped("written to " + path)
     }
 }

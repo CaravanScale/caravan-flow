@@ -1,0 +1,52 @@
+// HTTP Source — webhook handler for FlowFile ingestion.
+// Receives HTTP POST requests, creates FlowFiles, and feeds them into the Fabric.
+
+import net.http
+import io
+import core
+import stdlib.logging
+import fabric.runtime
+import time
+
+// HttpSource handles HTTP ingestion of FlowFiles.
+class HttpSource {
+    Fabric fab
+
+    init(Fabric fab) {
+        this.fab = fab
+    }
+
+    // handler processes an incoming HTTP request as a FlowFile.
+    pub fn handler(ResponseWriter w, Request r) {
+        var body = ReadAll(r.Body) or {
+            w.WriteHeader(400)
+            w.Write("failed to read body".toBytes())
+            return
+        }
+        r.Body.Close()
+
+        // Extract attributes from request metadata
+        var attrs = Map<String, String>{}
+        attrs["http.method"] = r.Method
+        attrs["http.uri"] = r.URL.Path
+        attrs["http.content.type"] = r.Header.Get("Content-Type")
+        attrs["http.host"] = r.Host
+
+        // Create FlowFile with content store awareness
+        var store = fab.getServices().getContentStore()
+        var content = maybeOffload(store, body)
+        var ff = FlowFile(flowFileId(), attrs, content, int(Now().Unix()))
+
+        // Process through the fabric
+        fab.process(ff)
+
+        w.WriteHeader(200)
+        w.Write("{\"status\":\"ok\",\"id\":\"{ff.id}\"}".toBytes())
+    }
+
+    // healthHandler returns a simple health check response.
+    pub fn healthHandler(ResponseWriter w, Request r) {
+        w.WriteHeader(200)
+        w.Write("{\"status\":\"healthy\",\"dlq\":{fab.getDlqCount()}}".toBytes())
+    }
+}

@@ -1,22 +1,26 @@
 // zinc-flow — data flow engine
 // Fabric loads processors + routing from config, processes FlowFiles in-process.
+// HTTP source accepts FlowFiles via POST /ingest.
 
 import stdlib.config
 import stdlib.logging
 import core
 import fabric.registry
 import fabric.runtime
+import fabric.source
 import processors
 import os
 import time
+import net.http
 
 fn main() {
     // Load config
     var cfg = config.Config()
-    cfg.setDefault("server.port", 8080)
+    cfg.setDefault("server.port", 9091)
     cfg.setDefault("logging.level", "INFO")
     cfg.setDefault("logging.handler", "text")
     cfg.setDefault("logging.output", "stdout")
+    cfg.setDefault("content.dir", "/tmp/zinc-flow/content")
     cfg.load("config", "yaml", ".")
 
     // Setup logging
@@ -25,31 +29,31 @@ fn main() {
 
     logging.info("zinc-flow starting")
 
+    // Create shared services
+    var contentDir = cfg.getString("content.dir")
+    var store = FileContentStore(contentDir)
+    var services = ServiceProvider(store)
+
     // Create processor registry and register built-ins
     var reg = Registry()
     registerBuiltins(reg)
     logging.info("registry loaded", "processors", len(reg.list()))
 
     // Create fabric and load flow graph from config
-    var fab = Fabric(reg)
+    var fab = Fabric(reg, services)
     fab.loadFlow(cfg)
     fab.status()
 
-    // Create output directory from config
-    var outputDir = cfg.getString("content.dir")
-    if outputDir == "" {
-        outputDir = "/tmp/zinc-flow/output"
-    }
-    MkdirAll(outputDir, 0o755)
+    // Create output directory for file-sink
+    MkdirAll("/tmp/zinc-flow/output", 0o755)
 
-    // Feed test FlowFiles
-    logging.info("sending test FlowFiles")
-    for i in 1..4 {
-        Map<String, String> attrs = {"type": "order"}
-        var ff = createFlowFile("order-data-{i}".toBytes(), attrs)
-        logging.info("sending", "id", ff.id)
-        fab.process(ff)
-    }
+    // Setup HTTP source
+    var httpSource = HttpSource(fab)
+    HandleFunc("/ingest", httpSource.handler)
+    HandleFunc("/health", httpSource.healthHandler)
 
-    logging.info("done")
+    // Start HTTP server
+    var port = cfg.getString("server.port")
+    logging.info("listening", "port", port)
+    ListenAndServe(":" + port, null)
 }

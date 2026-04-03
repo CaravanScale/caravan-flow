@@ -6,6 +6,7 @@ sealed class ProcessorResult {
     data Multiple(List<FlowFile> ffs)
     data Routed(String route, FlowFile ff)
     data Dropped(String reason)
+    data Failure(String reason, FlowFile ff)
 }
 
 // ProcessorFn — the interface every processor implements.

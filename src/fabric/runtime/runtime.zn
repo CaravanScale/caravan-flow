@@ -10,11 +10,15 @@ import fabric.router
 class Fabric {
     Registry reg
     RulesEngine engine
+    ServiceProvider services
     var procs = Map<String, ProcessorFn>{}
     var processorNames = List<String>[]
+    var dlq = Channel<FlowFile>(1000)
+    var dlqCount = 0
 
-    init(Registry reg) {
+    init(Registry reg, ServiceProvider services) {
         this.reg = reg
+        this.services = services
         this.engine = RulesEngine()
     }
 
@@ -35,7 +39,7 @@ class Fabric {
             var procConfig = cfg.getStringMap(prefix + ".config")
 
             if reg.has(typeName) {
-                var proc = reg.create(typeName, procConfig)
+                var proc = reg.create(typeName, procConfig, services)
                 procs[name] = proc
                 processorNames = append(processorNames, name)
                 logging.info("processor created", "name", name, "type", typeName)
@@ -79,6 +83,16 @@ class Fabric {
         routeWithVisited(ff, Map<String, bool>{})
     }
 
+    // getServices returns the shared service provider.
+    pub fn getServices(): ServiceProvider {
+        return services
+    }
+
+    // getDlqCount returns the number of FlowFiles in the dead letter queue.
+    pub fn getDlqCount(): int {
+        return dlqCount
+    }
+
     // routeWithVisited routes a FlowFile, skipping already-visited processors to prevent cycles.
     fn routeWithVisited(FlowFile ff, Map<String, bool> visited) {
         var destinations = engine.getDestinations(ff.attributes)
@@ -100,19 +114,24 @@ class Fabric {
     // handleResult routes processor output through the graph.
     fn handleResult(ProcessorResult result, Map<String, bool> visited) {
         match result {
-            case core.Single(ff) {
+            case Single(ff) {
                 routeWithVisited(ff, visited)
             }
-            case core.Multiple(ffs) {
+            case Multiple(ffs) {
                 for f in ffs {
                     routeWithVisited(f, visited)
                 }
             }
-            case core.Routed(_, ff) {
+            case Routed(_, ff) {
                 routeWithVisited(ff, visited)
             }
-            case core.Dropped(reason) {
+            case Dropped(reason) {
                 logging.debug("flowfile dropped", "reason", reason)
+            }
+            case Failure(reason, ff) {
+                logging.error("flowfile failure — routing to DLQ", "reason", reason, "id", ff.id)
+                dlq.send(ff)
+                dlqCount = dlqCount + 1
             }
         }
     }
@@ -121,7 +140,8 @@ class Fabric {
     pub fn status() {
         logging.info("fabric status",
             "processors", len(processorNames),
-            "rulesets", len(engine.getRulesetNames()))
+            "rulesets", len(engine.getRulesetNames()),
+            "dlq", dlqCount)
     }
 }
 
