@@ -3,7 +3,10 @@
 
 // packUint16BE encodes a uint16 as 2 big-endian bytes.
 pub fn packUint16BE(int value): byte[] {
-    return byte[]{byte(value >> 8), byte(value & 0xFF)}
+    var buf = byte[2]
+    buf[0] = byte(value >> 8)
+    buf[1] = byte(value & 0xFF)
+    return buf
 }
 
 // unpackUint16BE decodes 2 big-endian bytes to an int.
@@ -13,12 +16,12 @@ pub fn unpackUint16BE(byte[] data, int offset): int {
 
 // packUint32BE encodes a uint32 as 4 big-endian bytes.
 pub fn packUint32BE(int value): byte[] {
-    return byte[]{
-        byte(value >> 24),
-        byte(value >> 16 & 0xFF),
-        byte(value >> 8 & 0xFF),
-        byte(value & 0xFF)
-    }
+    var buf = byte[4]
+    buf[0] = byte(value >> 24)
+    buf[1] = byte(value >> 16 & 0xFF)
+    buf[2] = byte(value >> 8 & 0xFF)
+    buf[3] = byte(value & 0xFF)
+    return buf
 }
 
 // unpackUint32BE decodes 4 big-endian bytes to an int.
@@ -31,16 +34,16 @@ pub fn unpackUint32BE(byte[] data, int offset): int {
 
 // packInt64BE encodes a long as 8 big-endian bytes.
 pub fn packInt64BE(long value): byte[] {
-    return byte[]{
-        byte(value >> 56),
-        byte(value >> 48 & 0xFF),
-        byte(value >> 40 & 0xFF),
-        byte(value >> 32 & 0xFF),
-        byte(value >> 24 & 0xFF),
-        byte(value >> 16 & 0xFF),
-        byte(value >> 8 & 0xFF),
-        byte(value & 0xFF)
-    }
+    var buf = byte[8]
+    buf[0] = byte(value >> 56)
+    buf[1] = byte(value >> 48 & 0xFF)
+    buf[2] = byte(value >> 40 & 0xFF)
+    buf[3] = byte(value >> 32 & 0xFF)
+    buf[4] = byte(value >> 24 & 0xFF)
+    buf[5] = byte(value >> 16 & 0xFF)
+    buf[6] = byte(value >> 8 & 0xFF)
+    buf[7] = byte(value & 0xFF)
+    return buf
 }
 
 // unpackInt64BE decodes 8 big-endian bytes to a long.

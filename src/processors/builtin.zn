@@ -62,13 +62,13 @@ class FileSink : ProcessorFn {
         var path = outputDir + "/" + ff.id + ".out"
         match ff.content {
             case Raw(bytes) {
-                WriteFile(path, bytes, 0644)
+                WriteFile(path, bytes, 0o644)
             }
             case Records(_, _) {
-                WriteFile(path, "records".toBytes(), 0644)
+                WriteFile(path, "records".toBytes(), 0o644)
             }
             case Claim(claimId, _) {
-                WriteFile(path, "claim:{claimId}".toBytes(), 0644)
+                WriteFile(path, "claim:{claimId}".toBytes(), 0o644)
             }
         }
         return Dropped("written to " + path)

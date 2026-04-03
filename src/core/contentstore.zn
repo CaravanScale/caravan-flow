@@ -20,19 +20,22 @@ class FileContentStore : ContentStore {
 
     init(String baseDir) {
         this.baseDir = baseDir
-        MkdirAll(baseDir, 0755)
+        MkdirAll(baseDir, 0o755)
     }
 
     pub fn store(byte[] data): String {
         var claimId = generateClaimId()
         var path = claimPath(claimId)
-        WriteFile(path, data, 0644)
+        WriteFile(path, data, 0o644)
         return claimId
     }
 
     pub fn retrieve(String claimId): byte[] {
         var path = claimPath(claimId)
-        return ReadFile(path)
+        var data = ReadFile(path) or {
+            return byte[0]
+        }
+        return data
     }
 
     pub fn delete(String claimId) {
@@ -84,7 +87,7 @@ pub fn resolve(ContentStore store, Content c): ResolveResult {
             return ResolveResult(store.retrieve(claimId), "")
         }
         case Records(_, _) {
-            return ResolveResult(List<byte>[], "cannot resolve Records to raw bytes — use a RecordWriter")
+            return ResolveResult(byte[0], "cannot resolve Records to raw bytes — use a RecordWriter")
         }
     }
 }

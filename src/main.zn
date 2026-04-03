@@ -40,16 +40,14 @@ fn main() {
     if outputDir == "" {
         outputDir = "/tmp/zinc-flow/output"
     }
-    MkdirAll(outputDir, 0755)
+    MkdirAll(outputDir, 0o755)
 
     // Feed test FlowFiles
     logging.info("sending test FlowFiles")
     for i in 1..4 {
-        var id = flowFileId()
         Map<String, String> attrs = {"type": "order"}
-        var content = "order-data-{i}"
-        var ff = FlowFile(id, attrs, Raw(content.toBytes()), int(Now().Unix()))
-        logging.info("sending", "id", id)
+        var ff = createFlowFile("order-data-{i}".toBytes(), attrs)
+        logging.info("sending", "id", ff.id)
         fab.process(ff)
     }
 

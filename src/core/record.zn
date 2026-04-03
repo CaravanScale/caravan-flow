@@ -23,14 +23,14 @@ interface RecordProcessor {
 pub fn newRecord(Schema schema, Map<String, Object> values): GenericRecord {
     var record = GenericRecord(schema)
     for key, value in values {
-        record.put(key, value)
+        record.setField(key, value)
     }
     return record
 }
 
 // getField safely retrieves a field value as a String.
-pub fn getField(GenericRecord record, String field): String {
-    var val = record.get(field)
+pub fn getField(GenericRecord record, String fieldName): String {
+    var val = record.getField(fieldName)
     if val == null {
         return ""
     }
@@ -38,11 +38,12 @@ pub fn getField(GenericRecord record, String field): String {
 }
 
 // withField returns a copy of the record with a field set.
-pub fn withField(GenericRecord record, String field, Object value): GenericRecord {
-    var copy = GenericRecord(record.getSchema())
-    for f in record.getSchema().getFields() {
-        copy.put(f.name(), record.get(f.name()))
+pub fn withField(GenericRecord record, String fieldName, Object value): GenericRecord {
+    var schema = record.getSchema()
+    var copy = GenericRecord(schema)
+    for f in schema.fields {
+        copy.setField(f.name, record.getField(f.name))
     }
-    copy.put(field, value)
+    copy.setField(fieldName, value)
     return copy
 }

@@ -35,26 +35,26 @@ data Schema(
 // GenericRecord — a schema-aware row of data.
 // Backed by a map of field name → value.
 class GenericRecord {
-    Schema schema
+    Schema recordSchema
     var values = Map<String, Object>{}
 
-    init(Schema schema) {
-        this.schema = schema
+    init(Schema recordSchema) {
+        this.recordSchema = recordSchema
     }
 
-    pub fn put(String field, Object value) {
-        values[field] = value
+    pub fn setField(String key, Object value) {
+        values[key] = value
     }
 
-    pub fn get(String field): Object {
-        if values.containsKey(field) {
-            return values[field]
+    pub fn getField(String key): Object {
+        if values.containsKey(key) {
+            return values[key]
         }
         return null
     }
 
     pub fn getSchema(): Schema {
-        return schema
+        return recordSchema
     }
 }
 

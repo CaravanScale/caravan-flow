@@ -3,7 +3,7 @@
 // Claim reference for large content offloaded to the content store.
 
 // Threshold for offloading content to the content store.
-const CONTENT_CLAIM_THRESHOLD = 256 * 1024  // 256KB
+pub const CONTENT_CLAIM_THRESHOLD = 256 * 1024  // 256KB
 
 sealed class Content {
     // Raw binary content, inline (≤256KB).
@@ -24,7 +24,7 @@ pub fn contentSize(Content c): long {
             return long(len(bytes))
         }
         case Records(_, rows) {
-            return long(len(rows))  // row count, not byte size
+            return long(len(rows))
         }
         case Claim(_, size) {
             return size
@@ -38,7 +38,10 @@ pub fn isRecord(Content c): bool {
         case Records(_, _) {
             return true
         }
-        case _ {
+        case Raw(_) {
+            return false
+        }
+        case Claim(_, _) {
             return false
         }
     }

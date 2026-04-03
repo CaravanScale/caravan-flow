@@ -4,7 +4,7 @@
 import core
 
 const V3_MAGIC_LEN = 7             // "NiFiFF3" is 7 bytes
-const MAX_VALUE_2_BYTES = 65535     // field length sentinel
+const MAX_VALUE_2_BYTES = 0xFFFF    // field length sentinel
 
 // V3Error — returned when V3 deserialization fails.
 data V3Error(String message)
@@ -39,7 +39,7 @@ pub fn packFlowFile(FlowFile ff, byte[] contentBytes): byte[] {
 
 // packMultiple serializes multiple FlowFiles to a concatenated V3 stream.
 pub fn packMultiple(List<FlowFile> flowfiles, List<byte[]> contents): byte[] {
-    var buf = List<byte>[]
+    var buf = byte[0]
     for i in range(len(flowfiles)) {
         buf = append(buf, packFlowFile(flowfiles[i], contents[i])...)
     }
@@ -59,7 +59,7 @@ data UnpackResult(
 pub fn unpackFlowFile(byte[] data, int offset): UnpackResult {
     var magic = "NiFiFF3".toBytes()
     if data[offset:offset + V3_MAGIC_LEN] != magic {
-        return UnpackResult(FlowFile("", Map<String, String>{}, Raw(List<byte>[]), 0), offset, V3Error("invalid FlowFile V3 magic at offset {offset}"))
+        return UnpackResult(FlowFile("", Map<String, String>{}, Raw(byte[0]), 0), offset, V3Error("invalid FlowFile V3 magic at offset {offset}"))
     }
     var pos = offset + V3_MAGIC_LEN
 
@@ -114,7 +114,10 @@ fn writeFieldLength(int value): byte[] {
     if value < MAX_VALUE_2_BYTES {
         return packUint16BE(value)
     }
-    return append(List<byte>[0xFF, 0xFF], packUint32BE(value)...)
+    var sentinel = byte[2]
+    sentinel[0] = 0xFF
+    sentinel[1] = 0xFF
+    return append(sentinel, packUint32BE(value)...)
 }
 
 fn readFieldValue(byte[] data, int offset): int {
