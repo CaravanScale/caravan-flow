@@ -19,9 +19,45 @@ Common patterns across all:
 
 ## Design: ProcessorContext + Providers
 
+### Provider Interface
+
+Everything is a provider — content storage, NATS connections, SSL contexts, credential stores. No special cases.
+
+```zinc
+interface Provider {
+    fn getName(): String
+    fn getType(): String
+    fn enable()
+    fn disable()
+    fn isEnabled(): bool
+}
+```
+
+Specific providers extend this with their own capabilities:
+
+```zinc
+class FileContentProvider : Provider {
+    // provides store(data): claimId, retrieve(claimId): bytes, etc.
+}
+
+class MemoryContentProvider : Provider {
+    // same interface, in-memory for testing
+}
+
+class NatsProvider : Provider {
+    // provides getConnection(): nats.Conn
+}
+
+class SSLProvider : Provider {
+    // provides getSSLContext(): tls.Config
+}
+```
+
+ContentStore becomes a provider type like any other. No special field, no special accessor.
+
 ### ProcessorContext
 
-Instead of ServiceProvider growing into a god object, processors receive a **ProcessorContext** at creation time. This is the single access point for everything a processor needs:
+Processors receive a **ProcessorContext** at creation time. Single access point for everything:
 
 ```zinc
 class ProcessorContext {
@@ -39,17 +75,24 @@ class ProcessorContext {
     pub fn getConfig(String key): String
     pub fn getConfigOrDefault(String key, String defaultValue): String
 
-    // Provider lookup
+    // Provider lookup — everything goes through this
     pub fn getProvider(String name): Provider
 
-    // Content store (convenience — delegates to services)
-    pub fn getContentStore(): ContentStore
-
-    // Credentials (convenience — delegates to services)
+    // Credentials
     pub fn getCredential(String name): String
 
     // Logging (named logger for this processor)
     pub fn log(): Logger
+}
+```
+
+No `getContentStore()` shortcut. Processors that need content storage look up their provider by name:
+
+```zinc
+fn FileSinkFactory(ProcessorContext ctx): ProcessorFn {
+    var contentProvider = ctx.getProvider(ctx.getConfig("content-provider"))
+    var outputDir = ctx.getConfig("output_dir")
+    return FileSink(outputDir, contentProvider)
 }
 ```
 
@@ -65,23 +108,17 @@ type ProcessorFactory = Fn<(Map<String, String>, ServiceProvider), ProcessorFn>
 type ProcessorFactory = Fn<(ProcessorContext), ProcessorFn>
 ```
 
-This is a breaking change but a clean one — every factory gets one object instead of two.
-
 ### ServiceProvider Redesign
 
-ServiceProvider becomes the backing store for ProcessorContext:
+ServiceProvider is now just the backing store — provider registry + config + credentials:
 
 ```zinc
 class ServiceProvider {
-    ContentStore contentStore
     var providers = Map<String, Provider>{}
     var config = Map<String, String>{}
     var credentials = Map<String, String>{}
 
-    init(ContentStore contentStore) { ... }
-
-    // Content store
-    pub fn getContentStore(): ContentStore
+    init() {}
 
     // Providers
     pub fn getProvider(String name): Provider
@@ -101,42 +138,20 @@ class ServiceProvider {
 }
 ```
 
-### Provider Interface
-
-```zinc
-interface Provider {
-    fn getName(): String
-    fn getType(): String
-    fn enable()
-    fn disable()
-    fn isEnabled(): bool
-}
-```
-
-Specific providers extend this:
-
-```zinc
-class NatsProvider : Provider {
-    // provides getConnection(): nats.Conn
-}
-
-class SSLProvider : Provider {
-    // provides getSSLContext(): tls.Config
-}
-```
+No ContentStore field. No special constructor. Just a registry.
 
 ### Provider Registry
 
-Like ProcessorRegistry — maps provider type names to factory functions:
+Maps provider type names to factory functions (like ProcessorRegistry):
 
 ```zinc
-type ProviderFactory = Fn<(Map<String, String>), Provider>
+type ProviderFactory = Fn<(String, Map<String, String>), Provider>
 
 class ProviderRegistry {
     var factories = Map<String, ProviderFactory>{}
 
     pub fn register(String typeName, ProviderFactory factory)
-    pub fn create(String typeName, Map<String, String> config): Provider
+    pub fn create(String typeName, String name, Map<String, String> config): Provider
     pub fn has(String typeName): bool
     pub fn list(): List<String>
 }
@@ -147,22 +162,32 @@ class ProviderRegistry {
 ```yaml
 # config.yaml
 providers:
-  - name: nats-main
-    type: nats
-    config:
-      url: nats://localhost:4222
-
   - name: content
     type: file-content
     config:
       dir: /tmp/zinc-flow/content
 
+  - name: nats-main
+    type: nats
+    config:
+      url: nats://localhost:4222
+
 flow:
   processors:
+    - name: tag-env
+      type: add-attribute
+      config:
+        key: env
+        value: prod
+    - name: sink
+      type: file-sink
+      config:
+        output_dir: /tmp/zinc-flow/output
+        content-provider: content    # references provider by name
     - name: nats-out
       type: put-nats
       config:
-        provider: nats-main        # references provider by name
+        provider: nats-main
         subject: orders.tagged
 ```
 
@@ -172,19 +197,34 @@ Config hierarchy (highest priority wins):
 3. config.yaml values
 4. Hardcoded defaults
 
-### How a Connector Processor Uses This
+### How Processors Use Providers
 
 ```zinc
+// FileSink uses content provider for resolving claims
+class FileSink : ProcessorFn {
+    String outputDir
+    FileContentProvider contentProvider
+
+    init(String outputDir, FileContentProvider contentProvider) { ... }
+
+    pub fn process(FlowFile ff): ProcessorResult {
+        var resolved = contentProvider.resolve(ff.content)
+        // ... write to disk
+    }
+}
+
+fn FileSinkFactory(ProcessorContext ctx): ProcessorFn {
+    var contentProvider = ctx.getProvider(ctx.getConfig("content-provider"))
+    var outputDir = ctx.getConfig("output_dir")
+    return FileSink(outputDir, contentProvider)
+}
+
+// PutNats uses NATS provider for shared connection
 class PutNats : ProcessorFn {
     NatsProvider natsProvider
     String subject
-    ContentStore store
 
-    init(NatsProvider natsProvider, String subject, ContentStore store) {
-        this.natsProvider = natsProvider
-        this.subject = subject
-        this.store = store
-    }
+    init(NatsProvider natsProvider, String subject) { ... }
 
     pub fn process(FlowFile ff): ProcessorResult {
         var conn = natsProvider.getConnection()
@@ -195,7 +235,7 @@ class PutNats : ProcessorFn {
 fn PutNatsFactory(ProcessorContext ctx): ProcessorFn {
     var natsProvider = ctx.getProvider(ctx.getConfig("provider"))
     var subject = ctx.getConfig("subject")
-    return PutNats(natsProvider, subject, ctx.getContentStore())
+    return PutNats(natsProvider, subject)
 }
 ```
 
@@ -213,13 +253,14 @@ PUT  /api/config              — update a runtime config value
 ## Implementation Order
 
 1. Provider interface
-2. ProcessorContext class
-3. Redesign ServiceProvider — add provider registry, config, credentials
-4. ProviderRegistry
-5. Update ProcessorFactory type signature
-6. Update all 5 builtin processors to use ProcessorContext
-7. Update Fabric — create ProcessorContext per processor, load providers from config
-8. Config hierarchy — env vars override YAML
-9. API endpoints — provider management + config view
-10. Update tests
-11. NatsProvider — first real provider (after framework is solid)
+2. FileContentProvider + MemoryContentProvider (wrap existing ContentStore logic)
+3. ProcessorContext class
+4. Redesign ServiceProvider — provider registry + config + credentials, no ContentStore field
+5. ProviderRegistry
+6. Update ProcessorFactory type signature
+7. Update all 5 builtin processors to use ProcessorContext
+8. Update Fabric — load providers from config, create ProcessorContext per processor
+9. Config hierarchy — env vars override YAML
+10. API endpoints — provider management + config view
+11. Update tests
+12. NatsProvider — first external provider (after framework is solid)
