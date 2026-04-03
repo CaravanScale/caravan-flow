@@ -2,12 +2,17 @@
 // This is the boundary adapter. Internally we use core.FlowFile with Content sealed type.
 
 import core
+import bytes
 
-const V3_MAGIC_LEN = 7             // "NiFiFF3" is 7 bytes
-const MAX_VALUE_2_BYTES = 0xFFFF    // field length sentinel
+pub const V3_MAGIC_LEN = 7             // "NiFiFF3" is 7 bytes
+pub const MAX_VALUE_2_BYTES = 0xFFFF   // field length sentinel
 
-// V3Error — returned when V3 deserialization fails.
-data V3Error(String message)
+// V3Result — returned when V3 deserialization fails.
+data V3Result(
+    FlowFile ff,
+    int nextOffset,
+    String errorMsg
+)
 
 // --- Pack (core FlowFile → V3 wire bytes) ---
 
@@ -40,7 +45,7 @@ pub fn packFlowFile(FlowFile ff, byte[] contentBytes): byte[] {
 // packMultiple serializes multiple FlowFiles to a concatenated V3 stream.
 pub fn packMultiple(List<FlowFile> flowfiles, List<byte[]> contents): byte[] {
     var buf = byte[0]
-    for i in range(len(flowfiles)) {
+    for i in 0..len(flowfiles) {
         buf = append(buf, packFlowFile(flowfiles[i], contents[i])...)
     }
     return buf
@@ -48,18 +53,11 @@ pub fn packMultiple(List<FlowFile> flowfiles, List<byte[]> contents): byte[] {
 
 // --- Unpack (V3 wire bytes → core FlowFile) ---
 
-// UnpackResult holds a FlowFile and the next read offset, or an error.
-data UnpackResult(
-    FlowFile ff,
-    int nextOffset,
-    V3Error error
-)
-
 // unpackFlowFile deserializes one FlowFile from V3 binary at the given offset.
-pub fn unpackFlowFile(byte[] data, int offset): UnpackResult {
+pub fn unpackFlowFile(byte[] data, int offset): V3Result {
     var magic = "NiFiFF3".toBytes()
-    if data[offset:offset + V3_MAGIC_LEN] != magic {
-        return UnpackResult(FlowFile("", Map<String, String>{}, Raw(byte[0]), 0), offset, V3Error("invalid FlowFile V3 magic at offset {offset}"))
+    if !bytes.Equal(data[offset:offset + V3_MAGIC_LEN], magic) {
+        return V3Result(FlowFile("", Map<String, String>{}, Raw(byte[0]), 0), offset, "invalid FlowFile V3 magic at offset {offset}")
     }
     var pos = offset + V3_MAGIC_LEN
 
@@ -69,7 +67,7 @@ pub fn unpackFlowFile(byte[] data, int offset): UnpackResult {
 
     // Read attributes
     var attributes = Map<String, String>{}
-    for _ in range(count) {
+    for i in 0..count {
         var keyLen = readFieldValue(data, pos)
         pos = readFieldNextOffset(data, pos)
         var key = string(data[pos:pos + keyLen])
@@ -90,7 +88,7 @@ pub fn unpackFlowFile(byte[] data, int offset): UnpackResult {
     pos = pos + contentLen
 
     var ff = createFlowFile(content, attributes)
-    return UnpackResult(ff, pos, V3Error(""))
+    return V3Result(ff, pos, "")
 }
 
 // unpackAll deserializes all FlowFiles from a V3 binary stream.
@@ -99,7 +97,7 @@ pub fn unpackAll(byte[] data): List<FlowFile> {
     var pos = 0
     while pos < len(data) {
         var result = unpackFlowFile(data, pos)
-        if result.error.message != "" {
+        if result.errorMsg != "" {
             break
         }
         flowfiles = append(flowfiles, result.ff)

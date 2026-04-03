@@ -27,6 +27,12 @@ pub fn createRecordFlowFile(Schema schema, List<GenericRecord> rows, Map<String,
     return FlowFile(id, attributes, Records(schema, rows), int(Now().Unix()))
 }
 
+// Create a new FlowFile with pre-built Content (Raw, Records, or Claim).
+pub fn createFlowFileWithContent(Content content, Map<String, String> attributes): FlowFile {
+    var id = flowFileId()
+    return FlowFile(id, attributes, content, int(Now().Unix()))
+}
+
 // Create a copy with an additional attribute.
 pub fn withAttribute(FlowFile ff, String key, String value): FlowFile {
     var attrs = ff.attributes
