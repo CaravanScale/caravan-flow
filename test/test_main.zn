@@ -129,7 +129,6 @@ fn testV3MultipleRoundtrip() {
 fn testProcessorAddAttribute() {
     print("--- Processor: AddAttribute ---")
 
-    var services = testServices()
     var proc = AddAttribute("env", "prod")
     var ff = createFlowFile("data".toBytes(), Map<String, String>{"type": "order"})
     var result = proc.process(ff)

@@ -85,7 +85,7 @@ class MemoryContentStore : ContentStore {
     }
 
     pub fn delete(String claimId) {
-        delete(data, claimId)
+        data.delete(claimId)
     }
 
     pub fn exists(String claimId): bool {
