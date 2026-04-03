@@ -1,0 +1,126 @@
+// Provider — interface for shared infrastructure resources.
+// Providers are named, typed, and lifecycle-managed. Processors reference
+// them by name. Examples: content storage, NATS connections, SSL contexts.
+interface Provider {
+    fn getName(): String
+    fn getType(): String
+    fn enable()
+    fn disable()
+    fn isEnabled(): bool
+}
+
+// ProcessorContext — the central context for zinc-flow.
+// Loads providers from config, holds them by name, provides config and
+// credential access. Processor factories receive a view of this with
+// their processor-specific config layered on top.
+class ProcessorContext {
+    var providers = Map<String, Provider>{}
+    var config = Map<String, String>{}
+    var credentials = Map<String, String>{}
+    var processorConfig = Map<String, String>{}
+    var processorName = ""
+
+    init() {}
+
+    // --- Provider management ---
+
+    pub fn addProvider(Provider provider) {
+        providers[provider.getName()] = provider
+    }
+
+    pub fn removeProvider(String name) {
+        if providers.containsKey(name) {
+            var p = providers[name]
+            if p.isEnabled() {
+                p.disable()
+            }
+            providers.delete(name)
+        }
+    }
+
+    pub fn getProvider(String name): Provider {
+        if !providers.containsKey(name) {
+            return error("provider not found: ${name}")
+        }
+        var p = providers[name]
+        if !p.isEnabled() {
+            return error("provider not enabled: ${name}")
+        }
+        return p
+    }
+
+    pub fn listProviders(): List<String> {
+        return providers.keys()
+    }
+
+    pub fn enableAll() {
+        var names = providers.keys()
+        for name in names {
+            providers[name].enable()
+        }
+    }
+
+    pub fn disableAll() {
+        var names = providers.keys()
+        for name in names {
+            var p = providers[name]
+            if p.isEnabled() {
+                p.disable()
+            }
+        }
+    }
+
+    // --- Config ---
+
+    pub fn getConfig(String key): String {
+        // Processor-specific config takes precedence
+        if processorConfig.containsKey(key) {
+            return processorConfig[key]
+        }
+        if config.containsKey(key) {
+            return config[key]
+        }
+        return error("config key '${key}' not found")
+    }
+
+    pub fn getConfigOrDefault(String key, String defaultValue): String {
+        if processorConfig.containsKey(key) {
+            return processorConfig[key]
+        }
+        if config.containsKey(key) {
+            return config[key]
+        }
+        return defaultValue
+    }
+
+    pub fn setConfig(String key, String value) {
+        config[key] = value
+    }
+
+    // --- Credentials ---
+
+    pub fn getCredential(String name): String {
+        if !credentials.containsKey(name) {
+            return error("credential not found: ${name}")
+        }
+        return credentials[name]
+    }
+
+    pub fn setCredential(String name, String value) {
+        credentials[name] = value
+    }
+
+    // --- Processor-specific view ---
+    // Creates a child context for a specific processor, with its own config
+    // layered on top of the global context. Providers and credentials are shared.
+
+    pub fn forProcessor(String name, Map<String, String> procConfig): ProcessorContext {
+        var child = ProcessorContext()
+        child.providers = providers
+        child.config = config
+        child.credentials = credentials
+        child.processorConfig = procConfig
+        child.processorName = name
+        return child
+    }
+}
