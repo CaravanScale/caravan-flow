@@ -40,11 +40,11 @@ class ProcessorContext {
 
     pub fn getProvider(String name): Provider {
         if !providers.containsKey(name) {
-            return error("provider not found: ${name}")
+            return Error("provider not found: ${name}")
         }
         var p = providers[name]
         if !p.isEnabled() {
-            return error("provider not enabled: ${name}")
+            return Error("provider not enabled: ${name}")
         }
         return p
     }
@@ -80,7 +80,7 @@ class ProcessorContext {
         if config.containsKey(key) {
             return config[key]
         }
-        return error("config key '${key}' not found")
+        return Error("config key '${key}' not found")
     }
 
     pub fn getConfigOrDefault(String key, String defaultValue): String {
@@ -101,7 +101,7 @@ class ProcessorContext {
 
     pub fn getCredential(String name): String {
         if !credentials.containsKey(name) {
-            return error("credential not found: ${name}")
+            return Error("credential not found: ${name}")
         }
         return credentials[name]
     }
