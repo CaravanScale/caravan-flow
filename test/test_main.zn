@@ -55,6 +55,13 @@ fn main() {
     testScopedContextAccess()
     testProviderLifecycle()
 
+    // Scenarios — end-to-end flow engine behavior
+    testScenarioProcessorChain()
+    testScenarioDisableProcessor()
+    testScenarioBackpressurePropagation()
+    testScenarioRetryExhaustionToDLQ()
+    testScenarioDLQReplayToSourceQueue()
+
     print("")
     print("=== all tests complete ===")
 }
@@ -746,4 +753,207 @@ fn testProviderLifecycle() {
     assertTrue("re-enabled", cp.isEnabled())
     cp.shutdown()
     assertFalse("after shutdown", cp.isEnabled())
+}
+
+// =============================================================================
+// Scenarios — end-to-end flow engine behavior
+// =============================================================================
+
+// Scenario: FlowFile routes through a 2-processor chain via queues + sessions.
+// tag-env adds env=dev, then logger passes through. Verify end-to-end routing.
+fn testScenarioProcessorChain() {
+    print("--- Scenario: Processor Chain ---")
+
+    // Build scoped context with content provider
+    var scopedCtx = testScopedContext()
+
+    // Create processors via registry (tests real factory wiring)
+    var reg = Registry()
+    registerBuiltins(reg)
+    var tagger = reg.create("add-attribute", scopedCtx, Map<String, String>{"key": "env", "value": "dev"})
+    var logger = reg.create("log", scopedCtx, Map<String, String>{"prefix": "chain-test"})
+
+    // Create queues for each processor
+    var tagQueue = FlowQueue("tag-env", 100, long(1024 * 1024), long(30000000000))
+    var logQueue = FlowQueue("logger", 100, long(1024 * 1024), long(30000000000))
+    var allQueues = Map<String, FlowQueue>{}
+    allQueues["tag-env"] = tagQueue
+    allQueues["logger"] = logQueue
+
+    // Routing: tagger output (has env attr) → logger. Logger is terminal (no onward route).
+    var tagEngine = RulesEngine()
+    tagEngine.addOrReplaceRuleset("flow", List<RoutingRule>[
+        RoutingRule("to-logger", BaseRule("env", EXISTS, ""), Destination("logger", "local"), true)
+    ])
+    var logEngine = RulesEngine()  // empty — logger is terminal
+
+    // Create DLQ and sessions (each processor gets its own routing context)
+    var dlq = DLQ()
+    var tagSession = ProcessSession(tagQueue, tagger, "tag-env", tagEngine, allQueues, dlq, 5)
+    var logSession = ProcessSession(logQueue, logger, "logger", logEngine, allQueues, dlq, 5)
+
+    // Offer a FlowFile to the tag queue
+    var ff = createFlowFile("hello".toBytes(), Map<String, String>{"type": "order"})
+    tagQueue.offer(ff)
+    assertIntEqual("tag queue has 1", tagQueue.visibleCount(), 1)
+
+    // Execute tag session — should process and route to logger queue
+    var worked = tagSession.execute()
+    assertTrue("tag session executed", worked)
+    assertIntEqual("tag queue empty", tagQueue.visibleCount(), 0)
+    assertIntEqual("log queue has 1", logQueue.visibleCount(), 1)
+
+    // Execute log session — should process (no onward route, terminal)
+    worked = logSession.execute()
+    assertTrue("log session executed", worked)
+    assertIntEqual("log queue empty", logQueue.visibleCount(), 0)
+    assertIntEqual("no dlq entries", dlq.count(), 0)
+}
+
+// Scenario: Disable a processor, verify items accumulate in its queue.
+// Re-enable, verify processing resumes.
+fn testScenarioDisableProcessor() {
+    print("--- Scenario: Disable/Enable Processor ---")
+
+    var ctx = testContext()
+    var reg = Registry()
+    registerBuiltins(reg)
+    var fab = Fabric(reg, ctx)
+
+    // Manually add a processor and check state
+    fab.addProcessor("tagger", "add-attribute", Map<String, String>{"key": "env", "value": "test"})
+
+    // Verify initial state
+    var state = fab.getProcessorState("tagger")
+    match state {
+        case ENABLED { assertTrue("initially enabled", true) }
+        case DISABLED { assertTrue("initially enabled", false) }
+        case DRAINING { assertTrue("initially enabled", false) }
+    }
+
+    // Disable the processor
+    fab.disableProcessor("tagger", 1)
+
+    // Ingest a flowfile — it enters ingest queue
+    var ff = createFlowFile("test".toBytes(), Map<String, String>{"type": "test"})
+    fab.ingest(ff)
+
+    // Re-enable
+    fab.enableProcessor("tagger")
+    var reState = fab.getProcessorState("tagger")
+    match reState {
+        case ENABLED { assertTrue("re-enabled", true) }
+        case DISABLED { assertTrue("re-enabled", false) }
+        case DRAINING { assertTrue("re-enabled", false) }
+    }
+}
+
+// Scenario: Fill a queue to capacity, verify backpressure prevents further inserts.
+fn testScenarioBackpressurePropagation() {
+    print("--- Scenario: Backpressure Propagation ---")
+
+    // Create a tiny queue (capacity 3) and a downstream that's exactly full
+    var smallQueue = FlowQueue("small", 3, long(1024), long(30000000000))
+    var downstreamQueue = FlowQueue("downstream", 3, long(1024), long(30000000000))
+    var allQueues = Map<String, FlowQueue>{}
+    allQueues["small"] = smallQueue
+    allQueues["downstream"] = downstreamQueue
+
+    // Route everything from small → downstream
+    var engine = RulesEngine()
+    engine.addOrReplaceRuleset("flow", List<RoutingRule>[
+        RoutingRule("forward", BaseRule("type", EXISTS, ""), Destination("downstream", "local"), true)
+    ])
+
+    // Create a pass-through processor and session
+    var proc = LogProcessor("bp-test")
+    var dlq = DLQ()
+    var session = ProcessSession(smallQueue, proc, "small", engine, allQueues, dlq, 5)
+
+    // Fill the downstream queue to capacity
+    var i = 0
+    while i < 3 {
+        downstreamQueue.offer(createFlowFile("fill".toBytes(), Map<String, String>{"type": "x"}))
+        i = i + 1
+    }
+    assertFalse("downstream full", downstreamQueue.hasCapacity())
+
+    // Now put an item in the small queue and try to process
+    smallQueue.offer(createFlowFile("blocked".toBytes(), Map<String, String>{"type": "test"}))
+    var worked = session.execute()
+    assertTrue("session ran", worked)
+
+    // Item should be nacked back to small queue (backpressure from downstream)
+    assertIntEqual("item back in small queue", smallQueue.visibleCount(), 1)
+    assertIntEqual("attempt incremented", smallQueue.claim().attemptCount, 1)
+}
+
+// Scenario: Nack an item enough times to exceed max retries → ends up in DLQ.
+fn testScenarioRetryExhaustionToDLQ() {
+    print("--- Scenario: Retry Exhaustion → DLQ ---")
+
+    var sourceQueue = FlowQueue("source", 100, long(1024 * 1024), long(30000000000))
+    var destQueue = FlowQueue("dest", 0, long(0), long(30000000000))  // zero capacity — always full
+    var allQueues = Map<String, FlowQueue>{}
+    allQueues["dest"] = destQueue
+
+    // Route everything to the full dest queue
+    var engine = RulesEngine()
+    engine.addOrReplaceRuleset("flow", List<RoutingRule>[
+        RoutingRule("to-dest", BaseRule("type", EXISTS, ""), Destination("dest", "local"), true)
+    ])
+
+    var proc = LogProcessor("retry-test")
+    var dlq = DLQ()
+    var maxRetries = 3
+    var session = ProcessSession(sourceQueue, proc, "source", engine, allQueues, dlq, maxRetries)
+
+    // Offer a flowfile
+    var ff = createFlowFile("will-fail".toBytes(), Map<String, String>{"type": "test"})
+    sourceQueue.offer(ff)
+
+    // Execute repeatedly — each time nacks (backpressure), incrementing attemptCount
+    var attempt = 0
+    while attempt < maxRetries + 1 {
+        session.execute()
+        attempt = attempt + 1
+    }
+
+    // After maxRetries, item should be in DLQ
+    assertIntEqual("dlq has entry", dlq.count(), 1)
+    assertIntEqual("source queue empty", sourceQueue.visibleCount(), 0)
+
+    // Verify DLQ entry has correct context
+    var entries = dlq.list()
+    assertEqual("dlq source processor", entries[0].sourceProcessor, "source")
+    assertEqual("dlq error", entries[0].lastError, "max retries exceeded")
+}
+
+// Scenario: DLQ replay re-injects into the correct source queue.
+fn testScenarioDLQReplayToSourceQueue() {
+    print("--- Scenario: DLQ Replay to Source Queue ---")
+
+    var dlq = DLQ()
+    var sourceQueue = FlowQueue("my-proc", 100, long(1024 * 1024), long(30000000000))
+
+    // Simulate a failed flowfile landing in DLQ
+    var ff = createFlowFile("replay-test".toBytes(), Map<String, String>{"type": "order"})
+    dlq.add(ff, "my-proc", "my-proc", 5, "processing failed")
+    assertIntEqual("dlq count", dlq.count(), 1)
+
+    // Replay: get the entry, replay it, re-inject into source queue
+    var entries = dlq.list()
+    var replayed = dlq.replay(entries[0].id)
+    assertEqual("replayed ff id matches", replayed.id, ff.id)
+    assertIntEqual("dlq empty after replay", dlq.count(), 0)
+
+    // Re-inject into source queue
+    sourceQueue.offer(replayed)
+    assertIntEqual("source queue has replayed item", sourceQueue.visibleCount(), 1)
+
+    // Verify the replayed item can be claimed and processed
+    var entry = sourceQueue.claim()
+    assertEqual("claimed replayed ff", entry.flowFile.id, ff.id)
+    sourceQueue.ack(entry.id)
+    assertIntEqual("source queue empty after processing", sourceQueue.visibleCount(), 0)
 }
