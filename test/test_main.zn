@@ -46,6 +46,15 @@ fn main() {
     testFabricMultiHop()
     testFabricDlqFromFailure()
 
+    // Flow engine: queues, DLQ, sessions, providers
+    testFlowQueueOfferClaim()
+    testFlowQueueBackpressure()
+    testFlowQueueAckNack()
+    testDLQAddAndList()
+    testDLQReplay()
+    testScopedContextAccess()
+    testProviderLifecycle()
+
     print("")
     print("=== all tests complete ===")
 }
@@ -601,4 +610,140 @@ fn testFabricDlqFromFailure() {
 
     // Verify DLQ is accessible
     assertTrue("dlq accessible", true)
+}
+
+// --- Flow Engine: Queues ---
+
+fn testFlowQueueOfferClaim() {
+    print("--- FlowQueue: Offer/Claim ---")
+
+    var q = FlowQueue("test-q", 100, long(1024 * 1024), long(30000000000))
+    var ff = createFlowFile("hello".toBytes(), Map<String, String>{"key": "val"})
+
+    var offered = q.offer(ff)
+    assertTrue("offer accepted", offered)
+    assertIntEqual("visible count", q.visibleCount(), 1)
+    assertIntEqual("invisible count", q.invisibleCount(), 0)
+
+    var entry = q.claim()
+    assertTrue("claim non-empty", entry.id != "")
+    assertEqual("claimed flowfile id", entry.flowFile.id, ff.id)
+    assertIntEqual("after claim visible", q.visibleCount(), 0)
+    assertIntEqual("after claim invisible", q.invisibleCount(), 1)
+
+    q.ack(entry.id)
+    assertIntEqual("after ack visible", q.visibleCount(), 0)
+    assertIntEqual("after ack invisible", q.invisibleCount(), 0)
+}
+
+fn testFlowQueueBackpressure() {
+    print("--- FlowQueue: Backpressure ---")
+
+    var q = FlowQueue("bp-q", 2, long(1024), long(30000000000))
+
+    var ff1 = createFlowFile("a".toBytes(), Map<String, String>{})
+    var ff2 = createFlowFile("b".toBytes(), Map<String, String>{})
+    var ff3 = createFlowFile("c".toBytes(), Map<String, String>{})
+
+    assertTrue("first offer", q.offer(ff1))
+    assertTrue("second offer", q.offer(ff2))
+    assertFalse("third rejected (backpressure)", q.offer(ff3))
+    assertFalse("no capacity", q.hasCapacity())
+}
+
+fn testFlowQueueAckNack() {
+    print("--- FlowQueue: Ack/Nack ---")
+
+    var q = FlowQueue("an-q", 100, long(1024 * 1024), long(30000000000))
+    var ff = createFlowFile("test".toBytes(), Map<String, String>{})
+    q.offer(ff)
+
+    var entry = q.claim()
+    assertIntEqual("attempt before nack", entry.attemptCount, 0)
+
+    q.nack(entry.id)
+    assertIntEqual("after nack visible", q.visibleCount(), 1)
+    assertIntEqual("after nack invisible", q.invisibleCount(), 0)
+
+    var retried = q.claim()
+    assertIntEqual("attempt after nack", retried.attemptCount, 1)
+    q.ack(retried.id)
+}
+
+// --- Flow Engine: DLQ ---
+
+fn testDLQAddAndList() {
+    print("--- DLQ: Add/List ---")
+
+    var dlq = DLQ()
+    assertIntEqual("initial count", dlq.count(), 0)
+
+    var ff = createFlowFile("failed".toBytes(), Map<String, String>{"type": "test"})
+    dlq.add(ff, "my-proc", "my-queue", 3, "processing error")
+    assertIntEqual("after add count", dlq.count(), 1)
+
+    var entries = dlq.list()
+    assertIntEqual("list length", len(entries), 1)
+    assertEqual("source processor", entries[0].sourceProcessor, "my-proc")
+    assertEqual("last error", entries[0].lastError, "processing error")
+    assertIntEqual("attempt count", entries[0].attemptCount, 3)
+}
+
+fn testDLQReplay() {
+    print("--- DLQ: Replay ---")
+
+    var dlq = DLQ()
+    var ff = createFlowFile("replay-me".toBytes(), Map<String, String>{"id": "123"})
+    dlq.add(ff, "proc", "queue", 5, "max retries")
+    assertIntEqual("before replay", dlq.count(), 1)
+
+    var entries = dlq.list()
+    var replayedFf = dlq.replay(entries[0].id)
+    assertEqual("replayed flowfile id", replayedFf.id, ff.id)
+    assertIntEqual("after replay", dlq.count(), 0)
+}
+
+// --- Flow Engine: ScopedContext ---
+
+fn testScopedContextAccess() {
+    print("--- ScopedContext: Access ---")
+
+    var store = MemoryContentStore()
+    var cp = ContentProvider("content", store)
+    cp.enable()
+
+    var providers = Map<String, Provider>{}
+    providers["content"] = cp
+    var ctx = ScopedContext(providers)
+
+    var names = ctx.listProviders()
+    assertIntEqual("provider count", len(names), 1)
+
+    var p = ctx.getProvider("content") or {
+        assertTrue("content provider should exist", false)
+        return
+    }
+    assertEqual("provider name", p.getName(), "content")
+}
+
+// --- Flow Engine: Provider Lifecycle ---
+
+fn testProviderLifecycle() {
+    print("--- Provider: Lifecycle ---")
+
+    var store = MemoryContentStore()
+    var cp = ContentProvider("content", store)
+
+    assertFalse("initially disabled", cp.isEnabled())
+
+    cp.enable()
+    assertTrue("after enable", cp.isEnabled())
+
+    cp.disable(0)
+    assertFalse("after disable", cp.isEnabled())
+
+    cp.enable()
+    assertTrue("re-enabled", cp.isEnabled())
+    cp.shutdown()
+    assertFalse("after shutdown", cp.isEnabled())
 }

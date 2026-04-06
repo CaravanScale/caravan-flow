@@ -50,8 +50,8 @@ class DLQ {
         return result
     }
 
-    // discard removes a DLQ entry.
-    pub fn discard(String id) {
+    // remove discards a DLQ entry.
+    pub fn remove(String id) {
         lock mu {
             entries.delete(id)
         }
