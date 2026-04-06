@@ -1,0 +1,98 @@
+// Throughput benchmark — measures flowfiles/sec through a 2-processor chain.
+
+import core
+import fabric.router
+import fabric.registry
+import processors
+import time
+
+fn main() {
+    print("=== zinc-flow (Go) benchmark ===")
+    print("")
+
+    print("Queue throughput:")
+    benchQueueThroughput(100000)
+    print("")
+
+    print("Session throughput (2-hop pipeline):")
+    benchSessionThroughput(10000)
+    benchSessionThroughput(50000)
+    benchSessionThroughput(100000)
+}
+
+fn benchQueueThroughput(int n) {
+    var q = FlowQueue("bench", n + 100, long(0), long(30000000000))
+
+    var start = time.Now()
+    var i = 0
+    while i < n {
+        var ff = createFlowFile("x".toBytes(), Map<String, String>{})
+        q.offer(ff)
+        i = i + 1
+    }
+    var offerDur = time.Since(start)
+    var offerMs = offerDur.Milliseconds()
+    print("  ${n} offer: ${offerMs}ms")
+
+    start = time.Now()
+    i = 0
+    while i < n {
+        var entry = q.claim()
+        q.ack(entry.id)
+        i = i + 1
+    }
+    var claimDur = time.Since(start)
+    var claimMs = claimDur.Milliseconds()
+    print("  ${n} claim+ack: ${claimMs}ms")
+}
+
+fn benchSessionThroughput(int n) {
+    var tag = AddAttribute("env", "prod")
+    var sink = AddAttribute("done", "true")
+
+    var tagQ = FlowQueue("tag", n + 100, long(0), long(30000000000))
+    var sinkQ = FlowQueue("sink", n + 100, long(0), long(30000000000))
+    var queues = Map<String, FlowQueue>{}
+    queues["tag"] = tagQ
+    queues["sink"] = sinkQ
+
+    var tagEngine = RulesEngine()
+    tagEngine.addOrReplaceRuleset("flow", List<RoutingRule>[
+        RoutingRule("to-sink", BaseRule("env", EXISTS, ""), Destination("sink", "local"), true)
+    ])
+    var sinkEngine = RulesEngine()
+
+    var dlq = DLQ()
+    var tagSession = ProcessSession(tagQ, tag, "tag", tagEngine, queues, dlq, 5)
+    var sinkSession = ProcessSession(sinkQ, sink, "sink", sinkEngine, queues, dlq, 5)
+
+    // Pre-load
+    var i = 0
+    while i < n {
+        var ff = createFlowFile("bench payload data here".toBytes(), Map<String, String>{"type": "order", "id": str(i)})
+        tagQ.offer(ff)
+        i = i + 1
+    }
+
+    var start = time.Now()
+
+    i = 0
+    while i < n {
+        tagSession.execute()
+        i = i + 1
+    }
+    i = 0
+    while i < n {
+        sinkSession.execute()
+        i = i + 1
+    }
+
+    var elapsed = time.Since(start)
+    var ms = elapsed.Milliseconds()
+    if ms > 0 {
+        var rate = int(int64(n) * 1000 / elapsed.Milliseconds())
+        print("  ${n} flowfiles, 2 hops: ${ms}ms (${rate} ff/s)")
+    } else {
+        print("  ${n} flowfiles, 2 hops: <1ms")
+    }
+}

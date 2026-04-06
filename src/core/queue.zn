@@ -1,6 +1,8 @@
 // FlowQueue — bounded, transactional queue connecting processors.
 // Items have three states: VISIBLE (available), INVISIBLE (claimed), ACKED (removed).
 // Visibility timeout ensures automatic recovery if a processor crashes or hangs.
+//
+// Uses a head-index dequeue with compaction to avoid O(n) slice copies and GC leaks.
 
 import sync.Mutex
 import time
@@ -15,6 +17,7 @@ class FlowQueue {
     long maxBytes
     long visibilityTimeoutNanos
     var items = List<QueueEntry>[]
+    var head = 0
     var invisible = Map<String, QueueEntry>{}
     var Mutex mu
     long currentBytes
@@ -39,7 +42,8 @@ class FlowQueue {
         var ffBytes = long(contentSize(ff.content))
         var accepted = false
         lock mu {
-            var total = len(items) + len(invisible)
+            var visibleCount = len(items) - head
+            var total = visibleCount + len(invisible)
             if total < maxCount && (maxBytes == long(0) || (currentBytes + ffBytes) <= maxBytes) {
                 idCounter = idCounter + 1
                 var entryId = name + "-" + str(idCounter)
@@ -57,7 +61,8 @@ class FlowQueue {
         var ffBytes = long(contentSize(ff.content))
         var accepted = false
         lock mu {
-            var total = len(items) + len(invisible)
+            var visibleCount = len(items) - head
+            var total = visibleCount + len(invisible)
             if total < maxCount && (maxBytes == long(0) || (currentBytes + ffBytes) <= maxBytes) {
                 idCounter = idCounter + 1
                 var entryId = name + "-" + str(idCounter)
@@ -74,16 +79,11 @@ class FlowQueue {
     // Returns entry with empty id if queue is empty — check id == "".
     pub fn claim(): QueueEntry {
         lock mu {
-            if len(items) > 0 {
-                var entry = items[0]
-                // Remove from front
-                var rest = List<QueueEntry>[]
-                var i = 1
-                while i < len(items) {
-                    rest = append(rest, items[i])
-                    i = i + 1
-                }
-                items = rest
+            if head < len(items) {
+                var entry = items[head]
+                head = head + 1
+                // Compact when wasted space exceeds live items (amortized O(1))
+                compact()
                 // Move to invisible with timestamp
                 var now = long(time.Now().UnixNano())
                 var claimed = QueueEntry(entry.id, entry.flowFile, now, entry.attemptCount, entry.sourceProcessor)
@@ -125,7 +125,8 @@ class FlowQueue {
     pub fn hasCapacity(): bool {
         var result = false
         lock mu {
-            var total = len(items) + len(invisible)
+            var visibleCount = len(items) - head
+            var total = visibleCount + len(invisible)
             var countOk = total < maxCount
             var bytesOk = maxBytes == long(0) || currentBytes < maxBytes
             result = countOk && bytesOk
@@ -146,7 +147,7 @@ class FlowQueue {
     pub fn size(): int {
         var total = 0
         lock mu {
-            total = len(items) + len(invisible)
+            total = (len(items) - head) + len(invisible)
         }
         return total
     }
@@ -155,7 +156,7 @@ class FlowQueue {
     pub fn visibleCount(): int {
         var count = 0
         lock mu {
-            count = len(items)
+            count = len(items) - head
         }
         return count
     }
@@ -169,24 +170,43 @@ class FlowQueue {
         return count
     }
 
+    // compact reclaims dead space when head has advanced past half the slice.
+    // Called under lock. Amortized O(1): each element is copied at most once
+    // per N claims, where N is the number of elements.
+    fn compact() {
+        var live = len(items) - head
+        if head > 0 && head >= live {
+            var compacted = List<QueueEntry>[]
+            var i = head
+            while i < len(items) {
+                compacted = append(compacted, items[i])
+                i = i + 1
+            }
+            items = compacted
+            head = 0
+        }
+    }
+
     // startReaper spawns a background goroutine that returns timed-out invisible items to visible.
     pub fn startReaper() {
         spawn {
             while true {
                 time.Sleep(1 * time.Second)
                 lock mu {
-                    var now = long(time.Now().UnixNano())
-                    var expired = List<String>[]
-                    for id, entry in invisible {
-                        if (now - entry.claimedAt) > visibilityTimeoutNanos {
-                            expired = append(expired, id)
+                    if len(invisible) > 0 {
+                        var now = long(time.Now().UnixNano())
+                        var expired = List<String>[]
+                        for id, entry in invisible {
+                            if (now - entry.claimedAt) > visibilityTimeoutNanos {
+                                expired = append(expired, id)
+                            }
                         }
-                    }
-                    for id in expired {
-                        var entry = invisible[id]
-                        invisible.delete(id)
-                        var updated = QueueEntry(entry.id, entry.flowFile, long(0), entry.attemptCount + 1, entry.sourceProcessor)
-                        items = append(items, updated)
+                        for id in expired {
+                            var entry = invisible[id]
+                            invisible.delete(id)
+                            var updated = QueueEntry(entry.id, entry.flowFile, long(0), entry.attemptCount + 1, entry.sourceProcessor)
+                            items = append(items, updated)
+                        }
                     }
                 }
             }
