@@ -17,23 +17,44 @@ Core runtime — single process, config-driven, everything works with `zinc run 
 - [x] ProcessorRegistry with factory functions
 - [x] IRS-style predicate routing engine (EQ, NEQ, CONTAINS, STARTSWITH, ENDSWITH, EXISTS, composite AND/OR)
 - [x] Fabric runtime — config-driven processor + route wiring, cycle detection
-- [x] Dead letter queue (channel-backed, failure routing)
-- [x] ServiceProvider (constructor-injected shared services, no DI container)
 - [x] HTTP source (POST /ingest — raw body + V3 binary, /health endpoint)
 - [x] HTTP delivery (POST to downstream endpoints, raw + V3)
 - [x] Periodic terminal stats (processed/dropped/failures/dlq every 30s)
 - [x] Management API — read-only (flow, processors, routes, registry, stats, dlq)
 - [x] Management API — mutations (add/remove processors, add/remove/toggle routes)
-- [x] Test suite — 22 tests, 68 assertions
+
+## Phase 1.5 — Flow Engine (Transactional Delivery) ✓
+
+Reliability model — at-least-once delivery, backpressure, lifecycle management.
+
+- [x] Provider interface with lifecycle (ComponentState: ENABLED/DRAINING/DISABLED)
+- [x] Three concrete providers: ConfigProvider, LoggingProvider, ContentProvider
+- [x] ProcessorContext — global provider bag with dependency tracking
+- [x] ScopedContext — per-processor provider isolation via `requires`
+- [x] ProcessorFactory signature: `Fn<(ScopedContext, Map), ProcessorFn>`
+- [x] FlowQueue — transactional queue with claim/ack/nack and visibility timeout
+- [x] ProcessSession — transaction boundary (claim → process → route → ack)
+- [x] IRS all-or-nothing fan-out with capacity pre-check
+- [x] Backpressure — bounded queues (count + bytes), nack propagation, HTTP 503
+- [x] Async processing — per-processor goroutine loops + ingest router loop
+- [x] DLQ — inspectable, replayable to source queue via API
+- [x] Feature flags — enable/disable processors at runtime via API
+- [x] Dependency cascade — disable provider → drain + disable dependent processors
+- [x] Enable check — refuse to enable processor if required provider is disabled
+- [x] Config: `enabled` flag, `requires` list, `defaults.backpressure.*`, per-processor overrides
+- [x] Provider API: list, enable, disable with cascade
+- [x] Queue stats API: visible/invisible/total per processor
+- [x] DLQ API: list, replay, replay-all, delete
+- [x] Test suite — 29 tests, 128+ assertions, 9 end-to-end scenarios
+
+### Remaining (Phase 1.5)
+- [ ] Map-keyed YAML config (currently list-indexed — depends on Zinc config parser)
+- [ ] Visibility timeout e2e test (requires sleep-based async test)
+- [ ] Graceful shutdown (shutdownAll on SIGTERM)
 
 ## Phase 2 — Production Ready
 
-Connector framework, NATS messaging, backpressure, processor lifecycle.
-
-**Architecture:** Core engine stays self-contained (zero deps). External messaging
-is handled by connector processors (PutNats, GetNats, etc.) — just regular
-ProcessorFn implementations. Within a group: synchronous in-process routing.
-Between groups: connector processors publish/consume via NATS/Kafka/SQS.
+Connector framework, NATS messaging, processor lifecycle.
 
 ### Phase 2a: Connector framework + NATS (zinc-flow)
 - [ ] ConnectorSource interface (start/stop/isRunning lifecycle)
@@ -41,7 +62,6 @@ Between groups: connector processors publish/consume via NATS/Kafka/SQS.
 - [ ] PutNats processor (serialize V3, publish to subject)
 - [ ] GetNats source connector (subscribe, unpack V3, feed Fabric)
 - [ ] Connector lifecycle API (start/stop endpoints)
-- [ ] Bounded ingress queue (backpressure within group)
 - [ ] Add nats.go dependency
 - [ ] Integration tests with embedded NATS
 - [ ] Example: two zinc-flow instances connected via NATS
