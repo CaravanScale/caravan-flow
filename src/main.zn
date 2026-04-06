@@ -11,6 +11,8 @@ import fabric.source
 import fabric.api
 import processors
 import os
+import os.signal
+import syscall
 import time
 import net.http
 
@@ -102,5 +104,19 @@ fn main() {
     // Start HTTP server
     var port = cfg.getString("server.port")
     logging.info("listening", "port", port)
-    ListenAndServe(":" + port, null)
+    spawn {
+        ListenAndServe(":" + port, null)
+    }
+
+    // Wait for SIGTERM or SIGINT
+    var quit = Channel<os.Signal>(1)
+    signal.Notify(quit, syscall.SIGTERM, syscall.SIGINT)
+    quit.recv()
+
+    // Graceful shutdown
+    logging.info("shutdown signal received")
+    fab.stopAsync()
+    time.Sleep(5 * time.Second)
+    globalCtx.shutdownAll()
+    logging.info("shutdown complete")
 }

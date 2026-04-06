@@ -11,52 +11,60 @@ content:
   threshold: 262144
   dir: /tmp/zinc-flow/content
 
+defaults:
+  backpressure:
+    max_count: 10000
+    max_retries: 5
+    drain_timeout: 60
+
 # Flow graph: defines active processor instances and routing rules
 flow:
   processors:
-    - name: tag-env
+    tag-env:
       type: add-attribute
       config:
         key: env
         value: dev
 
-    - name: tag-source
+    tag-source:
       type: add-attribute
       config:
         key: source
         value: api
 
-    - name: logger
+    logger:
       type: log
       config:
         prefix: flow
 
-    - name: sink
+    sink:
       type: file-sink
+      requires:
+        - content
       config:
         output_dir: /tmp/zinc-flow/output
 
   routes:
-    - name: tag-all
+    tag-all:
       condition:
         attribute: type
         operator: EXISTS
       destination: tag-env
 
-    - name: after-tag-env
+    after-tag-env:
       condition:
         attribute: env
         operator: EQ
         value: dev
       destination: tag-source
 
-    - name: after-tag-source
+    after-tag-source:
       condition:
         attribute: source
         operator: EXISTS
       destination: logger
 
-    - name: after-log
+    after-log:
       condition:
         attribute: source
         operator: EXISTS

@@ -61,15 +61,10 @@ class Fabric {
         // Recreate ingest queue with configured defaults
         ingestQueue = FlowQueue("ingest", queueMaxCount, queueMaxBytes, visibilityTimeoutNanos)
 
-        // Read processor definitions
-        var i = 0
-        while true {
-            var prefix = "flow.processors.${i}"
-            var nameKey = prefix + ".name"
-            if !cfg.has(nameKey) {
-                break
-            }
-            var name = cfg.getString(nameKey)
+        // Read processor definitions (map-keyed YAML)
+        var procKeys = cfg.getSubKeys("flow.processors")
+        for name in procKeys {
+            var prefix = "flow.processors.${name}"
             var typeName = cfg.getString(prefix + ".type")
             var procConfig = cfg.getStringMap(prefix + ".config")
 
@@ -82,21 +77,11 @@ class Fabric {
             if !enabled {
                 logging.info("processor disabled in config", "name", name)
                 processorStates[name] = DISABLED
-                i = i + 1
                 continue
             }
 
             // Read requires — list of provider names this processor depends on
-            var requires = List<String>[]
-            var ri = 0
-            while true {
-                var reqKey = prefix + ".requires.${ri}"
-                if !cfg.has(reqKey) {
-                    break
-                }
-                requires = append(requires, cfg.getString(reqKey))
-                ri = ri + 1
-            }
+            var requires = cfg.getStringSlice(prefix + ".requires")
             processorRequires[name] = requires
 
             // Register dependencies
@@ -120,7 +105,6 @@ class Fabric {
             if !requiresMet {
                 logging.error("processor skipped — requirements not met", "name", name)
                 processorStates[name] = DISABLED
-                i = i + 1
                 continue
             }
 
@@ -147,19 +131,13 @@ class Fabric {
             } else {
                 logging.error("unknown processor type", "type", typeName)
             }
-            i = i + 1
         }
 
-        // Read routing rules
-        var r = 0
+        // Read routing rules (map-keyed YAML)
+        var routeKeys = cfg.getSubKeys("flow.routes")
         var rules = List<RoutingRule>[]
-        while true {
-            var prefix = "flow.routes.${r}"
-            var nameKey = prefix + ".name"
-            if !cfg.has(nameKey) {
-                break
-            }
-            var ruleName = cfg.getString(nameKey)
+        for ruleName in routeKeys {
+            var prefix = "flow.routes.${ruleName}"
             var attr = cfg.getString(prefix + ".condition.attribute")
             var op = cfg.getString(prefix + ".condition.operator")
             var val = cfg.getString(prefix + ".condition.value")
@@ -170,7 +148,6 @@ class Fabric {
             var destination = Destination(dest, "local")
 
             rules = append(rules, RoutingRule(ruleName, condition, destination, true))
-            r = r + 1
         }
 
         if len(rules) > 0 {

@@ -67,6 +67,7 @@ fn main() {
     testScenarioDependencyCascade()
     testScenarioEnableRefusesDisabledProvider()
     testScenarioIRSFanOut()
+    testScenarioVisibilityTimeout()
 
     print("")
     print("=== all tests complete ===")
@@ -1126,4 +1127,39 @@ fn testScenarioIRSFanOut() {
     var entryA = destA.claim()
     assertEqual("dest-a has env attr", entryA.flowFile.attributes["env"], "prod")
     destA.ack(entryA.id)
+}
+
+// Scenario: Visibility timeout returns item to visible queue after claim expires.
+fn testScenarioVisibilityTimeout() {
+    print("--- Scenario: Visibility Timeout ---")
+
+    // Create queue with 500ms visibility timeout (500_000_000 nanos)
+    var q = FlowQueue("vis-test", 10, long(1024), long(500000000))
+    q.startReaper()
+
+    var ff = createFlowFile("timeout-test".toBytes(), Map<String, String>{"type": "test"})
+    q.offer(ff)
+
+    // Claim the item — moves to invisible
+    var entry = q.claim()
+    assertTrue("claimed non-empty", entry.id != "")
+    assertIntEqual("visible after claim", q.visibleCount(), 0)
+    assertIntEqual("invisible after claim", q.invisibleCount(), 1)
+    assertIntEqual("attempt before timeout", entry.attemptCount, 0)
+
+    // Wait for visibility timeout to expire + reaper cycle (1s reaper + margin)
+    time.Sleep(2 * time.Second)
+
+    // Item should be back in visible queue with attempt incremented
+    assertIntEqual("visible after timeout", q.visibleCount(), 1)
+    assertIntEqual("invisible after timeout", q.invisibleCount(), 0)
+
+    // Re-claim and verify attempt count incremented
+    var reclaimed = q.claim()
+    assertTrue("reclaimed non-empty", reclaimed.id != "")
+    assertIntEqual("attempt after timeout", reclaimed.attemptCount, 1)
+
+    // Ack to clean up
+    q.ack(reclaimed.id)
+    assertIntEqual("clean after ack", q.visibleCount(), 0)
 }

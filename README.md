@@ -63,7 +63,7 @@ zinc-flow/
 │   ├── processors/builtin.zn  — 5 built-in processors
 │   └── main.zn                — Bootstrap + HTTP server
 ├── test/
-│   ├── test_main.zn           — 29 tests, 128+ assertions, 9 scenarios
+│   ├── test_main.zn           — 30 tests, 137+ assertions, 10 scenarios
 │   └── test_helpers.zn        — Test utilities + assertions
 ├── docs/
 │   └── design-providers.md    — Flow engine architecture (canonical design doc)

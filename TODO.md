@@ -45,12 +45,10 @@ Reliability model — at-least-once delivery, backpressure, lifecycle management
 - [x] Provider API: list, enable, disable with cascade
 - [x] Queue stats API: visible/invisible/total per processor
 - [x] DLQ API: list, replay, replay-all, delete
-- [x] Test suite — 29 tests, 128+ assertions, 9 end-to-end scenarios
-
-### Remaining (Phase 1.5)
-- [ ] Map-keyed YAML config (currently list-indexed — depends on Zinc config parser)
-- [ ] Visibility timeout e2e test (requires sleep-based async test)
-- [ ] Graceful shutdown (shutdownAll on SIGTERM)
+- [x] Test suite — 30 tests, 137+ assertions, 10 end-to-end scenarios
+- [x] Map-keyed YAML config (processors and routes keyed by name, not list-indexed)
+- [x] Visibility timeout e2e test (claim expires → item returns to visible with attempt+1)
+- [x] Graceful shutdown on SIGTERM/SIGINT (drain → shutdown providers → exit)
 
 ## Phase 2 — Production Ready
 

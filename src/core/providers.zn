@@ -30,6 +30,8 @@ class ConfigProvider : Provider {
     pub fn getBool(String key): bool { return cfg.getBool(key) }
     pub fn has(String key): bool { return cfg.has(key) }
     pub fn getStringMap(String key): Map<String, String> { return cfg.getStringMap(key) }
+    pub fn getStringSlice(String key): List<String> { return cfg.getStringSlice(key) }
+    pub fn getSubKeys(String key): List<String> { return cfg.getSubKeys(key) }
 
     // Processor-specific config by processor name
     pub fn getProcessorConfig(String processorName): Map<String, String> {
