@@ -2,69 +2,96 @@
 
 ---
 
+## What Works Now
+
+**zinc-flow** is a fully functional standalone data flow engine. You can use it today for:
+
+- Config-driven processor pipelines (YAML, map-keyed)
+- HTTP ingest with predicate-based routing (IRS fan-out)
+- Transactional delivery (claim/ack/nack, at-least-once, visibility timeout)
+- Backpressure (bounded queues, 503 on overload)
+- Dead letter queue with inspect/replay via API
+- Runtime lifecycle (enable/disable processors/providers, dependency cascade)
+- Graceful shutdown on SIGTERM/SIGINT
+
+**Two runtimes:**
+- **Go** — 11MB static binary, 599k ff/s, zero deps. Edge, embedded, performance-critical.
+- **Python 3.14t** — 14MB native binary, 95k ff/s, pandas/numpy/sklearn integration. Python orgs.
+
+---
+
 ## Phase 1 — MVP (Local Dev) ✓
 
-Core runtime — single process, config-driven, everything works with `zinc run .`
-
-- [x] FlowFile data class with attributes + Content sealed type (Raw, Records, Claim)
-- [x] ProcessorFn interface + ProcessorResult sealed class (Single, Multiple, Routed, Dropped, Failure)
-- [x] Avro-style GenericRecord with Schema, Field, FieldType
-- [x] JSON RecordReader/RecordWriter + schema-on-read inference
-- [x] ContentStore interface + FileContentStore + MemoryContentStore
-- [x] Content offload (>256KB → Claim reference in store)
-- [x] NiFi FlowFile V3 binary serde (pack/unpack, single + multiple)
-- [x] 5 built-in processors: AddAttribute, LogProcessor, FileSink, JsonToRecords, RecordsToJson
-- [x] ProcessorRegistry with factory functions
-- [x] IRS-style predicate routing engine (EQ, NEQ, CONTAINS, STARTSWITH, ENDSWITH, EXISTS, composite AND/OR)
-- [x] Fabric runtime — config-driven processor + route wiring, cycle detection
-- [x] HTTP source (POST /ingest — raw body + V3 binary, /health endpoint)
-- [x] HTTP delivery (POST to downstream endpoints, raw + V3)
-- [x] Periodic terminal stats (processed/dropped/failures/dlq every 30s)
-- [x] Management API — read-only (flow, processors, routes, registry, stats, dlq)
-- [x] Management API — mutations (add/remove processors, add/remove/toggle routes)
+- [x] FlowFile + Content sealed type (Raw, Records, Claim)
+- [x] ProcessorResult (Single, Multiple, Routed, Dropped, Failure)
+- [x] Avro GenericRecord, JSON serde, ContentStore + offload
+- [x] NiFi FlowFile V3 binary serde
+- [x] 5 built-in processors (AddAttribute, Log, FileSink, JsonToRecords, RecordsToJson)
+- [x] ProcessorRegistry + factory pattern
+- [x] IRS predicate routing (EQ, NEQ, CONTAINS, STARTSWITH, ENDSWITH, EXISTS, AND/OR)
+- [x] HTTP source + delivery, management API (read + mutations)
 
 ## Phase 1.5 — Flow Engine (Transactional Delivery) ✓
 
-Reliability model — at-least-once delivery, backpressure, lifecycle management.
+- [x] Provider lifecycle (ENABLED/DRAINING/DISABLED), ScopedContext, dependency cascade
+- [x] FlowQueue — transactional, bounded, visibility timeout, head-index with compaction
+- [x] ProcessSession, IRS all-or-nothing fan-out, backpressure, DLQ with replay
+- [x] Async processing, graceful shutdown, map-keyed YAML config
+- [x] 30 tests, 137+ assertions, 10 e2e scenarios
+- [x] zinc-flow-python port — 129 assertions, DataFrame processors, performance optimized
 
-- [x] Provider interface with lifecycle (ComponentState: ENABLED/DRAINING/DISABLED)
-- [x] Three concrete providers: ConfigProvider, LoggingProvider, ContentProvider
-- [x] ProcessorContext — global provider bag with dependency tracking
-- [x] ScopedContext — per-processor provider isolation via `requires`
-- [x] ProcessorFactory signature: `Fn<(ScopedContext, Map), ProcessorFn>`
-- [x] FlowQueue — transactional queue with claim/ack/nack and visibility timeout
-- [x] ProcessSession — transaction boundary (claim → process → route → ack)
-- [x] IRS all-or-nothing fan-out with capacity pre-check
-- [x] Backpressure — bounded queues (count + bytes), nack propagation, HTTP 503
-- [x] Async processing — per-processor goroutine loops + ingest router loop
-- [x] DLQ — inspectable, replayable to source queue via API
-- [x] Feature flags — enable/disable processors at runtime via API
-- [x] Dependency cascade — disable provider → drain + disable dependent processors
-- [x] Enable check — refuse to enable processor if required provider is disabled
-- [x] Config: `enabled` flag, `requires` list, `defaults.backpressure.*`, per-processor overrides
-- [x] Provider API: list, enable, disable with cascade
-- [x] Queue stats API: visible/invisible/total per processor
-- [x] DLQ API: list, replay, replay-all, delete
-- [x] Test suite — 30 tests, 137+ assertions, 10 end-to-end scenarios
-- [x] Map-keyed YAML config (processors and routes keyed by name, not list-indexed)
-- [x] Visibility timeout e2e test (claim expires → item returns to visible with attempt+1)
-- [x] Graceful shutdown on SIGTERM/SIGINT (drain → shutdown providers → exit)
+---
 
-## Phase 2 — Production Ready
+## Phase 2 — Useful Standalone
 
-Connector framework, NATS messaging, processor lifecycle.
+Make zinc-flow useful for real workloads without requiring NATS or K8s. A single binary that can ingest, transform, and deliver data.
 
-### Phase 2a: Connector framework + NATS (zinc-flow)
+### Phase 2a: Connectors — get data in and out
 - [ ] ConnectorSource interface (start/stop/isRunning lifecycle)
 - [ ] Refactor HttpSource to implement ConnectorSource
+- [ ] PutHTTP processor — POST flowfiles to downstream HTTP endpoints
+- [ ] GetHTTP source — poll an HTTP endpoint on a schedule
+- [ ] PutFile processor — write to disk (replaces FileSink with proper directory/naming)
+- [ ] GetFile source — watch a directory, ingest new files
+- [ ] PutStdout processor — write to stdout (CLI pipelines, debugging)
+- [ ] Connector lifecycle API (start/stop/status endpoints)
+
+### Phase 2b: Observability — know what's happening
+- [ ] Prometheus /metrics endpoint (processed count, queue depths, DLQ size, latency histograms)
+- [ ] Structured JSON logging option (for log aggregation)
+- [ ] FlowFile provenance — track processing history in attributes (processor chain, timestamps)
+- [ ] Health checks with connector status
+- [ ] /api/flow endpoint returns full DAG with queue depths (dashboard-ready)
+
+### Phase 2c: Hardening — don't break in production
+- [ ] Retry policies per processor (max retries, backoff strategy)
+- [ ] Circuit breaker — stop routing after N consecutive failures, auto-recover
+- [ ] Content store cleanup — periodic sweep of orphaned claims
+- [ ] Queue persistence — optional WAL for crash recovery (bounded file, not a database)
+- [ ] Config validation at startup (missing processors, broken routes, unknown types)
+
+### Phase 2d: Developer experience
+- [ ] `zinc-flow init` scaffolding — generate project with config, sample processors
+- [ ] `zinc-flow validate` — check config without starting
+- [ ] `zinc-flow replay` — CLI tool to replay DLQ entries
+- [ ] Hot reload — watch config.yaml, reload flow graph on change
+- [ ] Custom processor loading — register processors from external packages
+
+---
+
+## Phase 3 — Multi-Instance
+
+Connect multiple zinc-flow instances into a distributed flow graph.
+
+### Phase 3a: NATS messaging
 - [ ] PutNats processor (serialize V3, publish to subject)
 - [ ] GetNats source connector (subscribe, unpack V3, feed Fabric)
-- [ ] Connector lifecycle API (start/stop endpoints)
+- [ ] NATS auth (credentials, TLS)
 - [ ] Add nats.go dependency
 - [ ] Integration tests with embedded NATS
 - [ ] Example: two zinc-flow instances connected via NATS
 
-### Phase 2b: K8s operator (zinc-flow-operator, separate repo)
+### Phase 3b: K8s operator (zinc-flow-operator, separate repo)
 - [ ] Scaffold with kubebuilder
 - [ ] ProcessorGroup CRD + controller (deploy zinc-flow pods from CRD spec)
 - [ ] Config generation (CRD spec → config.yaml ConfigMap)
@@ -73,30 +100,42 @@ Connector framework, NATS messaging, processor lifecycle.
 - [ ] Status aggregation across groups
 - [ ] E2e test with kind cluster
 
-### Phase 2c: Production hardening
-- [ ] NATS auth (credentials, TLS)
-- [ ] Retry policies per connector
-- [ ] Graceful shutdown (drain connectors, flush DLQ)
-- [ ] Health checks including connector status
-- [ ] Prometheus /metrics endpoint
+### Phase 3c: Scaling
+- [ ] Auto-scaling based on consumer lag (operator-driven)
+- [ ] Partitioned NATS subjects for parallel processing
+- [ ] Sticky routing — same key always routes to same processor instance
 
-## Phase 3 — Ecosystem
+---
 
-Additional connectors, observability, developer experience.
+## Phase 4 — Ecosystem
 
-- [ ] PutKafka / GetKafka connectors
-- [ ] PutSQS / GetSQS connectors
-- [ ] PutHTTP / GetHTTP formalized connectors
+Additional connectors, advanced features, developer tools.
+
+### Connectors
+- [ ] PutKafka / GetKafka
+- [ ] PutSQS / GetSQS
+- [ ] PutS3 / GetS3
+- [ ] PutPostgres / GetPostgres (CDC)
+- [ ] PutElasticsearch
+
+### Advanced
 - [ ] OpenTelemetry tracing (FlowFile attributes carry trace context)
-- [ ] Circuit breaker (stop routing after N consecutive failures)
-- [ ] Auto-scaling based on consumer lag (operator)
-- [ ] TUI dashboard
 - [ ] Schema registry for Avro schemas
+- [ ] Content-based routing (route on FlowFile content, not just attributes)
+- [ ] Windowed aggregation processor (tumbling/sliding windows)
+- [ ] Join processor (merge two streams by key)
 
-## Phase 4 — Enterprise
+### Tools
+- [ ] TUI dashboard (terminal UI with live queue depths + processor stats)
+- [ ] Web UI — flow graph visualization, drag-and-drop processor wiring
+- [ ] Provenance viewer — trace a FlowFile's path through the graph
 
-- [ ] Provenance tracking and lineage visualization
+---
+
+## Phase 5 — Enterprise
+
 - [ ] Role-based access control on management API
-- [ ] Audit logging
-- [ ] Multi-flow management
-- [ ] Low-code web UI
+- [ ] Audit logging (who changed what, when)
+- [ ] Multi-tenant flow isolation
+- [ ] SLA monitoring and alerting
+- [ ] Low-code web UI for flow authoring
