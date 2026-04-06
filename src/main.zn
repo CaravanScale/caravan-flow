@@ -87,6 +87,9 @@ fn main() {
     HandleFunc("/api/processors/enable", api.enableProcessorHandler)
     HandleFunc("/api/processors/disable", api.disableProcessorHandler)
     HandleFunc("/api/processors/state", api.processorStateHandler)
+    HandleFunc("/api/providers", api.providersHandler)
+    HandleFunc("/api/providers/enable", api.enableProviderHandler)
+    HandleFunc("/api/providers/disable", api.disableProviderHandler)
 
     // Start periodic stats reporter
     spawn {

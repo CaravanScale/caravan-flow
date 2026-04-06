@@ -123,16 +123,18 @@ class ApiHandler {
             return
         }
         var dlq = fab.getDLQ()
-        var ff = dlq.replay(id)
-        if ff.id == "" {
+        var entry = dlq.get(id)
+        if entry.id == "" {
             writeError(w, 404, "dlq entry not found")
             return
         }
-        fab.ingest(ff)
-        writeJson(w, Map<String, Object>{"status": "replayed", "id": id, "flowFileId": ff.id})
+        var sourceQueue = entry.sourceQueue
+        var ff = dlq.replay(id)
+        fab.replayToQueue(sourceQueue, ff)
+        writeJson(w, Map<String, Object>{"status": "replayed", "id": id, "flowFileId": ff.id, "queue": sourceQueue})
     }
 
-    // POST /api/dlq/replay-all — replay all DLQ entries
+    // POST /api/dlq/replay-all — replay all DLQ entries to their source queues
     pub fn dlqReplayAllHandler(ResponseWriter w, Request r) {
         if r.Method != "POST" {
             writeError(w, 405, "method not allowed")
@@ -142,7 +144,7 @@ class ApiHandler {
         var entries = dlq.replayAll()
         var count = 0
         for entry in entries {
-            fab.ingest(entry.flowFile)
+            fab.replayToQueue(entry.sourceQueue, entry.flowFile)
             count = count + 1
         }
         writeJson(w, Map<String, Object>{"status": "replayed", "count": count})
@@ -430,6 +432,92 @@ class ApiHandler {
             return
         }
         writeJson(w, Map<String, Object>{"status": "toggled", "name": name})
+    }
+
+    // GET /api/providers — list all providers and their states
+    pub fn providersHandler(ResponseWriter w, Request r) {
+        var ctx = fab.getContext()
+        var names = ctx.listProviders()
+        var result = List<Map<String, Object>>[]
+        for name in names {
+            var entry = Map<String, Object>{}
+            entry["name"] = name
+            var prov = ctx.getProvider(name) or {
+                entry["state"] = "UNKNOWN"
+                result = append(result, entry)
+                continue
+            }
+            entry["type"] = prov.getType()
+            var state = prov.getState()
+            match state {
+                case ENABLED { entry["state"] = "ENABLED" }
+                case DRAINING { entry["state"] = "DRAINING" }
+                case DISABLED { entry["state"] = "DISABLED" }
+            }
+            result = append(result, entry)
+        }
+        writeJson(w, result)
+    }
+
+    // POST /api/providers/enable — enable a provider
+    // Body: {"name": "content"}
+    pub fn enableProviderHandler(ResponseWriter w, Request r) {
+        if r.Method != "POST" {
+            writeError(w, 405, "method not allowed")
+            return
+        }
+        var body = readBody(r)
+        if body == null {
+            writeError(w, 400, "failed to read body")
+            return
+        }
+        var req = Map<String, Object>{}
+        json.Unmarshal(body, req) or {
+            writeError(w, 400, "invalid json")
+            return
+        }
+        var name = strVal(req, "name")
+        if name == "" {
+            writeError(w, 400, "name is required")
+            return
+        }
+        var ok = fab.enableProvider(name)
+        if !ok {
+            writeError(w, 404, "provider not found")
+            return
+        }
+        writeJson(w, Map<String, Object>{"status": "enabled", "name": name})
+    }
+
+    // POST /api/providers/disable — disable a provider (cascades to dependent processors)
+    // Body: {"name": "content"}
+    pub fn disableProviderHandler(ResponseWriter w, Request r) {
+        if r.Method != "POST" {
+            writeError(w, 405, "method not allowed")
+            return
+        }
+        var body = readBody(r)
+        if body == null {
+            writeError(w, 400, "failed to read body")
+            return
+        }
+        var req = Map<String, Object>{}
+        json.Unmarshal(body, req) or {
+            writeError(w, 400, "invalid json")
+            return
+        }
+        var name = strVal(req, "name")
+        if name == "" {
+            writeError(w, 400, "name is required")
+            return
+        }
+        var drainSecs = 60
+        var ok = fab.disableProvider(name, drainSecs)
+        if !ok {
+            writeError(w, 404, "provider not found")
+            return
+        }
+        writeJson(w, Map<String, Object>{"status": "disabled", "name": name})
     }
 }
 

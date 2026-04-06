@@ -25,7 +25,7 @@ class Fabric {
     var failureCount = 0
     var running = false
 
-    // Defaults — queue backpressure and retry
+    // Defaults — queue backpressure and retry (overridable from config)
     int queueMaxCount
     long queueMaxBytes
     long visibilityTimeoutNanos
@@ -47,6 +47,20 @@ class Fabric {
 
     // loadFlow reads the flow graph from config and instantiates everything.
     pub fn loadFlow(config.Config cfg) {
+        // Read defaults from config if present
+        if cfg.has("defaults.backpressure.max_count") {
+            queueMaxCount = cfg.getInt("defaults.backpressure.max_count")
+        }
+        if cfg.has("defaults.backpressure.max_retries") {
+            maxRetries = cfg.getInt("defaults.backpressure.max_retries")
+        }
+        if cfg.has("defaults.backpressure.drain_timeout") {
+            drainTimeoutSeconds = cfg.getInt("defaults.backpressure.drain_timeout")
+        }
+
+        // Recreate ingest queue with configured defaults
+        ingestQueue = FlowQueue("ingest", queueMaxCount, queueMaxBytes, visibilityTimeoutNanos)
+
         // Read processor definitions
         var i = 0
         while true {
@@ -59,17 +73,74 @@ class Fabric {
             var typeName = cfg.getString(prefix + ".type")
             var procConfig = cfg.getStringMap(prefix + ".config")
 
+            // Check enabled flag — skip disabled processors
+            var enabled = true
+            if cfg.has(prefix + ".enabled") {
+                enabled = cfg.getBool(prefix + ".enabled")
+            }
+
+            if !enabled {
+                logging.info("processor disabled in config", "name", name)
+                processorStates[name] = DISABLED
+                i = i + 1
+                continue
+            }
+
+            // Read requires — list of provider names this processor depends on
+            var requires = List<String>[]
+            var ri = 0
+            while true {
+                var reqKey = prefix + ".requires.${ri}"
+                if !cfg.has(reqKey) {
+                    break
+                }
+                requires = append(requires, cfg.getString(reqKey))
+                ri = ri + 1
+            }
+            processorRequires[name] = requires
+
+            // Register dependencies
+            for provName in requires {
+                globalCtx.registerDependent(provName, name)
+            }
+
+            // Validate requires — all required providers must exist and be enabled
+            var requiresMet = true
+            for provName in requires {
+                var prov = globalCtx.getProvider(provName) or {
+                    logging.error("processor requires missing provider", "processor", name, "provider", provName)
+                    requiresMet = false
+                    continue
+                }
+                if !prov.isEnabled() {
+                    logging.error("processor requires disabled provider", "processor", name, "provider", provName)
+                    requiresMet = false
+                }
+            }
+            if !requiresMet {
+                logging.error("processor skipped — requirements not met", "name", name)
+                processorStates[name] = DISABLED
+                i = i + 1
+                continue
+            }
+
             if reg.has(typeName) {
-                // Build ScopedContext for this processor — give access to all providers
-                var ctx = buildScopedContext()
+                // Build ScopedContext filtered by requires
+                var ctx = buildScopedContextFor(requires)
 
                 var proc = reg.create(typeName, ctx, procConfig)
                 procs[name] = proc
                 processorNames = append(processorNames, name)
                 processorStates[name] = ENABLED
 
-                // Create input queue for this processor
-                var queue = FlowQueue(name, queueMaxCount, queueMaxBytes, visibilityTimeoutNanos)
+                // Per-processor queue size override
+                var pMaxCount = queueMaxCount
+                var pMaxBytes = queueMaxBytes
+                if cfg.has(prefix + ".backpressure.max_count") {
+                    pMaxCount = cfg.getInt(prefix + ".backpressure.max_count")
+                }
+
+                var queue = FlowQueue(name, pMaxCount, pMaxBytes, visibilityTimeoutNanos)
                 queues[name] = queue
 
                 logging.info("processor created", "name", name, "type", typeName)
@@ -190,6 +261,15 @@ class Fabric {
         return ingestQueue.offer(ff)
     }
 
+    // replayToQueue re-injects a FlowFile into a named queue. Returns false if queue not found.
+    pub fn replayToQueue(String queueName, FlowFile ff): bool {
+        if queues.containsKey(queueName) {
+            return queues[queueName].offer(ff)
+        }
+        // Fallback to ingest queue
+        return ingestQueue.offer(ff)
+    }
+
     // getContext returns the global ProcessorContext.
     pub fn getContext(): ProcessorContext {
         return globalCtx
@@ -248,10 +328,24 @@ class Fabric {
         return stats
     }
 
-    // enableProcessor enables a processor. Returns false if not found or providers missing.
+    // enableProcessor enables a processor. Refuses if required providers are disabled.
     pub fn enableProcessor(String name): bool {
         if !procs.containsKey(name) {
             return false
+        }
+        // Check required providers are enabled
+        if processorRequires.containsKey(name) {
+            var requires = processorRequires[name]
+            for provName in requires {
+                var prov = globalCtx.getProvider(provName) or {
+                    logging.warn("cannot enable processor — provider missing", "processor", name, "provider", provName)
+                    return false
+                }
+                if !prov.isEnabled() {
+                    logging.warn("cannot enable processor — provider disabled", "processor", name, "provider", provName)
+                    return false
+                }
+            }
         }
         processorStates[name] = ENABLED
         logging.info("processor enabled", "name", name)
@@ -259,7 +353,7 @@ class Fabric {
     }
 
     // disableProcessor drains and disables a processor.
-    pub fn disableProcessor(String name, int drainTimeoutSeconds): bool {
+    pub fn disableProcessor(String name, int drainSecs): bool {
         if !procs.containsKey(name) {
             return false
         }
@@ -269,7 +363,7 @@ class Fabric {
         // Spawn drain watcher
         spawn {
             var elapsed = 0
-            while elapsed < drainTimeoutSeconds {
+            while elapsed < drainSecs {
                 if getQueueDepth(name) == 0 {
                     break
                 }
@@ -282,12 +376,57 @@ class Fabric {
         return true
     }
 
+    // disableProvider disables a provider and cascades drain+disable to dependent processors.
+    pub fn disableProvider(String providerName, int drainSecs): bool {
+        var prov = globalCtx.getProvider(providerName) or {
+            return false
+        }
+
+        // First drain all dependent processors
+        var dependents = globalCtx.getDependents(providerName)
+        for procName in dependents {
+            if processorStates.containsKey(procName) {
+                var state = processorStates[procName]
+                match state {
+                    case ENABLED {
+                        disableProcessor(procName, drainSecs)
+                    }
+                    case DRAINING {}
+                    case DISABLED {}
+                }
+            }
+        }
+
+        // Then disable the provider
+        prov.disable(drainSecs)
+        logging.info("provider disabled", "name", providerName)
+        return true
+    }
+
+    // enableProvider enables a provider.
+    pub fn enableProvider(String providerName): bool {
+        var prov = globalCtx.getProvider(providerName) or {
+            return false
+        }
+        prov.enable()
+        logging.info("provider enabled", "name", providerName)
+        return true
+    }
+
     // getProcessorState returns the lifecycle state of a processor.
     pub fn getProcessorState(String name): ComponentState {
         if processorStates.containsKey(name) {
             return processorStates[name]
         }
         return DISABLED
+    }
+
+    // getProcessorRequires returns the provider dependencies for a processor.
+    pub fn getProcessorRequires(String name): List<String> {
+        if processorRequires.containsKey(name) {
+            return processorRequires[name]
+        }
+        return List<String>[]
     }
 
     // addProcessor creates a processor from the registry and adds it.
@@ -301,13 +440,14 @@ class Fabric {
             return false
         }
 
-        // Build scoped context with all providers
-        var ctx = buildScopedContext()
+        // Build scoped context with all providers (no requires for dynamic adds)
+        var ctx = buildScopedContextFor(List<String>[])
 
         var proc = reg.create(typeName, ctx, config)
         procs[name] = proc
         processorNames = append(processorNames, name)
         processorStates[name] = ENABLED
+        processorRequires[name] = List<String>[]
 
         // Create queue and session
         var queue = FlowQueue(name, queueMaxCount, queueMaxBytes, visibilityTimeoutNanos)
@@ -404,15 +544,27 @@ class Fabric {
         return found
     }
 
-    // buildScopedContext creates a ScopedContext with all providers from the global context.
-    fn buildScopedContext(): ScopedContext {
+    // buildScopedContextFor creates a ScopedContext filtered to the given provider names.
+    // If requires is empty, gives access to all providers.
+    fn buildScopedContextFor(List<String> requires): ScopedContext {
         var scopedProviders = Map<String, Provider>{}
-        var providerNames = globalCtx.listProviders()
-        for pn in providerNames {
-            var prov = globalCtx.getProvider(pn) or {
-                continue
+        if len(requires) == 0 {
+            // No requires declared — give access to all providers
+            var providerNames = globalCtx.listProviders()
+            for pn in providerNames {
+                var prov = globalCtx.getProvider(pn) or {
+                    continue
+                }
+                scopedProviders[pn] = prov
             }
-            scopedProviders[pn] = prov
+        } else {
+            // Only give access to declared providers
+            for pn in requires {
+                var prov = globalCtx.getProvider(pn) or {
+                    continue
+                }
+                scopedProviders[pn] = prov
+            }
         }
         return ScopedContext(scopedProviders)
     }

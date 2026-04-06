@@ -17,7 +17,7 @@ class FlowQueue {
     var items = List<QueueEntry>[]
     var invisible = Map<String, QueueEntry>{}
     var Mutex mu
-    var currentBytes = long(0)
+    long currentBytes
     long idCounter
 
     init(String name, int maxCount, long maxBytes, long visibilityTimeoutNanos) {
@@ -26,6 +26,7 @@ class FlowQueue {
         this.maxBytes = maxBytes
         this.visibilityTimeoutNanos = visibilityTimeoutNanos
         this.idCounter = long(0)
+        this.currentBytes = long(0)
     }
 
     // getName returns the queue name.
@@ -35,14 +36,16 @@ class FlowQueue {
 
     // offer adds a FlowFile to the queue. Returns false if at capacity (backpressure).
     pub fn offer(FlowFile ff): bool {
+        var ffBytes = long(contentSize(ff.content))
         var accepted = false
         lock mu {
             var total = len(items) + len(invisible)
-            if total < maxCount {
+            if total < maxCount && (maxBytes == long(0) || (currentBytes + ffBytes) <= maxBytes) {
                 idCounter = idCounter + 1
                 var entryId = name + "-" + str(idCounter)
                 var entry = QueueEntry(entryId, ff, long(0), 0, "")
                 items = append(items, entry)
+                currentBytes = currentBytes + ffBytes
                 accepted = true
             }
         }
@@ -51,14 +54,16 @@ class FlowQueue {
 
     // offerWithSource adds a FlowFile with source processor context.
     pub fn offerWithSource(FlowFile ff, String sourceProc): bool {
+        var ffBytes = long(contentSize(ff.content))
         var accepted = false
         lock mu {
             var total = len(items) + len(invisible)
-            if total < maxCount {
+            if total < maxCount && (maxBytes == long(0) || (currentBytes + ffBytes) <= maxBytes) {
                 idCounter = idCounter + 1
                 var entryId = name + "-" + str(idCounter)
                 var entry = QueueEntry(entryId, ff, long(0), 0, sourceProc)
                 items = append(items, entry)
+                currentBytes = currentBytes + ffBytes
                 accepted = true
             }
         }
@@ -93,7 +98,14 @@ class FlowQueue {
     // ack confirms successful processing — permanently removes the entry.
     pub fn ack(String entryId) {
         lock mu {
-            invisible.delete(entryId)
+            if invisible.containsKey(entryId) {
+                var entry = invisible[entryId]
+                currentBytes = currentBytes - long(contentSize(entry.flowFile.content))
+                if currentBytes < long(0) {
+                    currentBytes = long(0)
+                }
+                invisible.delete(entryId)
+            }
         }
     }
 
@@ -114,9 +126,20 @@ class FlowQueue {
         var result = false
         lock mu {
             var total = len(items) + len(invisible)
-            result = total < maxCount
+            var countOk = total < maxCount
+            var bytesOk = maxBytes == long(0) || currentBytes < maxBytes
+            result = countOk && bytesOk
         }
         return result
+    }
+
+    // getBytes returns the current tracked byte size.
+    pub fn getBytes(): long {
+        var b = long(0)
+        lock mu {
+            b = currentBytes
+        }
+        return b
     }
 
     // size returns total items (visible + invisible).
