@@ -79,7 +79,14 @@ fn main() {
     HandleFunc("/api/routes/toggle", api.toggleRouteHandler)
     HandleFunc("/api/registry", api.registryHandler)
     HandleFunc("/api/stats", api.statsHandler)
+    HandleFunc("/api/queues", api.queuesHandler)
     HandleFunc("/api/dlq", api.dlqHandler)
+    HandleFunc("/api/dlq/replay", api.dlqReplayHandler)
+    HandleFunc("/api/dlq/replay-all", api.dlqReplayAllHandler)
+    HandleFunc("/api/dlq/delete", api.dlqDeleteHandler)
+    HandleFunc("/api/processors/enable", api.enableProcessorHandler)
+    HandleFunc("/api/processors/disable", api.disableProcessorHandler)
+    HandleFunc("/api/processors/state", api.processorStateHandler)
 
     // Start periodic stats reporter
     spawn {

@@ -4,6 +4,7 @@
 import net.http
 import io
 import encoding.json
+import core
 import fabric.runtime
 import fabric.registry
 import fabric.router
@@ -80,11 +81,192 @@ class ApiHandler {
         writeJson(w, flow)
     }
 
-    // GET /api/dlq — DLQ status
+    // GET /api/dlq — DLQ entries
     pub fn dlqHandler(ResponseWriter w, Request r) {
-        var result = Map<String, Object>{}
-        result["count"] = fab.getDlqCount()
-        writeJson(w, result)
+        var dlq = fab.getDLQ()
+        var entries = dlq.list()
+        var result = List<Map<String, Object>>[]
+        for entry in entries {
+            var e = Map<String, Object>{}
+            e["id"] = entry.id
+            e["sourceProcessor"] = entry.sourceProcessor
+            e["sourceQueue"] = entry.sourceQueue
+            e["attemptCount"] = entry.attemptCount
+            e["lastError"] = entry.lastError
+            e["arrivedAt"] = entry.arrivedAt
+            e["flowFileId"] = entry.flowFile.id
+            result = append(result, e)
+        }
+        writeJson(w, Map<String, Object>{"count": dlq.count(), "entries": result})
+    }
+
+    // POST /api/dlq/replay — replay a DLQ entry
+    // Body: {"id": "dlq-1"}
+    pub fn dlqReplayHandler(ResponseWriter w, Request r) {
+        if r.Method != "POST" {
+            writeError(w, 405, "method not allowed")
+            return
+        }
+        var body = readBody(r)
+        if body == null {
+            writeError(w, 400, "failed to read body")
+            return
+        }
+        var req = Map<String, Object>{}
+        json.Unmarshal(body, req) or {
+            writeError(w, 400, "invalid json")
+            return
+        }
+        var id = strVal(req, "id")
+        if id == "" {
+            writeError(w, 400, "id is required")
+            return
+        }
+        var dlq = fab.getDLQ()
+        var ff = dlq.replay(id)
+        if ff.id == "" {
+            writeError(w, 404, "dlq entry not found")
+            return
+        }
+        fab.ingest(ff)
+        writeJson(w, Map<String, Object>{"status": "replayed", "id": id, "flowFileId": ff.id})
+    }
+
+    // POST /api/dlq/replay-all — replay all DLQ entries
+    pub fn dlqReplayAllHandler(ResponseWriter w, Request r) {
+        if r.Method != "POST" {
+            writeError(w, 405, "method not allowed")
+            return
+        }
+        var dlq = fab.getDLQ()
+        var entries = dlq.replayAll()
+        var count = 0
+        for entry in entries {
+            fab.ingest(entry.flowFile)
+            count = count + 1
+        }
+        writeJson(w, Map<String, Object>{"status": "replayed", "count": count})
+    }
+
+    // DELETE /api/dlq — remove a DLQ entry
+    // Body: {"id": "dlq-1"}
+    pub fn dlqDeleteHandler(ResponseWriter w, Request r) {
+        if r.Method != "DELETE" {
+            writeError(w, 405, "method not allowed")
+            return
+        }
+        var body = readBody(r)
+        if body == null {
+            writeError(w, 400, "failed to read body")
+            return
+        }
+        var req = Map<String, Object>{}
+        json.Unmarshal(body, req) or {
+            writeError(w, 400, "invalid json")
+            return
+        }
+        var id = strVal(req, "id")
+        if id == "" {
+            writeError(w, 400, "id is required")
+            return
+        }
+        var dlq = fab.getDLQ()
+        dlq.discard(id)
+        writeJson(w, Map<String, Object>{"status": "removed", "id": id})
+    }
+
+    // GET /api/queues — queue depths for all processors
+    pub fn queuesHandler(ResponseWriter w, Request r) {
+        writeJson(w, fab.getQueueStats())
+    }
+
+    // POST /api/processors/enable — enable a processor
+    // Body: {"name": "my-proc"}
+    pub fn enableProcessorHandler(ResponseWriter w, Request r) {
+        if r.Method != "POST" {
+            writeError(w, 405, "method not allowed")
+            return
+        }
+        var body = readBody(r)
+        if body == null {
+            writeError(w, 400, "failed to read body")
+            return
+        }
+        var req = Map<String, Object>{}
+        json.Unmarshal(body, req) or {
+            writeError(w, 400, "invalid json")
+            return
+        }
+        var name = strVal(req, "name")
+        if name == "" {
+            writeError(w, 400, "name is required")
+            return
+        }
+        var ok = fab.enableProcessor(name)
+        if !ok {
+            writeError(w, 404, "processor not found")
+            return
+        }
+        writeJson(w, Map<String, Object>{"status": "enabled", "name": name})
+    }
+
+    // POST /api/processors/disable — disable a processor (drains first)
+    // Body: {"name": "my-proc", "timeout": 60}
+    pub fn disableProcessorHandler(ResponseWriter w, Request r) {
+        if r.Method != "POST" {
+            writeError(w, 405, "method not allowed")
+            return
+        }
+        var body = readBody(r)
+        if body == null {
+            writeError(w, 400, "failed to read body")
+            return
+        }
+        var req = Map<String, Object>{}
+        json.Unmarshal(body, req) or {
+            writeError(w, 400, "invalid json")
+            return
+        }
+        var name = strVal(req, "name")
+        if name == "" {
+            writeError(w, 400, "name is required")
+            return
+        }
+        var drainSecs = 60
+        var ok = fab.disableProcessor(name, drainSecs)
+        if !ok {
+            writeError(w, 404, "processor not found")
+            return
+        }
+        writeJson(w, Map<String, Object>{"status": "draining", "name": name, "drainTimeout": drainSecs})
+    }
+
+    // POST /api/processors/state — get processor lifecycle state
+    // Body: {"name": "my-proc"}
+    pub fn processorStateHandler(ResponseWriter w, Request r) {
+        var body = readBody(r)
+        if body == null {
+            writeError(w, 400, "failed to read body")
+            return
+        }
+        var req = Map<String, Object>{}
+        json.Unmarshal(body, req) or {
+            writeError(w, 400, "invalid json")
+            return
+        }
+        var name = strVal(req, "name")
+        if name == "" {
+            writeError(w, 400, "name is required")
+            return
+        }
+        var state = fab.getProcessorState(name)
+        var stateStr = "DISABLED"
+        match state {
+            case ENABLED { stateStr = "ENABLED" }
+            case DRAINING { stateStr = "DRAINING" }
+            case DISABLED { stateStr = "DISABLED" }
+        }
+        writeJson(w, Map<String, Object>{"name": name, "state": stateStr})
     }
 
     // POST /api/processors — add a processor
