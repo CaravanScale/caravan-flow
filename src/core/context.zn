@@ -1,3 +1,10 @@
+// Component lifecycle state.
+enum ComponentState {
+    DISABLED,
+    ENABLED,
+    DRAINING
+}
+
 // Provider — interface for shared infrastructure resources.
 // Everything is a provider: content storage, config, credentials,
 // connections, SSL contexts, logging. Processors look up what they
@@ -5,15 +12,18 @@
 interface Provider {
     fn getName(): String
     fn getType(): String
+    fn getState(): ComponentState
     fn enable()
-    fn disable()
+    fn disable(int drainTimeoutSeconds)
+    fn shutdown()
     fn isEnabled(): bool
 }
 
 // ProcessorContext — the central context for zinc-flow.
-// Just a bag of providers. Nothing else.
+// Just a bag of providers with dependency tracking.
 class ProcessorContext {
     var providers = Map<String, Provider>{}
+    var dependents = Map<String, List<String>>{}
 
     init() {}
 
@@ -27,13 +37,21 @@ class ProcessorContext {
         if providers.containsKey(name) {
             var p = providers[name]
             if p.isEnabled() {
-                p.disable()
+                p.disable(60)
             }
+            p.shutdown()
             providers.delete(name)
         }
     }
 
     pub fn getProvider(String name): Provider {
+        if !providers.containsKey(name) {
+            return Error("provider not found: ${name}")
+        }
+        return providers[name]
+    }
+
+    pub fn getEnabledProvider(String name): Provider {
         if !providers.containsKey(name) {
             return Error("provider not found: ${name}")
         }
@@ -48,20 +66,32 @@ class ProcessorContext {
         return providers.keys()
     }
 
-    pub fn enableAll() {
-        var names = providers.keys()
-        for name in names {
-            providers[name].enable()
+    // --- Dependency tracking ---
+
+    pub fn registerDependent(String providerName, String processorName) {
+        if !dependents.containsKey(providerName) {
+            dependents[providerName] = List<String>[]
         }
+        dependents[providerName] = append(dependents[providerName], processorName)
     }
 
-    pub fn disableAll() {
+    pub fn getDependents(String providerName): List<String> {
+        if dependents.containsKey(providerName) {
+            return dependents[providerName]
+        }
+        return List<String>[]
+    }
+
+    // --- Lifecycle ---
+
+    pub fn shutdownAll() {
         var names = providers.keys()
         for name in names {
             var p = providers[name]
             if p.isEnabled() {
-                p.disable()
+                p.disable(60)
             }
+            p.shutdown()
         }
     }
 }

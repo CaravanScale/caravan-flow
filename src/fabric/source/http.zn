@@ -13,11 +13,11 @@ import time
 // HttpSource handles HTTP ingestion of FlowFiles.
 class HttpSource {
     Fabric fab
-    ServiceProvider services
+    ContentStore store
 
-    init(Fabric fab) {
+    init(Fabric fab, ContentStore store) {
         this.fab = fab
-        this.services = fab.getServices()
+        this.store = store
     }
 
     // handler processes an incoming HTTP request as a FlowFile.
@@ -45,24 +45,31 @@ class HttpSource {
 
         // Raw ingestion — body becomes FlowFile content
         var attrs = extractAttributes(r)
-        var store = services.getContentStore()
         var content = maybeOffload(store, body)
         var ff = createFlowFileWithContent(content, attrs)
 
-        fab.process(ff)
+        var accepted = fab.ingest(ff)
+        if !accepted {
+            w.WriteHeader(503)
+            w.Write('{"error":"backpressure","message":"ingest queue full"}'.toBytes())
+            return
+        }
 
         w.WriteHeader(200)
-        w.Write(('{"status":"ok","id":"' + ff.id + '"}').toBytes())
+        w.Write(('{"status":"accepted","id":"' + ff.id + '"}').toBytes())
     }
 
     // handleV3 unpacks NiFi FlowFile V3 binary and processes each FlowFile.
     fn handleV3(ResponseWriter w, byte[] body) {
         var flowfiles = unpackAll(body)
+        var accepted = 0
         for ff in flowfiles {
-            fab.process(ff)
+            if fab.ingest(ff) {
+                accepted = accepted + 1
+            }
         }
         w.WriteHeader(200)
-        w.Write(('{"status":"ok","count":' + str(len(flowfiles)) + '}').toBytes())
+        w.Write(('{"status":"accepted","count":' + str(accepted) + '}').toBytes())
     }
 
     // extractAttributes builds FlowFile attributes from HTTP request metadata.

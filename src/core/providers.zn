@@ -1,0 +1,84 @@
+// Concrete provider implementations.
+// Each wraps an existing infrastructure type and adds lifecycle management.
+
+import stdlib.config
+import stdlib.logging
+
+// ConfigProvider wraps Config. The bootstrap provider — used to configure everything else.
+class ConfigProvider : Provider {
+    String providerName
+    ComponentState state
+    config.Config cfg
+
+    init(config.Config cfg) {
+        this.providerName = "config"
+        this.state = DISABLED
+        this.cfg = cfg
+    }
+
+    pub fn getName(): String { return providerName }
+    pub fn getType(): String { return "config" }
+    pub fn getState(): ComponentState { return state }
+    pub fn enable() { state = ENABLED }
+    pub fn disable(int drainTimeoutSeconds) { state = DISABLED }
+    pub fn shutdown() { state = DISABLED }
+    pub fn isEnabled(): bool { return state == ENABLED }
+
+    // Delegate to underlying Config
+    pub fn getString(String key): String { return cfg.getString(key) }
+    pub fn getInt(String key): int { return cfg.getInt(key) }
+    pub fn getBool(String key): bool { return cfg.getBool(key) }
+    pub fn has(String key): bool { return cfg.has(key) }
+    pub fn getStringMap(String key): Map<String, String> { return cfg.getStringMap(key) }
+
+    // Processor-specific config by processor name
+    pub fn getProcessorConfig(String processorName): Map<String, String> {
+        return cfg.getStringMap("flow.processors.${processorName}.config")
+    }
+}
+
+// LoggingProvider wraps LogManager.
+class LoggingProvider : Provider {
+    String providerName
+    ComponentState state
+    logging.LogManager lm
+
+    init(logging.LogManager lm) {
+        this.providerName = "logging"
+        this.state = DISABLED
+        this.lm = lm
+    }
+
+    pub fn getName(): String { return providerName }
+    pub fn getType(): String { return "logging" }
+    pub fn getState(): ComponentState { return state }
+    pub fn enable() { state = ENABLED }
+    pub fn disable(int drainTimeoutSeconds) { state = DISABLED }
+    pub fn shutdown() { state = DISABLED }
+    pub fn isEnabled(): bool { return state == ENABLED }
+
+    pub fn getLogManager(): logging.LogManager { return lm }
+}
+
+// ContentProvider wraps ContentStore (FileContentStore or MemoryContentStore).
+class ContentProvider : Provider {
+    String providerName
+    ComponentState state
+    ContentStore store
+
+    init(String providerName, ContentStore store) {
+        this.providerName = providerName
+        this.state = DISABLED
+        this.store = store
+    }
+
+    pub fn getName(): String { return providerName }
+    pub fn getType(): String { return "content" }
+    pub fn getState(): ComponentState { return state }
+    pub fn enable() { state = ENABLED }
+    pub fn disable(int drainTimeoutSeconds) { state = DISABLED }
+    pub fn shutdown() { state = DISABLED }
+    pub fn isEnabled(): bool { return state == ENABLED }
+
+    pub fn getStore(): ContentStore { return store }
+}

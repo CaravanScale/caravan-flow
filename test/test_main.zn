@@ -552,16 +552,13 @@ fn testRoutingNoMatch() {
 fn testFabricMultiHop() {
     print("--- Fabric: Multi-Hop ---")
 
-    var services = testServices()
+    var ctx = testContext()
     var reg = Registry()
     registerBuiltins(reg)
 
-    var fab = Fabric(reg, services)
+    var fab = Fabric(reg, ctx)
 
-    // Manually wire processors and routing:
-    // tag-env → logger (two-hop chain)
-    // We use the Fabric's internal procs map via loadFlow with a config-like approach.
-    // Since we can't easily build a config.Config in tests, test the engine + process directly.
+    // Test the IRS engine routing logic directly
     var engine = RulesEngine()
 
     // Rule: all FlowFiles → tag-env processor
@@ -580,30 +577,28 @@ fn testFabricMultiHop() {
     var dests2 = engine.getDestinations(taggedAttrs)
     assertIntEqual("second hop matches", len(dests2), 2)
 
-    // Process through fabric with no routes configured — no panic
+    // Ingest into fabric with no routes configured — should accept
     var ff = createFlowFile("multi-hop".toBytes(), Map<String, String>{"type": "test"})
-    fab.process(ff)
-    assertTrue("multi-hop completes", true)
+    var accepted = fab.ingest(ff)
+    assertTrue("ingest accepted", accepted)
 }
 
 fn testFabricDlqFromFailure() {
     print("--- Fabric: DLQ from Failure ---")
 
-    // We can't easily inject a failing processor through Fabric's config loading,
-    // but we can verify the DLQ mechanism by testing handleResult indirectly.
-    // The Fabric.process method calls handleResult which routes Failures to DLQ.
-    // Test: process a FlowFile through a fabric with no matching routes → no DLQ.
-    var services = testServices()
+    var ctx = testContext()
     var reg = Registry()
     registerBuiltins(reg)
 
-    var fab = Fabric(reg, services)
+    var fab = Fabric(reg, ctx)
     assertIntEqual("initial dlq", fab.getDlqCount(), 0)
 
+    // Ingest a FlowFile — with no routes, it enters ingest queue but goes nowhere
     var ff = createFlowFile("test".toBytes(), Map<String, String>{"type": "unknown"})
-    fab.process(ff)
-    assertIntEqual("no routes no dlq", fab.getDlqCount(), 0)
+    var accepted = fab.ingest(ff)
+    assertTrue("ingest accepted", accepted)
+    assertIntEqual("no failures no dlq", fab.getDlqCount(), 0)
 
-    // Verify DLQ count is accessible and stays at 0 when nothing fails
+    // Verify DLQ is accessible
     assertTrue("dlq accessible", true)
 }

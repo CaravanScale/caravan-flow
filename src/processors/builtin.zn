@@ -29,29 +29,35 @@ pub fn registerBuiltins(Registry reg) {
     )
 }
 
-fn AddAttributeFactory(Map<String, String> config, ServiceProvider services): ProcessorFn {
+fn AddAttributeFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
     return AddAttribute(config["key"], config["value"])
 }
 
-fn FileSinkFactory(Map<String, String> config, ServiceProvider services): ProcessorFn {
-    return FileSink(config["output_dir"], services.getContentStore())
+fn FileSinkFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
+    var p = ctx.getProvider("content") or {
+        return FileSink(config["output_dir"], MemoryContentStore())
+    }
+    var cp = p as ContentProvider
+    return FileSink(config["output_dir"], cp.getStore())
 }
 
-fn LogProcessorFactory(Map<String, String> config, ServiceProvider services): ProcessorFn {
+fn LogProcessorFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
     return LogProcessor(config["prefix"])
 }
 
-fn JsonToRecordsFactory(Map<String, String> config, ServiceProvider services): ProcessorFn {
-    // Build a simple schema from config — fields are comma-separated
-    // e.g. schema_name=order, fields=name:STRING,amount:INT
+fn JsonToRecordsFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
     var schemaName = config["schema_name"]
     if schemaName == "" {
         schemaName = "default"
     }
-    return JsonToRecords(schemaName, services.getContentStore())
+    var p = ctx.getProvider("content") or {
+        return JsonToRecords(schemaName, MemoryContentStore())
+    }
+    var cp = p as ContentProvider
+    return JsonToRecords(schemaName, cp.getStore())
 }
 
-fn RecordsToJsonFactory(Map<String, String> config, ServiceProvider services): ProcessorFn {
+fn RecordsToJsonFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
     return RecordsToJson()
 }
 

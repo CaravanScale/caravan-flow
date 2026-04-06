@@ -3,9 +3,24 @@
 
 import core
 
-// testServices creates a ServiceProvider backed by MemoryContentStore.
-pub fn testServices(): ServiceProvider {
-    return ServiceProvider(MemoryContentStore())
+// testContext creates a ProcessorContext backed by MemoryContentStore.
+pub fn testContext(): ProcessorContext {
+    var store = MemoryContentStore()
+    var cp = ContentProvider("content", store)
+    cp.enable()
+    var ctx = ProcessorContext()
+    ctx.addProvider(cp)
+    return ctx
+}
+
+// testScopedContext creates a ScopedContext with a content provider.
+pub fn testScopedContext(): ScopedContext {
+    var store = MemoryContentStore()
+    var cp = ContentProvider("content", store)
+    cp.enable()
+    var providers = Map<String, Provider>{}
+    providers["content"] = cp
+    return ScopedContext(providers)
 }
 
 // assertEqual prints PASS or FAIL for a string comparison.

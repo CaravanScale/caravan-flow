@@ -1,28 +1,48 @@
-// Fabric Runtime — creates processors from config, wires IRS routing, runs processing loop.
+// Fabric Runtime — queue-backed async flow engine with transactional delivery.
 
 import stdlib.config
 import stdlib.logging
 import core
 import fabric.registry
 import fabric.router
+import time
 
-// Fabric is the main runtime.
+// Fabric is the main runtime — wires processors, queues, routing, and lifecycle.
 class Fabric {
     Registry reg
     RulesEngine engine
-    ServiceProvider services
+    ProcessorContext globalCtx
     var procs = Map<String, ProcessorFn>{}
     var processorNames = List<String>[]
-    var dlq = Channel<FlowFile>(1000)
-    var dlqCount = 0
+    var queues = Map<String, FlowQueue>{}
+    var sessions = Map<String, ProcessSession>{}
+    var processorStates = Map<String, ComponentState>{}
+    var processorRequires = Map<String, List<String>>{}
+    FlowQueue ingestQueue
+    DLQ dlqStore
     var processedCount = 0
     var droppedCount = 0
     var failureCount = 0
+    var running = false
 
-    init(Registry reg, ServiceProvider services) {
+    // Defaults — queue backpressure and retry
+    int queueMaxCount
+    long queueMaxBytes
+    long visibilityTimeoutNanos
+    int drainTimeoutSeconds
+    int maxRetries
+
+    init(Registry reg, ProcessorContext globalCtx) {
         this.reg = reg
-        this.services = services
+        this.globalCtx = globalCtx
         this.engine = RulesEngine()
+        this.queueMaxCount = 10000
+        this.queueMaxBytes = long(100 * 1024 * 1024)
+        this.visibilityTimeoutNanos = long(30000000000)
+        this.drainTimeoutSeconds = 60
+        this.maxRetries = 5
+        this.dlqStore = DLQ()
+        this.ingestQueue = FlowQueue("ingest", 10000, long(100 * 1024 * 1024), long(30000000000))
     }
 
     // loadFlow reads the flow graph from config and instantiates everything.
@@ -37,14 +57,21 @@ class Fabric {
             }
             var name = cfg.getString(nameKey)
             var typeName = cfg.getString(prefix + ".type")
-
-            // Build config map for this processor from config sub-tree
             var procConfig = cfg.getStringMap(prefix + ".config")
 
             if reg.has(typeName) {
-                var proc = reg.create(typeName, procConfig, services)
+                // Build ScopedContext for this processor — give access to all providers
+                var ctx = buildScopedContext()
+
+                var proc = reg.create(typeName, ctx, procConfig)
                 procs[name] = proc
                 processorNames = append(processorNames, name)
+                processorStates[name] = ENABLED
+
+                // Create input queue for this processor
+                var queue = FlowQueue(name, queueMaxCount, queueMaxBytes, visibilityTimeoutNanos)
+                queues[name] = queue
+
                 logging.info("processor created", "name", name, "type", typeName)
             } else {
                 logging.error("unknown processor type", "type", typeName)
@@ -79,25 +106,111 @@ class Fabric {
             engine.addOrReplaceRuleset("flow", rules)
             logging.info("routes configured", "count", len(rules))
         }
+
+        // Create ProcessSessions now that all queues exist
+        for name in processorNames {
+            var session = ProcessSession(queues[name], procs[name], name, engine, queues, dlqStore, maxRetries)
+            sessions[name] = session
+        }
     }
 
-    // process routes a FlowFile through the graph.
-    pub fn process(FlowFile ff) {
-        processedCount = processedCount + 1
-        routeWithVisited(ff, Map<String, bool>{})
+    // startAsync starts processing goroutines for each processor and the ingest router.
+    pub fn startAsync() {
+        running = true
+        ingestQueue.startReaper()
+
+        // Start processor loops
+        for name in processorNames {
+            queues[name].startReaper()
+            var procName = name
+            spawn {
+                while running {
+                    if processorStates[procName] != ENABLED {
+                        time.Sleep(100 * time.Millisecond)
+                        continue
+                    }
+                    var processed = sessions[procName].execute()
+                    if !processed {
+                        time.Sleep(10 * time.Millisecond)
+                    } else {
+                        processedCount = processedCount + 1
+                    }
+                }
+            }
+        }
+
+        // Start ingest router loop
+        spawn {
+            while running {
+                var entry = ingestQueue.claim()
+                if entry.id == "" {
+                    time.Sleep(10 * time.Millisecond)
+                    continue
+                }
+                var destinations = engine.getDestinations(entry.flowFile.attributes)
+                if len(destinations) == 0 {
+                    ingestQueue.ack(entry.id)
+                    continue
+                }
+                // Pre-check all destination queues
+                var allReady = true
+                for dest in destinations {
+                    if queues.containsKey(dest.endpoint) {
+                        if !queues[dest.endpoint].hasCapacity() {
+                            allReady = false
+                            break
+                        }
+                    }
+                }
+                if !allReady {
+                    ingestQueue.nack(entry.id)
+                    time.Sleep(10 * time.Millisecond)
+                    continue
+                }
+                // All-or-nothing commit
+                for dest in destinations {
+                    if queues.containsKey(dest.endpoint) {
+                        queues[dest.endpoint].offer(entry.flowFile)
+                    }
+                }
+                ingestQueue.ack(entry.id)
+            }
+        }
+
+        logging.info("fabric started", "processors", len(processorNames))
     }
 
-    // getServices returns the shared service provider.
-    pub fn getServices(): ServiceProvider {
-        return services
+    // stopAsync stops all processing loops.
+    pub fn stopAsync() {
+        running = false
     }
 
-    // getDlqCount returns the number of FlowFiles in the dead letter queue.
+    // ingest offers a FlowFile to the ingest queue. Returns false on backpressure.
+    pub fn ingest(FlowFile ff): bool {
+        return ingestQueue.offer(ff)
+    }
+
+    // getContext returns the global ProcessorContext.
+    pub fn getContext(): ProcessorContext {
+        return globalCtx
+    }
+
+    // getIngestQueue returns the ingest queue.
+    pub fn getIngestQueue(): FlowQueue {
+        return ingestQueue
+    }
+
+    // getDLQ returns the dead letter queue.
+    pub fn getDLQ(): DLQ {
+        return dlqStore
+    }
+
+    // getDlqCount returns the DLQ entry count.
     pub fn getDlqCount(): int {
-        return dlqCount
+        return dlqStore.count()
     }
 
-    // getProcessorNames returns the names of all active processors.
+    // getProcessorNames returns the names of all processors.
     pub fn getProcessorNames(): List<String> {
         return processorNames
     }
@@ -118,12 +231,66 @@ class Fabric {
         stats["processed"] = processedCount
         stats["dropped"] = droppedCount
         stats["failures"] = failureCount
-        stats["dlq"] = dlqCount
+        stats["dlq"] = dlqStore.count()
         return stats
     }
 
-    // addProcessor creates a processor from the registry and adds it to the fabric.
-    // Returns true if successful, false if the type is unknown or name already exists.
+    // getQueueStats returns stats for all queues.
+    pub fn getQueueStats(): Map<String, Map<String, int>> {
+        var stats = Map<String, Map<String, int>>{}
+        for name in processorNames {
+            var qs = Map<String, int>{}
+            qs["visible"] = queues[name].visibleCount()
+            qs["invisible"] = queues[name].invisibleCount()
+            qs["total"] = getQueueDepth(name)
+            stats[name] = qs
+        }
+        return stats
+    }
+
+    // enableProcessor enables a processor. Returns false if not found or providers missing.
+    pub fn enableProcessor(String name): bool {
+        if !procs.containsKey(name) {
+            return false
+        }
+        processorStates[name] = ENABLED
+        logging.info("processor enabled", "name", name)
+        return true
+    }
+
+    // disableProcessor drains and disables a processor.
+    pub fn disableProcessor(String name, int drainTimeoutSeconds): bool {
+        if !procs.containsKey(name) {
+            return false
+        }
+        processorStates[name] = DRAINING
+        logging.info("processor draining", "name", name)
+
+        // Spawn drain watcher
+        spawn {
+            var elapsed = 0
+            while elapsed < drainTimeoutSeconds {
+                if getQueueDepth(name) == 0 {
+                    break
+                }
+                time.Sleep(100 * time.Millisecond)
+                elapsed = elapsed + 1
+            }
+            processorStates[name] = DISABLED
+            logging.info("processor disabled", "name", name)
+        }
+        return true
+    }
+
+    // getProcessorState returns the lifecycle state of a processor.
+    pub fn getProcessorState(String name): ComponentState {
+        if processorStates.containsKey(name) {
+            return processorStates[name]
+        }
+        return DISABLED
+    }
+
+    // addProcessor creates a processor from the registry and adds it.
     pub fn addProcessor(String name, String typeName, Map<String, String> config): bool {
         if procs.containsKey(name) {
             logging.warn("processor already exists", "name", name)
@@ -133,19 +300,50 @@ class Fabric {
             logging.warn("unknown processor type", "type", typeName)
             return false
         }
-        var proc = reg.create(typeName, config, services)
+
+        // Build scoped context with all providers
+        var ctx = buildScopedContext()
+
+        var proc = reg.create(typeName, ctx, config)
         procs[name] = proc
         processorNames = append(processorNames, name)
+        processorStates[name] = ENABLED
+
+        // Create queue and session
+        var queue = FlowQueue(name, queueMaxCount, queueMaxBytes, visibilityTimeoutNanos)
+        queues[name] = queue
+        var session = ProcessSession(queue, proc, name, engine, queues, dlqStore, maxRetries)
+        sessions[name] = session
+
+        // Start processing loop if fabric is running
+        if running {
+            queue.startReaper()
+            spawn {
+                while running {
+                    if processorStates[name] != ENABLED {
+                        time.Sleep(100 * time.Millisecond)
+                        continue
+                    }
+                    var processed = session.execute()
+                    if !processed {
+                        time.Sleep(10 * time.Millisecond)
+                    } else {
+                        processedCount = processedCount + 1
+                    }
+                }
+            }
+        }
+
         logging.info("processor added", "name", name, "type", typeName)
         return true
     }
 
     // removeProcessor removes a processor from the fabric.
-    // Returns true if the processor was found and removed.
     pub fn removeProcessor(String name): bool {
         if !procs.containsKey(name) {
             return false
         }
+        processorStates[name] = DISABLED
         procs.delete(name)
         var updated = List<String>[]
         for n in processorNames {
@@ -165,14 +363,13 @@ class Fabric {
         var destination = Destination(dest, "local")
         var rule = RoutingRule(name, condition, destination, true)
 
-        // Get existing rules and append
         var existing = engine.getAllRules()
         existing = append(existing, rule)
         engine.addOrReplaceRuleset("flow", existing)
         logging.info("route added", "name", name, "destination", dest)
     }
 
-    // removeRoute removes a routing rule by name from the "flow" ruleset.
+    // removeRoute removes a routing rule by name.
     pub fn removeRoute(String name): bool {
         var existing = engine.getAllRules()
         var updated = List<RoutingRule>[]
@@ -207,49 +404,25 @@ class Fabric {
         return found
     }
 
-    // routeWithVisited routes a FlowFile, skipping already-visited processors to prevent cycles.
-    fn routeWithVisited(FlowFile ff, Map<String, bool> visited) {
-        var destinations = engine.getDestinations(ff.attributes)
-        for dest in destinations {
-            if visited.containsKey(dest.endpoint) {
+    // buildScopedContext creates a ScopedContext with all providers from the global context.
+    fn buildScopedContext(): ScopedContext {
+        var scopedProviders = Map<String, Provider>{}
+        var providerNames = globalCtx.listProviders()
+        for pn in providerNames {
+            var prov = globalCtx.getProvider(pn) or {
                 continue
             }
-            if procs.containsKey(dest.endpoint) {
-                var proc = procs[dest.endpoint]
-                visited[dest.endpoint] = true
-                var result = proc.process(ff)
-                handleResult(result, visited)
-            } else {
-                logging.warn("no processor for destination", "dest", dest.endpoint)
-            }
+            scopedProviders[pn] = prov
         }
+        return ScopedContext(scopedProviders)
     }
 
-    // handleResult routes processor output through the graph.
-    fn handleResult(ProcessorResult result, Map<String, bool> visited) {
-        match result {
-            case Single(ff) {
-                routeWithVisited(ff, visited)
-            }
-            case Multiple(ffs) {
-                for f in ffs {
-                    routeWithVisited(f, visited)
-                }
-            }
-            case Routed(_, ff) {
-                routeWithVisited(ff, visited)
-            }
-            case Dropped(reason) {
-                droppedCount = droppedCount + 1
-                logging.debug("flowfile dropped", "reason", reason)
-            }
-            case Failure(reason, ff) {
-                failureCount = failureCount + 1
-                logging.error("flowfile failure — routing to DLQ", "reason", reason, "id", ff.id)
-                dlq.send(ff)
-                dlqCount = dlqCount + 1
-            }
+    // getQueueDepth returns the total items in a processor's queue.
+    pub fn getQueueDepth(String name): int {
+        if queues.containsKey(name) {
+            return queues[name].visibleCount() + queues[name].invisibleCount()
         }
+        return 0
     }
 
     // status prints the current fabric state.
@@ -260,7 +433,7 @@ class Fabric {
             "processed", processedCount,
             "dropped", droppedCount,
             "failures", failureCount,
-            "dlq", dlqCount)
+            "dlq", dlqStore.count())
     }
 }
 

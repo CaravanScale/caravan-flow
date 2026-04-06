@@ -1,0 +1,29 @@
+// ScopedContext — restricts provider visibility per processor.
+// Each processor only sees providers it declared as dependencies via `requires`.
+// This prevents ambient access to all infrastructure and enforces security boundaries.
+
+// ScopedContext wraps a subset of providers for a specific processor.
+class ScopedContext {
+    Map<String, Provider> providers
+
+    init(Map<String, Provider> providers) {
+        this.providers = providers
+    }
+
+    // getProvider returns a provider by name, or Error if not in scope or not enabled.
+    pub fn getProvider(String name): Provider {
+        if !providers.containsKey(name) {
+            return Error("provider '${name}' not in scope for this processor")
+        }
+        var p = providers[name]
+        if !p.isEnabled() {
+            return Error("provider '${name}' is not enabled")
+        }
+        return p
+    }
+
+    // listProviders returns the names of all providers in scope.
+    pub fn listProviders(): List<String> {
+        return providers.keys()
+    }
+}

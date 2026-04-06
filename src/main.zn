@@ -1,5 +1,5 @@
 // zinc-flow — data flow engine
-// Fabric loads processors + routing from config, processes FlowFiles in-process.
+// Fabric loads processors + routing from config, processes FlowFiles asynchronously.
 // HTTP source accepts FlowFiles via POST /ingest.
 
 import stdlib.config
@@ -30,10 +30,23 @@ fn main() {
 
     logging.info("zinc-flow starting")
 
-    // Create shared services
+    // Create providers
     var contentDir = cfg.getString("content.dir")
     var store = FileContentStore(contentDir)
-    var services = ServiceProvider(store)
+    var contentProvider = ContentProvider("content", store)
+    contentProvider.enable()
+
+    var configProvider = ConfigProvider(cfg)
+    configProvider.enable()
+
+    var loggingProvider = LoggingProvider(lm)
+    loggingProvider.enable()
+
+    // Build global context
+    var globalCtx = ProcessorContext()
+    globalCtx.addProvider(contentProvider)
+    globalCtx.addProvider(configProvider)
+    globalCtx.addProvider(loggingProvider)
 
     // Create processor registry and register built-ins
     var reg = Registry()
@@ -41,15 +54,16 @@ fn main() {
     logging.info("registry loaded", "processors", len(reg.list()))
 
     // Create fabric and load flow graph from config
-    var fab = Fabric(reg, services)
+    var fab = Fabric(reg, globalCtx)
     fab.loadFlow(cfg)
+    fab.startAsync()
     fab.status()
 
     // Create output directory for file-sink
     MkdirAll("/tmp/zinc-flow/output", 0o755)
 
     // Setup HTTP source
-    var httpSource = HttpSource(fab)
+    var httpSource = HttpSource(fab, store)
     HandleFunc("/ingest", httpSource.handler)
     HandleFunc("/health", httpSource.healthHandler)
 

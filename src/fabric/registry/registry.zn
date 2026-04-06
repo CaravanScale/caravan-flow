@@ -5,8 +5,8 @@
 import core
 
 // ProcessorFactory creates a configured ProcessorFn instance.
-// Receives config map and shared services for constructor injection.
-type ProcessorFactory = Fn<(Map<String, String>, ServiceProvider), ProcessorFn>
+// Receives scoped context (only declared providers) and config map.
+type ProcessorFactory = Fn<(ScopedContext, Map<String, String>), ProcessorFn>
 
 // ProcessorInfo describes a registered processor type.
 data ProcessorInfo(
@@ -28,10 +28,10 @@ class Registry {
         info[pinfo.name] = pinfo
     }
 
-    // create instantiates a processor by name with the given config and services.
-    pub fn create(String name, Map<String, String> config, ServiceProvider services): ProcessorFn {
+    // create instantiates a processor by name with the given scoped context and config.
+    pub fn create(String name, ScopedContext ctx, Map<String, String> config): ProcessorFn {
         var factory = factories[name]
-        return factory(config, services)
+        return factory(ctx, config)
     }
 
     // has checks if a processor type is registered.
