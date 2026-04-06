@@ -1,0 +1,8 @@
+[project]
+name = "zinc-flow-python"
+version = "0.1.0"
+main = "src/main.zn"
+
+[python]
+version = "3.14t"
+deps = ["pyyaml", "flask"]

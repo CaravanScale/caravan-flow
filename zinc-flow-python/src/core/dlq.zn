@@ -1,0 +1,67 @@
+import threading
+import time
+from core.types import FlowFile, DLQEntry
+
+
+class DLQ {
+    def init() {
+        self.entries: dict[str, DLQEntry] = {}
+        self.lock = threading.Lock()
+        self.id_counter = 0
+    }
+
+    def add(ff: FlowFile, source_proc: str, source_queue: str, attempts: int, error: str) {
+        with self.lock {
+            self.id_counter += 1
+            entry_id = "dlq-{self.id_counter}"
+            entry = DLQEntry(
+                id=entry_id, flowfile=ff, source_processor=source_proc,
+                source_queue=source_queue, attempt_count=attempts,
+                last_error=error, arrived_at=time.time(),
+            )
+            self.entries[entry_id] = entry
+        }
+    }
+
+    def get(entry_id: str) -> DLQEntry | None {
+        with self.lock {
+            return self.entries.get(entry_id)
+        }
+    }
+
+    def list_entries() -> list[DLQEntry] {
+        with self.lock {
+            return list(self.entries.values())
+        }
+    }
+
+    def remove(entry_id: str) {
+        with self.lock {
+            self.entries.pop(entry_id, None)
+        }
+    }
+
+    def replay(entry_id: str) -> FlowFile | None {
+        with self.lock {
+            entry = self.entries.pop(entry_id, None)
+            if entry {
+                return entry.flowfile
+            }
+        }
+        return None
+    }
+
+    def replay_all() -> list[tuple[str, FlowFile]] {
+        with self.lock {
+            results = [(e.source_queue, e.flowfile) for e in self.entries.values()]
+            self.entries.clear()
+            return results
+        }
+    }
+
+    def count() -> int {
+        with self.lock {
+            return len(self.entries)
+        }
+    }
+}

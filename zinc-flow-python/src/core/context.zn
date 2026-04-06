@@ -1,0 +1,104 @@
+from abc import ABC, abstractmethod
+from core.types import ComponentState
+import logging
+
+logger = logging.getLogger("zinc-flow")
+
+
+class Provider(ABC) {
+    @abstractmethod
+    def get_name() -> str {
+        ...
+    }
+
+    @abstractmethod
+    def get_type() -> str {
+        ...
+    }
+
+    @abstractmethod
+    def get_state() -> ComponentState {
+        ...
+    }
+
+    @abstractmethod
+    def enable() {
+        ...
+    }
+
+    @abstractmethod
+    def disable(drain_timeout: int) {
+        ...
+    }
+
+    @abstractmethod
+    def shutdown() {
+        ...
+    }
+
+    def is_enabled() -> bool {
+        return self.get_state() == ComponentState.ENABLED
+    }
+}
+
+
+class ProcessorContext {
+    def init() {
+        self.providers: dict[str, Provider] = {}
+        self.dependents: dict[str, list[str]] = {}
+    }
+
+    def add_provider(provider: Provider) {
+        self.providers[provider.get_name()] = provider
+    }
+
+    def get_provider(name: str) -> Provider | None {
+        return self.providers.get(name)
+    }
+
+    def list_providers() -> list[str] {
+        return list(self.providers.keys())
+    }
+
+    def register_dependent(provider_name: str, processor_name: str) {
+        if provider_name not in self.dependents {
+            self.dependents[provider_name] = []
+        }
+        self.dependents[provider_name].append(processor_name)
+    }
+
+    def get_dependents(provider_name: str) -> list[str] {
+        return self.dependents.get(provider_name, [])
+    }
+
+    def shutdown_all() {
+        for name, p in self.providers.items() {
+            if p.is_enabled() {
+                p.disable(60)
+            }
+            p.shutdown()
+        }
+    }
+}
+
+
+class ScopedContext {
+    def init(providers: dict[str, Provider]) {
+        self._providers = providers
+    }
+
+    def get_provider(name: str) -> Provider {
+        if name not in self._providers {
+            raise KeyError("provider not in scope: {name}")
+        }
+        p = self._providers[name]
+        if not p.is_enabled() {
+            raise RuntimeError("provider not enabled: {name}")
+        }
+        return p
+    }
+
+    def list_providers() -> list[str] {
+        return list(self._providers.keys())
+    }
+}

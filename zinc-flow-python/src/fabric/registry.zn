@@ -1,0 +1,25 @@
+from typing import Callable
+
+
+class Registry {
+    def init() {
+        self.factories: dict[str, Callable] = {}
+    }
+
+    def register(type_name: str, factory: Callable) {
+        self.factories[type_name] = factory
+    }
+
+    def create(type_name: str, ctx, config: dict) {
+        factory = self.factories[type_name]
+        return factory(ctx, config)
+    }
+
+    def has(type_name: str) -> bool {
+        return type_name in self.factories
+    }
+
+    def list_types() -> list[str] {
+        return list(self.factories.keys())
+    }
+}

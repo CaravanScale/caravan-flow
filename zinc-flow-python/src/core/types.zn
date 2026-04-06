@@ -1,0 +1,128 @@
+from dataclasses import dataclass, field
+from enum import Enum, auto
+from typing import Any
+import uuid
+import time
+
+
+# --- Component lifecycle ---
+
+class ComponentState(Enum) {
+    DISABLED = auto()
+    ENABLED = auto()
+    DRAINING = auto()
+}
+
+
+# --- Content types ---
+
+@dataclass(slots=True)
+class Raw {
+    data: bytes
+}
+
+@dataclass(slots=True)
+class Records {
+    schema: dict
+    records: list
+}
+
+@dataclass(slots=True)
+class Claim {
+    claim_id: str
+    size: int
+}
+
+Content = Raw | Records | Claim
+
+
+def content_size(content: Content) -> int {
+    if isinstance(content, Raw) {
+        return len(content.data)
+    } else if isinstance(content, Records) {
+        return len(content.records)
+    } else if isinstance(content, Claim) {
+        return content.size
+    }
+    return 0
+}
+
+def is_record(content: Content) -> bool {
+    return isinstance(content, Records)
+}
+
+
+# --- FlowFile ---
+
+@dataclass(slots=True)
+class FlowFile {
+    id: str
+    attributes: dict[str, str]
+    content: Content
+    size: int
+}
+
+# Pre-allocate counter for fast IDs (avoid uuid overhead)
+_id_counter = 0
+
+def create_flowfile(data: bytes, attributes: dict[str, str]) -> FlowFile {
+    global _id_counter
+    _id_counter += 1
+    ff_id = "ff-{_id_counter}"
+    content = Raw(data)
+    return FlowFile(id=ff_id, attributes=attributes, content=content, size=len(data))
+}
+
+def with_attribute(ff: FlowFile, key: str, value: str) -> FlowFile {
+    attrs = dict(ff.attributes)
+    attrs[key] = value
+    return FlowFile(id=ff.id, attributes=attrs, content=ff.content, size=ff.size)
+}
+
+def with_content(ff: FlowFile, content: Content) -> FlowFile {
+    return FlowFile(id=ff.id, attributes=ff.attributes, content=content, size=content_size(content))
+}
+
+
+# --- Processor results ---
+
+@dataclass(slots=True)
+class Single {
+    flowfile: FlowFile
+}
+
+@dataclass(slots=True)
+class Dropped {
+    pass
+}
+
+@dataclass(slots=True)
+class Failure {
+    reason: str
+    flowfile: FlowFile
+}
+
+ProcessorResult = Single | Dropped | Failure
+
+
+# --- Queue and DLQ entries ---
+
+@dataclass(slots=True)
+class QueueEntry {
+    id: str
+    flowfile: FlowFile
+    claimed_at: float
+    attempt_count: int
+    source_processor: str
+}
+
+@dataclass(slots=True)
+class DLQEntry {
+    id: str
+    flowfile: FlowFile
+    source_processor: str
+    source_queue: str
+    attempt_count: int
+    last_error: str
+    arrived_at: float
+}

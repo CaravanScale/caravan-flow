@@ -1,0 +1,118 @@
+from enum import Enum, auto
+
+
+class Operator(Enum) {
+    EQ = auto()
+    NEQ = auto()
+    CONTAINS = auto()
+    STARTSWITH = auto()
+    ENDSWITH = auto()
+    EXISTS = auto()
+    GT = auto()
+    LT = auto()
+}
+
+
+class RoutingRule {
+    def init(name: str, attribute: str, operator: Operator, value: str, destination: str, enabled: bool = True) {
+        self.name = name
+        self.attribute = attribute
+        self.operator = operator
+        self.value = value
+        self.destination = destination
+        self.enabled = enabled
+    }
+}
+
+
+def parse_operator(op: str) -> Operator {
+    ops = {
+        "EQ": Operator.EQ, "eq": Operator.EQ,
+        "NEQ": Operator.NEQ, "neq": Operator.NEQ,
+        "CONTAINS": Operator.CONTAINS, "contains": Operator.CONTAINS,
+        "STARTSWITH": Operator.STARTSWITH, "startswith": Operator.STARTSWITH,
+        "ENDSWITH": Operator.ENDSWITH, "endswith": Operator.ENDSWITH,
+        "EXISTS": Operator.EXISTS, "exists": Operator.EXISTS,
+        "GT": Operator.GT, "gt": Operator.GT,
+        "LT": Operator.LT, "lt": Operator.LT,
+    }
+    return ops.get(op, Operator.EXISTS)
+}
+
+
+class RulesEngine {
+    def init() {
+        self.rulesets: dict[str, list[RoutingRule]] = {}
+    }
+
+    def add_or_replace_ruleset(name: str, rules: list[RoutingRule]) {
+        self.rulesets[name] = rules
+    }
+
+    def get_destinations(attributes: dict[str, str]) -> list[str] {
+        destinations = []
+        for rules in self.rulesets.values() {
+            for rule in rules {
+                if not rule.enabled {
+                    continue
+                }
+                if _evaluate(rule, attributes) {
+                    destinations.append(rule.destination)
+                }
+            }
+        }
+        return destinations
+    }
+
+    def get_all_rules() -> list[RoutingRule] {
+        result = []
+        for rules in self.rulesets.values() {
+            result.extend(rules)
+        }
+        return result
+    }
+
+    def get_ruleset_names() -> list[str] {
+        return list(self.rulesets.keys())
+    }
+
+    def toggle_rule(ruleset: str, rule_name: str) {
+        if ruleset in self.rulesets {
+            for rule in self.rulesets[ruleset] {
+                if rule.name == rule_name {
+                    rule.enabled = not rule.enabled
+                }
+            }
+        }
+    }
+}
+
+
+def _evaluate(rule: RoutingRule, attributes: dict[str, str]) -> bool {
+    val = attributes.get(rule.attribute)
+
+    if rule.operator == Operator.EXISTS {
+        return val is not None
+    }
+
+    if val is None {
+        return False
+    }
+
+    if rule.operator == Operator.EQ {
+        return val == rule.value
+    } else if rule.operator == Operator.NEQ {
+        return val != rule.value
+    } else if rule.operator == Operator.CONTAINS {
+        return rule.value in val
+    } else if rule.operator == Operator.STARTSWITH {
+        return val.startswith(rule.value)
+    } else if rule.operator == Operator.ENDSWITH {
+        return val.endswith(rule.value)
+    } else if rule.operator == Operator.GT {
+        return val > rule.value
+    } else if rule.operator == Operator.LT {
+        return val < rule.value
+    }
+    return False
+}
