@@ -183,6 +183,97 @@ public sealed class LoggingProvider : IProvider
     private static string EscapeJson(string s) => s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n");
 }
 
+// --- Provenance provider: records FlowFile lifecycle events ---
+
+public enum ProvenanceEventType { Created, Processed, Routed, Dropped, DLQ }
+
+public sealed class ProvenanceEvent
+{
+    public long FlowFileId { get; }
+    public ProvenanceEventType EventType { get; }
+    public string Component { get; }
+    public string Details { get; }
+    public long Timestamp { get; }
+
+    public ProvenanceEvent(long ffId, ProvenanceEventType type, string component, string details = "")
+    {
+        FlowFileId = ffId;
+        EventType = type;
+        Component = component;
+        Details = details;
+        Timestamp = Environment.TickCount64;
+    }
+}
+
+public sealed class ProvenanceProvider : IProvider
+{
+    public string Name => "provenance";
+    public string ProviderType => "provenance";
+    public ComponentState State { get; private set; } = ComponentState.Disabled;
+
+    // Ring buffer — bounded, oldest events evicted
+    private readonly ProvenanceEvent[] _events;
+    private readonly int _capacity;
+    private int _head;
+    private int _count;
+    private readonly object _lock = new();
+
+    public ProvenanceProvider(int capacity = 100_000)
+    {
+        _capacity = capacity;
+        _events = new ProvenanceEvent[capacity];
+    }
+
+    public void Enable() => State = ComponentState.Enabled;
+    public void Disable(int drainTimeout) => State = ComponentState.Disabled;
+    public void Shutdown() => State = ComponentState.Disabled;
+
+    public void Record(long ffId, ProvenanceEventType type, string component, string details = "")
+    {
+        if (State != ComponentState.Enabled) return;
+        var evt = new ProvenanceEvent(ffId, type, component, details);
+        lock (_lock)
+        {
+            _events[_head] = evt;
+            _head = (_head + 1) % _capacity;
+            if (_count < _capacity) _count++;
+        }
+    }
+
+    /// <summary>Get all events for a specific FlowFile ID, oldest first.</summary>
+    public List<ProvenanceEvent> GetEvents(long ffId)
+    {
+        var result = new List<ProvenanceEvent>();
+        lock (_lock)
+        {
+            int start = _count < _capacity ? 0 : _head;
+            for (int i = 0; i < _count; i++)
+            {
+                var evt = _events[(start + i) % _capacity];
+                if (evt.FlowFileId == ffId)
+                    result.Add(evt);
+            }
+        }
+        return result;
+    }
+
+    /// <summary>Get the most recent N events across all FlowFiles.</summary>
+    public List<ProvenanceEvent> GetRecent(int n)
+    {
+        var result = new List<ProvenanceEvent>();
+        lock (_lock)
+        {
+            int take = Math.Min(n, _count);
+            int start = (_head - take + _capacity) % _capacity;
+            for (int i = 0; i < take; i++)
+                result.Add(_events[(start + i) % _capacity]);
+        }
+        return result;
+    }
+
+    public int Count { get { lock (_lock) return _count; } }
+}
+
 public sealed class ContentProvider : IProvider
 {
     public string Name { get; }

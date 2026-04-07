@@ -17,7 +17,7 @@ public sealed class ProcessSession
     private readonly Dictionary<string, FlowQueue> _destQueues;
     private readonly DLQ _dlq;
     private readonly int _maxRetries;
-    private readonly bool _provenanceEnabled;
+    private readonly ProvenanceProvider? _provenance;
 
     // Reusable destination list — never reallocated
     private readonly List<string> _destBuffer = new();
@@ -30,7 +30,7 @@ public sealed class ProcessSession
         Dictionary<string, FlowQueue> destQueues,
         DLQ dlq,
         int maxRetries,
-        bool provenanceEnabled = false)
+        ProvenanceProvider? provenance = null)
     {
         _source = source;
         _processor = processor;
@@ -39,7 +39,7 @@ public sealed class ProcessSession
         _destQueues = destQueues;
         _dlq = dlq;
         _maxRetries = maxRetries;
-        _provenanceEnabled = provenanceEnabled;
+        _provenance = provenance;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -52,6 +52,7 @@ public sealed class ProcessSession
         // Retry exhaustion → DLQ
         if (entry.AttemptCount >= _maxRetries)
         {
+            _provenance?.Record(entry.FlowFile.NumericId, ProvenanceEventType.DLQ, _processorName, "max retries exceeded");
             _dlq.Add(entry.FlowFile, _processorName, _source.Name, entry.AttemptCount, "max retries exceeded");
             _source.Ack(entry.Id);
             return true;
@@ -62,8 +63,7 @@ public sealed class ProcessSession
         if (result is SingleResult single)
         {
             var outFf = single.FlowFile;
-            if (_provenanceEnabled)
-                outFf = FlowFile.WithAttribute(outFf, "provenance.last", _processorName);
+            _provenance?.Record(outFf.NumericId, ProvenanceEventType.Processed, _processorName);
             SingleResult.Return(single);
 
             if (RouteResult(outFf, entry))
@@ -109,6 +109,7 @@ public sealed class ProcessSession
         }
         else if (result is DroppedResult)
         {
+            _provenance?.Record(entry.FlowFile.NumericId, ProvenanceEventType.Dropped, _processorName);
             var inputFf = entry.FlowFile;
             _source.Ack(entry.Id);
             FlowFile.Return(inputFf);
@@ -116,6 +117,7 @@ public sealed class ProcessSession
         }
         else if (result is FailureResult failure)
         {
+            _provenance?.Record(failure.FlowFile.NumericId, ProvenanceEventType.DLQ, _processorName, failure.Reason);
             _dlq.Add(failure.FlowFile, _processorName, _source.Name, entry.AttemptCount, failure.Reason);
             FailureResult.Return(failure);
             _source.Ack(entry.Id);
@@ -148,7 +150,10 @@ public sealed class ProcessSession
         foreach (var dest in _destBuffer)
         {
             if (_destQueues.TryGetValue(dest, out var q))
+            {
+                _provenance?.Record(ff.NumericId, ProvenanceEventType.Routed, _processorName, dest);
                 q.Offer(ff);
+            }
         }
         return true;
     }

@@ -1064,7 +1064,10 @@ public static class TestSuite
 
     static void TestProvenance()
     {
-        Console.WriteLine("--- Provenance ---");
+        Console.WriteLine("--- Provenance Provider ---");
+        var prov = new ProvenanceProvider();
+        prov.Enable();
+
         var tag = new UpdateAttribute("env", "prod");
         var q = new FlowQueue("prov", 100, 0, 30_000);
         var outQ = new FlowQueue("out", 100, 0, 30_000);
@@ -1075,15 +1078,23 @@ public static class TestSuite
             new RoutingRule("to-out", "env", Operator.Exists, "", "out")
         });
         var dlq = new DLQ();
-        var session = new ProcessSession(q, tag, "tagger", engine, queues, dlq, 5, provenanceEnabled: true);
+        var session = new ProcessSession(q, tag, "tagger", engine, queues, dlq, 5, prov);
 
-        q.Offer(FlowFile.Create("test"u8, new() { ["type"] = "order" }));
+        var ff = FlowFile.Create("test"u8, new() { ["type"] = "order" });
+        q.Offer(ff);
         session.Execute();
 
-        // Output FlowFile should have provenance attribute
-        var entry = outQ.Claim()!;
-        AssertTrue("provenance.last set", entry.FlowFile.Attributes.TryGetValue("provenance.last", out var last) && last == "tagger");
-        outQ.Ack(entry.Id);
+        // Provenance provider should have recorded events
+        var events = prov.GetEvents(ff.NumericId);
+        AssertTrue("has provenance events", events.Count >= 2);
+        AssertTrue("processed event", events.Any(e => e.EventType == ProvenanceEventType.Processed && e.Component == "tagger"));
+        AssertTrue("routed event", events.Any(e => e.EventType == ProvenanceEventType.Routed && e.Component == "tagger" && e.Details == "out"));
+
+        // Recent events API
+        var recent = prov.GetRecent(10);
+        AssertTrue("recent has events", recent.Count >= 2);
+
+        outQ.Claim();
     }
 
     static void TestContentStoreCleanup()

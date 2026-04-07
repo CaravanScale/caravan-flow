@@ -32,7 +32,7 @@ public sealed class Fabric
     private int _drainTimeoutSeconds = 60;
     private int _maxRetries = 5;
     private string _walDir = "";
-    private bool _provenanceEnabled = true;
+    private ProvenanceProvider? _provenance;
     private LoggingProvider? _log;
 
     public Fabric(Registry reg, ProcessorContext globalCtx)
@@ -41,6 +41,7 @@ public sealed class Fabric
         _globalCtx = globalCtx;
         _ingestQueue = new FlowQueue("ingest", _queueMaxCount, _queueMaxBytes, _visibilityTimeoutMs);
         _log = globalCtx.GetProvider("logging") as LoggingProvider;
+        _provenance = globalCtx.GetProvider("provenance") as ProvenanceProvider;
     }
 
     // --- Config loading ---
@@ -52,10 +53,9 @@ public sealed class Fabric
         if (TryGetConfig<int>(config, "defaults.backpressure.max_retries", out var mr)) _maxRetries = mr;
         if (TryGetConfig<int>(config, "defaults.backpressure.drain_timeout", out var dt)) _drainTimeoutSeconds = dt;
 
-        // WAL + provenance config
+        // WAL config
         _walDir = GetStr(config, "defaults.wal.dir");
         if (string.IsNullOrEmpty(_walDir)) _walDir = "";
-        _provenanceEnabled = GetStr(config, "defaults.provenance") != "false";
 
         // Recreate ingest queue with WAL if configured
         if (_walDir != "")
@@ -140,7 +140,7 @@ public sealed class Fabric
         // Create sessions
         foreach (var name in _processorNames)
         {
-            var session = new ProcessSession(_queues[name], _procs[name], name, _engine, _queues, _dlq, _maxRetries, _provenanceEnabled);
+            var session = new ProcessSession(_queues[name], _procs[name], name, _engine, _queues, _dlq, _maxRetries, _provenance);
             _sessions[name] = session;
         }
     }
@@ -310,6 +310,7 @@ public sealed class Fabric
     public ProcessorContext GetContext() => _globalCtx;
     public FlowQueue GetIngestQueue() => _ingestQueue;
     public DLQ GetDLQ() => _dlq;
+    public ProvenanceProvider? GetProvenance() => _provenance;
     public List<string> GetProcessorNames() => new(_processorNames);
     public Registry GetRegistry() => _reg;
     public RulesEngine GetEngine() => _engine;
@@ -415,7 +416,7 @@ public sealed class Fabric
         QueueWAL? qWal = _walDir != "" ? new QueueWAL(Path.Combine(_walDir, $"{name}.wal")) : null;
         var queue = new FlowQueue(name, _queueMaxCount, _queueMaxBytes, _visibilityTimeoutMs, qWal);
         _queues[name] = queue;
-        var session = new ProcessSession(queue, proc, name, _engine, _queues, _dlq, _maxRetries, _provenanceEnabled);
+        var session = new ProcessSession(queue, proc, name, _engine, _queues, _dlq, _maxRetries, _provenance);
         _sessions[name] = session;
 
         if (_running)

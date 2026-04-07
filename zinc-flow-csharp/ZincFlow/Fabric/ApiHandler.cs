@@ -37,6 +37,8 @@ public sealed class ApiHandler
         app.MapPost("/api/providers/disable", DisableProvider);
 
         app.MapGet("/health", Health);
+        app.MapGet("/api/provenance", ProvenanceRecent);
+        app.MapGet("/api/provenance/{id}", ProvenanceById);
 
         // Connector source lifecycle
         app.MapGet("/api/sources", Sources);
@@ -278,6 +280,39 @@ public sealed class ApiHandler
             dlq = _fab.GetDLQ().Count,
             sources = sources.Select(s => new { name = s.Name, type = s.Type, running = s.Running })
         });
+    }
+
+    // --- Provenance ---
+
+    private IResult ProvenanceRecent(HttpContext ctx)
+    {
+        var prov = _fab.GetProvenance();
+        if (prov is null) return Results.Json(new { error = "provenance provider not enabled" });
+        var n = 50;
+        if (ctx.Request.Query.TryGetValue("n", out var nStr) && int.TryParse(nStr, out var parsed))
+            n = parsed;
+        return Results.Json(prov.GetRecent(n).Select(e => new
+        {
+            flowfile = $"ff-{e.FlowFileId}",
+            type = e.EventType.ToString(),
+            component = e.Component,
+            details = e.Details,
+            timestamp = e.Timestamp
+        }));
+    }
+
+    private IResult ProvenanceById(long id)
+    {
+        var prov = _fab.GetProvenance();
+        if (prov is null) return Results.Json(new { error = "provenance provider not enabled" });
+        return Results.Json(prov.GetEvents(id).Select(e => new
+        {
+            flowfile = $"ff-{e.FlowFileId}",
+            type = e.EventType.ToString(),
+            component = e.Component,
+            details = e.Details,
+            timestamp = e.Timestamp
+        }));
     }
 
     // --- Connector sources ---

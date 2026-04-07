@@ -55,11 +55,15 @@ var loggingProvider = new LoggingProvider();
 loggingProvider.JsonOutput = GetConfigString(config, "logging.format", "text") == "json";
 loggingProvider.Enable();
 
+var provenanceProvider = new ProvenanceProvider();
+provenanceProvider.Enable();
+
 // Build global context
 var globalCtx = new ProcessorContext();
 globalCtx.AddProvider(contentProvider);
 globalCtx.AddProvider(configProvider);
 globalCtx.AddProvider(loggingProvider);
+globalCtx.AddProvider(provenanceProvider);
 
 // Create registry
 var reg = new Registry();
