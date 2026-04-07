@@ -2,6 +2,7 @@
 name = "zinc-flow-csharp"
 version = "0.1.0"
 main = "ZincFlow/Program.cs"
+sdk = "Microsoft.NET.Sdk.Web"
 
 [csharp]
 framework = "net10.0"
@@ -22,8 +23,4 @@ trim_metadata = true
 server = true
 
 [csharp.nuget]
-# No NuGet deps yet — pure BCL
-# Example:
-# packages = [
-#   { name = "System.IO.Pipelines", version = "10.0.0" },
-# ]
+packages = ["YamlDotNet:16.3.0"]

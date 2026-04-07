@@ -96,8 +96,9 @@ public sealed class ContentProvider : IProvider
     public string Name { get; }
     public string ProviderType => "content";
     public ComponentState State { get; private set; } = ComponentState.Disabled;
+    public IContentStore Store { get; }
 
-    public ContentProvider(string name) => Name = name;
+    public ContentProvider(string name, IContentStore store) { Name = name; Store = store; }
 
     public void Enable() => State = ComponentState.Enabled;
     public void Disable(int drainTimeout) => State = ComponentState.Disabled;

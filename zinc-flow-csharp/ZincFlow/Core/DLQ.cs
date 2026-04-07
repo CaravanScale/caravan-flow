@@ -47,6 +47,16 @@ public sealed class DLQ
         }
     }
 
+    public List<DLQEntry> ReplayAll()
+    {
+        lock (_lock)
+        {
+            var results = new List<DLQEntry>(_entries.Values);
+            _entries.Clear();
+            return results;
+        }
+    }
+
     public int Count
     {
         get { lock (_lock) return _entries.Count; }

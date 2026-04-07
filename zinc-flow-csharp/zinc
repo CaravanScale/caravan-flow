@@ -84,8 +84,12 @@ generate_csproj() {
 
     mkdir -p "$PROJECT_DIR"
 
+    # SDK type (default Sdk, or Web for HTTP)
+    local sdk
+    sdk="$(toml_get "$ZINC_TOML" "project" "sdk" "Microsoft.NET.Sdk")"
+
     cat > "$CSPROJ" <<CSPROJ_EOF
-<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="${sdk}">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -115,6 +119,24 @@ CSPROJ_EOF
   </PropertyGroup>
 
 AOT_EOF
+    fi
+
+    # NuGet packages
+    local packages
+    packages="$(toml_get "$ZINC_TOML" "csharp.nuget" "packages" "")"
+    # Strip brackets
+    packages="${packages#[}" ; packages="${packages%]}"
+    if [[ -n "$packages" ]]; then
+        echo "  <ItemGroup>" >> "$CSPROJ"
+        IFS=',' read -ra PKGS <<< "$packages"
+        for pkg in "${PKGS[@]}"; do
+            pkg="${pkg//\"/}" ; pkg="${pkg// /}"
+            local pkgName="${pkg%%:*}"
+            local pkgVer="${pkg##*:}"
+            echo "    <PackageReference Include=\"${pkgName}\" Version=\"${pkgVer}\" />" >> "$CSPROJ"
+        done
+        echo "  </ItemGroup>" >> "$CSPROJ"
+        echo "" >> "$CSPROJ"
     fi
 
     echo "</Project>" >> "$CSPROJ"
