@@ -1,3 +1,5 @@
+using System.Net.Http.Headers;
+using System.Text;
 using ZincFlow.Core;
 
 namespace ZincFlow.Fabric;
@@ -41,6 +43,41 @@ public static class BuiltinProcessors
         reg.Register(
             new ProcessorInfo("records-to-json", "Serializes Avro records back to JSON", []),
             (ctx, config) => new RecordsToJson());
+
+        reg.Register(
+            new ProcessorInfo("put-http", "POST FlowFile to downstream HTTP endpoint", ["endpoint"]),
+            (ctx, config) =>
+            {
+                IContentStore store;
+                try { store = ((ContentProvider)ctx.GetProvider("content")).Store; }
+                catch { store = new MemoryContentStore(); }
+                var format = config.GetValueOrDefault("format", "raw");
+                return new PutHTTP(config["endpoint"], format, store);
+            });
+
+        reg.Register(
+            new ProcessorInfo("put-file", "Write FlowFile content to directory with configurable naming", ["output_dir"]),
+            (ctx, config) =>
+            {
+                IContentStore store;
+                try { store = ((ContentProvider)ctx.GetProvider("content")).Store; }
+                catch { store = new MemoryContentStore(); }
+                var namingAttr = config.GetValueOrDefault("naming_attribute", "filename");
+                var prefix = config.GetValueOrDefault("prefix", "");
+                var suffix = config.GetValueOrDefault("suffix", "");
+                return new PutFile(config["output_dir"], namingAttr, prefix, suffix, store);
+            });
+
+        reg.Register(
+            new ProcessorInfo("put-stdout", "Write FlowFile content to stdout", []),
+            (ctx, config) =>
+            {
+                IContentStore store;
+                try { store = ((ContentProvider)ctx.GetProvider("content")).Store; }
+                catch { store = new MemoryContentStore(); }
+                var format = config.GetValueOrDefault("format", "text");
+                return new PutStdout(format, store);
+            });
     }
 }
 
@@ -155,7 +192,6 @@ public sealed class RecordsToJson : IProcessor
     {
         if (ff.Content is RecordContent rc)
         {
-            // Serialize the stored record dicts back to JSON
             byte[] bytes;
             try
             {
@@ -168,6 +204,197 @@ public sealed class RecordsToJson : IProcessor
             var updated = FlowFile.WithContent(ff, Raw.Rent(bytes));
             return SingleResult.Rent(updated);
         }
-        return SingleResult.Rent(ff); // pass through Raw/Claim
+        return SingleResult.Rent(ff);
+    }
+}
+
+// --- PutHTTP: POST FlowFile content to downstream HTTP endpoint ---
+
+public sealed class PutHTTP : IProcessor
+{
+    private readonly string _endpoint;
+    private readonly string _format; // "raw", "v3", "json"
+    private readonly IContentStore _store;
+    private readonly HttpClient _client;
+
+    public PutHTTP(string endpoint, string format, IContentStore store)
+    {
+        _endpoint = endpoint;
+        _format = format;
+        _store = store;
+        _client = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+    }
+
+    public ProcessorResult Process(FlowFile ff)
+    {
+        var (data, error) = ContentHelpers.Resolve(_store, ff.Content);
+        if (error != "")
+            return FailureResult.Rent(error, ff);
+
+        try
+        {
+            HttpContent httpContent;
+            if (_format == "v3")
+            {
+                var packed = FlowFileV3.Pack(ff, data);
+                httpContent = new ByteArrayContent(packed);
+                httpContent.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+            }
+            else
+            {
+                httpContent = new ByteArrayContent(data);
+                var ct = ff.Attributes.TryGetValue("http.content.type", out var contentType)
+                    ? contentType : "application/octet-stream";
+                httpContent.Headers.ContentType = MediaTypeHeaderValue.Parse(ct);
+            }
+
+            // Forward flow attributes as X-Flow headers
+            var current = ff.Attributes;
+            while (current is not null)
+            {
+                if (current._key is not null && !current._key.StartsWith("http."))
+                    httpContent.Headers.TryAddWithoutValidation($"X-Flow-{current._key}", current._value);
+                current = current._key is not null ? current._parent : null;
+            }
+            if (current?._base is not null)
+            {
+                foreach (var (k, v) in current._base)
+                {
+                    if (!k.StartsWith("http."))
+                        httpContent.Headers.TryAddWithoutValidation($"X-Flow-{k}", v);
+                }
+            }
+
+            var response = _client.PostAsync(_endpoint, httpContent).GetAwaiter().GetResult();
+
+            if (!response.IsSuccessStatusCode)
+            {
+                // 429 = backpressure → nack (retry later)
+                if ((int)response.StatusCode == 429)
+                    return FailureResult.Rent($"backpressure: {response.StatusCode}", ff);
+
+                return FailureResult.Rent($"HTTP {(int)response.StatusCode}: {response.ReasonPhrase}", ff);
+            }
+
+            // Add delivery attributes
+            var delivered = FlowFile.WithAttribute(ff, "delivery.status", ((int)response.StatusCode).ToString());
+            delivered = FlowFile.WithAttribute(delivered, "delivery.endpoint", _endpoint);
+            return SingleResult.Rent(delivered);
+        }
+        catch (TaskCanceledException)
+        {
+            return FailureResult.Rent($"timeout delivering to {_endpoint}", ff);
+        }
+        catch (HttpRequestException ex)
+        {
+            return FailureResult.Rent($"delivery failed: {ex.Message}", ff);
+        }
+    }
+}
+
+// --- PutFile: write FlowFile content to directory with configurable naming ---
+
+public sealed class PutFile : IProcessor
+{
+    private readonly string _outputDir;
+    private readonly string _namingAttr;
+    private readonly string _prefix;
+    private readonly string _suffix;
+    private readonly IContentStore _store;
+    private long _counter;
+
+    public PutFile(string outputDir, string namingAttr, string prefix, string suffix, IContentStore store)
+    {
+        _outputDir = outputDir;
+        _namingAttr = namingAttr;
+        _prefix = prefix;
+        _suffix = string.IsNullOrEmpty(suffix) ? ".dat" : suffix;
+        _store = store;
+        Directory.CreateDirectory(outputDir);
+    }
+
+    public ProcessorResult Process(FlowFile ff)
+    {
+        var (data, error) = ContentHelpers.Resolve(_store, ff.Content);
+        if (error != "")
+            return FailureResult.Rent(error, ff);
+
+        // Determine filename: attribute → fallback to counter
+        string fileName;
+        if (ff.Attributes.TryGetValue(_namingAttr, out var attrName) && !string.IsNullOrEmpty(attrName))
+        {
+            fileName = $"{_prefix}{attrName}";
+        }
+        else
+        {
+            var id = Interlocked.Increment(ref _counter);
+            fileName = $"{_prefix}{id}{_suffix}";
+        }
+
+        // Sanitize — no path traversal
+        fileName = Path.GetFileName(fileName);
+
+        var path = Path.Combine(_outputDir, fileName);
+        File.WriteAllBytes(path, data);
+
+        var updated = FlowFile.WithAttribute(ff, "output.path", path);
+        updated = FlowFile.WithAttribute(updated, "output.size", data.Length.ToString());
+        return SingleResult.Rent(updated);
+    }
+}
+
+// --- PutStdout: write FlowFile content to stdout ---
+
+public sealed class PutStdout : IProcessor
+{
+    private readonly string _format; // "text", "hex", "attrs"
+    private readonly IContentStore _store;
+
+    public PutStdout(string format, IContentStore store)
+    {
+        _format = format;
+        _store = store;
+    }
+
+    public ProcessorResult Process(FlowFile ff)
+    {
+        if (_format == "attrs")
+        {
+            // Print attributes only
+            var sb = new StringBuilder();
+            sb.Append($"[ff-{ff.NumericId}]");
+            var current = ff.Attributes;
+            while (current is not null)
+            {
+                if (current._key is not null)
+                {
+                    sb.Append($" {current._key}={current._value}");
+                    current = current._parent;
+                }
+                else
+                {
+                    if (current._base is not null)
+                        foreach (var (k, v) in current._base)
+                            sb.Append($" {k}={v}");
+                    break;
+                }
+            }
+            Console.WriteLine(sb.ToString());
+            return SingleResult.Rent(ff);
+        }
+
+        var (data, error) = ContentHelpers.Resolve(_store, ff.Content);
+        if (error != "")
+            return FailureResult.Rent(error, ff);
+
+        if (_format == "hex")
+        {
+            Console.WriteLine($"[ff-{ff.NumericId}] ({data.Length} bytes) {Convert.ToHexString(data[..Math.Min(data.Length, 128)])}");
+        }
+        else
+        {
+            Console.WriteLine($"[ff-{ff.NumericId}] {Encoding.UTF8.GetString(data)}");
+        }
+        return SingleResult.Rent(ff);
     }
 }

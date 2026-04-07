@@ -35,6 +35,11 @@ public sealed class ApiHandler
         app.MapGet("/api/providers", Providers);
         app.MapPost("/api/providers/enable", EnableProvider);
         app.MapPost("/api/providers/disable", DisableProvider);
+
+        // Connector source lifecycle
+        app.MapGet("/api/sources", Sources);
+        app.MapPost("/api/sources/start", StartSource);
+        app.MapPost("/api/sources/stop", StopSource);
     }
 
     // --- Stats ---
@@ -258,6 +263,33 @@ public sealed class ApiHandler
         return _fab.DisableProvider(name, 60)
             ? Results.Json(new { status = "disabled", name })
             : Results.NotFound(new { error = "provider not found" });
+    }
+
+    // --- Connector sources ---
+
+    private IResult Sources()
+    {
+        return Results.Json(_fab.GetSources().Select(s => new { name = s.Name, type = s.Type, running = s.Running }));
+    }
+
+    private async Task<IResult> StartSource(HttpContext ctx)
+    {
+        var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>();
+        var name = req?.GetValueOrDefault("name") ?? "";
+        if (name == "") return Results.BadRequest(new { error = "name required" });
+        return _fab.StartSource(name)
+            ? Results.Json(new { status = "started", name })
+            : Results.NotFound(new { error = "source not found" });
+    }
+
+    private async Task<IResult> StopSource(HttpContext ctx)
+    {
+        var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>();
+        var name = req?.GetValueOrDefault("name") ?? "";
+        if (name == "") return Results.BadRequest(new { error = "name required" });
+        return _fab.StopSource(name)
+            ? Results.Json(new { status = "stopped", name })
+            : Results.NotFound(new { error = "source not found" });
     }
 
     // --- Helpers ---

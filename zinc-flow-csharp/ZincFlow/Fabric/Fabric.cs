@@ -19,6 +19,7 @@ public sealed class Fabric
     private readonly Dictionary<string, List<string>> _processorRequires = new();
     private readonly FlowQueue _ingestQueue;
     private readonly DLQ _dlq = new();
+    private readonly Dictionary<string, IConnectorSource> _sources = new();
     private readonly CancellationTokenSource _cts = new();
 
     private long _processedCount;
@@ -144,7 +145,15 @@ public sealed class Fabric
         // Ingest router loop
         _ = Task.Run(IngestRouterLoop, _cts.Token);
 
-        Console.WriteLine($"[fabric] started ({_processorNames.Count} processors)");
+        // Start all connector sources
+        foreach (var (name, source) in _sources)
+        {
+            if (!source.IsRunning)
+                source.Start(Ingest, _cts.Token);
+            Console.WriteLine($"[fabric] source started: {name} (type={source.SourceType})");
+        }
+
+        Console.WriteLine($"[fabric] started ({_processorNames.Count} processors, {_sources.Count} sources)");
     }
 
     private void ProcessorLoop(string procName)
@@ -217,7 +226,41 @@ public sealed class Fabric
     public void StopAsync()
     {
         _running = false;
+        foreach (var source in _sources.Values)
+            source.Stop();
         _cts.Cancel();
+    }
+
+    // --- Connector source management ---
+
+    public void AddSource(IConnectorSource source)
+    {
+        _sources[source.Name] = source;
+        if (_running)
+            source.Start(Ingest, _cts.Token);
+    }
+
+    public bool StartSource(string name)
+    {
+        if (!_sources.TryGetValue(name, out var source)) return false;
+        if (!source.IsRunning)
+            source.Start(Ingest, _cts.Token);
+        return true;
+    }
+
+    public bool StopSource(string name)
+    {
+        if (!_sources.TryGetValue(name, out var source)) return false;
+        source.Stop();
+        return true;
+    }
+
+    public List<(string Name, string Type, bool Running)> GetSources()
+    {
+        var result = new List<(string, string, bool)>();
+        foreach (var (name, src) in _sources)
+            result.Add((name, src.SourceType, src.IsRunning));
+        return result;
     }
 
     // --- Ingest ---

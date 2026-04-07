@@ -61,6 +61,12 @@ public static class TestSuite
         TestScopedContextAccess();
         TestProviderLifecycle();
 
+        // Phase 2 processors
+        TestPutFile();
+        TestPutStdout();
+        TestConnectorSourceLifecycle();
+        TestGetFileSource();
+
         // Scenarios
         TestScenarioProcessorChain();
         TestScenarioBackpressurePropagation();
@@ -785,6 +791,119 @@ public static class TestSuite
         var entryA = destA.Claim()!;
         AssertTrue("dest-a has env attr", entryA.FlowFile.Attributes.TryGetValue("env", out var env) && env == "prod");
         destA.Ack(entryA.Id);
+    }
+
+    // --- Phase 2: New Processors and Connectors ---
+
+    static void TestPutFile()
+    {
+        Console.WriteLine("--- PutFile ---");
+        var tmpDir = Path.Combine(Path.GetTempPath(), $"zinc-test-putfile-{Environment.TickCount64}");
+        Directory.CreateDirectory(tmpDir);
+        try
+        {
+            var store = new MemoryContentStore();
+            var proc = new PutFile(tmpDir, "filename", "", ".dat", store);
+
+            // Test with filename attribute
+            var ff1 = FlowFile.Create("hello world"u8, new() { ["filename"] = "test.txt" });
+            var result1 = proc.Process(ff1);
+            AssertTrue("putfile returns single", result1 is SingleResult);
+            var outFf1 = ((SingleResult)result1).FlowFile;
+            AssertTrue("has output.path", outFf1.Attributes.TryGetValue("output.path", out _));
+            AssertTrue("file exists", File.Exists(Path.Combine(tmpDir, "test.txt")));
+            var contents = File.ReadAllText(Path.Combine(tmpDir, "test.txt"));
+            AssertTrue("file content", contents == "hello world");
+
+            // Test without filename attribute — uses counter
+            var ff2 = FlowFile.Create("data"u8, new() { ["type"] = "order" });
+            var result2 = proc.Process(ff2);
+            AssertTrue("putfile counter fallback", result2 is SingleResult);
+        }
+        finally
+        {
+            Directory.Delete(tmpDir, true);
+        }
+    }
+
+    static void TestPutStdout()
+    {
+        Console.WriteLine("--- PutStdout ---");
+        var store = new MemoryContentStore();
+
+        // Text format
+        var proc = new PutStdout("text", store);
+        var ff = FlowFile.Create("stdout test"u8, new() { ["type"] = "test" });
+        var result = proc.Process(ff);
+        AssertTrue("stdout returns single", result is SingleResult);
+        AssertTrue("stdout passthrough", ReferenceEquals(((SingleResult)result).FlowFile, ff));
+
+        // Attrs format
+        var procAttrs = new PutStdout("attrs", store);
+        var result2 = procAttrs.Process(ff);
+        AssertTrue("stdout attrs returns single", result2 is SingleResult);
+    }
+
+    static void TestConnectorSourceLifecycle()
+    {
+        Console.WriteLine("--- ConnectorSource Lifecycle ---");
+        var store = new MemoryContentStore();
+        var dlq = new DLQ();
+        var source = new HttpConnectorSource("test-http", store, dlq);
+
+        AssertTrue("not running initially", !source.IsRunning);
+        AssertTrue("name correct", source.Name == "test-http");
+        AssertTrue("type is http", source.SourceType == "http");
+
+        int ingested = 0;
+        source.Start(ff => { ingested++; return true; }, CancellationToken.None);
+        AssertTrue("running after start", source.IsRunning);
+
+        source.Stop();
+        AssertTrue("stopped after stop", !source.IsRunning);
+    }
+
+    static void TestGetFileSource()
+    {
+        Console.WriteLine("--- GetFileSource ---");
+        var tmpDir = Path.Combine(Path.GetTempPath(), $"zinc-test-getfile-{Environment.TickCount64}");
+        Directory.CreateDirectory(tmpDir);
+        try
+        {
+            var store = new MemoryContentStore();
+            var source = new GetFileSource("test-file", tmpDir, "*", 200, store);
+
+            AssertTrue("not running initially", !source.IsRunning);
+
+            // Write a test file
+            File.WriteAllText(Path.Combine(tmpDir, "input.txt"), "file source test");
+
+            var ingested = new List<FlowFile>();
+            using var cts = new CancellationTokenSource();
+            source.Start(ff => { ingested.Add(ff); return true; }, cts.Token);
+            AssertTrue("running after start", source.IsRunning);
+
+            // Wait for poll cycle
+            Thread.Sleep(1000);
+
+            AssertTrue("ingested 1 file", ingested.Count >= 1);
+            if (ingested.Count > 0)
+            {
+                AssertTrue("filename attr", ingested[0].Attributes.TryGetValue("filename", out var fn) && fn == "input.txt");
+                AssertTrue("source attr", ingested[0].Attributes.TryGetValue("source", out var src) && src == "test-file");
+            }
+
+            // File should be moved to .processed
+            AssertTrue("input removed", !File.Exists(Path.Combine(tmpDir, "input.txt")));
+            AssertTrue("processed exists", File.Exists(Path.Combine(tmpDir, ".processed", "input.txt")));
+
+            source.Stop();
+            AssertTrue("stopped", !source.IsRunning);
+        }
+        finally
+        {
+            Directory.Delete(tmpDir, true);
+        }
     }
 
     static void TestScenarioVisibilityTimeout()

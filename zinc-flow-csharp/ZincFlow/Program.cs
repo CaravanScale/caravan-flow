@@ -71,8 +71,19 @@ fab.Status();
 // Create output directory
 Directory.CreateDirectory("/tmp/zinc-flow-csharp/output");
 
-// HTTP source
-var httpSource = new HttpSource(fab, store);
+// HTTP connector source
+var httpSource = new HttpConnectorSource("http-ingest", store, fab.GetDLQ());
+fab.AddSource(httpSource);
+
+// Config-driven file sources
+var sourcesConfig = GetConfigString(config, "sources.file.input_dir", "");
+if (!string.IsNullOrEmpty(sourcesConfig))
+{
+    var pattern = GetConfigString(config, "sources.file.pattern", "*");
+    var pollMs = int.TryParse(GetConfigString(config, "sources.file.poll_interval_ms", "1000"), out var p) ? p : 1000;
+    var fileSource = new GetFileSource("file-ingest", sourcesConfig, pattern, pollMs, store);
+    fab.AddSource(fileSource);
+}
 
 // Build ASP.NET Minimal API app
 var builder = WebApplication.CreateBuilder(args);
