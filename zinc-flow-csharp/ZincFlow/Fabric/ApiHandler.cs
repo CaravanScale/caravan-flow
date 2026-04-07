@@ -75,17 +75,33 @@ public sealed class ApiHandler
         }));
     }
 
-    private IResult Flow() => Results.Json(new
+    private IResult Flow()
     {
-        processors = _fab.GetProcessorNames(),
-        routes = _fab.GetEngine().GetAllRules().Select(r => new
+        var queueStats = _fab.GetQueueStats();
+        return Results.Json(new
         {
-            name = r.Name,
-            enabled = r.Enabled,
-            destination = r.Destination
-        }),
-        stats = _fab.GetStats()
-    });
+            processors = _fab.GetProcessorNames().Select(name => new
+            {
+                name,
+                state = _fab.GetProcessorState(name).ToString().ToUpperInvariant(),
+                queue = queueStats.TryGetValue(name, out var qs) ? qs : null
+            }),
+            routes = _fab.GetEngine().GetAllRules().Select(r => new
+            {
+                name = r.Name,
+                enabled = r.Enabled,
+                destination = r.Destination,
+                condition = FormatCondition(r.Condition)
+            }),
+            sources = _fab.GetSources().Select(s => new { name = s.Name, type = s.Type, running = s.Running }),
+            providers = _fab.GetContext().ListProviders().Select(name =>
+            {
+                var p = _fab.GetContext().GetProvider(name);
+                return new { name, type = p?.ProviderType ?? "unknown", state = p?.State.ToString().ToUpperInvariant() ?? "UNKNOWN" };
+            }),
+            stats = _fab.GetStats()
+        });
+    }
 
     // --- DLQ ---
 
@@ -187,7 +203,7 @@ public sealed class ApiHandler
         var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>();
         var name = req?.GetValueOrDefault("name") ?? "";
         if (name == "") return Results.BadRequest(new { error = "name required" });
-        return _fab.DisableProcessor(name, _fab.GetStats().GetValueOrDefault("drain_timeout", 60))
+        return _fab.DisableProcessor(name, 60)
             ? Results.Json(new { status = "draining", name })
             : Results.NotFound(new { error = "processor not found" });
     }
