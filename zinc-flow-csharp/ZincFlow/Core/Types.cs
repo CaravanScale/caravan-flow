@@ -263,6 +263,13 @@ public sealed class FlowFile
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void Return(FlowFile ff)
     {
+        // Content and AttributeMap are NOT returned here because they may be
+        // shared with sibling FlowFiles:
+        //   - WithAttribute creates overlay on same parent chain
+        //   - WithContent shares the same Content reference
+        // The FlowFile shell is the only thing we can safely pool.
+        // AttributeMap overlay nodes and Raw byte arrays are reclaimed by GC.
+        // ArrayPool.Rent for Raw avoids LOH on initial alloc (the main win).
         ff.Content = null!;
         ff.Attributes = null!;
         Pool<FlowFile>.Return(ff);

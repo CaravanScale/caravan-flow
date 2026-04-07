@@ -180,7 +180,9 @@ public sealed class Fabric
             _engine.GetDestinations(entry.FlowFile.Attributes, destBuffer);
             if (destBuffer.Count == 0)
             {
-                _ingestQueue.Ack(entry.Id);
+                var ff = entry.FlowFile;
+                _ingestQueue.Ack(entry.Id); // returns QueueEntry to pool
+                FlowFile.Return(ff);        // return FlowFile to pool (no destinations)
                 continue;
             }
 

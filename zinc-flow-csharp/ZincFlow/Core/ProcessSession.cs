@@ -63,11 +63,16 @@ public sealed class ProcessSession
 
             if (RouteResult(outFf, entry))
             {
-                // Route succeeded — return the input FlowFile to pool (output is now in dest queue)
+                // Route succeeded — return the input FlowFile to pool
                 var inputFf = entry.FlowFile;
                 _source.Ack(entry.Id); // returns QueueEntry to pool
                 if (!ReferenceEquals(inputFf, outFf))
+                {
                     FlowFile.Return(inputFf);
+                    // If no destinations matched, output FF is orphaned — return it too
+                    if (_destBuffer.Count == 0)
+                        FlowFile.Return(outFf);
+                }
             }
             // else: nacked — entry goes back to visible, don't return anything
             return true;
