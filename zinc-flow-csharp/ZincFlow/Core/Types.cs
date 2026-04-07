@@ -305,6 +305,7 @@ public sealed class FlowFile
     public AttributeMap Attributes;
     public Content Content;
     public long Timestamp;
+    public int HopCount;
 
     private static long _idCounter;
 
@@ -320,24 +321,24 @@ public sealed class FlowFile
     public string Id => $"ff-{NumericId}";
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static FlowFile Rent(long id, AttributeMap attributes, Content content, long timestamp)
+    public static FlowFile Rent(long id, AttributeMap attributes, Content content, long timestamp, int hopCount = 0)
     {
         var ff = Pool<FlowFile>.Rent();
         ff.NumericId = id;
         ff.Attributes = attributes;
         ff.Content = content;
         ff.Timestamp = timestamp;
+        ff.HopCount = hopCount;
         return ff;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void Return(FlowFile ff)
     {
-        // Release Content ref count — when it hits 0, ArrayPool bytes are returned
-        // and Raw shell is pooled. Safe because ref counting tracks all sharing.
         ff.Content?.Release();
         ff.Content = null!;
         ff.Attributes = null!;
+        ff.HopCount = 0;
         Pool<FlowFile>.Return(ff);
     }
 
@@ -366,14 +367,13 @@ public sealed class FlowFile
     public static FlowFile WithAttribute(FlowFile ff, string key, string value)
     {
         ff.Content.AddRef(); // shared Content — increment ref count
-        return Rent(ff.NumericId, ff.Attributes.With(key, value), ff.Content, ff.Timestamp);
+        return Rent(ff.NumericId, ff.Attributes.With(key, value), ff.Content, ff.Timestamp, ff.HopCount);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FlowFile WithContent(FlowFile ff, Content content)
     {
-        // New Content — no AddRef on old, new content starts with refCount=1
-        return Rent(ff.NumericId, ff.Attributes, content, ff.Timestamp);
+        return Rent(ff.NumericId, ff.Attributes, content, ff.Timestamp, ff.HopCount);
     }
 }
 

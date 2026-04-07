@@ -109,8 +109,10 @@ public static class ConfigValidator
                 errors.Add(new($"flow.processors.{name}.type", $"unknown processor type: {typeName}"));
         }
 
-        // Check routes reference valid destinations
+        // Check routes reference valid destinations + build adjacency for cycle detection
         var routeDefs = Fabric.AsStringDict(flowDict.GetValueOrDefault("routes"));
+        // adjacency: every processor can potentially route to these destinations
+        var allDestinations = new HashSet<string>();
         if (routeDefs is not null)
         {
             foreach (var (ruleName, rObj) in routeDefs)
@@ -123,6 +125,8 @@ public static class ConfigValidator
                     errors.Add(new($"flow.routes.{ruleName}.destination", "missing destination"));
                 else if (!procNames.Contains(dest))
                     errors.Add(new($"flow.routes.{ruleName}.destination", $"destination '{dest}' is not a defined processor"));
+                else
+                    allDestinations.Add(dest);
 
                 var condDict = Fabric.AsStringDict(rDef.GetValueOrDefault("condition"));
                 if (condDict is null)

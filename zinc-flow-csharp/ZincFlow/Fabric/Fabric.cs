@@ -31,6 +31,7 @@ public sealed class Fabric
     private long _visibilityTimeoutMs = 30_000;
     private int _drainTimeoutSeconds = 60;
     private int _maxRetries = 5;
+    private int _maxHops = 50;
     private string _walDir = "";
     private int _walMaxSizeMb = 100;
     private int _walCompactIntervalMs = 60_000;
@@ -54,6 +55,7 @@ public sealed class Fabric
         if (TryGetConfig<int>(config, "defaults.backpressure.max_count", out var mc)) _queueMaxCount = mc;
         if (TryGetConfig<int>(config, "defaults.backpressure.max_retries", out var mr)) _maxRetries = mr;
         if (TryGetConfig<int>(config, "defaults.backpressure.drain_timeout", out var dt)) _drainTimeoutSeconds = dt;
+        if (TryGetConfig<int>(config, "defaults.backpressure.max_hops", out var mh)) _maxHops = mh;
 
         // WAL config
         _walDir = GetStr(config, "defaults.wal.dir");
@@ -144,7 +146,7 @@ public sealed class Fabric
         // Create sessions
         foreach (var name in _processorNames)
         {
-            var session = new ProcessSession(_queues[name], _procs[name], name, _engine, _queues, _dlq, _maxRetries, _provenance);
+            var session = new ProcessSession(_queues[name], _procs[name], name, _engine, _queues, _dlq, _maxRetries, _provenance, _maxHops);
             _sessions[name] = session;
         }
     }
@@ -422,7 +424,7 @@ public sealed class Fabric
         QueueWAL? qWal = _walDir != "" ? new QueueWAL(Path.Combine(_walDir, $"{name}.wal"), _walMaxSizeMb, _walCompactIntervalMs) : null;
         var queue = new FlowQueue(name, _queueMaxCount, _queueMaxBytes, _visibilityTimeoutMs, qWal);
         _queues[name] = queue;
-        var session = new ProcessSession(queue, proc, name, _engine, _queues, _dlq, _maxRetries, _provenance);
+        var session = new ProcessSession(queue, proc, name, _engine, _queues, _dlq, _maxRetries, _provenance, _maxHops);
         _sessions[name] = session;
 
         if (_running)

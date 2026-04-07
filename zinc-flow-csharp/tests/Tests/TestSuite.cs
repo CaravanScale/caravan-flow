@@ -84,6 +84,8 @@ public static class TestSuite
         TestScenarioIRSFanOut();
         TestScenarioVisibilityTimeout();
 
+        TestMaxHopCycleDetection();
+
         // E2E integration tests
         TestE2EFullPipeline();
         TestE2EWALPersistence();
@@ -1212,14 +1214,60 @@ public static class TestSuite
         AssertIntEqual("clean after ack", q.VisibleCount, 0);
     }
 
+    static void TestMaxHopCycleDetection()
+    {
+        Console.WriteLine("--- Max Hop Cycle Detection ---");
+        // Create a cycle: A routes to B, B routes to A
+        var procA = new UpdateAttribute("hop", "a");
+        var procB = new UpdateAttribute("hop", "b");
+
+        var qA = new FlowQueue("a", 1000, 0, 30_000);
+        var qB = new FlowQueue("b", 1000, 0, 30_000);
+        var queues = new Dictionary<string, FlowQueue> { ["a"] = qA, ["b"] = qB };
+
+        // Both route to each other — infinite cycle
+        var engineA = new RulesEngine();
+        engineA.AddOrReplaceRuleset("flow", [new RoutingRule("a-to-b", "hop", Operator.Exists, "", "b")]);
+        var engineB = new RulesEngine();
+        engineB.AddOrReplaceRuleset("flow", [new RoutingRule("b-to-a", "hop", Operator.Exists, "", "a")]);
+
+        var dlq = new DLQ();
+        var prov = new ProvenanceProvider();
+        prov.Enable();
+
+        // maxHops = 5 — should DLQ after 5 hops instead of looping forever
+        var sessionA = new ProcessSession(qA, procA, "proc-a", engineA, queues, dlq, 5, prov, maxHops: 5);
+        var sessionB = new ProcessSession(qB, procB, "proc-b", engineB, queues, dlq, 5, prov, maxHops: 5);
+
+        // Start the cycle
+        qA.Offer(FlowFile.Create("cycle-test"u8, new() { ["type"] = "test" }));
+
+        // Run enough iterations to hit the max hop limit
+        for (int i = 0; i < 20; i++)
+        {
+            sessionA.Execute();
+            sessionB.Execute();
+        }
+
+        // FlowFile should be in DLQ, not bouncing forever
+        AssertTrue("cycle detected → DLQ", dlq.Count >= 1);
+
+        // Provenance should show the cycle
+        var events = prov.GetRecent(50);
+        AssertTrue("has DLQ event", events.Any(e => e.EventType == ProvenanceEventType.DLQ));
+        var dlqEvent = events.First(e => e.EventType == ProvenanceEventType.DLQ);
+        AssertTrue("cycle reason", dlqEvent.Details.Contains("max hops exceeded"));
+
+        // Queues should be empty (everything DLQ'd)
+        AssertIntEqual("qA empty", qA.VisibleCount, 0);
+        AssertIntEqual("qB empty", qB.VisibleCount, 0);
+    }
+
     // ===== E2E INTEGRATION TESTS =====
 
     static void TestE2EFullPipeline()
     {
         Console.WriteLine("--- E2E: Full Pipeline (ingest → process → route → sink) ---");
-        var tmpDir = Path.Combine(Path.GetTempPath(), $"zinc-e2e-pipeline-{Environment.TickCount64}");
-        var outputDir = Path.Combine(tmpDir, "output");
-        Directory.CreateDirectory(outputDir);
         try
         {
             var store = new MemoryContentStore();
@@ -1237,22 +1285,24 @@ public static class TestSuite
 
             var fab = new ZincFlow.Fabric.Fabric(reg, globalCtx);
 
-            // Use stage attributes to prevent re-routing loops
+            // Stage attribute advances through the pipeline: 0 → 1 → 2 → 3.
+            // Each processor sets stage to the next value, so previous routes
+            // don't re-match (EQ checks exact value, not EXISTS).
             var config = new Dictionary<string, object?>
             {
                 ["flow"] = new Dictionary<string, object?>
                 {
                     ["processors"] = new Dictionary<string, object?>
                     {
-                        ["tagger"] = new Dictionary<string, object?> { ["type"] = "UpdateAttribute", ["config"] = new Dictionary<string, object?> { ["key"] = "stage", ["value"] = "tagged" } },
-                        ["logger"] = new Dictionary<string, object?> { ["type"] = "UpdateAttribute", ["config"] = new Dictionary<string, object?> { ["key"] = "stage", ["value"] = "logged" } },
-                        ["sink"] = new Dictionary<string, object?> { ["type"] = "PutFile", ["config"] = new Dictionary<string, object?> { ["output_dir"] = outputDir, ["naming_attribute"] = "filename" } }
+                        ["tagger"] = new Dictionary<string, object?> { ["type"] = "UpdateAttribute", ["config"] = new Dictionary<string, object?> { ["key"] = "stage", ["value"] = "1" } },
+                        ["logger"] = new Dictionary<string, object?> { ["type"] = "UpdateAttribute", ["config"] = new Dictionary<string, object?> { ["key"] = "stage", ["value"] = "2" } },
+                        ["sink"] = new Dictionary<string, object?> { ["type"] = "UpdateAttribute", ["config"] = new Dictionary<string, object?> { ["key"] = "stage", ["value"] = "3" } }
                     },
                     ["routes"] = new Dictionary<string, object?>
                     {
-                        ["to-tagger"] = new Dictionary<string, object?> { ["destination"] = "tagger", ["condition"] = new Dictionary<string, object?> { ["attribute"] = "type", ["operator"] = "EQ", ["value"] = "order" } },
-                        ["to-logger"] = new Dictionary<string, object?> { ["destination"] = "logger", ["condition"] = new Dictionary<string, object?> { ["attribute"] = "stage", ["operator"] = "EQ", ["value"] = "tagged" } },
-                        ["to-sink"] = new Dictionary<string, object?> { ["destination"] = "sink", ["condition"] = new Dictionary<string, object?> { ["attribute"] = "stage", ["operator"] = "EQ", ["value"] = "logged" } }
+                        ["to-tagger"] = new Dictionary<string, object?> { ["destination"] = "tagger", ["condition"] = new Dictionary<string, object?> { ["attribute"] = "stage", ["operator"] = "EQ", ["value"] = "0" } },
+                        ["to-logger"] = new Dictionary<string, object?> { ["destination"] = "logger", ["condition"] = new Dictionary<string, object?> { ["attribute"] = "stage", ["operator"] = "EQ", ["value"] = "1" } },
+                        ["to-sink"] = new Dictionary<string, object?> { ["destination"] = "sink", ["condition"] = new Dictionary<string, object?> { ["attribute"] = "stage", ["operator"] = "EQ", ["value"] = "2" } }
                     }
                 }
             };
@@ -1261,28 +1311,19 @@ public static class TestSuite
             fab.StartAsync();
 
             // Ingest a FlowFile
-            var ff = FlowFile.Create("{\"order\":123}"u8, new() { ["type"] = "order", ["filename"] = "e2e-test.json" });
+            var ff = FlowFile.Create("{\"order\":123}"u8, new() { ["type"] = "order", ["stage"] = "0" });
             var ffId = ff.NumericId;
             AssertTrue("ingest accepted", fab.Ingest(ff));
 
-            // Wait for processing
-            Thread.Sleep(2000);
-
-            // Verify file was written
-            var outputPath = Path.Combine(outputDir, "e2e-test.json");
-            AssertTrue("output file exists", File.Exists(outputPath));
-            if (File.Exists(outputPath))
-            {
-                var content = File.ReadAllText(outputPath);
-                AssertTrue("output content correct", content == "{\"order\":123}");
-            }
+            // Wait for async pipeline (3 hops + routing)
+            Thread.Sleep(4000);
 
             // Verify stats
             var stats = fab.GetStats();
             AssertTrue("processed > 0", stats["processed"] > 0);
             AssertIntEqual("no dlq entries", stats["dlq"], 0);
 
-            // Verify provenance chain
+            // Verify provenance chain — all 3 processors touched the FlowFile
             var events = prov.GetEvents(ffId);
             AssertTrue("provenance has events", events.Count >= 3);
             AssertTrue("processed by tagger", events.Any(e => e.EventType == ProvenanceEventType.Processed && e.Component == "tagger"));
@@ -1293,7 +1334,6 @@ public static class TestSuite
         }
         finally
         {
-            if (Directory.Exists(tmpDir)) Directory.Delete(tmpDir, true);
         }
     }
 

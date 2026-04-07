@@ -17,6 +17,7 @@ public sealed class ProcessSession
     private readonly Dictionary<string, FlowQueue> _destQueues;
     private readonly DLQ _dlq;
     private readonly int _maxRetries;
+    private readonly int _maxHops;
     private readonly ProvenanceProvider? _provenance;
 
     // Reusable destination list — never reallocated
@@ -30,7 +31,8 @@ public sealed class ProcessSession
         Dictionary<string, FlowQueue> destQueues,
         DLQ dlq,
         int maxRetries,
-        ProvenanceProvider? provenance = null)
+        ProvenanceProvider? provenance = null,
+        int maxHops = 50)
     {
         _source = source;
         _processor = processor;
@@ -40,6 +42,7 @@ public sealed class ProcessSession
         _dlq = dlq;
         _maxRetries = maxRetries;
         _provenance = provenance;
+        _maxHops = maxHops;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -48,6 +51,15 @@ public sealed class ProcessSession
         var entry = _source.Claim();
         if (entry is null)
             return false;
+
+        // Max hop protection — detect routing cycles at runtime
+        if (entry.FlowFile.HopCount >= _maxHops)
+        {
+            _provenance?.Record(entry.FlowFile.NumericId, ProvenanceEventType.DLQ, _processorName, $"max hops exceeded ({_maxHops})");
+            _dlq.Add(entry.FlowFile, _processorName, _source.Name, entry.AttemptCount, $"routing cycle detected: {_maxHops} hops exceeded");
+            _source.Ack(entry.Id);
+            return true;
+        }
 
         // Retry exhaustion → DLQ
         if (entry.AttemptCount >= _maxRetries)
@@ -151,6 +163,7 @@ public sealed class ProcessSession
         {
             if (_destQueues.TryGetValue(dest, out var q))
             {
+                ff.HopCount++;
                 _provenance?.Record(ff.NumericId, ProvenanceEventType.Routed, _processorName, dest);
                 q.Offer(ff);
             }
