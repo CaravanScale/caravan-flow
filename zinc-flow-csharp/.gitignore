@@ -1,0 +1,13 @@
+build/
+bin/
+obj/
+*.dll
+*.pdb
+*.exe
+*.dbg
+
+# Generated from zinc.toml — do not edit
+ZincFlow/ZincFlow.csproj
+
+ZincFlow/bin/
+ZincFlow/obj/

@@ -5,30 +5,75 @@ C# / .NET 10 port of the zinc-flow engine, optimized with ArrayPool, MemoryPool,
 ## Quick Start
 
 ```bash
-# JIT (development)
-dotnet run -c Release
+# Build (generates .csproj from zinc.toml, then dotnet build)
+./zinc build
 
-# Native AOT (1.4 MB static binary)
-dotnet publish -c Release -r linux-x64
-./bin/Release/net10.0/linux-x64/publish/ZincFlow
+# Run benchmarks (JIT)
+./zinc run
+
+# Native AOT publish (1.4 MB static binary)
+./zinc publish
+./build/ZincFlow
+
+# Cross-compile
+./zinc publish linux-arm64
+
+# Clean
+./zinc clean
 ```
+
+All build configuration lives in `zinc.toml` — the `.csproj` is generated and gitignored.
+You never need to touch XML.
 
 ## Architecture
 
 ```
-ZincFlow/
-├── Core/
-│   ├── Types.cs           — FlowFile, Content, AttributeMap, ProcessorResult, Pool<T>
-│   ├── FlowQueue.cs       — Transactional queue: ArrayPool backing, pooled entries
-│   ├── ProcessSession.cs  — Claim→process→route→ack with object return-to-pool
-│   ├── DLQ.cs             — Dead letter queue
-│   └── Providers.cs       — Provider interface, ProcessorContext, ScopedContext
-├── Fabric/
-│   ├── Router.cs          — RulesEngine predicate evaluation over AttributeMap
-│   └── Processors.cs      — AddAttribute, LogProcessor
-├── Program.cs             — Benchmarks with JIT warmup + GC stats
-└── ZincFlow.csproj        — .NET 10, ServerGC, Native AOT, size-optimized
+zinc-flow-csharp/
+├── zinc.toml              — Project config (framework, AOT, NuGet deps)
+├── zinc                   — Build CLI (reads zinc.toml, delegates to dotnet)
+├── config.yaml            — Runtime flow config (processors, routes, providers)
+├── ZincFlow/              — C# source (hand-written, optimized)
+│   ├── Core/
+│   │   ├── Types.cs       — Pool<T>, AttributeMap, FlowFile, Content, ProcessorResult
+│   │   ├── FlowQueue.cs   — Transactional queue: ArrayPool backing, pooled entries
+│   │   ├── ProcessSession.cs — Claim→process→route→ack with object return-to-pool
+│   │   ├── DLQ.cs         — Dead letter queue
+│   │   └── Providers.cs   — Provider interface, ProcessorContext, ScopedContext
+│   ├── Fabric/
+│   │   ├── Router.cs      — RulesEngine predicate evaluation over AttributeMap
+│   │   └── Processors.cs  — AddAttribute, LogProcessor
+│   ├── Program.cs         — Benchmarks with JIT warmup + GC stats
+│   └── ZincFlow.csproj    — GENERATED from zinc.toml (do not edit)
+├── build/                 — AOT binary output (gitignored)
+├── docs/
+│   └── design-pooling.md  — Deep dive on .NET pool types and choices
+└── README.md
 ```
+
+## zinc.toml → .csproj
+
+The `zinc` CLI reads `zinc.toml` and generates `ZincFlow.csproj` on every build.
+This eliminates hand-editing XML for framework, AOT, GC, and NuGet settings:
+
+```toml
+[project]
+name = "zinc-flow-csharp"
+version = "0.1.0"
+
+[csharp]
+framework = "net10.0"
+unsafe = true
+
+[csharp.aot]
+enabled = true
+optimization = "Size"
+strip_symbols = true
+
+[csharp.gc]
+server = true
+```
+
+Same pattern as `zinc-flow-python/zinc.toml` → `pyproject.toml`.
 
 ## Memory Borrowing / Pooling Strategy
 
