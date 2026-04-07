@@ -48,29 +48,29 @@
 
 Make zinc-flow useful for real workloads without requiring NATS or K8s. A single binary that can ingest, transform, and deliver data.
 
-### Phase 2a: Connectors — get data in and out
-- [ ] ConnectorSource interface (start/stop/isRunning lifecycle)
-- [ ] Refactor HttpSource to implement ConnectorSource
-- [ ] PutHTTP processor — POST flowfiles to downstream HTTP endpoints
+### Phase 2a: Connectors — get data in and out ✓ (C#)
+- [x] ConnectorSource interface (start/stop/isRunning lifecycle)
+- [x] Refactor HttpSource to implement ConnectorSource
+- [x] PutHTTP processor — POST flowfiles to downstream HTTP endpoints
 - [ ] GetHTTP source — poll an HTTP endpoint on a schedule
-- [ ] PutFile processor — write to disk (replaces FileSink with proper directory/naming)
-- [ ] GetFile source — watch a directory, ingest new files
-- [ ] PutStdout processor — write to stdout (CLI pipelines, debugging)
-- [ ] Connector lifecycle API (start/stop/status endpoints)
+- [x] PutFile processor — write to disk with configurable naming (attribute/counter/prefix/suffix)
+- [x] GetFile source — watch a directory, ingest new files, move to .processed
+- [x] PutStdout processor — write to stdout (text/hex/attrs format)
+- [x] Connector lifecycle API (/api/sources, start/stop endpoints)
 
-### Phase 2b: Observability — know what's happening
-- [ ] Prometheus /metrics endpoint (processed count, queue depths, DLQ size, latency histograms)
-- [ ] Structured JSON logging option (for log aggregation)
-- [ ] FlowFile provenance — track processing history in attributes (processor chain, timestamps)
-- [ ] Health checks with connector status
-- [ ] /api/flow endpoint returns full DAG with queue depths (dashboard-ready)
+### Phase 2b: Observability — know what's happening ✓ (C#)
+- [x] Prometheus /metrics endpoint (processed count, queue depths, DLQ size, source status, uptime)
+- [x] Structured JSON logging option (LoggingProvider with json/text modes)
+- [x] FlowFile provenance — provenance.last attribute stamped per processor hop
+- [x] Health checks with connector status
+- [x] /api/flow endpoint returns full DAG with queue depths (dashboard-ready)
 
-### Phase 2c: Hardening — don't break in production
+### Phase 2c: Hardening — don't break in production (partial)
 - [ ] Retry policies per processor (max retries, backoff strategy)
 - [ ] Circuit breaker — stop routing after N consecutive failures, auto-recover
 - [ ] Content store cleanup — periodic sweep of orphaned claims
 - [ ] Queue persistence — optional WAL for crash recovery (bounded file, not a database)
-- [ ] Config validation at startup (missing processors, broken routes, unknown types)
+- [x] Config validation at startup (missing processors, broken routes, unknown types)
 
 ### Phase 2d: Developer experience
 - [ ] `zinc-flow init` scaffolding — generate project with config, sample processors
