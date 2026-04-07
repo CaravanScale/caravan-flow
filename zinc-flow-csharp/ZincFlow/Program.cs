@@ -88,13 +88,13 @@ if (!string.IsNullOrEmpty(fileInputDir))
 {
     var pattern = GetConfigString(config, "sources.file.pattern", "*");
     var pollMs = int.TryParse(GetConfigString(config, "sources.file.poll_interval_ms", "1000"), out var p) ? p : 1000;
-    fab.AddSource(new GetFileSource("file-ingest", fileInputDir, pattern, pollMs, store));
+    fab.AddSource(new GetFile("file-ingest", fileInputDir, pattern, pollMs, store));
 }
 
 // ListenHTTP source — default ingest on port 9092, configurable
 var ingestPort = GetConfigString(config, "sources.listen_http.port", "9092");
 var ingestPath = GetConfigString(config, "sources.listen_http.path", "/");
-fab.AddSource(new ListenHttpSource("http-ingest", int.Parse(ingestPort), ingestPath, store));
+fab.AddSource(new ListenHTTP("http-ingest", int.Parse(ingestPort), ingestPath, store));
 
 // Build ASP.NET Minimal API app
 var builder = WebApplication.CreateBuilder(args);
@@ -237,8 +237,8 @@ static void BenchQueueThroughput(int n, bool quiet = false)
 
 static void BenchSessionThroughput(int n, bool quiet = false)
 {
-    var tag = new AddAttribute("env", "prod");
-    var sink = new AddAttribute("done", "true");
+    var tag = new UpdateAttribute("env", "prod");
+    var sink = new UpdateAttribute("done", "true");
 
     var tagQ = new FlowQueue("tag", n + 100, 0, 30_000);
     var sinkQ = new FlowQueue("sink", n + 100, 0, 30_000);

@@ -12,40 +12,30 @@ public static class BuiltinProcessors
     public static void RegisterAll(Registry reg)
     {
         reg.Register(
-            new ProcessorInfo("add-attribute", "Adds key=value attribute to FlowFiles", ["key", "value"]),
-            (ctx, config) => new AddAttribute(config["key"], config["value"]));
+            new ProcessorInfo("UpdateAttribute", "Sets key=value attribute on FlowFiles", ["key", "value"]),
+            (ctx, config) => new UpdateAttribute(config["key"], config["value"]));
 
         reg.Register(
-            new ProcessorInfo("file-sink", "Writes FlowFile content to disk", ["output_dir"]),
-            (ctx, config) =>
-            {
-                IContentStore store;
-                try { store = ((ContentProvider)ctx.GetProvider("content")).Store; }
-                catch { store = new MemoryContentStore(); }
-                return new FileSink(config["output_dir"], store);
-            });
+            new ProcessorInfo("LogAttribute", "Logs FlowFile attributes and passes through", ["prefix"]),
+            (ctx, config) => new LogAttribute(config.GetValueOrDefault("prefix", "flow")));
 
         reg.Register(
-            new ProcessorInfo("log", "Logs FlowFile and passes through", ["prefix"]),
-            (ctx, config) => new LogProcessor(config.GetValueOrDefault("prefix", "flow")));
-
-        reg.Register(
-            new ProcessorInfo("json-to-records", "Parses JSON content into Avro records", ["schema_name"]),
+            new ProcessorInfo("ConvertJSONToRecord", "Parses JSON content into records", ["schema_name"]),
             (ctx, config) =>
             {
                 var schemaName = config.GetValueOrDefault("schema_name", "default");
                 IContentStore store;
                 try { store = ((ContentProvider)ctx.GetProvider("content")).Store; }
                 catch { store = new MemoryContentStore(); }
-                return new JsonToRecords(schemaName, store);
+                return new ConvertJSONToRecord(schemaName, store);
             });
 
         reg.Register(
-            new ProcessorInfo("records-to-json", "Serializes Avro records back to JSON", []),
-            (ctx, config) => new RecordsToJson());
+            new ProcessorInfo("ConvertRecordToJSON", "Serializes records back to JSON", []),
+            (ctx, config) => new ConvertRecordToJSON());
 
         reg.Register(
-            new ProcessorInfo("put-http", "POST FlowFile to downstream HTTP endpoint", ["endpoint"]),
+            new ProcessorInfo("PutHTTP", "POST FlowFile to downstream HTTP endpoint", ["endpoint"]),
             (ctx, config) =>
             {
                 IContentStore store;
@@ -56,7 +46,7 @@ public static class BuiltinProcessors
             });
 
         reg.Register(
-            new ProcessorInfo("put-file", "Write FlowFile content to directory with configurable naming", ["output_dir"]),
+            new ProcessorInfo("PutFile", "Write FlowFile content to directory", ["output_dir"]),
             (ctx, config) =>
             {
                 IContentStore store;
@@ -69,7 +59,7 @@ public static class BuiltinProcessors
             });
 
         reg.Register(
-            new ProcessorInfo("put-stdout", "Write FlowFile content to stdout", []),
+            new ProcessorInfo("PutStdout", "Write FlowFile content to stdout", []),
             (ctx, config) =>
             {
                 IContentStore store;
@@ -81,68 +71,42 @@ public static class BuiltinProcessors
     }
 }
 
-// --- AddAttribute: zero-alloc via overlay chain + pooled result ---
+// --- UpdateAttribute: zero-alloc via overlay chain + pooled result ---
 
-public sealed class AddAttribute : IProcessor
+public sealed class UpdateAttribute : IProcessor
 {
     private readonly string _key;
     private readonly string _value;
 
-    public AddAttribute(string key, string value) { _key = key; _value = value; }
+    public UpdateAttribute(string key, string value) { _key = key; _value = value; }
 
     public ProcessorResult Process(FlowFile ff)
         => SingleResult.Rent(FlowFile.WithAttribute(ff, _key, _value));
 }
 
-// --- FileSink: writes content to disk, returns Dropped (terminal) ---
+// --- LogAttribute: logs FlowFile and passes through ---
 
-public sealed class FileSink : IProcessor
-{
-    private readonly string _outputDir;
-    private readonly IContentStore _store;
-
-    public FileSink(string outputDir, IContentStore store)
-    {
-        _outputDir = outputDir;
-        _store = store;
-        Directory.CreateDirectory(outputDir);
-    }
-
-    public ProcessorResult Process(FlowFile ff)
-    {
-        var path = Path.Combine(_outputDir, $"{ff.NumericId}.out");
-        var (data, error) = ContentHelpers.Resolve(_store, ff.Content);
-        if (error != "")
-            return FailureResult.Rent(error, ff);
-        File.WriteAllBytes(path, data);
-        return DroppedResult.Instance;
-    }
-}
-
-// --- LogProcessor ---
-
-public sealed class LogProcessor : IProcessor
+public sealed class LogAttribute : IProcessor
 {
     private readonly string _prefix;
 
-    public LogProcessor(string prefix) => _prefix = prefix;
+    public LogAttribute(string prefix) => _prefix = prefix;
 
     public ProcessorResult Process(FlowFile ff)
     {
-        // Minimal logging on hot path — no string interpolation unless debug
         return SingleResult.Rent(ff);
     }
 }
 
-// --- JsonToRecords: parses Raw/Claim JSON content → Avro Records ---
+// --- ConvertJSONToRecord: parses Raw/Claim JSON content → Records ---
 
-public sealed class JsonToRecords : IProcessor
+public sealed class ConvertJSONToRecord : IProcessor
 {
     private readonly string _schemaName;
     private readonly IContentStore _store;
     private readonly JsonRecordReader _reader = new();
 
-    public JsonToRecords(string schemaName, IContentStore store)
+    public ConvertJSONToRecord(string schemaName, IContentStore store)
     {
         _schemaName = schemaName;
         _store = store;
@@ -184,9 +148,9 @@ public sealed class JsonToRecords : IProcessor
     }
 }
 
-// --- RecordsToJson: Avro Records → JSON bytes ---
+// --- ConvertRecordToJSON: Records → JSON bytes ---
 
-public sealed class RecordsToJson : IProcessor
+public sealed class ConvertRecordToJSON : IProcessor
 {
     public ProcessorResult Process(FlowFile ff)
     {

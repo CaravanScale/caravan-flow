@@ -31,13 +31,12 @@ public static class TestSuite
         TestV3EmptyContent();
 
         // Processors
-        TestProcessorAddAttribute();
-        TestProcessorLogPassthrough();
-        TestProcessorFileSink();
-        TestProcessorJsonToRecords();
-        TestProcessorRecordsToJson();
-        TestProcessorJsonRoundtrip();
-        TestProcessorJsonToRecordsEmpty();
+        TestUpdateAttribute();
+        TestLogAttribute();
+        TestConvertJSONToRecord();
+        TestConvertRecordToJSON();
+        TestJSONRoundtrip();
+        TestConvertJSONToRecordEmpty();
 
         // Routing engine
         TestRoutingEQ();
@@ -65,9 +64,8 @@ public static class TestSuite
         TestPutFile();
         TestPutStdout();
         TestConnectorSourceLifecycle();
-        TestGetFileSource();
-
-        TestListenHttpSource();
+        TestGetFile();
+        TestListenHTTP();
 
         // Phase 2b/2c observability + hardening
         TestStructuredLogging();
@@ -263,10 +261,10 @@ public static class TestSuite
 
     // --- Processors ---
 
-    static void TestProcessorAddAttribute()
+    static void TestUpdateAttribute()
     {
-        Console.WriteLine("--- Processor: AddAttribute ---");
-        var proc = new AddAttribute("env", "prod");
+        Console.WriteLine("--- UpdateAttribute ---");
+        var proc = new UpdateAttribute("env", "prod");
         var ff = FlowFile.Create("data"u8, new() { ["type"] = "order" });
         var result = proc.Process(ff);
         AssertTrue("returns single", result is SingleResult);
@@ -275,10 +273,10 @@ public static class TestSuite
         AssertTrue("kept type", outFf.Attributes.TryGetValue("type", out var t) && t == "order");
     }
 
-    static void TestProcessorLogPassthrough()
+    static void TestLogAttribute()
     {
-        Console.WriteLine("--- Processor: LogProcessor ---");
-        var proc = new LogProcessor("test");
+        Console.WriteLine("--- LogAttribute ---");
+        var proc = new LogAttribute("test");
         var ff = FlowFile.Create("data"u8, new() { ["type"] = "order" });
         var result = proc.Process(ff);
         AssertTrue("returns single", result is SingleResult);
@@ -286,20 +284,10 @@ public static class TestSuite
         AssertTrue("same id", outFf.NumericId == ff.NumericId);
     }
 
-    static void TestProcessorFileSink()
+    static void TestConvertJSONToRecord()
     {
-        Console.WriteLine("--- Processor: FileSink ---");
-        Directory.CreateDirectory("/tmp/zinc-flow-test/output");
-        var proc = new FileSink("/tmp/zinc-flow-test/output", new MemoryContentStore());
-        var ff = FlowFile.Create("sink test"u8, new());
-        var result = proc.Process(ff);
-        AssertTrue("returns dropped", result is DroppedResult);
-    }
-
-    static void TestProcessorJsonToRecords()
-    {
-        Console.WriteLine("--- Processor: JsonToRecords ---");
-        var proc = new JsonToRecords("order", new MemoryContentStore());
+        Console.WriteLine("--- ConvertJSONToRecord ---");
+        var proc = new ConvertJSONToRecord("order", new MemoryContentStore());
         var ff = FlowFile.Create(TestJsonArray(), new());
         var result = proc.Process(ff);
         AssertTrue("returns single", result is SingleResult);
@@ -307,14 +295,14 @@ public static class TestSuite
         AssertTrue("content is records", outFf.Content is RecordContent);
     }
 
-    static void TestProcessorRecordsToJson()
+    static void TestConvertRecordToJSON()
     {
-        Console.WriteLine("--- Processor: RecordsToJson ---");
+        Console.WriteLine("--- ConvertRecordToJSON ---");
         var rc = new RecordContent(
             new() { ["name"] = "test" },
             [new() { ["name"] = (object?)"Bob" }]);
         var ff = FlowFile.CreateWithContent(rc, new());
-        var proc = new RecordsToJson();
+        var proc = new ConvertRecordToJSON();
         var result = proc.Process(ff);
         AssertTrue("returns single", result is SingleResult);
         var outFf = ((SingleResult)result).FlowFile;
@@ -323,7 +311,7 @@ public static class TestSuite
         AssertTrue("json contains Bob", Encoding.UTF8.GetString(bytes).Contains("Bob"));
     }
 
-    static void TestProcessorJsonRoundtrip()
+    static void TestJSONRoundtrip()
     {
         Console.WriteLine("--- Processor: JSON Roundtrip ---");
         var rc = new RecordContent(
@@ -332,7 +320,7 @@ public static class TestSuite
         var ff = FlowFile.CreateWithContent(rc, new());
 
         // Records → JSON
-        var toJson = new RecordsToJson();
+        var toJson = new ConvertRecordToJSON();
         var step1 = toJson.Process(ff);
         AssertTrue("step1 returns single", step1 is SingleResult);
         var jsonFf = ((SingleResult)step1).FlowFile;
@@ -341,16 +329,16 @@ public static class TestSuite
         AssertTrue("json contains Portland", Encoding.UTF8.GetString(bytes).Contains("Portland"));
 
         // JSON → Records
-        var toRec = new JsonToRecords("geo", new MemoryContentStore());
+        var toRec = new ConvertJSONToRecord("geo", new MemoryContentStore());
         var step2 = toRec.Process(jsonFf);
         AssertTrue("step2 returns single", step2 is SingleResult);
         AssertTrue("step2 is records", ((SingleResult)step2).FlowFile.Content is RecordContent);
     }
 
-    static void TestProcessorJsonToRecordsEmpty()
+    static void TestConvertJSONToRecordEmpty()
     {
-        Console.WriteLine("--- Processor: JsonToRecords Empty ---");
-        var proc = new JsonToRecords("test", new MemoryContentStore());
+        Console.WriteLine("--- ConvertJSONToRecord Empty ---");
+        var proc = new ConvertJSONToRecord("test", new MemoryContentStore());
         var ff = FlowFile.Create("[]"u8, new());
         var result = proc.Process(ff);
         AssertTrue("empty json fails", result is FailureResult);
@@ -647,8 +635,8 @@ public static class TestSuite
         Console.WriteLine("--- Scenario: Processor Chain ---");
         var scopedCtx = TestScopedCtx();
         var reg = new Registry(); BuiltinProcessors.RegisterAll(reg);
-        var tagger = reg.Create("add-attribute", scopedCtx, new() { ["key"] = "env", ["value"] = "dev" });
-        var logger = reg.Create("log", scopedCtx, new() { ["prefix"] = "chain-test" });
+        var tagger = reg.Create("UpdateAttribute", scopedCtx, new() { ["key"] = "env", ["value"] = "dev" });
+        var logger = reg.Create("LogAttribute", scopedCtx, new() { ["prefix"] = "chain-test" });
 
         var tagQueue = new FlowQueue("tag-env", 100, 1024 * 1024, 30_000);
         var logQueue = new FlowQueue("logger", 100, 1024 * 1024, 30_000);
@@ -684,7 +672,7 @@ public static class TestSuite
         var engine = new RulesEngine();
         engine.AddOrReplaceRuleset("flow", [new RoutingRule("forward", "type", Operator.Exists, "", "downstream")]);
 
-        var proc = new LogProcessor("bp-test");
+        var proc = new LogAttribute("bp-test");
         var dlq = new DLQ();
         var session = new ProcessSession(smallQueue, proc, "small", engine, allQueues, dlq, 5);
 
@@ -712,7 +700,7 @@ public static class TestSuite
 
         var dlq = new DLQ();
         int maxRetries = 3;
-        var session = new ProcessSession(sourceQueue, new LogProcessor("retry"), "source", engine, allQueues, dlq, maxRetries);
+        var session = new ProcessSession(sourceQueue, new LogAttribute("retry"), "source", engine, allQueues, dlq, maxRetries);
 
         sourceQueue.Offer(FlowFile.Create("will-fail"u8, new() { ["type"] = "test" }));
 
@@ -765,7 +753,7 @@ public static class TestSuite
     static void TestScenarioIRSFanOut()
     {
         Console.WriteLine("--- Scenario: IRS Fan-Out ---");
-        var tagger = new AddAttribute("env", "prod");
+        var tagger = new UpdateAttribute("env", "prod");
 
         var srcQueue = new FlowQueue("source", 100, 1024 * 1024, 30_000);
         var destA = new FlowQueue("dest-a", 100, 1024 * 1024, 30_000);
@@ -860,11 +848,11 @@ public static class TestSuite
         Directory.CreateDirectory(tmpDir);
         try
         {
-            var source = new GetFileSource("test-file", tmpDir, "*", 60000, store);
+            var source = new GetFile("test-file", tmpDir, "*", 60000, store);
 
             AssertTrue("not running initially", !source.IsRunning);
             AssertTrue("name correct", source.Name == "test-file");
-            AssertTrue("type is get-file", source.SourceType == "get-file");
+            AssertTrue("type is GetFile", source.SourceType == "GetFile");
 
             using var cts = new CancellationTokenSource();
             source.Start(ff => true, cts.Token);
@@ -880,7 +868,7 @@ public static class TestSuite
         }
     }
 
-    static void TestGetFileSource()
+    static void TestGetFile()
     {
         Console.WriteLine("--- GetFileSource ---");
         var tmpDir = Path.Combine(Path.GetTempPath(), $"zinc-test-getfile-{Environment.TickCount64}");
@@ -888,7 +876,7 @@ public static class TestSuite
         try
         {
             var store = new MemoryContentStore();
-            var source = new GetFileSource("test-file", tmpDir, "*", 200, store);
+            var source = new GetFile("test-file", tmpDir, "*", 200, store);
 
             AssertTrue("not running initially", !source.IsRunning);
 
@@ -923,14 +911,14 @@ public static class TestSuite
         }
     }
 
-    static void TestListenHttpSource()
+    static void TestListenHTTP()
     {
         Console.WriteLine("--- ListenHTTP Source ---");
         var store = new MemoryContentStore();
-        var source = new ListenHttpSource("test-listen", 19876, "/ingest", store);
+        var source = new ListenHTTP("test-listen", 19876, "/ingest", store);
 
         AssertTrue("not running initially", !source.IsRunning);
-        AssertTrue("type is listen-http", source.SourceType == "listen-http");
+        AssertTrue("type is ListenHTTP", source.SourceType == "ListenHTTP");
 
         var ingested = new List<FlowFile>();
         using var cts = new CancellationTokenSource();
@@ -1022,7 +1010,7 @@ public static class TestSuite
             {
                 ["processors"] = new Dictionary<string, object?>
                 {
-                    ["tagger"] = new Dictionary<string, object?> { ["type"] = "add-attribute", ["config"] = new Dictionary<string, object?> { ["key"] = "env", ["value"] = "prod" } }
+                    ["tagger"] = new Dictionary<string, object?> { ["type"] = "UpdateAttribute", ["config"] = new Dictionary<string, object?> { ["key"] = "env", ["value"] = "prod" } }
                 },
                 ["routes"] = new Dictionary<string, object?>
                 {
@@ -1059,7 +1047,7 @@ public static class TestSuite
             {
                 ["processors"] = new Dictionary<string, object?>
                 {
-                    ["tagger"] = new Dictionary<string, object?> { ["type"] = "add-attribute" }
+                    ["tagger"] = new Dictionary<string, object?> { ["type"] = "UpdateAttribute" }
                 },
                 ["routes"] = new Dictionary<string, object?>
                 {
@@ -1074,7 +1062,7 @@ public static class TestSuite
     static void TestProvenance()
     {
         Console.WriteLine("--- Provenance ---");
-        var tag = new AddAttribute("env", "prod");
+        var tag = new UpdateAttribute("env", "prod");
         var q = new FlowQueue("prov", 100, 0, 30_000);
         var outQ = new FlowQueue("out", 100, 0, 30_000);
         var queues = new Dictionary<string, FlowQueue> { ["prov"] = q, ["out"] = outQ };

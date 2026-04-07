@@ -24,10 +24,10 @@ internal static class SourceHelpers
 /// File source connector: watches a directory and ingests new files as FlowFiles.
 /// Files are moved to a "processed" subdirectory after ingestion.
 /// </summary>
-public sealed class GetFileSource : IConnectorSource
+public sealed class GetFile : IConnectorSource
 {
     public string Name { get; }
-    public string SourceType => "get-file";
+    public string SourceType => "GetFile";
     public bool IsRunning { get; private set; }
 
     private readonly string _inputDir;
@@ -38,7 +38,7 @@ public sealed class GetFileSource : IConnectorSource
     private Func<FlowFile, bool> _ingest = null!;
     private CancellationTokenSource? _cts;
 
-    public GetFileSource(string name, string inputDir, string pattern, int pollIntervalMs, IContentStore store)
+    public GetFile(string name, string inputDir, string pattern, int pollIntervalMs, IContentStore store)
     {
         Name = name;
         _inputDir = inputDir;
@@ -124,10 +124,10 @@ public sealed class GetFileSource : IConnectorSource
 /// and accepts FlowFile ingestion (raw body or NiFi V3 binary).
 /// Independent from the main server — can be started/stopped via API.
 /// </summary>
-public sealed class ListenHttpSource : IConnectorSource
+public sealed class ListenHTTP : IConnectorSource
 {
     public string Name { get; }
-    public string SourceType => "listen-http";
+    public string SourceType => "ListenHTTP";
     public bool IsRunning { get; private set; }
 
     private readonly int _port;
@@ -138,7 +138,7 @@ public sealed class ListenHttpSource : IConnectorSource
     private CancellationTokenSource? _cts;
     private static long _idCounter;
 
-    public ListenHttpSource(string name, int port, string path, IContentStore store)
+    public ListenHTTP(string name, int port, string path, IContentStore store)
     {
         Name = name;
         _port = port;
