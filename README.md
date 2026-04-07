@@ -13,7 +13,7 @@ NiFi's processor model — with transactional delivery guarantees, backpressure,
 - **Lifecycle management** — enable/disable processors and providers at runtime with graceful drain
 - **Backpressure** — bounded queues propagate pressure backwards through the flow graph
 - **DLQ** — inspectable dead letter queue with replay to source queue
-- Zinc transpiles to Go — goroutines, typed channels, native binaries (~2.5MB)
+- **Three runtimes:** Go (goroutines, 11MB), C# .NET 10 (AOT, 16MB, 2M+ ff/s), Python 3.14t (14MB)
 
 ## Quick Start
 
@@ -109,9 +109,17 @@ Processor Input Queue ──claim──→ [Processor] ──result──→ IRS
 | POST | /api/processors/add | Add processor at runtime |
 | POST | /api/routes/add | Add routing rule |
 
+## Runtimes
+
+| Runtime | Binary | Session throughput | Best for |
+|---|---|---|---|
+| **Go** (zinc-go transpiled) | 11MB static | 599K ff/s | Edge, embedded, performance-critical |
+| **C# .NET 10** (zinc-csharp AOT) | 16MB stripped | 2M+ ff/s | Maximum throughput, .NET ecosystems |
+| **Python 3.14t** (free-threaded) | 14MB native | 95K ff/s | ML/pandas integration, Python orgs |
+
 ## Status
 
-**Phase 1.5 — Flow Engine** — complete. See [TODO.md](TODO.md) for the full roadmap.
+**Phase 1.5 — Flow Engine** — complete across all three runtimes. See [TODO.md](TODO.md) for the roadmap.
 
 ## Design
 
@@ -120,3 +128,4 @@ The canonical design document is [docs/design-providers.md](docs/design-provider
 ## Related
 
 - [Zinc Language](https://github.com/ZincScale/zinc) — the language Zinc Flow is written in
+- [zinc-csharp](https://github.com/ZincScale/zinc/tree/master/zinc-csharp) — C# build backend (installs .NET, reads zinc.toml, produces AOT binaries)

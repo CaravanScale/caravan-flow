@@ -1,213 +1,220 @@
 # zinc-flow-csharp
 
-C# / .NET 10 port of the zinc-flow engine, optimized with ArrayPool, MemoryPool, and ThreadStatic object pooling to minimize GC pressure on hot code paths.
+C# / .NET 10 port of the zinc-flow engine. Uses ThreadStatic object pools, ArrayPool byte buffers, ref-counted Content, and AttributeMap overlay chains to achieve 2M+ ff/s with zero GC during execution.
 
 ## Quick Start
 
 ```bash
-# Build (generates .csproj from zinc.toml, then dotnet build)
-./zinc build
+# Install zinc-csharp (one-stop shop — installs .NET 10 + build tool)
+curl -LsSf https://raw.githubusercontent.com/ZincScale/zinc/master/zinc-csharp/install.sh | bash
 
-# Run benchmarks (JIT)
-./zinc run
+# Build Native AOT binary
+zinc-csharp build
 
-# Native AOT publish (1.4 MB static binary)
-./zinc publish
-./build/ZincFlow
+# Run
+zinc-csharp run
 
-# Cross-compile
-./zinc publish linux-arm64
+# Run benchmarks
+./build/ZincFlow --bench
+
+# JIT mode (fast iteration)
+zinc-csharp build --jit
+zinc-csharp run --jit
+
+# Run tests (separate project, never in production binary)
+zinc-csharp test
+
+# Diagnostics
+zinc-csharp doctor
 
 # Clean
-./zinc clean
+zinc-csharp clean
 ```
 
-All build configuration lives in `zinc.toml` — the `.csproj` is generated and gitignored.
-You never need to touch XML.
+All build configuration lives in `zinc.toml` — the `.csproj` is generated and gitignored. You never touch XML.
 
-## Architecture
+## Project Structure
 
 ```
 zinc-flow-csharp/
 ├── zinc.toml              — Project config (framework, AOT, NuGet deps)
-├── zinc                   — Build CLI (reads zinc.toml, delegates to dotnet)
 ├── config.yaml            — Runtime flow config (processors, routes, providers)
-├── ZincFlow/              — C# source (hand-written, optimized)
+├── ZincFlow/              — C# source
 │   ├── Core/
-│   │   ├── Types.cs       — Pool<T>, AttributeMap, FlowFile, Content, ProcessorResult
+│   │   ├── Types.cs       — Pool<T>, AttributeMap, FlowFile, Content (ref-counted), ProcessorResults
 │   │   ├── FlowQueue.cs   — Transactional queue: ArrayPool backing, pooled entries
 │   │   ├── ProcessSession.cs — Claim→process→route→ack with object return-to-pool
 │   │   ├── DLQ.cs         — Dead letter queue
-│   │   └── Providers.cs   — Provider interface, ProcessorContext, ScopedContext
+│   │   ├── Providers.cs   — Provider interface, ProcessorContext, ScopedContext
+│   │   ├── ContentStore.cs — FileContentStore, MemoryContentStore, offload to claim
+│   │   ├── Avro.cs        — Schema, GenericRecord
+│   │   ├── JsonRecord.cs  — JSON record serde
+│   │   └── Binary.cs      — Big-endian encoding helpers
 │   ├── Fabric/
-│   │   ├── Router.cs      — RulesEngine predicate evaluation over AttributeMap
-│   │   └── Processors.cs  — AddAttribute, LogProcessor
-│   ├── Program.cs         — Benchmarks with JIT warmup + GC stats
-│   └── ZincFlow.csproj    — GENERATED from zinc.toml (do not edit)
+│   │   ├── Fabric.cs      — Runtime engine (queues, sessions, lifecycle, async loops)
+│   │   ├── Router.cs      — RulesEngine with BaseRule + CompositeRule (AND/OR)
+│   │   ├── Processors.cs  — 5 built-in processors
+│   │   ├── Registry.cs    — Processor registry + factory pattern
+│   │   ├── FlowFileV3.cs  — NiFi FlowFile V3 binary pack/unpack
+│   │   ├── HttpSource.cs  — HTTP ingest (raw + V3 binary)
+│   │   └── ApiHandler.cs  — 21 management API endpoints
+│   └── Program.cs         — Server mode + benchmarks (--bench)
+├── tests/
+│   ├── zinc.toml          — Test project config (separate from production)
+│   └── Tests/
+│       ├── Program.cs     — Test entry point
+│       └── TestSuite.cs   — 149 assertions across all modules
 ├── build/                 — AOT binary output (gitignored)
-├── docs/
-│   └── design-pooling.md  — Deep dive on .NET pool types and choices
-└── README.md
+└── docs/
+    └── design-pooling.md  — Pool types, ref counting, GC analysis
 ```
 
 ## zinc.toml → .csproj
 
-The `zinc` CLI reads `zinc.toml` and generates `ZincFlow.csproj` on every build.
-This eliminates hand-editing XML for framework, AOT, GC, and NuGet settings:
+The `zinc-csharp` tool reads `zinc.toml` and generates `.csproj` on every build:
 
 ```toml
 [project]
-name = "zinc-flow-csharp"
+name = "ZincFlow"
 version = "0.1.0"
+source_dir = "ZincFlow"
+sdk = "Microsoft.NET.Sdk.Web"
 
 [csharp]
 framework = "net10.0"
+lang_version = "latest"
+nullable = true
+implicit_usings = true
 unsafe = true
 
 [csharp.aot]
 enabled = true
-optimization = "Size"
 strip_symbols = true
+invariant_globalization = true
+optimization = "Size"
+stack_traces = false
+trim_metadata = true
 
 [csharp.gc]
 server = true
+
+[csharp.nuget]
+packages = ["YamlDotNet:16.3.0"]
 ```
 
-Same pattern as `zinc-flow-python/zinc.toml` → `pyproject.toml`.
+Tests are a separate project (`tests/zinc.toml`) with a `ProjectReference` to the main project. Production binary has zero test code.
 
 ## Memory Borrowing / Pooling Strategy
 
-The engine processes FlowFiles through a claim→process→route→ack pipeline. Each step
-previously allocated new objects that became immediate garbage. The pooling architecture
-eliminates nearly all hot-path allocations:
+The engine processes FlowFiles through a claim→process→route→ack pipeline. Every step reuses pooled objects — zero allocations in steady state.
 
 ### 1. ThreadStatic Object Pool (`Pool<T>`)
 
-Zero-contention, zero-CAS object pool using `[ThreadStatic]` arrays. Each thread maintains
-its own pool of up to 256 objects per type. Rent is an array pop, return is an array push.
+Zero-contention, zero-CAS object pool using `[ThreadStatic]` arrays. Each thread maintains its own pool of up to 256 objects per type.
 
-Pooled types: `FlowFile`, `QueueEntry`, `SingleResult`
+Pooled types: `FlowFile`, `QueueEntry`, `SingleResult`, `RoutedResult`, `MultipleResult`, `FailureResult`, `AttributeMap`, `Raw`
 
 ```csharp
-// Hot path: ~2ns rent/return (array index + decrement)
+// ~2-3ns rent/return (array index + decrement)
 var ff = Pool<FlowFile>.Rent();
-// ... use ff ...
 Pool<FlowFile>.Return(ff);
 ```
 
-### 2. AttributeMap Overlay Chain
+### 2. Ref-Counted Content
 
-`WithAttribute()` was the #1 allocation hotspot — it copied the entire `Dictionary<string,string>`
-per processor hop. Replaced with an immutable linked overlay:
+Content (Raw byte buffers) is shared across FlowFiles via `WithAttribute`. A non-atomic ref count tracks ownership:
+
+- `WithAttribute` → increments ref count (shared Content, new FlowFile shell)
+- `FlowFile.Return` → decrements ref count; when zero, returns ArrayPool bytes and pools Raw shell
+- Non-atomic: safe because FlowFiles move through pipeline stages sequentially
 
 ```
-Before: new Dictionary(parent) + bucket array + element copy  → ~200 bytes/call
-After:  new AttributeMap(parent, key, value)                  → ~40 bytes/call (5 fields)
+FF1.Create(data) → Raw refCount=1
+FF2 = WithAttribute(FF1) → Raw refCount=2
+Return(FF1) → refCount=1
+Return(FF2) → refCount=0 → ArrayPool.Return(bytes) + Pool<Raw>.Return(shell)
 ```
 
-The overlay chain walks parent links on `ContainsKey`/`TryGetValue`. For typical 2-4 attribute
-depths, this is faster than dictionary hashing.
+### 3. AttributeMap Overlay Chain
 
-### 3. ArrayPool for Content Bytes
+`WithAttribute` creates an immutable linked overlay instead of cloning the Dictionary:
 
-`Raw` content rents byte arrays from `ArrayPool<byte>.Shared` instead of allocating.
-This keeps payloads off the LOH (Large Object Heap) for buffers >85KB and avoids
-Gen2 collection triggers.
-
-```csharp
-// Rent from pool (may be slightly oversized — that's fine)
-_rented = ArrayPool<byte>.Shared.Rent(data.Length);
-data.CopyTo(_rented);
-
-// Return when FlowFile is consumed
-ArrayPool<byte>.Shared.Return(_rented);
+```
+Before: new Dictionary(parent) + copy  → ~200 bytes/call
+After:  overlay node (parent, key, value) → ~40 bytes/call, pooled
 ```
 
-### 4. ArrayPool for Queue Backing Array
+### 4. ArrayPool for Content Bytes and Queue Backing
 
-`FlowQueue._items` is rented from `ArrayPool<QueueEntry?>`. Growth events return the
-old array to the pool and rent a larger one, avoiding GC pressure from array resizing.
+- `Raw` content rents from `ArrayPool<byte>.Shared` (avoids LOH for >85KB payloads)
+- `FlowQueue._items` rented from `ArrayPool<QueueEntry?>.Shared`
+- Ref counting ensures bytes are returned when last FlowFile reference is released
 
-### 5. In-Place Mutation on Claim
+### 5. Zero-Alloc Routing
 
-Queue `Claim()` used to create a new `QueueEntry` copy to move from visible → invisible.
-Now it mutates the existing entry in-place (just sets `ClaimedAt` timestamp), eliminating
-one allocation per dequeue.
-
-### 6. Reusable Destination Buffer
-
-`ProcessSession._destBuffer` is a pre-allocated `List<string>` reused across all
-`Execute()` calls. `RulesEngine.GetDestinations()` writes into this buffer via a
-`Clear()` + `Add()` pattern instead of returning a new list.
+`ProcessSession._destBuffer` is a pre-allocated `List<string>` reused across all `Execute()` calls. `RulesEngine.GetDestinations()` writes into caller's buffer.
 
 ## Hot Path Allocation Summary
 
-| Operation | Before (v1) | After (pooled) |
+| Operation | Before | After (pooled) |
 |---|---|---|
-| `WithAttribute` per hop | new Dict + buckets + copy | 1 AttributeMap node (~40B) |
+| `WithAttribute` per hop | new Dict + copy | 1 pooled AttributeMap overlay |
 | `FlowFile` per process | `new FlowFile()` | `Pool<FlowFile>.Rent()` |
 | `QueueEntry` per claim | `new QueueEntry()` | mutate in-place (zero alloc) |
 | `QueueEntry` per offer | `new QueueEntry()` | `Pool<QueueEntry>.Rent()` |
 | `SingleResult` per process | `new SingleResult()` | `Pool<SingleResult>.Rent()` |
+| `RoutedResult` per process | `new RoutedResult()` | `Pool<RoutedResult>.Rent()` |
+| `MultipleResult` per process | `new MultipleResult()` | `Pool<MultipleResult>.Rent()` |
+| `FailureResult` per process | `new FailureResult()` | `Pool<FailureResult>.Rent()` |
+| Raw content bytes | `new byte[]` | `ArrayPool<byte>.Rent()` + ref-counted return |
+| Raw object shell | `new Raw()` | `Pool<Raw>.Rent()` + ref-counted return |
 | Queue backing array | `new QueueEntry[]` | `ArrayPool.Rent()` |
-| Content bytes | `new byte[]` | `ArrayPool<byte>.Rent()` |
 | Destination list | `new List<string>()` | reuse `_destBuffer` |
 
 ## Benchmark Results
 
-All benchmarks: 2-hop pipeline (AddAttribute "env"→"prod" → route → AddAttribute "done"→"true"),
-single-threaded, measured after JIT warmup + forced Gen2 collection.
+2-hop pipeline (AddAttribute→route→AddAttribute), single-threaded, Native AOT, .NET 10, Server GC.
 
-### Session Throughput (100K FlowFiles, 2 hops)
+### Session Throughput
 
-| Runtime | Time | Rate | vs Python |
+| Size | Time | Rate | GC during execution |
 |---|---|---|---|
-| **C# AOT** (1.4 MB binary) | 48ms | **2,083,333 ff/s** | **14.4x** |
-| **C# JIT** (.NET 10) | 111ms | **900,900 ff/s** | **6.2x** |
-| **Python 3.14t** | 692ms | 144,583 ff/s | baseline |
+| 10K ff | 4-6ms | 2.0-2.5M ff/s | gc0: 0 |
+| 50K ff | 25ms | 2.0M ff/s | gc0: 0 |
+| 100K ff | 46-68ms | 1.5-2.2M ff/s | gc0: 0 |
+| 500K ff | 256ms | 1.95M ff/s | gc0: 0 |
 
 ### Queue Operations (100K)
 
-| Operation | C# AOT | C# JIT | Python 3.14t |
-|---|---|---|---|
-| Offer | 46ms (2.17M ops/s) | 98ms (1.02M ops/s) | 222ms (450K ops/s) |
-| Claim+Ack | 6ms (16.7M ops/s) | 6ms (16.7M ops/s) | 114ms (878K ops/s) |
+| Operation | Rate |
+|---|---|
+| Offer | 2.0-2.8M ops/s |
+| Claim+Ack | 16-25M ops/s |
 
-### GC Pressure
-
-| Metric | Before pooling | After pooling |
-|---|---|---|
-| Gen0 collections | 21-27 | 15-16 |
-| Gen1 collections | 10-13 | 7 |
-| Gen2 collections | 5-6 | 4 |
-| Session 100K rate | 265-552K ff/s | 900K-2.08M ff/s |
-
-### Binary Size (Native AOT)
+### Binary Size
 
 ```
-1.4 MB  — stripped ELF x86-64, statically linked runtime
-         IlcOptimizationPreference=Size, InvariantGlobalization,
-         no stack traces, no resource strings, trimmed metadata
+16 MB — stripped ELF x86-64, .NET 10 AOT, Web SDK
+        IlcOptimizationPreference=Size, InvariantGlobalization,
+        no stack traces, trimmed metadata
 ```
 
 ## Key Design Decisions
 
-1. **ThreadStatic over ConcurrentBag** — ConcurrentBag uses per-thread lists with cross-thread
-   stealing and CAS operations. For single-threaded hot paths (which is how flow processors run),
-   a simple `[ThreadStatic]` array is 10-50x faster for rent/return.
+1. **ThreadStatic over ConcurrentBag** — ConcurrentBag has O(threadCount) scan on cold pool. ThreadStatic array is 10-50x faster for single-thread-per-processor model.
 
-2. **Overlay chain over FrozenDictionary** — FrozenDictionary is immutable but requires full
-   construction upfront. The overlay chain amortizes the cost: `With()` is O(1), lookup is O(depth).
-   For typical 2-4 hop pipelines, the chain depth is tiny and cache-friendly.
+2. **Non-atomic ref counting** — FlowFiles move through pipeline stages sequentially. No concurrent access to the same Content, so `_refCount++`/`_refCount--` is safe without Interlocked.
 
-3. **In-place mutation for Claim** — The QueueEntry moves from `_items[]` → `_invisible` dict.
-   Since no other code holds a reference to it mid-transition (we're inside the lock), mutating
-   `ClaimedAt` in-place is safe and eliminates one object allocation per dequeue.
+3. **Overlay chain over FrozenDictionary** — `With()` is O(1), lookup is O(depth). For 2-4 hop pipelines, chain depth is tiny and cache-friendly.
 
-4. **Server GC** — Enabled via `<ServerGarbageCollection>true</ServerGarbageCollection>`.
-   Uses dedicated GC threads and larger generation sizes, which is better for throughput
-   workloads (longer between collections, larger Gen0 budget).
+4. **In-place mutation for Claim** — QueueEntry moves from visible to invisible. Since we're inside the lock, mutating `ClaimedAt` in-place eliminates one allocation per dequeue.
 
-5. **Native AOT + Size trimming** — AOT eliminates JIT warmup and produces a 1.4MB self-contained
-   binary. The `[ThreadStatic]` pool works identically under AOT since it's a runtime feature,
-   not a JIT optimization.
+5. **Separate test project** — Tests have their own `zinc.toml` and `ProjectReference` to the main project. Production AOT binary has zero test code.
+
+6. **Server GC** — Dedicated GC threads, larger generation sizes, better for throughput workloads.
+
+## Related
+
+- [zinc-csharp build tool](https://github.com/ZincScale/zinc/tree/master/zinc-csharp) — the build tool used by this project
+- [design-pooling.md](docs/design-pooling.md) — deep dive on .NET pool types and choices
+- [zinc-flow](https://github.com/ZincScale/zinc-flow) — the Zinc/Go reference implementation

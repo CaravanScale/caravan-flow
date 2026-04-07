@@ -14,9 +14,10 @@
 - Runtime lifecycle (enable/disable processors/providers, dependency cascade)
 - Graceful shutdown on SIGTERM/SIGINT
 
-**Two runtimes:**
-- **Go** — 11MB static binary, 599k ff/s, zero deps. Edge, embedded, performance-critical.
-- **Python 3.14t** — 14MB native binary, 95k ff/s, pandas/numpy/sklearn integration. Python orgs.
+**Three runtimes:**
+- **Go** — 11MB static binary, 599K ff/s, zero deps. Edge, embedded, performance-critical.
+- **C# .NET 10** — 16MB AOT binary, 2M+ ff/s, zero GC during execution. Maximum throughput, .NET ecosystems.
+- **Python 3.14t** — 14MB native binary, 95K ff/s, pandas/numpy/sklearn integration. Python orgs.
 
 ---
 
@@ -39,6 +40,7 @@
 - [x] Async processing, graceful shutdown, map-keyed YAML config
 - [x] 30 tests, 137+ assertions, 10 e2e scenarios
 - [x] zinc-flow-python port — 129 assertions, DataFrame processors, performance optimized
+- [x] zinc-flow-csharp port — 149 assertions, ThreadStatic pools, ArrayPool, ref-counted Content, 2M+ ff/s AOT
 
 ---
 
