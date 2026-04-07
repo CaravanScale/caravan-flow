@@ -151,10 +151,36 @@ public sealed class LoggingProvider : IProvider
     public string Name => "logging";
     public string ProviderType => "logging";
     public ComponentState State { get; private set; } = ComponentState.Disabled;
+    public bool JsonOutput { get; set; }
 
     public void Enable() => State = ComponentState.Enabled;
     public void Disable(int drainTimeout) => State = ComponentState.Disabled;
     public void Shutdown() => State = ComponentState.Disabled;
+
+    public void Log(string level, string component, string message, Dictionary<string, string>? extra = null)
+    {
+        if (State != ComponentState.Enabled) return;
+
+        if (JsonOutput)
+        {
+            var sb = new System.Text.StringBuilder(128);
+            sb.Append("{\"ts\":\"").Append(DateTime.UtcNow.ToString("o"))
+              .Append("\",\"level\":\"").Append(level)
+              .Append("\",\"component\":\"").Append(component)
+              .Append("\",\"msg\":\"").Append(EscapeJson(message)).Append('"');
+            if (extra is not null)
+                foreach (var (k, v) in extra)
+                    sb.Append(",\"").Append(k).Append("\":\"").Append(EscapeJson(v)).Append('"');
+            sb.Append('}');
+            Console.WriteLine(sb.ToString());
+        }
+        else
+        {
+            Console.WriteLine($"[{DateTime.UtcNow:HH:mm:ss}] [{level}] [{component}] {message}");
+        }
+    }
+
+    private static string EscapeJson(string s) => s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\n", "\\n");
 }
 
 public sealed class ContentProvider : IProvider

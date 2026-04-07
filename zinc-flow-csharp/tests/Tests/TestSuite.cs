@@ -61,11 +61,16 @@ public static class TestSuite
         TestScopedContextAccess();
         TestProviderLifecycle();
 
-        // Phase 2 processors
+        // Phase 2a processors
         TestPutFile();
         TestPutStdout();
         TestConnectorSourceLifecycle();
         TestGetFileSource();
+
+        // Phase 2b/2c observability + hardening
+        TestStructuredLogging();
+        TestConfigValidation();
+        TestProvenance();
 
         // Scenarios
         TestScenarioProcessorChain();
@@ -904,6 +909,130 @@ public static class TestSuite
         {
             Directory.Delete(tmpDir, true);
         }
+    }
+
+    static void TestStructuredLogging()
+    {
+        Console.WriteLine("--- Structured Logging ---");
+        var provider = new LoggingProvider();
+        provider.Enable();
+
+        // Text mode (default)
+        provider.JsonOutput = false;
+        var sw = new StringWriter();
+        var orig = Console.Out;
+        Console.SetOut(sw);
+        provider.Log("INFO", "test", "hello world");
+        Console.SetOut(orig);
+        var output = sw.ToString();
+        AssertTrue("text log contains level", output.Contains("[INFO]"));
+        AssertTrue("text log contains component", output.Contains("[test]"));
+        AssertTrue("text log contains message", output.Contains("hello world"));
+
+        // JSON mode
+        provider.JsonOutput = true;
+        sw = new StringWriter();
+        Console.SetOut(sw);
+        provider.Log("WARN", "fabric", "queue full", new() { ["queue"] = "ingest" });
+        Console.SetOut(orig);
+        output = sw.ToString();
+        AssertTrue("json log has level", output.Contains("\"level\":\"WARN\""));
+        AssertTrue("json log has component", output.Contains("\"component\":\"fabric\""));
+        AssertTrue("json log has extra", output.Contains("\"queue\":\"ingest\""));
+
+        // Disabled provider does nothing
+        provider.Disable(0);
+        sw = new StringWriter();
+        Console.SetOut(sw);
+        provider.Log("ERROR", "test", "should not appear");
+        Console.SetOut(orig);
+        AssertTrue("disabled log empty", sw.ToString().Length == 0);
+    }
+
+    static void TestConfigValidation()
+    {
+        Console.WriteLine("--- Config Validation ---");
+        var reg = new Registry();
+        BuiltinProcessors.RegisterAll(reg);
+
+        // Valid config
+        var good = new Dictionary<string, object?>
+        {
+            ["flow"] = new Dictionary<string, object?>
+            {
+                ["processors"] = new Dictionary<string, object?>
+                {
+                    ["tagger"] = new Dictionary<string, object?> { ["type"] = "add-attribute", ["config"] = new Dictionary<string, object?> { ["key"] = "env", ["value"] = "prod" } }
+                },
+                ["routes"] = new Dictionary<string, object?>
+                {
+                    ["to-tagger"] = new Dictionary<string, object?> { ["destination"] = "tagger", ["condition"] = new Dictionary<string, object?> { ["attribute"] = "type", ["operator"] = "EXISTS" } }
+                }
+            }
+        };
+        var errors = ConfigValidator.Validate(good, reg);
+        AssertIntEqual("valid config no errors", errors.Count, 0);
+
+        // Missing flow section
+        var noFlow = new Dictionary<string, object?>();
+        errors = ConfigValidator.Validate(noFlow, reg);
+        AssertTrue("missing flow error", errors.Count > 0);
+
+        // Unknown processor type
+        var badType = new Dictionary<string, object?>
+        {
+            ["flow"] = new Dictionary<string, object?>
+            {
+                ["processors"] = new Dictionary<string, object?>
+                {
+                    ["bad"] = new Dictionary<string, object?> { ["type"] = "nonexistent" }
+                }
+            }
+        };
+        errors = ConfigValidator.Validate(badType, reg);
+        AssertTrue("unknown type error", errors.Any(e => e.Message.Contains("unknown processor type")));
+
+        // Route to nonexistent processor
+        var badRoute = new Dictionary<string, object?>
+        {
+            ["flow"] = new Dictionary<string, object?>
+            {
+                ["processors"] = new Dictionary<string, object?>
+                {
+                    ["tagger"] = new Dictionary<string, object?> { ["type"] = "add-attribute" }
+                },
+                ["routes"] = new Dictionary<string, object?>
+                {
+                    ["bad-route"] = new Dictionary<string, object?> { ["destination"] = "missing", ["condition"] = new Dictionary<string, object?> { ["attribute"] = "x" } }
+                }
+            }
+        };
+        errors = ConfigValidator.Validate(badRoute, reg);
+        AssertTrue("bad route error", errors.Any(e => e.Message.Contains("not a defined processor")));
+    }
+
+    static void TestProvenance()
+    {
+        Console.WriteLine("--- Provenance ---");
+        var tag = new AddAttribute("env", "prod");
+        var q = new FlowQueue("prov", 100, 0, 30_000);
+        var outQ = new FlowQueue("out", 100, 0, 30_000);
+        var queues = new Dictionary<string, FlowQueue> { ["prov"] = q, ["out"] = outQ };
+        var engine = new RulesEngine();
+        engine.AddOrReplaceRuleset("flow", new List<RoutingRule>
+        {
+            new RoutingRule("to-out", "env", Operator.Exists, "", "out")
+        });
+        var dlq = new DLQ();
+        var session = new ProcessSession(q, tag, "tagger", engine, queues, dlq, 5, provenanceEnabled: true);
+
+        q.Offer(FlowFile.Create("test"u8, new() { ["type"] = "order" }));
+        session.Execute();
+
+        // Output FlowFile should have provenance attribute
+        var entry = outQ.Claim()!;
+        AssertTrue("provenance.last set", entry.FlowFile.Attributes.TryGetValue("provenance.last", out var last) && last == "tagger");
+        outQ.Ack(entry.Id);
     }
 
     static void TestScenarioVisibilityTimeout()

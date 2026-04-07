@@ -49,6 +49,7 @@ var configProvider = new ConfigProvider(config);
 configProvider.Enable();
 
 var loggingProvider = new LoggingProvider();
+loggingProvider.JsonOutput = GetConfigString(config, "logging.format", "text") == "json";
 loggingProvider.Enable();
 
 // Build global context
@@ -61,6 +62,16 @@ globalCtx.AddProvider(loggingProvider);
 var reg = new Registry();
 BuiltinProcessors.RegisterAll(reg);
 Console.WriteLine($"Registry loaded: {reg.List().Count} processor types");
+
+// Validate config before loading
+var validationErrors = ConfigValidator.Validate(config, reg);
+if (validationErrors.Count > 0)
+{
+    Console.Error.WriteLine("Config validation errors:");
+    foreach (var err in validationErrors)
+        Console.Error.WriteLine(err);
+    Console.Error.WriteLine("Continuing with valid processors...");
+}
 
 // Create fabric and load flow
 var fab = new ZincFlow.Fabric.Fabric(reg, globalCtx);
@@ -108,6 +119,10 @@ app.Map("/health", (RequestDelegate)httpSource.HandleHealth);
 
 var api = new ApiHandler(fab);
 api.MapRoutes(app);
+
+// Prometheus metrics
+var metrics = new MetricsHandler(fab);
+app.Map("/metrics", (RequestDelegate)metrics.HandleMetrics);
 
 // Periodic stats
 _ = Task.Run(async () =>

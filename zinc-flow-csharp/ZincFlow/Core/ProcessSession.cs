@@ -17,6 +17,7 @@ public sealed class ProcessSession
     private readonly Dictionary<string, FlowQueue> _destQueues;
     private readonly DLQ _dlq;
     private readonly int _maxRetries;
+    private readonly bool _provenanceEnabled;
 
     // Reusable destination list — never reallocated
     private readonly List<string> _destBuffer = new();
@@ -28,7 +29,8 @@ public sealed class ProcessSession
         RulesEngine engine,
         Dictionary<string, FlowQueue> destQueues,
         DLQ dlq,
-        int maxRetries)
+        int maxRetries,
+        bool provenanceEnabled = false)
     {
         _source = source;
         _processor = processor;
@@ -37,6 +39,7 @@ public sealed class ProcessSession
         _destQueues = destQueues;
         _dlq = dlq;
         _maxRetries = maxRetries;
+        _provenanceEnabled = provenanceEnabled;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -59,7 +62,9 @@ public sealed class ProcessSession
         if (result is SingleResult single)
         {
             var outFf = single.FlowFile;
-            SingleResult.Return(single); // return result wrapper to pool
+            if (_provenanceEnabled)
+                outFf = FlowFile.WithAttribute(outFf, "provenance.last", _processorName);
+            SingleResult.Return(single);
 
             if (RouteResult(outFf, entry))
             {
