@@ -259,6 +259,8 @@ public sealed class FlowQueue
         }
     }
 
+    public void StartWALCompaction(CancellationToken ct) => _wal?.StartPeriodicCompaction(ct);
+
     // --- WAL integration ---
 
     private static byte[] SerializeForWAL(FlowFile ff)

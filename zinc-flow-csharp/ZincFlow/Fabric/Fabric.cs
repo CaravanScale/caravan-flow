@@ -32,6 +32,8 @@ public sealed class Fabric
     private int _drainTimeoutSeconds = 60;
     private int _maxRetries = 5;
     private string _walDir = "";
+    private int _walMaxSizeMb = 100;
+    private int _walCompactIntervalMs = 60_000;
     private ProvenanceProvider? _provenance;
     private LoggingProvider? _log;
 
@@ -56,12 +58,14 @@ public sealed class Fabric
         // WAL config
         _walDir = GetStr(config, "defaults.wal.dir");
         if (string.IsNullOrEmpty(_walDir)) _walDir = "";
+        if (TryGetConfig<int>(config, "defaults.wal.max_size_mb", out var wsm)) _walMaxSizeMb = wsm;
+        if (TryGetConfig<int>(config, "defaults.wal.compact_interval_ms", out var wci)) _walCompactIntervalMs = wci;
 
         // Recreate ingest queue with WAL if configured
         if (_walDir != "")
         {
             Directory.CreateDirectory(_walDir);
-            var ingestWal = new QueueWAL(Path.Combine(_walDir, "ingest.wal"));
+            var ingestWal = new QueueWAL(Path.Combine(_walDir, "ingest.wal"), _walMaxSizeMb, _walCompactIntervalMs);
             _ingestQueue = new FlowQueue("ingest", _queueMaxCount, _queueMaxBytes, _visibilityTimeoutMs, ingestWal);
         }
 
@@ -102,7 +106,7 @@ public sealed class Fabric
                     _processorNames.Add(name);
                     _processorStates[name] = ComponentState.Enabled;
 
-                    QueueWAL? qWal = _walDir != "" ? new QueueWAL(Path.Combine(_walDir, $"{name}.wal")) : null;
+                    QueueWAL? qWal = _walDir != "" ? new QueueWAL(Path.Combine(_walDir, $"{name}.wal"), _walMaxSizeMb, _walCompactIntervalMs) : null;
                     var queue = new FlowQueue(name, _queueMaxCount, _queueMaxBytes, _visibilityTimeoutMs, qWal);
                     _queues[name] = queue;
 
@@ -162,11 +166,13 @@ public sealed class Fabric
         }
 
         _ingestQueue.StartReaper(_cts.Token);
+        _ingestQueue.StartWALCompaction(_cts.Token);
 
         // Processor loops
         foreach (var name in _processorNames)
         {
             _queues[name].StartReaper(_cts.Token);
+            _queues[name].StartWALCompaction(_cts.Token);
             var procName = name;
             _ = Task.Run(() => ProcessorLoop(procName), _cts.Token);
         }
@@ -413,7 +419,7 @@ public sealed class Fabric
         _processorStates[name] = ComponentState.Enabled;
         _processorRequires[name] = [];
 
-        QueueWAL? qWal = _walDir != "" ? new QueueWAL(Path.Combine(_walDir, $"{name}.wal")) : null;
+        QueueWAL? qWal = _walDir != "" ? new QueueWAL(Path.Combine(_walDir, $"{name}.wal"), _walMaxSizeMb, _walCompactIntervalMs) : null;
         var queue = new FlowQueue(name, _queueMaxCount, _queueMaxBytes, _visibilityTimeoutMs, qWal);
         _queues[name] = queue;
         var session = new ProcessSession(queue, proc, name, _engine, _queues, _dlq, _maxRetries, _provenance);
