@@ -53,36 +53,56 @@ public enum ComponentState { Disabled, Enabled, Draining }
 public sealed class AttributeMap
 {
     // Base layer: the original dictionary (shared, never copied)
-    private readonly Dictionary<string, string>? _base;
+    internal Dictionary<string, string>? _base;
     // Overlay chain: single key/value override on top of parent
-    private readonly AttributeMap? _parent;
-    private readonly string? _key;
-    private readonly string? _value;
-    private readonly int _count;
+    internal AttributeMap? _parent;
+    internal string? _key;
+    internal string? _value;
+    internal int _count;
 
-    // Construct from a dictionary (initial FlowFile creation)
-    public AttributeMap(Dictionary<string, string> baseAttrs)
+    public AttributeMap()
     {
-        _base = baseAttrs;
+        _base = null;
         _parent = null;
         _key = null;
         _value = null;
-        _count = baseAttrs.Count;
+        _count = 0;
     }
 
-    // Construct an overlay (WithAttribute — zero dict copy)
-    private AttributeMap(AttributeMap parent, string key, string value)
+    // Construct from a dictionary (initial FlowFile creation)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static AttributeMap FromDict(Dictionary<string, string> baseAttrs)
     {
-        _base = null;
-        _parent = parent;
-        _key = key;
-        _value = value;
-        // Count: parent count + 1 if new key, else same
-        _count = parent.ContainsKey(key) ? parent._count : parent._count + 1;
+        var map = Pool<AttributeMap>.Rent();
+        map._base = baseAttrs;
+        map._parent = null;
+        map._key = null;
+        map._value = null;
+        map._count = baseAttrs.Count;
+        return map;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public AttributeMap With(string key, string value) => new(this, key, value);
+    public static void Return(AttributeMap map)
+    {
+        map._base = null;
+        map._parent = null;
+        map._key = null;
+        map._value = null;
+        Pool<AttributeMap>.Return(map);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public AttributeMap With(string key, string value)
+    {
+        var overlay = Pool<AttributeMap>.Rent();
+        overlay._base = null;
+        overlay._parent = this;
+        overlay._key = key;
+        overlay._value = value;
+        overlay._count = this.ContainsKey(key) ? this._count : this._count + 1;
+        return overlay;
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool ContainsKey(string key)
@@ -211,7 +231,7 @@ public sealed class ClaimContent : Content
 
 public sealed class FlowFile
 {
-    public string Id;
+    public long NumericId;
     public AttributeMap Attributes;
     public Content Content;
     public long Timestamp;
@@ -220,17 +240,20 @@ public sealed class FlowFile
 
     public FlowFile()
     {
-        Id = "";
+        NumericId = 0;
         Attributes = null!;
         Content = null!;
         Timestamp = 0;
     }
 
+    // String ID for display/debugging only (not on hot path)
+    public string Id => $"ff-{NumericId}";
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static FlowFile Rent(string id, AttributeMap attributes, Content content, long timestamp)
+    public static FlowFile Rent(long id, AttributeMap attributes, Content content, long timestamp)
     {
         var ff = Pool<FlowFile>.Rent();
-        ff.Id = id;
+        ff.NumericId = id;
         ff.Attributes = attributes;
         ff.Content = content;
         ff.Timestamp = timestamp;
@@ -248,21 +271,19 @@ public sealed class FlowFile
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FlowFile Create(ReadOnlySpan<byte> data, Dictionary<string, string> attributes)
     {
-        var id = string.Create(null, stackalloc char[24], $"ff-{Interlocked.Increment(ref _idCounter)}");
-        return Rent(id, new AttributeMap(attributes), new Raw(data), Environment.TickCount64);
+        return Rent(Interlocked.Increment(ref _idCounter), AttributeMap.FromDict(attributes), new Raw(data), Environment.TickCount64);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FlowFile WithAttribute(FlowFile ff, string key, string value)
     {
-        // Zero-copy: overlay chain instead of Dictionary copy
-        return Rent(ff.Id, ff.Attributes.With(key, value), ff.Content, ff.Timestamp);
+        return Rent(ff.NumericId, ff.Attributes.With(key, value), ff.Content, ff.Timestamp);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FlowFile WithContent(FlowFile ff, Content content)
     {
-        return Rent(ff.Id, ff.Attributes, content, ff.Timestamp);
+        return Rent(ff.NumericId, ff.Attributes, content, ff.Timestamp);
     }
 }
 
@@ -315,7 +336,7 @@ public interface IProcessor
 
 public sealed class QueueEntry
 {
-    public string Id;
+    public long Id;
     public FlowFile FlowFile;
     public long ClaimedAt;
     public int AttemptCount;
@@ -323,7 +344,7 @@ public sealed class QueueEntry
 
     public QueueEntry()
     {
-        Id = "";
+        Id = 0;
         FlowFile = null!;
         ClaimedAt = 0;
         AttemptCount = 0;
@@ -331,7 +352,7 @@ public sealed class QueueEntry
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static QueueEntry Rent(string id, FlowFile flowFile, long claimedAt, int attemptCount, string sourceProcessor)
+    public static QueueEntry Rent(long id, FlowFile flowFile, long claimedAt, int attemptCount, string sourceProcessor)
     {
         var e = Pool<QueueEntry>.Rent();
         e.Id = id;

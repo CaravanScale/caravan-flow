@@ -5,7 +5,7 @@ namespace ZincFlow.Core;
 
 /// <summary>
 /// Transactional bounded queue with claim/ack/nack semantics.
-/// Hot paths use ArrayPool-backed storage and pooled QueueEntry objects.
+/// Hot paths use ArrayPool-backed storage, pooled QueueEntry objects, and numeric IDs.
 /// Head-index dequeue with amortized compaction.
 /// </summary>
 public sealed class FlowQueue
@@ -21,8 +21,8 @@ public sealed class FlowQueue
     private int _head;
     private int _tail;
 
-    // Claimed items waiting for ack/nack
-    private readonly Dictionary<string, QueueEntry> _invisible;
+    // Claimed items waiting for ack/nack — long key avoids string hashing
+    private readonly Dictionary<long, QueueEntry> _invisible;
 
     private readonly object _lock = new();
     private long _currentBytes;
@@ -39,7 +39,7 @@ public sealed class FlowQueue
         _itemsPooled = true;
         _head = 0;
         _tail = 0;
-        _invisible = new Dictionary<string, QueueEntry>();
+        _invisible = new Dictionary<long, QueueEntry>();
         _currentBytes = 0;
         _idCounter = 0;
     }
@@ -57,8 +57,7 @@ public sealed class FlowQueue
             if (_maxBytes > 0 && _currentBytes + ffBytes > _maxBytes)
                 return false;
 
-            var entryId = string.Create(null, stackalloc char[32], $"{Name}-{++_idCounter}");
-            var entry = QueueEntry.Rent(entryId, ff, 0, 0, "");
+            var entry = QueueEntry.Rent(++_idCounter, ff, 0, 0, "");
 
             EnsureCapacity();
             _items[_tail++] = entry;
@@ -80,8 +79,7 @@ public sealed class FlowQueue
             if (_maxBytes > 0 && _currentBytes + ffBytes > _maxBytes)
                 return false;
 
-            var entryId = string.Create(null, stackalloc char[32], $"{Name}-{++_idCounter}");
-            var entry = QueueEntry.Rent(entryId, ff, 0, 0, sourceProc);
+            var entry = QueueEntry.Rent(++_idCounter, ff, 0, 0, sourceProc);
 
             EnsureCapacity();
             _items[_tail++] = entry;
@@ -99,12 +97,12 @@ public sealed class FlowQueue
                 return null;
 
             var entry = _items[_head]!;
-            _items[_head] = null; // allow GC of slot
+            _items[_head] = null;
             _head++;
 
             MaybeCompact();
 
-            // Mutate in-place instead of allocating a new QueueEntry
+            // Mutate in-place — zero allocation
             entry.ClaimedAt = Environment.TickCount64;
             _invisible[entry.Id] = entry;
             return entry;
@@ -112,20 +110,20 @@ public sealed class FlowQueue
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void Ack(string entryId)
+    public void Ack(long entryId)
     {
         lock (_lock)
         {
             if (_invisible.Remove(entryId, out var entry))
             {
                 _currentBytes -= entry.FlowFile.Content.Size;
-                QueueEntry.Return(entry); // return to pool
+                QueueEntry.Return(entry);
             }
         }
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void Nack(string entryId)
+    public void Nack(long entryId)
     {
         lock (_lock)
         {
@@ -134,7 +132,7 @@ public sealed class FlowQueue
                 entry.ClaimedAt = 0;
                 entry.AttemptCount++;
                 EnsureCapacity();
-                _items[_tail++] = entry; // reuse same object
+                _items[_tail++] = entry;
             }
         }
     }
@@ -166,12 +164,12 @@ public sealed class FlowQueue
             if (_invisible.Count == 0) return;
 
             long now = Environment.TickCount64;
-            List<string>? expired = null;
+            List<long>? expired = null;
             foreach (var (id, entry) in _invisible)
             {
                 if (now - entry.ClaimedAt > _visibilityTimeoutMs)
                 {
-                    expired ??= new List<string>();
+                    expired ??= new List<long>();
                     expired.Add(id);
                 }
             }
@@ -223,7 +221,6 @@ public sealed class FlowQueue
             int liveCount = _tail - _head;
             if (_head > _items.Length / 4)
             {
-                // Compact in place
                 Array.Copy(_items, _head, _items, 0, liveCount);
                 Array.Clear(_items, liveCount, _head);
                 _tail = liveCount;
@@ -231,13 +228,11 @@ public sealed class FlowQueue
             }
             else
             {
-                // Grow: rent a bigger array from pool
                 int newSize = Math.Min(_items.Length * 2, _maxCount + 16);
                 if (newSize <= _items.Length) newSize = _items.Length + 256;
                 var newItems = ArrayPool<QueueEntry?>.Shared.Rent(newSize);
                 Array.Copy(_items, _head, newItems, 0, liveCount);
 
-                // Return old array to pool
                 Array.Clear(_items, 0, _tail);
                 if (_itemsPooled)
                     ArrayPool<QueueEntry?>.Shared.Return(_items, clearArray: false);

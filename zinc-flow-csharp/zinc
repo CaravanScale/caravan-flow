@@ -3,13 +3,14 @@
 # Reads zinc.toml, generates .csproj, delegates to dotnet.
 #
 # Usage:
-#   ./zinc build          Build in Release mode
-#   ./zinc run             Build + run
-#   ./zinc test            Run tests
-#   ./zinc publish         Native AOT publish (produces static binary)
-#   ./zinc clean           Remove build artifacts
-#   ./zinc csproj          Regenerate .csproj from zinc.toml (no build)
-#   ./zinc bench           Build + run benchmarks in Release mode
+#   ./zinc build          Native AOT build (default, produces static binary)
+#   ./zinc build --jit    JIT build only (fast, for dev iteration)
+#   ./zinc run            Build AOT + run
+#   ./zinc run --jit      JIT run (faster build, slower runtime)
+#   ./zinc test           Run tests
+#   ./zinc clean          Remove build artifacts
+#   ./zinc csproj         Regenerate .csproj from zinc.toml (no build)
+#   ./zinc bench          Alias for run
 
 set -euo pipefail
 
@@ -119,6 +120,21 @@ AOT_EOF
     echo "</Project>" >> "$CSPROJ"
 }
 
+# --- Detect RID ---
+
+detect_rid() {
+    local arch
+    arch="$(uname -m)"
+    case "$arch" in
+        x86_64)  echo "linux-x64" ;;
+        aarch64) echo "linux-arm64" ;;
+        arm*)    echo "linux-arm" ;;
+        *)       echo "linux-x64" ;;
+    esac
+}
+
+BINARY="$BUILD_DIR/ZincFlow"
+
 # --- Commands ---
 
 cmd_csproj() {
@@ -129,43 +145,48 @@ cmd_csproj() {
 cmd_build() {
     generate_csproj
     export PATH="$HOME/.dotnet:$PATH"
-    dotnet build "$PROJECT_DIR" -c Release
+
+    if [[ "${1:-}" == "--jit" ]]; then
+        echo "Building (JIT)..."
+        dotnet build "$PROJECT_DIR" -c Release
+    else
+        local rid="${1:-$(detect_rid)}"
+        mkdir -p "$BUILD_DIR"
+        echo "Building AOT binary for $rid..."
+        dotnet publish "$PROJECT_DIR" -c Release -r "$rid" -o "$BUILD_DIR" 2>&1
+
+        if [[ -f "$BINARY" ]]; then
+            local size
+            size=$(du -h "$BINARY" | cut -f1)
+            echo ""
+            echo "Binary: $BINARY ($size)"
+        fi
+    fi
 }
 
 cmd_run() {
-    generate_csproj
-    export PATH="$HOME/.dotnet:$PATH"
-    dotnet run --project "$PROJECT_DIR" -c Release
+    if [[ "${1:-}" == "--jit" ]]; then
+        generate_csproj
+        export PATH="$HOME/.dotnet:$PATH"
+        echo "Running (JIT)..."
+        dotnet run --project "$PROJECT_DIR" -c Release
+    else
+        # Build AOT if not already built
+        if [[ ! -f "$BINARY" ]]; then
+            cmd_build
+        fi
+        "$BINARY"
+    fi
 }
 
 cmd_bench() {
-    cmd_run
+    cmd_run "$@"
 }
 
 cmd_test() {
     generate_csproj
     export PATH="$HOME/.dotnet:$PATH"
     dotnet test "$PROJECT_DIR" -c Release
-}
-
-cmd_publish() {
-    generate_csproj
-    export PATH="$HOME/.dotnet:$PATH"
-
-    local rid="${1:-linux-x64}"
-    mkdir -p "$BUILD_DIR"
-
-    echo "Publishing AOT binary for $rid..."
-    dotnet publish "$PROJECT_DIR" -c Release -r "$rid" -o "$BUILD_DIR"
-
-    local binary="$BUILD_DIR/ZincFlow"
-    if [[ -f "$binary" ]]; then
-        local size
-        size=$(du -h "$binary" | cut -f1)
-        echo ""
-        echo "Binary: $binary ($size)"
-        file "$binary"
-    fi
 }
 
 cmd_clean() {
@@ -178,18 +199,19 @@ cmd_help() {
 zinc — build tool for zinc-flow-csharp
 
 Commands:
-  build       Build in Release mode
-  run         Build + run (benchmarks)
-  bench       Alias for run
-  publish     Native AOT publish (default: linux-x64)
-              ./zinc publish linux-arm64
-  test        Run tests
-  csproj      Regenerate .csproj from zinc.toml
-  clean       Remove build artifacts
-  help        Show this help
+  build            Native AOT build (default)
+  build --jit      JIT-only build (fast iteration)
+  build linux-arm64  Cross-compile AOT for target RID
+  run              Build AOT + run
+  run --jit        JIT run (faster build, slower runtime)
+  bench            Alias for run
+  test             Run tests
+  csproj           Regenerate .csproj from zinc.toml
+  clean            Remove build artifacts
+  help             Show this help
 
-Config:  zinc.toml
-Project: ZincFlow/ZincFlow.csproj (generated — do not edit)
+Config:  zinc.toml  →  ZincFlow/ZincFlow.csproj (generated)
+Output:  build/ZincFlow (1.4 MB AOT binary)
 HELP
 }
 
