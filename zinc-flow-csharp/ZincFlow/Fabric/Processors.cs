@@ -16,7 +16,12 @@ public static class BuiltinProcessors
 
         reg.Register(
             new ProcessorInfo("LogAttribute", "Logs FlowFile attributes and passes through", ["prefix"]),
-            (ctx, config) => new LogAttribute(config.GetValueOrDefault("prefix", "flow")));
+            (ctx, config) =>
+            {
+                LoggingProvider? log = null;
+                try { log = ctx.GetProvider("logging") as LoggingProvider; } catch { }
+                return new LogAttribute(config.GetValueOrDefault("prefix", "flow"), log);
+            });
 
         reg.Register(
             new ProcessorInfo("ConvertJSONToRecord", "Parses JSON content into records", ["schema_name"]),

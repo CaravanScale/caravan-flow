@@ -17,7 +17,7 @@ public sealed class Fabric
     private readonly Dictionary<string, ProcessSession> _sessions = new();
     private readonly Dictionary<string, ComponentState> _processorStates = new();
     private readonly Dictionary<string, List<string>> _processorRequires = new();
-    private readonly FlowQueue _ingestQueue;
+    private FlowQueue _ingestQueue;
     private readonly DLQ _dlq = new();
     private readonly Dictionary<string, IConnectorSource> _sources = new();
     private readonly CancellationTokenSource _cts = new();
@@ -31,12 +31,16 @@ public sealed class Fabric
     private long _visibilityTimeoutMs = 30_000;
     private int _drainTimeoutSeconds = 60;
     private int _maxRetries = 5;
+    private string _walDir = "";
+    private bool _provenanceEnabled = true;
+    private LoggingProvider? _log;
 
     public Fabric(Registry reg, ProcessorContext globalCtx)
     {
         _reg = reg;
         _globalCtx = globalCtx;
         _ingestQueue = new FlowQueue("ingest", _queueMaxCount, _queueMaxBytes, _visibilityTimeoutMs);
+        _log = globalCtx.GetProvider("logging") as LoggingProvider;
     }
 
     // --- Config loading ---
@@ -47,6 +51,19 @@ public sealed class Fabric
         if (TryGetConfig<int>(config, "defaults.backpressure.max_count", out var mc)) _queueMaxCount = mc;
         if (TryGetConfig<int>(config, "defaults.backpressure.max_retries", out var mr)) _maxRetries = mr;
         if (TryGetConfig<int>(config, "defaults.backpressure.drain_timeout", out var dt)) _drainTimeoutSeconds = dt;
+
+        // WAL + provenance config
+        _walDir = GetStr(config, "defaults.wal.dir");
+        if (string.IsNullOrEmpty(_walDir)) _walDir = "";
+        _provenanceEnabled = GetStr(config, "defaults.provenance") != "false";
+
+        // Recreate ingest queue with WAL if configured
+        if (_walDir != "")
+        {
+            Directory.CreateDirectory(_walDir);
+            var ingestWal = new QueueWAL(Path.Combine(_walDir, "ingest.wal"));
+            _ingestQueue = new FlowQueue("ingest", _queueMaxCount, _queueMaxBytes, _visibilityTimeoutMs, ingestWal);
+        }
 
         // Read processors
         var flowDict = AsStringDict(config.GetValueOrDefault("flow"));
@@ -85,7 +102,8 @@ public sealed class Fabric
                     _processorNames.Add(name);
                     _processorStates[name] = ComponentState.Enabled;
 
-                    var queue = new FlowQueue(name, _queueMaxCount, _queueMaxBytes, _visibilityTimeoutMs);
+                    QueueWAL? qWal = _walDir != "" ? new QueueWAL(Path.Combine(_walDir, $"{name}.wal")) : null;
+                    var queue = new FlowQueue(name, _queueMaxCount, _queueMaxBytes, _visibilityTimeoutMs, qWal);
                     _queues[name] = queue;
 
                     Console.WriteLine($"[fabric] processor created: {name} (type={typeName})");
@@ -122,7 +140,7 @@ public sealed class Fabric
         // Create sessions
         foreach (var name in _processorNames)
         {
-            var session = new ProcessSession(_queues[name], _procs[name], name, _engine, _queues, _dlq, _maxRetries);
+            var session = new ProcessSession(_queues[name], _procs[name], name, _engine, _queues, _dlq, _maxRetries, _provenanceEnabled);
             _sessions[name] = session;
         }
     }
@@ -132,6 +150,17 @@ public sealed class Fabric
     public void StartAsync()
     {
         _running = true;
+
+        // Replay WAL for all queues before processing begins
+        int totalRestored = _ingestQueue.ReplayWAL();
+        foreach (var (name, queue) in _queues)
+            totalRestored += queue.ReplayWAL();
+        if (totalRestored > 0)
+        {
+            _log?.Log("INFO", "fabric", $"WAL replay: restored {totalRestored} entries");
+            Console.WriteLine($"[fabric] WAL replay: restored {totalRestored} entries");
+        }
+
         _ingestQueue.StartReaper(_cts.Token);
 
         // Processor loops
@@ -153,6 +182,7 @@ public sealed class Fabric
             Console.WriteLine($"[fabric] source started: {name} (type={source.SourceType})");
         }
 
+        _log?.Log("INFO", "fabric", $"started: {_processorNames.Count} processors, {_sources.Count} sources");
         Console.WriteLine($"[fabric] started ({_processorNames.Count} processors, {_sources.Count} sources)");
     }
 
@@ -189,9 +219,10 @@ public sealed class Fabric
             _engine.GetDestinations(entry.FlowFile.Attributes, destBuffer);
             if (destBuffer.Count == 0)
             {
+                _log?.Log("WARN", "fabric", $"no routes matched for ff-{entry.FlowFile.NumericId}, dropping");
                 var ff = entry.FlowFile;
-                _ingestQueue.Ack(entry.Id); // returns QueueEntry to pool
-                FlowFile.Return(ff);        // return FlowFile to pool (no destinations)
+                _ingestQueue.Ack(entry.Id);
+                FlowFile.Return(ff);
                 continue;
             }
 
@@ -381,9 +412,10 @@ public sealed class Fabric
         _processorStates[name] = ComponentState.Enabled;
         _processorRequires[name] = [];
 
-        var queue = new FlowQueue(name, _queueMaxCount, _queueMaxBytes, _visibilityTimeoutMs);
+        QueueWAL? qWal = _walDir != "" ? new QueueWAL(Path.Combine(_walDir, $"{name}.wal")) : null;
+        var queue = new FlowQueue(name, _queueMaxCount, _queueMaxBytes, _visibilityTimeoutMs, qWal);
         _queues[name] = queue;
-        var session = new ProcessSession(queue, proc, name, _engine, _queues, _dlq, _maxRetries);
+        var session = new ProcessSession(queue, proc, name, _engine, _queues, _dlq, _maxRetries, _provenanceEnabled);
         _sessions[name] = session;
 
         if (_running)

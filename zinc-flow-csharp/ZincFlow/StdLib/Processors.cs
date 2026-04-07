@@ -23,11 +23,38 @@ public sealed class UpdateAttribute : IProcessor
 public sealed class LogAttribute : IProcessor
 {
     private readonly string _prefix;
+    private readonly LoggingProvider? _log;
 
-    public LogAttribute(string prefix) => _prefix = prefix;
+    public LogAttribute(string prefix, LoggingProvider? log = null)
+    {
+        _prefix = prefix;
+        _log = log;
+    }
 
     public ProcessorResult Process(FlowFile ff)
     {
+        if (_log is not null)
+        {
+            var extras = new Dictionary<string, string> { ["ff"] = $"ff-{ff.NumericId}", ["size"] = ff.Content.Size.ToString() };
+            // Walk attributes for logging
+            var current = ff.Attributes;
+            while (current is not null)
+            {
+                if (current._key is not null)
+                {
+                    extras[current._key] = current._value!;
+                    current = current._parent;
+                }
+                else
+                {
+                    if (current._base is not null)
+                        foreach (var (k, v) in current._base)
+                            extras[k] = v;
+                    break;
+                }
+            }
+            _log.Log("INFO", _prefix, $"ff-{ff.NumericId}", extras);
+        }
         return SingleResult.Rent(ff);
     }
 }

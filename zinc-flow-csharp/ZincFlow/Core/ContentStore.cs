@@ -102,6 +102,9 @@ public sealed class MemoryContentStore : IContentStore
 
 public sealed class ContentStoreCleanup
 {
+    /// <summary>Global instance, set at startup. Used by ClaimContent.Release and MaybeOffload.</summary>
+    public static ContentStoreCleanup? Instance { get; set; }
+
     private readonly FileContentStore _store;
     private readonly string _baseDir;
     private readonly HashSet<string> _activeClaims = new();
@@ -181,6 +184,7 @@ public static class ContentHelpers
         if (data.Length > ClaimThreshold)
         {
             var claimId = store.Store(data);
+            ContentStoreCleanup.Instance?.TrackClaim(claimId);
             return new ClaimContent(claimId, data.Length);
         }
         return Raw.Rent(data);

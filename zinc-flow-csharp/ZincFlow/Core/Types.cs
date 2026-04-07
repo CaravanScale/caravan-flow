@@ -288,6 +288,13 @@ public sealed class ClaimContent : Content
         ClaimId = claimId;
         Size = size;
     }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal override void Release()
+    {
+        if (--_refCount == 0)
+            ContentStoreCleanup.Instance?.ReleaseClaim(ClaimId);
+    }
 }
 
 // --- FlowFile (pooled) ---

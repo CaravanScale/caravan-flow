@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Runtime.CompilerServices;
+using ZincFlow.Fabric;
 
 namespace ZincFlow.Core;
 
@@ -28,12 +29,16 @@ public sealed class FlowQueue
     private long _currentBytes;
     private long _idCounter;
 
-    public FlowQueue(string name, int maxCount, long maxBytes, long visibilityTimeoutMs)
+    // Optional WAL for persistence
+    private readonly QueueWAL? _wal;
+
+    public FlowQueue(string name, int maxCount, long maxBytes, long visibilityTimeoutMs, QueueWAL? wal = null)
     {
         Name = name;
         _maxCount = maxCount;
         _maxBytes = maxBytes;
         _visibilityTimeoutMs = visibilityTimeoutMs;
+        _wal = wal;
         int initialSize = Math.Min(maxCount, 1024);
         _items = ArrayPool<QueueEntry?>.Shared.Rent(initialSize);
         _itemsPooled = true;
@@ -62,6 +67,10 @@ public sealed class FlowQueue
             EnsureCapacity();
             _items[_tail++] = entry;
             _currentBytes += ffBytes;
+
+            if (_wal is not null)
+                _wal.AppendOffer(entry.Id, SerializeForWAL(ff));
+
             return true;
         }
     }
@@ -84,6 +93,10 @@ public sealed class FlowQueue
             EnsureCapacity();
             _items[_tail++] = entry;
             _currentBytes += ffBytes;
+
+            if (_wal is not null)
+                _wal.AppendOffer(entry.Id, SerializeForWAL(ff));
+
             return true;
         }
     }
@@ -117,6 +130,7 @@ public sealed class FlowQueue
             if (_invisible.Remove(entryId, out var entry))
             {
                 _currentBytes -= entry.FlowFile.Content.Size;
+                _wal?.AppendAck(entryId);
                 QueueEntry.Return(entry);
             }
         }
@@ -243,5 +257,51 @@ public sealed class FlowQueue
                 _head = 0;
             }
         }
+    }
+
+    // --- WAL integration ---
+
+    private static byte[] SerializeForWAL(FlowFile ff)
+    {
+        byte[] contentBytes;
+        if (ff.Content is Raw raw)
+            contentBytes = raw.Data.ToArray();
+        else if (ff.Content is ClaimContent claim)
+            contentBytes = System.Text.Encoding.UTF8.GetBytes($"claim:{claim.ClaimId}:{claim.Size}");
+        else
+            contentBytes = [];
+        return FlowFileV3.Pack(ff, contentBytes);
+    }
+
+    /// <summary>
+    /// Replay WAL entries into the queue. Called once at startup before processing begins.
+    /// </summary>
+    public int ReplayWAL()
+    {
+        if (_wal is null) return 0;
+        _wal.Open();
+        var liveEntries = _wal.Replay();
+        if (liveEntries.Count == 0) return 0;
+
+        int restored = 0;
+        foreach (var (id, v3Payload) in liveEntries)
+        {
+            var (ff, _, error) = FlowFileV3.Unpack(v3Payload, 0);
+            if (ff is null || error != "") continue;
+
+            // Offer directly without re-writing to WAL
+            lock (_lock)
+            {
+                var entry = QueueEntry.Rent(++_idCounter, ff, 0, 0, "");
+                EnsureCapacity();
+                _items[_tail++] = entry;
+                _currentBytes += ff.Content.Size;
+                restored++;
+            }
+        }
+
+        // Compact WAL after replay to remove acked entries
+        _wal.Compact(liveEntries);
+        return restored;
     }
 }

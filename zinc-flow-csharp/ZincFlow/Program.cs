@@ -43,6 +43,8 @@ else
 // Create providers
 var contentDir = GetConfigString(config, "content.dir", "/tmp/zinc-flow-csharp/content");
 var store = new FileContentStore(contentDir);
+var cleanup = new ContentStoreCleanup(store, contentDir);
+ContentStoreCleanup.Instance = cleanup;
 var contentProvider = new ContentProvider("content", store);
 contentProvider.Enable();
 
@@ -131,6 +133,10 @@ _ = Task.Run(async () =>
         fab.Status();
     }
 });
+
+// Content store cleanup — sweep orphaned claims every 5 minutes
+var appCts = new CancellationTokenSource();
+cleanup.StartPeriodicSweep(300_000, appCts.Token);
 
 Console.WriteLine($"Listening on port {port}");
 
