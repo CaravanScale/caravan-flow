@@ -64,10 +64,11 @@ Make zinc-flow useful for real workloads without requiring NATS or K8s. A single
 - [x] Health checks with connector status
 - [x] /api/flow endpoint returns full DAG with queue depths (dashboard-ready)
 
-### Phase 2c: Hardening — don't break in production
+### Phase 2c: Hardening — don't break in production ✓ (C#)
 - [x] Config validation at startup (missing processors, broken routes, unknown types)
-- [ ] Content store cleanup — periodic sweep of orphaned claims
-- [ ] Queue persistence — optional WAL for crash recovery (bounded file, not a database)
+- [x] Content store cleanup — periodic sweep, ref-counted claim lifecycle, configurable threshold + interval
+- [x] Queue persistence — WAL with replay, periodic compaction, max size, configurable
+- [x] Max-hop cycle protection — runtime detection for routing loops (default 50, configurable)
 
 ### Phase 2d: Developer experience
 - [ ] `zinc-flow init` scaffolding — generate project with config, sample processors
