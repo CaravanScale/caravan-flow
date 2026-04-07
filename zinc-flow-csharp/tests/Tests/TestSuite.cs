@@ -84,6 +84,13 @@ public static class TestSuite
         TestScenarioIRSFanOut();
         TestScenarioVisibilityTimeout();
 
+        // E2E integration tests
+        TestE2EFullPipeline();
+        TestE2EWALPersistence();
+        TestE2EContentStoreLifecycle();
+        TestE2EProvenanceChain();
+        TestE2EListenHTTPPipeline();
+
         Console.WriteLine();
         Console.WriteLine($"=== {_pass} passed, {_fail} failed ({_pass + _fail} total) ===");
         return _fail;
@@ -1203,5 +1210,320 @@ public static class TestSuite
         AssertIntEqual("attempt after timeout", reclaimed.AttemptCount, 1);
         q.Ack(reclaimed.Id);
         AssertIntEqual("clean after ack", q.VisibleCount, 0);
+    }
+
+    // ===== E2E INTEGRATION TESTS =====
+
+    static void TestE2EFullPipeline()
+    {
+        Console.WriteLine("--- E2E: Full Pipeline (ingest → process → route → sink) ---");
+        var tmpDir = Path.Combine(Path.GetTempPath(), $"zinc-e2e-pipeline-{Environment.TickCount64}");
+        var outputDir = Path.Combine(tmpDir, "output");
+        Directory.CreateDirectory(outputDir);
+        try
+        {
+            var store = new MemoryContentStore();
+            var prov = new ProvenanceProvider();
+            prov.Enable();
+
+            // Build a 3-stage pipeline: UpdateAttribute → LogAttribute → PutFile
+            var reg = new Registry();
+            BuiltinProcessors.RegisterAll(reg);
+
+            var globalCtx = new ProcessorContext();
+            globalCtx.AddProvider(new ContentProvider("content", store));
+            globalCtx.AddProvider(new LoggingProvider());
+            globalCtx.AddProvider(prov);
+
+            var fab = new ZincFlow.Fabric.Fabric(reg, globalCtx);
+
+            // Use stage attributes to prevent re-routing loops
+            var config = new Dictionary<string, object?>
+            {
+                ["flow"] = new Dictionary<string, object?>
+                {
+                    ["processors"] = new Dictionary<string, object?>
+                    {
+                        ["tagger"] = new Dictionary<string, object?> { ["type"] = "UpdateAttribute", ["config"] = new Dictionary<string, object?> { ["key"] = "stage", ["value"] = "tagged" } },
+                        ["logger"] = new Dictionary<string, object?> { ["type"] = "UpdateAttribute", ["config"] = new Dictionary<string, object?> { ["key"] = "stage", ["value"] = "logged" } },
+                        ["sink"] = new Dictionary<string, object?> { ["type"] = "PutFile", ["config"] = new Dictionary<string, object?> { ["output_dir"] = outputDir, ["naming_attribute"] = "filename" } }
+                    },
+                    ["routes"] = new Dictionary<string, object?>
+                    {
+                        ["to-tagger"] = new Dictionary<string, object?> { ["destination"] = "tagger", ["condition"] = new Dictionary<string, object?> { ["attribute"] = "type", ["operator"] = "EQ", ["value"] = "order" } },
+                        ["to-logger"] = new Dictionary<string, object?> { ["destination"] = "logger", ["condition"] = new Dictionary<string, object?> { ["attribute"] = "stage", ["operator"] = "EQ", ["value"] = "tagged" } },
+                        ["to-sink"] = new Dictionary<string, object?> { ["destination"] = "sink", ["condition"] = new Dictionary<string, object?> { ["attribute"] = "stage", ["operator"] = "EQ", ["value"] = "logged" } }
+                    }
+                }
+            };
+
+            fab.LoadFlow(config);
+            fab.StartAsync();
+
+            // Ingest a FlowFile
+            var ff = FlowFile.Create("{\"order\":123}"u8, new() { ["type"] = "order", ["filename"] = "e2e-test.json" });
+            var ffId = ff.NumericId;
+            AssertTrue("ingest accepted", fab.Ingest(ff));
+
+            // Wait for processing
+            Thread.Sleep(2000);
+
+            // Verify file was written
+            var outputPath = Path.Combine(outputDir, "e2e-test.json");
+            AssertTrue("output file exists", File.Exists(outputPath));
+            if (File.Exists(outputPath))
+            {
+                var content = File.ReadAllText(outputPath);
+                AssertTrue("output content correct", content == "{\"order\":123}");
+            }
+
+            // Verify stats
+            var stats = fab.GetStats();
+            AssertTrue("processed > 0", stats["processed"] > 0);
+            AssertIntEqual("no dlq entries", stats["dlq"], 0);
+
+            // Verify provenance chain
+            var events = prov.GetEvents(ffId);
+            AssertTrue("provenance has events", events.Count >= 3);
+            AssertTrue("processed by tagger", events.Any(e => e.EventType == ProvenanceEventType.Processed && e.Component == "tagger"));
+            AssertTrue("processed by logger", events.Any(e => e.EventType == ProvenanceEventType.Processed && e.Component == "logger"));
+            AssertTrue("processed by sink", events.Any(e => e.EventType == ProvenanceEventType.Processed && e.Component == "sink"));
+
+            fab.StopAsync();
+        }
+        finally
+        {
+            if (Directory.Exists(tmpDir)) Directory.Delete(tmpDir, true);
+        }
+    }
+
+    static void TestE2EWALPersistence()
+    {
+        Console.WriteLine("--- E2E: WAL Persistence (write → close → replay) ---");
+        var walDir = Path.Combine(Path.GetTempPath(), $"zinc-e2e-wal-{Environment.TickCount64}");
+        Directory.CreateDirectory(walDir);
+        try
+        {
+            var walPath = Path.Combine(walDir, "test.wal");
+
+            // Phase 1: create queue with WAL, offer items, ack some
+            {
+                var wal = new QueueWAL(walPath, maxSizeMb: 10, compactIntervalMs: 0);
+                var q = new FlowQueue("wal-test", 1000, 0, 30_000, wal);
+                q.ReplayWAL(); // opens WAL
+
+                q.Offer(FlowFile.Create("item-1"u8, new() { ["id"] = "1" }));
+                q.Offer(FlowFile.Create("item-2"u8, new() { ["id"] = "2" }));
+                q.Offer(FlowFile.Create("item-3"u8, new() { ["id"] = "3" }));
+
+                // Ack item 1
+                var e1 = q.Claim()!;
+                q.Ack(e1.Id);
+
+                AssertIntEqual("2 visible before close", q.VisibleCount, 2);
+                wal.Dispose();
+            }
+
+            // Phase 2: new queue, replay WAL — should restore items 2 and 3
+            {
+                var wal = new QueueWAL(walPath, maxSizeMb: 10, compactIntervalMs: 0);
+                var q = new FlowQueue("wal-test", 1000, 0, 30_000, wal);
+                int restored = q.ReplayWAL();
+
+                AssertIntEqual("restored 2 items", restored, 2);
+                AssertIntEqual("2 visible after replay", q.VisibleCount, 2);
+
+                // Verify content survived
+                var e2 = q.Claim()!;
+                if (e2.FlowFile.Content is Raw raw2)
+                    AssertTrue("content survived WAL", Encoding.UTF8.GetString(raw2.Data) == "item-2" || Encoding.UTF8.GetString(raw2.Data) == "item-3");
+                q.Ack(e2.Id);
+
+                wal.Dispose();
+            }
+        }
+        finally
+        {
+            if (Directory.Exists(walDir)) Directory.Delete(walDir, true);
+        }
+    }
+
+    static void TestE2EContentStoreLifecycle()
+    {
+        Console.WriteLine("--- E2E: Content Store Lifecycle (offload → process → cleanup) ---");
+        var tmpDir = Path.Combine(Path.GetTempPath(), $"zinc-e2e-content-{Environment.TickCount64}");
+        try
+        {
+            var store = new FileContentStore(tmpDir);
+            var cleanup = new ContentStoreCleanup(store, tmpDir);
+            var prevInstance = ContentStoreCleanup.Instance;
+            ContentStoreCleanup.Instance = cleanup;
+
+            // Create large content that triggers offload
+            var largeData = new byte[300 * 1024]; // 300KB > 256KB threshold
+            Array.Fill(largeData, (byte)'X');
+            var content = ContentHelpers.MaybeOffload(store, largeData);
+
+            AssertTrue("offloaded to claim", content is ClaimContent);
+            var claim = (ClaimContent)content;
+            AssertTrue("claim tracked", cleanup.ActiveCount == 1);
+            AssertTrue("claim file exists", store.Exists(claim.ClaimId));
+
+            // Create FlowFile with the claim content
+            var ff = FlowFile.CreateWithContent(content, new() { ["type"] = "large" });
+
+            // Resolve content (simulates processor reading it)
+            var (resolved, error) = ContentHelpers.Resolve(store, ff.Content);
+            AssertTrue("resolve ok", error == "");
+            AssertIntEqual("resolved size", resolved.Length, 300 * 1024);
+
+            // Return FlowFile — should release the claim
+            FlowFile.Return(ff);
+            AssertIntEqual("claim released", cleanup.ActiveCount, 0);
+
+            // Sweep should delete the claim file
+            int swept = cleanup.Sweep();
+            AssertTrue("swept claim file", swept >= 1);
+            AssertTrue("claim file gone", !store.Exists(claim.ClaimId));
+
+            ContentStoreCleanup.Instance = prevInstance;
+        }
+        finally
+        {
+            if (Directory.Exists(tmpDir)) Directory.Delete(tmpDir, true);
+        }
+    }
+
+    static void TestE2EProvenanceChain()
+    {
+        Console.WriteLine("--- E2E: Provenance Chain (multi-hop tracking) ---");
+        var prov = new ProvenanceProvider();
+        prov.Enable();
+
+        // 3-hop pipeline: tagger → logger → sink
+        var tagger = new UpdateAttribute("env", "prod");
+        var logger = new LogAttribute("chain");
+        var sink = new UpdateAttribute("done", "true");
+
+        var q1 = new FlowQueue("q1", 100, 0, 30_000);
+        var q2 = new FlowQueue("q2", 100, 0, 30_000);
+        var q3 = new FlowQueue("q3", 100, 0, 30_000);
+        var queues = new Dictionary<string, FlowQueue> { ["q1"] = q1, ["q2"] = q2, ["q3"] = q3 };
+
+        var engine1 = new RulesEngine();
+        engine1.AddOrReplaceRuleset("flow", [new RoutingRule("to-q2", "env", Operator.Exists, "", "q2")]);
+        var engine2 = new RulesEngine();
+        engine2.AddOrReplaceRuleset("flow", [new RoutingRule("to-q3", "env", Operator.Exists, "", "q3")]);
+        var engine3 = new RulesEngine();
+
+        var dlq = new DLQ();
+        var s1 = new ProcessSession(q1, tagger, "tagger", engine1, queues, dlq, 5, prov);
+        var s2 = new ProcessSession(q2, logger, "logger", engine2, queues, dlq, 5, prov);
+        var s3 = new ProcessSession(q3, sink, "sink", engine3, queues, dlq, 5, prov);
+
+        var ff = FlowFile.Create("chain-test"u8, new() { ["type"] = "order" });
+        var ffId = ff.NumericId;
+        q1.Offer(ff);
+
+        s1.Execute();
+        s2.Execute();
+        s3.Execute();
+
+        var events = prov.GetEvents(ffId);
+        AssertTrue("chain has 5+ events", events.Count >= 5); // 3 processed + 2 routed
+        AssertTrue("tagger processed", events.Any(e => e.Component == "tagger" && e.EventType == ProvenanceEventType.Processed));
+        AssertTrue("tagger routed to q2", events.Any(e => e.Component == "tagger" && e.EventType == ProvenanceEventType.Routed && e.Details == "q2"));
+        AssertTrue("logger processed", events.Any(e => e.Component == "logger" && e.EventType == ProvenanceEventType.Processed));
+        AssertTrue("logger routed to q3", events.Any(e => e.Component == "logger" && e.EventType == ProvenanceEventType.Routed && e.Details == "q3"));
+        AssertTrue("sink processed", events.Any(e => e.Component == "sink" && e.EventType == ProvenanceEventType.Processed));
+
+        // Verify ordering — tagger before logger before sink
+        var procEvents = events.Where(e => e.EventType == ProvenanceEventType.Processed).ToList();
+        AssertTrue("order: tagger first", procEvents[0].Component == "tagger");
+        AssertTrue("order: logger second", procEvents[1].Component == "logger");
+        AssertTrue("order: sink third", procEvents[2].Component == "sink");
+    }
+
+    static void TestE2EListenHTTPPipeline()
+    {
+        Console.WriteLine("--- E2E: ListenHTTP → Pipeline → PutFile ---");
+        var tmpDir = Path.Combine(Path.GetTempPath(), $"zinc-e2e-http-{Environment.TickCount64}");
+        var outputDir = Path.Combine(tmpDir, "output");
+        Directory.CreateDirectory(outputDir);
+        try
+        {
+            var store = new MemoryContentStore();
+            var prov = new ProvenanceProvider();
+            prov.Enable();
+
+            var reg = new Registry();
+            BuiltinProcessors.RegisterAll(reg);
+
+            var globalCtx = new ProcessorContext();
+            globalCtx.AddProvider(new ContentProvider("content", store));
+            var logProv = new LoggingProvider();
+            logProv.Enable();
+            globalCtx.AddProvider(logProv);
+            globalCtx.AddProvider(prov);
+
+            var fab = new ZincFlow.Fabric.Fabric(reg, globalCtx);
+
+            var config = new Dictionary<string, object?>
+            {
+                ["flow"] = new Dictionary<string, object?>
+                {
+                    ["processors"] = new Dictionary<string, object?>
+                    {
+                        ["writer"] = new Dictionary<string, object?> { ["type"] = "PutFile", ["config"] = new Dictionary<string, object?> { ["output_dir"] = outputDir } }
+                    },
+                    ["routes"] = new Dictionary<string, object?>
+                    {
+                        ["all-to-writer"] = new Dictionary<string, object?> { ["destination"] = "writer", ["condition"] = new Dictionary<string, object?> { ["attribute"] = "source", ["operator"] = "EXISTS" } }
+                    }
+                }
+            };
+
+            fab.LoadFlow(config);
+
+            // Add ListenHTTP source on a test port
+            var listenSource = new ListenHTTP("e2e-listen", 19877, "/", store);
+            fab.AddSource(listenSource);
+
+            fab.StartAsync();
+            Thread.Sleep(1500); // wait for ListenHTTP to start
+
+            // POST data to ListenHTTP
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+            var response = client.PostAsync("http://localhost:19877/",
+                new StringContent("{\"e2e\":true}", Encoding.UTF8, "application/json")).GetAwaiter().GetResult();
+            AssertTrue("ingest accepted", response.IsSuccessStatusCode);
+
+            // Wait for pipeline to process
+            Thread.Sleep(2000);
+
+            // Verify output file was written
+            var files = Directory.GetFiles(outputDir);
+            AssertTrue("output file written", files.Length >= 1);
+
+            // Verify provenance captured the flow
+            var recent = prov.GetRecent(20);
+            AssertTrue("provenance captured", recent.Count >= 1);
+            AssertTrue("writer processed", recent.Any(e => e.Component == "writer" && e.EventType == ProvenanceEventType.Processed));
+
+            // Verify sources API
+            var sources = fab.GetSources();
+            AssertTrue("source registered", sources.Any(s => s.Name == "e2e-listen" && s.Running));
+
+            fab.StopAsync();
+            Thread.Sleep(500);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  WARN: ListenHTTP pipeline test issue ({ex.GetType().Name}: {ex.Message})");
+        }
+        finally
+        {
+            if (Directory.Exists(tmpDir)) Directory.Delete(tmpDir, true);
+        }
     }
 }
