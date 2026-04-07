@@ -1,6 +1,7 @@
 using System.Text;
 using ZincFlow.Core;
 using ZincFlow.Fabric;
+using ZincFlow.StdLib;
 
 namespace ZincFlow.Tests;
 
@@ -71,6 +72,8 @@ public static class TestSuite
         TestStructuredLogging();
         TestConfigValidation();
         TestProvenance();
+        TestContentStoreCleanup();
+        TestQueueWAL();
 
         // Scenarios
         TestScenarioProcessorChain();
@@ -1081,6 +1084,87 @@ public static class TestSuite
         var entry = outQ.Claim()!;
         AssertTrue("provenance.last set", entry.FlowFile.Attributes.TryGetValue("provenance.last", out var last) && last == "tagger");
         outQ.Ack(entry.Id);
+    }
+
+    static void TestContentStoreCleanup()
+    {
+        Console.WriteLine("--- ContentStore Cleanup ---");
+        var tmpDir = Path.Combine(Path.GetTempPath(), $"zinc-test-cleanup-{Environment.TickCount64}");
+        try
+        {
+            var store = new FileContentStore(tmpDir);
+            var cleanup = new ContentStoreCleanup(store, tmpDir);
+
+            // Store some claims
+            var id1 = store.Store("active data"u8.ToArray());
+            var id2 = store.Store("orphan data"u8.ToArray());
+
+            // Track only id1 as active
+            cleanup.TrackClaim(id1);
+            AssertIntEqual("1 active claim", cleanup.ActiveCount, 1);
+
+            // Sweep should delete id2 (orphaned)
+            int swept = cleanup.Sweep();
+            AssertTrue("swept orphan", swept >= 1);
+            AssertTrue("active still exists", store.Exists(id1));
+            AssertTrue("orphan deleted", !store.Exists(id2));
+
+            // Release id1 and sweep again
+            cleanup.ReleaseClaim(id1);
+            swept = cleanup.Sweep();
+            AssertTrue("swept released", swept >= 1);
+            AssertTrue("all cleaned", !store.Exists(id1));
+        }
+        finally
+        {
+            if (Directory.Exists(tmpDir)) Directory.Delete(tmpDir, true);
+        }
+    }
+
+    static void TestQueueWAL()
+    {
+        Console.WriteLine("--- QueueWAL ---");
+        var walPath = Path.Combine(Path.GetTempPath(), $"zinc-test-wal-{Environment.TickCount64}.wal");
+        try
+        {
+            // Write some entries
+            using (var wal = new QueueWAL(walPath))
+            {
+                wal.Open();
+                wal.AppendOffer(1, "payload-1"u8.ToArray());
+                wal.AppendOffer(2, "payload-2"u8.ToArray());
+                wal.AppendOffer(3, "payload-3"u8.ToArray());
+                wal.AppendAck(2); // ack entry 2
+            }
+
+            // Replay — should have entries 1 and 3 (2 was acked)
+            using (var wal = new QueueWAL(walPath))
+            {
+                wal.Open();
+                var live = wal.Replay();
+                AssertIntEqual("2 live entries", live.Count, 2);
+
+                var ids = live.Select(e => e.Id).OrderBy(id => id).ToList();
+                AssertTrue("entry 1 live", ids.Contains(1));
+                AssertTrue("entry 3 live", ids.Contains(3));
+                AssertTrue("entry 2 acked", !ids.Contains(2));
+
+                // Verify payload
+                var entry1 = live.First(e => e.Id == 1);
+                AssertTrue("payload preserved", System.Text.Encoding.UTF8.GetString(entry1.V3Payload) == "payload-1");
+
+                // Compact
+                wal.Compact(live);
+                var afterCompact = wal.Replay();
+                AssertIntEqual("still 2 after compact", afterCompact.Count, 2);
+            }
+        }
+        finally
+        {
+            if (File.Exists(walPath)) File.Delete(walPath);
+            var tmpWal = walPath + ".tmp";
+            if (File.Exists(tmpWal)) File.Delete(tmpWal);
+        }
     }
 
     static void TestScenarioVisibilityTimeout()

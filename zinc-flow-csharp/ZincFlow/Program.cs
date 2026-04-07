@@ -5,6 +5,7 @@ using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
 using ZincFlow.Core;
 using ZincFlow.Fabric;
+using ZincFlow.StdLib;
 
 // --- Mode selection ---
 var mode = args.Length > 0 ? args[0] : "serve";

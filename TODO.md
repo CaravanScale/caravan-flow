@@ -50,9 +50,8 @@ Make zinc-flow useful for real workloads without requiring NATS or K8s. A single
 
 ### Phase 2a: Connectors — get data in and out ✓ (C#)
 - [x] ConnectorSource interface (start/stop/isRunning lifecycle)
-- [x] Refactor HttpSource to implement ConnectorSource
+- [x] Refactor HttpSource → ListenHTTP (standalone server on dedicated port)
 - [x] PutHTTP processor — POST flowfiles to downstream HTTP endpoints
-- [ ] GetHTTP source — poll an HTTP endpoint on a schedule
 - [x] PutFile processor — write to disk with configurable naming (attribute/counter/prefix/suffix)
 - [x] GetFile source — watch a directory, ingest new files, move to .processed
 - [x] PutStdout processor — write to stdout (text/hex/attrs format)
@@ -65,12 +64,10 @@ Make zinc-flow useful for real workloads without requiring NATS or K8s. A single
 - [x] Health checks with connector status
 - [x] /api/flow endpoint returns full DAG with queue depths (dashboard-ready)
 
-### Phase 2c: Hardening — don't break in production (partial)
-- [ ] Retry policies per processor (max retries, backoff strategy)
-- [ ] Circuit breaker — stop routing after N consecutive failures, auto-recover
+### Phase 2c: Hardening — don't break in production
+- [x] Config validation at startup (missing processors, broken routes, unknown types)
 - [ ] Content store cleanup — periodic sweep of orphaned claims
 - [ ] Queue persistence — optional WAL for crash recovery (bounded file, not a database)
-- [x] Config validation at startup (missing processors, broken routes, unknown types)
 
 ### Phase 2d: Developer experience
 - [ ] `zinc-flow init` scaffolding — generate project with config, sample processors

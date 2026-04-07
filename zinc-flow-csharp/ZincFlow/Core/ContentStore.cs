@@ -98,6 +98,77 @@ public sealed class MemoryContentStore : IContentStore
     }
 }
 
+// --- Content store cleanup: periodic sweep of orphaned claims ---
+
+public sealed class ContentStoreCleanup
+{
+    private readonly FileContentStore _store;
+    private readonly string _baseDir;
+    private readonly HashSet<string> _activeClaims = new();
+    private readonly object _lock = new();
+
+    public ContentStoreCleanup(FileContentStore store, string baseDir)
+    {
+        _store = store;
+        _baseDir = baseDir;
+    }
+
+    public void TrackClaim(string claimId)
+    {
+        lock (_lock) _activeClaims.Add(claimId);
+    }
+
+    public void ReleaseClaim(string claimId)
+    {
+        lock (_lock) _activeClaims.Remove(claimId);
+    }
+
+    /// <summary>
+    /// Sweep: delete any claim files not in the active set.
+    /// Returns number of orphaned files deleted.
+    /// </summary>
+    public int Sweep()
+    {
+        int deleted = 0;
+        try
+        {
+            foreach (var dir in Directory.GetDirectories(_baseDir))
+            {
+                foreach (var file in Directory.GetFiles(dir))
+                {
+                    var claimId = Path.GetFileName(file);
+                    bool active;
+                    lock (_lock) active = _activeClaims.Contains(claimId);
+                    if (!active)
+                    {
+                        try { File.Delete(file); deleted++; }
+                        catch (IOException) { }
+                    }
+                }
+            }
+        }
+        catch (DirectoryNotFoundException) { }
+        return deleted;
+    }
+
+    public void StartPeriodicSweep(int intervalMs, CancellationToken ct)
+    {
+        _ = Task.Run(async () =>
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                try { await Task.Delay(intervalMs, ct); }
+                catch (OperationCanceledException) { break; }
+                var count = Sweep();
+                if (count > 0)
+                    Console.WriteLine($"[content-cleanup] swept {count} orphaned claims");
+            }
+        }, ct);
+    }
+
+    public int ActiveCount { get { lock (_lock) return _activeClaims.Count; } }
+}
+
 // --- Content helpers ---
 
 public static class ContentHelpers

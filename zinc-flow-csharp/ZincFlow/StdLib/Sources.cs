@@ -1,10 +1,11 @@
 using System.Text.Json;
 using System.Text.Json.Serialization.Metadata;
 using ZincFlow.Core;
+using ZincFlow.Fabric;
 
-namespace ZincFlow.Fabric;
+namespace ZincFlow.StdLib;
 
-// --- Shared helpers for source connectors ---
+// --- Shared helpers ---
 
 internal static class SourceHelpers
 {
@@ -21,8 +22,8 @@ internal static class SourceHelpers
 }
 
 /// <summary>
-/// File source connector: watches a directory and ingests new files as FlowFiles.
-/// Files are moved to a "processed" subdirectory after ingestion.
+/// GetFile: polls a directory and ingests new files as FlowFiles.
+/// Files are moved to a .processed subdirectory after ingestion.
 /// </summary>
 public sealed class GetFile : IConnectorSource
 {
@@ -53,10 +54,8 @@ public sealed class GetFile : IConnectorSource
         _ingest = ingest;
         _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         IsRunning = true;
-
         Directory.CreateDirectory(_inputDir);
         Directory.CreateDirectory(_processedDir);
-
         _ = Task.Run(() => PollLoop(_cts.Token), _cts.Token);
     }
 
@@ -72,57 +71,43 @@ public sealed class GetFile : IConnectorSource
         {
             try
             {
-                var files = Directory.GetFiles(_inputDir, _pattern);
-                foreach (var filePath in files)
+                foreach (var filePath in Directory.GetFiles(_inputDir, _pattern))
                 {
                     if (ct.IsCancellationRequested) break;
-
                     var fileName = Path.GetFileName(filePath);
                     try
                     {
                         var data = await File.ReadAllBytesAsync(filePath, ct);
                         var content = ContentHelpers.MaybeOffload(_store, data);
-                        var attrs = new Dictionary<string, string>
+                        var ff = FlowFile.CreateWithContent(content, new Dictionary<string, string>
                         {
                             ["filename"] = fileName,
                             ["path"] = filePath,
                             ["size"] = data.Length.ToString(),
                             ["source"] = Name
-                        };
-                        var ff = FlowFile.CreateWithContent(content, attrs);
-
+                        });
                         if (_ingest(ff))
                         {
-                            // Move to processed
                             var dest = Path.Combine(_processedDir, fileName);
                             if (File.Exists(dest)) File.Delete(dest);
                             File.Move(filePath, dest);
                         }
-                        // else: backpressure — leave file for next poll
                     }
-                    catch (IOException)
-                    {
-                        // File in use or disappeared — skip, retry next poll
-                    }
+                    catch (IOException) { }
                 }
             }
-            catch (DirectoryNotFoundException)
-            {
-                Directory.CreateDirectory(_inputDir);
-            }
+            catch (DirectoryNotFoundException) { Directory.CreateDirectory(_inputDir); }
 
             try { await Task.Delay(_pollIntervalMs, ct); }
             catch (OperationCanceledException) { break; }
         }
-
         IsRunning = false;
     }
 }
 
 /// <summary>
-/// ListenHTTP source connector: starts its own HTTP server on a dedicated port
-/// and accepts FlowFile ingestion (raw body or NiFi V3 binary).
-/// Independent from the main server — can be started/stopped via API.
+/// ListenHTTP: starts its own HTTP server on a dedicated port.
+/// Accepts FlowFile ingestion (raw body or NiFi V3 binary).
 /// </summary>
 public sealed class ListenHTTP : IConnectorSource
 {
@@ -169,18 +154,12 @@ public sealed class ListenHTTP : IConnectorSource
                 _app.Map(_path, (RequestDelegate)HandleRequest);
                 _app.Map("/health", (RequestDelegate)HandleHealth);
 
-                Console.WriteLine($"[listen-http] {Name} listening on :{_port}{_path}");
+                Console.WriteLine($"[ListenHTTP] {Name} listening on :{_port}{_path}");
                 await _app.RunAsync(_cts.Token);
             }
             catch (OperationCanceledException) { }
-            catch (Exception ex)
-            {
-                Console.Error.WriteLine($"[listen-http] {Name} error: {ex.Message}");
-            }
-            finally
-            {
-                IsRunning = false;
-            }
+            catch (Exception ex) { Console.Error.WriteLine($"[ListenHTTP] {Name} error: {ex.Message}"); }
+            finally { IsRunning = false; }
         }, _cts.Token);
     }
 
@@ -204,7 +183,6 @@ public sealed class ListenHTTP : IConnectorSource
         await ctx.Request.Body.CopyToAsync(ms);
         var body = ms.ToArray();
 
-        // V3 binary format
         if (ctx.Request.ContentType == "application/octet-stream")
         {
             var flowfiles = FlowFileV3.UnpackAll(body);
@@ -215,7 +193,6 @@ public sealed class ListenHTTP : IConnectorSource
             return;
         }
 
-        // Raw ingestion
         var attrs = new Dictionary<string, string>
         {
             ["http.method"] = ctx.Request.Method,
@@ -223,7 +200,6 @@ public sealed class ListenHTTP : IConnectorSource
             ["http.content.type"] = ctx.Request.ContentType ?? "",
             ["source"] = Name
         };
-
         foreach (var header in ctx.Request.Headers)
         {
             if (header.Key.StartsWith("X-Flow-", StringComparison.OrdinalIgnoreCase))
