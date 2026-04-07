@@ -147,28 +147,37 @@ static void RunBenchmarks()
     Console.WriteLine($"GC: Server={GCSettings.IsServerGC}, LatencyMode={GCSettings.LatencyMode}");
     Console.WriteLine();
 
-    Console.WriteLine("Warmup (JIT)...");
+    Console.WriteLine("Warmup (pools + JIT)...");
     BenchQueueThroughput(10_000, quiet: true);
-    BenchSessionThroughput(5_000, quiet: true);
+    BenchSessionThroughput(10_000, quiet: true);
 
     GC.Collect(2, GCCollectionMode.Aggressive, true, true);
     GC.WaitForPendingFinalizers();
     GC.Collect(2, GCCollectionMode.Aggressive, true, true);
+
+    // Snapshot GC baseline after warmup
+    int g0Base = GC.CollectionCount(0), g1Base = GC.CollectionCount(1), g2Base = GC.CollectionCount(2);
+    long allocBase = GC.GetTotalAllocatedBytes(true);
     Console.WriteLine();
 
     Console.WriteLine("Queue throughput:");
     BenchQueueThroughput(100_000);
+    BenchQueueThroughput(500_000);
     Console.WriteLine();
 
     Console.WriteLine("Session throughput (2-hop pipeline):");
     BenchSessionThroughput(10_000);
     BenchSessionThroughput(50_000);
     BenchSessionThroughput(100_000);
+    BenchSessionThroughput(500_000);
     Console.WriteLine();
 
-    Console.WriteLine("GC collections during benchmark:");
-    Console.WriteLine($"  Gen0: {GC.CollectionCount(0)}, Gen1: {GC.CollectionCount(1)}, Gen2: {GC.CollectionCount(2)}");
-    Console.WriteLine($"  Total memory: {GC.GetTotalMemory(false) / 1024.0 / 1024.0:F2} MB");
+    long allocTotal = GC.GetTotalAllocatedBytes(true) - allocBase;
+    int g0 = GC.CollectionCount(0) - g0Base, g1 = GC.CollectionCount(1) - g1Base, g2 = GC.CollectionCount(2) - g2Base;
+    Console.WriteLine("GC during benchmarks (post-warmup):");
+    Console.WriteLine($"  Gen0: {g0}, Gen1: {g1}, Gen2: {g2}");
+    Console.WriteLine($"  Allocated: {allocTotal / 1024.0 / 1024.0:F2} MB");
+    Console.WriteLine($"  Heap now:  {GC.GetTotalMemory(false) / 1024.0 / 1024.0:F2} MB");
 }
 
 static void BenchQueueThroughput(int n, bool quiet = false)
@@ -179,7 +188,7 @@ static void BenchQueueThroughput(int n, bool quiet = false)
     var sw = Stopwatch.StartNew();
     for (int i = 0; i < n; i++)
     {
-        var ff = FlowFile.Create(payload, new Dictionary<string, string>());
+        var ff = FlowFile.CreateEmpty(payload);
         q.Offer(ff);
     }
     sw.Stop();
@@ -223,6 +232,7 @@ static void BenchSessionThroughput(int n, bool quiet = false)
     var tagSession = new ProcessSession(tagQ, tag, "tag", tagEngine, queues, dlq, 5);
     var sinkSession = new ProcessSession(sinkQ, sink, "sink", sinkEngine, queues, dlq, 5);
 
+    // Setup phase — allocate FlowFiles outside timed section
     var payload = "bench payload data here"u8.ToArray();
     for (int i = 0; i < n; i++)
     {
@@ -234,6 +244,8 @@ static void BenchSessionThroughput(int n, bool quiet = false)
         tagQ.Offer(ff);
     }
 
+    int g0Before = GC.CollectionCount(0);
+
     var sw = Stopwatch.StartNew();
 
     for (int i = 0; i < n; i++)
@@ -243,17 +255,18 @@ static void BenchSessionThroughput(int n, bool quiet = false)
 
     sw.Stop();
     long ms = sw.ElapsedMilliseconds;
+    int g0During = GC.CollectionCount(0) - g0Before;
 
     if (!quiet)
     {
         if (ms > 0)
         {
             long rate = n * 1000L / ms;
-            Console.WriteLine($"  {n:N0} flowfiles, 2 hops: {ms}ms ({rate:N0} ff/s)");
+            Console.WriteLine($"  {n:N0} ff, 2 hops: {ms}ms ({rate:N0} ff/s) [gc0: {g0During}]");
         }
         else
         {
-            Console.WriteLine($"  {n:N0} flowfiles, 2 hops: <1ms");
+            Console.WriteLine($"  {n:N0} ff, 2 hops: <1ms [gc0: {g0During}]");
         }
     }
 }

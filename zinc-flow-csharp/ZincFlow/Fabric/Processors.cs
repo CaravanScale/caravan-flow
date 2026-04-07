@@ -76,7 +76,7 @@ public sealed class FileSink : IProcessor
         var path = Path.Combine(_outputDir, $"{ff.NumericId}.out");
         var (data, error) = ContentHelpers.Resolve(_store, ff.Content);
         if (error != "")
-            return new FailureResult(error, ff);
+            return FailureResult.Rent(error, ff);
         File.WriteAllBytes(path, data);
         return DroppedResult.Instance;
     }
@@ -121,7 +121,7 @@ public sealed class JsonToRecords : IProcessor
         else if (ff.Content is ClaimContent)
         {
             var (resolved, error) = ContentHelpers.Resolve(_store, ff.Content);
-            if (error != "") return new FailureResult(error, ff);
+            if (error != "") return FailureResult.Rent(error, ff);
             data = resolved;
         }
         else // RecordContent — already records, pass through
@@ -132,7 +132,7 @@ public sealed class JsonToRecords : IProcessor
         var schema = new Schema(_schemaName, []);
         var records = _reader.Read(data, schema);
         if (records.Count == 0)
-            return new FailureResult("no records parsed from JSON", ff);
+            return FailureResult.Rent("no records parsed from JSON", ff);
 
         var updated = FlowFile.WithContent(ff, new RecordContent(
             new Dictionary<string, string> { ["name"] = records[0].RecordSchema.Name },
@@ -163,9 +163,9 @@ public sealed class RecordsToJson : IProcessor
             }
             catch
             {
-                return new FailureResult("failed to serialize records to JSON", ff);
+                return FailureResult.Rent("failed to serialize records to JSON", ff);
             }
-            var updated = FlowFile.WithContent(ff, new Raw(bytes));
+            var updated = FlowFile.WithContent(ff, Raw.Rent(bytes));
             return SingleResult.Rent(updated);
         }
         return SingleResult.Rent(ff); // pass through Raw/Claim

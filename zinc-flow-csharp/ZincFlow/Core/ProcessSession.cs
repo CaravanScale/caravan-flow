@@ -89,13 +89,16 @@ public sealed class ProcessSession
                     break;
                 }
             }
+            MultipleResult.Return(multiple);
             if (allRouted)
                 _source.Ack(entry.Id);
             return true;
         }
         else if (result is RoutedResult routed)
         {
-            if (RouteResult(routed.FlowFile, entry))
+            var routedFf = routed.FlowFile;
+            RoutedResult.Return(routed);
+            if (RouteResult(routedFf, entry))
                 _source.Ack(entry.Id);
             return true;
         }
@@ -109,6 +112,7 @@ public sealed class ProcessSession
         else if (result is FailureResult failure)
         {
             _dlq.Add(failure.FlowFile, _processorName, _source.Name, entry.AttemptCount, failure.Reason);
+            FailureResult.Return(failure);
             _source.Ack(entry.Id);
             return true;
         }

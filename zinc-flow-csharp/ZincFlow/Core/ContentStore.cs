@@ -112,7 +112,7 @@ public static class ContentHelpers
             var claimId = store.Store(data);
             return new ClaimContent(claimId, data.Length);
         }
-        return new Raw(data);
+        return Raw.Rent(data);
     }
 
     public static (byte[] Data, string Error) Resolve(IContentStore store, Content content)

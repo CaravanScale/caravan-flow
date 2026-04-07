@@ -151,23 +151,40 @@ public sealed class AttributeMap
     public int Count => _count;
 }
 
-// --- Content types ---
+// --- Content types (ref-counted for safe ArrayPool return) ---
+// Non-atomic: FlowFiles move through pipeline sequentially (one thread per stage).
 
 public abstract class Content
 {
     public abstract int Size { get; }
+    internal int _refCount = 1;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void AddRef() => _refCount++;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal virtual void Release() => _refCount--;
 }
 
 public sealed class Raw : Content
 {
     private byte[]? _rented;
-    private readonly int _length;
-    private readonly bool _pooled;
+    private int _length;
+    private bool _pooled;
 
     public ReadOnlySpan<byte> Data => _rented.AsSpan(0, _length);
     public ReadOnlyMemory<byte> Memory => _rented.AsMemory(0, _length);
     public override int Size => _length;
 
+    // Parameterless constructor for Pool<Raw>
+    public Raw()
+    {
+        _rented = null;
+        _length = 0;
+        _pooled = false;
+    }
+
+    // Legacy constructors (prefer Rent factory methods)
     public Raw(ReadOnlySpan<byte> data)
     {
         _length = data.Length;
@@ -184,12 +201,58 @@ public sealed class Raw : Content
         }
     }
 
-    // Fast path: wrap an already-rented buffer (caller transfers ownership)
     public Raw(byte[] rented, int length, bool pooled = true)
     {
         _rented = rented;
         _length = length;
         _pooled = pooled;
+    }
+
+    /// <summary>Pool-friendly factory: rents Raw shell + ArrayPool bytes.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Raw Rent(ReadOnlySpan<byte> data)
+    {
+        var raw = Pool<Raw>.Rent();
+        raw._refCount = 1;
+        raw._length = data.Length;
+        if (data.Length > 0)
+        {
+            raw._rented = ArrayPool<byte>.Shared.Rent(data.Length);
+            data.CopyTo(raw._rented);
+            raw._pooled = true;
+        }
+        else
+        {
+            raw._rented = Array.Empty<byte>();
+            raw._pooled = false;
+        }
+        return raw;
+    }
+
+    /// <summary>Pool-friendly factory: wraps already-rented buffer.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static Raw Rent(byte[] rented, int length, bool pooled = true)
+    {
+        var raw = Pool<Raw>.Rent();
+        raw._refCount = 1;
+        raw._rented = rented;
+        raw._length = length;
+        raw._pooled = pooled;
+        return raw;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal override void Release()
+    {
+        if (--_refCount == 0)
+        {
+            if (_pooled && _rented is not null && _rented.Length > 0)
+                ArrayPool<byte>.Shared.Return(_rented);
+            _rented = null;
+            _length = 0;
+            _pooled = false;
+            Pool<Raw>.Return(this);
+        }
     }
 
     public void Return()
@@ -263,13 +326,9 @@ public sealed class FlowFile
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void Return(FlowFile ff)
     {
-        // Content and AttributeMap are NOT returned here because they may be
-        // shared with sibling FlowFiles:
-        //   - WithAttribute creates overlay on same parent chain
-        //   - WithContent shares the same Content reference
-        // The FlowFile shell is the only thing we can safely pool.
-        // AttributeMap overlay nodes and Raw byte arrays are reclaimed by GC.
-        // ArrayPool.Rent for Raw avoids LOH on initial alloc (the main win).
+        // Release Content ref count — when it hits 0, ArrayPool bytes are returned
+        // and Raw shell is pooled. Safe because ref counting tracks all sharing.
+        ff.Content?.Release();
         ff.Content = null!;
         ff.Attributes = null!;
         Pool<FlowFile>.Return(ff);
@@ -278,7 +337,16 @@ public sealed class FlowFile
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FlowFile Create(ReadOnlySpan<byte> data, Dictionary<string, string> attributes)
     {
-        return Rent(Interlocked.Increment(ref _idCounter), AttributeMap.FromDict(attributes), new Raw(data), Environment.TickCount64);
+        return Rent(Interlocked.Increment(ref _idCounter), AttributeMap.FromDict(attributes), Raw.Rent(data), Environment.TickCount64);
+    }
+
+    private static readonly Dictionary<string, string> EmptyAttrs = new();
+
+    /// <summary>Create FlowFile with empty attributes — avoids Dictionary allocation.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static FlowFile CreateEmpty(ReadOnlySpan<byte> data)
+    {
+        return Rent(Interlocked.Increment(ref _idCounter), AttributeMap.FromDict(EmptyAttrs), Raw.Rent(data), Environment.TickCount64);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -290,12 +358,14 @@ public sealed class FlowFile
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FlowFile WithAttribute(FlowFile ff, string key, string value)
     {
+        ff.Content.AddRef(); // shared Content — increment ref count
         return Rent(ff.NumericId, ff.Attributes.With(key, value), ff.Content, ff.Timestamp);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FlowFile WithContent(FlowFile ff, Content content)
     {
+        // New Content — no AddRef on old, new content starts with refCount=1
         return Rent(ff.NumericId, ff.Attributes, content, ff.Timestamp);
     }
 }
@@ -328,15 +398,49 @@ public sealed class SingleResult : ProcessorResult
 
 public sealed class MultipleResult : ProcessorResult
 {
-    public List<FlowFile> FlowFiles { get; }
-    public MultipleResult(List<FlowFile> ffs) => FlowFiles = ffs;
+    public List<FlowFile> FlowFiles;
+
+    public MultipleResult() { FlowFiles = new List<FlowFile>(); }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static MultipleResult Rent()
+    {
+        var r = Pool<MultipleResult>.Rent();
+        r.FlowFiles.Clear();
+        return r;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void Return(MultipleResult r)
+    {
+        r.FlowFiles.Clear();
+        Pool<MultipleResult>.Return(r);
+    }
 }
 
 public sealed class RoutedResult : ProcessorResult
 {
-    public string Route { get; }
-    public FlowFile FlowFile { get; }
-    public RoutedResult(string route, FlowFile ff) { Route = route; FlowFile = ff; }
+    public string Route;
+    public FlowFile FlowFile;
+
+    public RoutedResult() { Route = ""; FlowFile = null!; }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static RoutedResult Rent(string route, FlowFile ff)
+    {
+        var r = Pool<RoutedResult>.Rent();
+        r.Route = route;
+        r.FlowFile = ff;
+        return r;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void Return(RoutedResult r)
+    {
+        r.Route = "";
+        r.FlowFile = null!;
+        Pool<RoutedResult>.Return(r);
+    }
 }
 
 public sealed class DroppedResult : ProcessorResult
@@ -346,9 +450,27 @@ public sealed class DroppedResult : ProcessorResult
 
 public sealed class FailureResult : ProcessorResult
 {
-    public string Reason { get; }
-    public FlowFile FlowFile { get; }
-    public FailureResult(string reason, FlowFile ff) { Reason = reason; FlowFile = ff; }
+    public string Reason;
+    public FlowFile FlowFile;
+
+    public FailureResult() { Reason = ""; FlowFile = null!; }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static FailureResult Rent(string reason, FlowFile ff)
+    {
+        var r = Pool<FailureResult>.Rent();
+        r.Reason = reason;
+        r.FlowFile = ff;
+        return r;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void Return(FailureResult r)
+    {
+        r.Reason = "";
+        r.FlowFile = null!;
+        Pool<FailureResult>.Return(r);
+    }
 }
 
 // --- Processor interface ---
