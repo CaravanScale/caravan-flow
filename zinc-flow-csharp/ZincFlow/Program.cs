@@ -15,12 +15,6 @@ if (mode == "--bench" || mode == "bench")
     return;
 }
 
-if (mode == "--test" || mode == "test")
-{
-    var failures = ZincFlow.Tests.TestSuite.Run();
-    return;
-}
-
 // --- Production server mode ---
 Console.WriteLine("zinc-flow-csharp starting");
 

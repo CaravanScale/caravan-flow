@@ -1,7 +1,8 @@
 [project]
-name = "zinc-flow-csharp"
+name = "ZincFlow"
 version = "0.1.0"
 main = "ZincFlow/Program.cs"
+source_dir = "ZincFlow"
 sdk = "Microsoft.NET.Sdk.Web"
 
 [csharp]

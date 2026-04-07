@@ -1,0 +1,20 @@
+[project]
+name = "ZincFlow.Tests"
+version = "0.1.0"
+main = "Tests/Program.cs"
+source_dir = "Tests"
+sdk = "Microsoft.NET.Sdk.Web"
+
+[csharp]
+framework = "net10.0"
+lang_version = "latest"
+nullable = true
+implicit_usings = true
+unsafe = true
+
+[csharp.nuget]
+packages = ["YamlDotNet:16.3.0"]
+
+[csharp.references]
+# Project reference to the main ZincFlow project
+projects = ["../../ZincFlow/ZincFlow.csproj"]

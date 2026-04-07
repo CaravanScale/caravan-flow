@@ -12,3 +12,8 @@ ZincFlow/ZincFlow.Tests.csproj
 
 ZincFlow/bin/
 ZincFlow/obj/
+
+# Test project generated files
+tests/Tests/ZincFlow.Tests.csproj
+tests/Tests/bin/
+tests/Tests/obj/
