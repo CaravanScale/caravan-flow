@@ -42,6 +42,8 @@ else
 
 // Create providers
 var contentDir = GetConfigString(config, "content.dir", "/tmp/zinc-flow-csharp/content");
+if (int.TryParse(GetConfigString(config, "content.offload_threshold_kb", "256"), out var threshKb))
+    ContentHelpers.ClaimThreshold = threshKb * 1024;
 var store = new FileContentStore(contentDir);
 var cleanup = new ContentStoreCleanup(store, contentDir);
 ContentStoreCleanup.Instance = cleanup;
@@ -138,9 +140,10 @@ _ = Task.Run(async () =>
     }
 });
 
-// Content store cleanup — sweep orphaned claims every 5 minutes
+// Content store cleanup
+var sweepMs = int.TryParse(GetConfigString(config, "content.sweep_interval_ms", "300000"), out var si) ? si : 300_000;
 var appCts = new CancellationTokenSource();
-cleanup.StartPeriodicSweep(300_000, appCts.Token);
+cleanup.StartPeriodicSweep(sweepMs, appCts.Token);
 
 Console.WriteLine($"Listening on port {port}");
 

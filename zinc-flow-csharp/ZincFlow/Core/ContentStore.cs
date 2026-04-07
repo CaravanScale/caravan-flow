@@ -176,7 +176,8 @@ public sealed class ContentStoreCleanup
 
 public static class ContentHelpers
 {
-    public const int ClaimThreshold = 256 * 1024;
+    /// <summary>Offload threshold in bytes. Content larger than this is stored via ContentStore. Default 256KB.</summary>
+    public static int ClaimThreshold { get; set; } = 256 * 1024;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static Content MaybeOffload(IContentStore store, byte[] data)
