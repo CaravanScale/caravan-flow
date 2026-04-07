@@ -8,6 +8,7 @@ obj/
 
 # Generated from zinc.toml — do not edit
 ZincFlow/ZincFlow.csproj
+ZincFlow/ZincFlow.Tests.csproj
 
 ZincFlow/bin/
 ZincFlow/obj/
