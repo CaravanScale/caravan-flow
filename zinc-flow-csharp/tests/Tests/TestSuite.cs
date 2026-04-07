@@ -855,19 +855,29 @@ public static class TestSuite
     {
         Console.WriteLine("--- ConnectorSource Lifecycle ---");
         var store = new MemoryContentStore();
-        var dlq = new DLQ();
-        var source = new HttpConnectorSource("test-http", store, dlq);
+        // Use GetFileSource for lifecycle test (no port needed)
+        var tmpDir = Path.Combine(Path.GetTempPath(), $"zinc-test-lifecycle-{Environment.TickCount64}");
+        Directory.CreateDirectory(tmpDir);
+        try
+        {
+            var source = new GetFileSource("test-file", tmpDir, "*", 60000, store);
 
-        AssertTrue("not running initially", !source.IsRunning);
-        AssertTrue("name correct", source.Name == "test-http");
-        AssertTrue("type is http", source.SourceType == "http");
+            AssertTrue("not running initially", !source.IsRunning);
+            AssertTrue("name correct", source.Name == "test-file");
+            AssertTrue("type is get-file", source.SourceType == "get-file");
 
-        int ingested = 0;
-        source.Start(ff => { ingested++; return true; }, CancellationToken.None);
-        AssertTrue("running after start", source.IsRunning);
+            using var cts = new CancellationTokenSource();
+            source.Start(ff => true, cts.Token);
+            AssertTrue("running after start", source.IsRunning);
 
-        source.Stop();
-        AssertTrue("stopped after stop", !source.IsRunning);
+            source.Stop();
+            Thread.Sleep(200);
+            AssertTrue("stopped after stop", !source.IsRunning);
+        }
+        finally
+        {
+            Directory.Delete(tmpDir, true);
+        }
     }
 
     static void TestGetFileSource()

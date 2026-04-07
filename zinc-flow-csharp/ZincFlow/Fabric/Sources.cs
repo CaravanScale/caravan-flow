@@ -4,115 +4,11 @@ using ZincFlow.Core;
 
 namespace ZincFlow.Fabric;
 
-/// <summary>
-/// HTTP source connector: receives FlowFiles via HTTP POST.
-/// Supports raw body and NiFi FlowFile V3 binary format.
-/// </summary>
-public sealed class HttpConnectorSource : IConnectorSource
+// --- Shared helpers for source connectors ---
+
+internal static class SourceHelpers
 {
-    public string Name { get; }
-    public string SourceType => "http";
-    public bool IsRunning { get; private set; }
-
-    private readonly IContentStore _store;
-    private readonly DLQ _dlq;
-    private Func<FlowFile, bool> _ingest = null!;
-    private static long _idCounter;
-
-    public HttpConnectorSource(string name, IContentStore store, DLQ dlq)
-    {
-        Name = name;
-        _store = store;
-        _dlq = dlq;
-    }
-
-    public void Start(Func<FlowFile, bool> ingest, CancellationToken ct)
-    {
-        _ingest = ingest;
-        IsRunning = true;
-    }
-
-    public void Stop() => IsRunning = false;
-
-    public async Task HandleIngest(HttpContext ctx)
-    {
-        if (!IsRunning)
-        {
-            ctx.Response.StatusCode = 503;
-            await WriteJson(ctx.Response, new { error = "source not running" });
-            return;
-        }
-
-        if (ctx.Request.Method != "POST")
-        {
-            ctx.Response.StatusCode = 405;
-            await WriteJson(ctx.Response, new { error = "method not allowed" });
-            return;
-        }
-
-        using var ms = new MemoryStream();
-        await ctx.Request.Body.CopyToAsync(ms);
-        var body = ms.ToArray();
-
-        // V3 binary format
-        if (ctx.Request.ContentType == "application/octet-stream")
-        {
-            var flowfiles = FlowFileV3.UnpackAll(body);
-            int accepted = 0;
-            foreach (var ff in flowfiles)
-                if (_ingest(ff)) accepted++;
-
-            await WriteJson(ctx.Response, new { status = "accepted", count = accepted });
-            return;
-        }
-
-        // Raw ingestion
-        var attrs = ExtractAttributes(ctx.Request);
-        var content = ContentHelpers.MaybeOffload(_store, body);
-        var flowFile = FlowFile.Rent(
-            Interlocked.Increment(ref _idCounter),
-            AttributeMap.FromDict(attrs),
-            content,
-            Environment.TickCount64);
-
-        if (!_ingest(flowFile))
-        {
-            ctx.Response.StatusCode = 503;
-            await WriteJson(ctx.Response, new { error = "backpressure", message = "ingest queue full" });
-            return;
-        }
-
-        await WriteJson(ctx.Response, new { status = "accepted", id = flowFile.Id });
-    }
-
-    public async Task HandleHealth(HttpContext ctx)
-    {
-        await WriteJson(ctx.Response, new { status = "healthy", running = IsRunning, dlq = _dlq.Count });
-    }
-
-    private static Dictionary<string, string> ExtractAttributes(HttpRequest req)
-    {
-        var attrs = new Dictionary<string, string>
-        {
-            ["http.method"] = req.Method,
-            ["http.uri"] = req.Path.Value ?? "/",
-            ["http.content.type"] = req.ContentType ?? "",
-            ["http.host"] = req.Host.Value
-        };
-
-        foreach (var header in req.Headers)
-        {
-            if (header.Key.StartsWith("X-Flow-", StringComparison.OrdinalIgnoreCase))
-            {
-                var attrKey = header.Key[7..].ToLowerInvariant();
-                attrs[attrKey] = header.Value.ToString();
-            }
-        }
-
-        return attrs;
-    }
-
-    private static readonly JsonSerializerOptions _jsonOpts = new()
+    private static readonly JsonSerializerOptions JsonOpts = new()
     {
         TypeInfoResolver = new DefaultJsonTypeInfoResolver()
     };
@@ -120,7 +16,7 @@ public sealed class HttpConnectorSource : IConnectorSource
     internal static Task WriteJson(HttpResponse response, object value)
     {
         response.ContentType = "application/json";
-        return response.WriteAsync(JsonSerializer.Serialize(value, _jsonOpts));
+        return response.WriteAsync(JsonSerializer.Serialize(value, JsonOpts));
     }
 }
 
@@ -300,7 +196,7 @@ public sealed class ListenHttpSource : IConnectorSource
         if (ctx.Request.Method != "POST")
         {
             ctx.Response.StatusCode = 405;
-            await HttpConnectorSource.WriteJson(ctx.Response, new { error = "method not allowed" });
+            await SourceHelpers.WriteJson(ctx.Response, new { error = "method not allowed" });
             return;
         }
 
@@ -315,7 +211,7 @@ public sealed class ListenHttpSource : IConnectorSource
             int accepted = 0;
             foreach (var ff in flowfiles)
                 if (_ingest(ff)) accepted++;
-            await HttpConnectorSource.WriteJson(ctx.Response, new { status = "accepted", count = accepted, source = Name });
+            await SourceHelpers.WriteJson(ctx.Response, new { status = "accepted", count = accepted, source = Name });
             return;
         }
 
@@ -344,15 +240,15 @@ public sealed class ListenHttpSource : IConnectorSource
         if (!_ingest(flowFile))
         {
             ctx.Response.StatusCode = 503;
-            await HttpConnectorSource.WriteJson(ctx.Response, new { error = "backpressure", source = Name });
+            await SourceHelpers.WriteJson(ctx.Response, new { error = "backpressure", source = Name });
             return;
         }
 
-        await HttpConnectorSource.WriteJson(ctx.Response, new { status = "accepted", id = flowFile.Id, source = Name });
+        await SourceHelpers.WriteJson(ctx.Response, new { status = "accepted", id = flowFile.Id, source = Name });
     }
 
     private async Task HandleHealth(HttpContext ctx)
     {
-        await HttpConnectorSource.WriteJson(ctx.Response, new { status = "healthy", source = Name, running = IsRunning });
+        await SourceHelpers.WriteJson(ctx.Response, new { status = "healthy", source = Name, running = IsRunning });
     }
 }

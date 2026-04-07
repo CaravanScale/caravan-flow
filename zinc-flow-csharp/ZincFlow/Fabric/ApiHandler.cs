@@ -36,6 +36,8 @@ public sealed class ApiHandler
         app.MapPost("/api/providers/enable", EnableProvider);
         app.MapPost("/api/providers/disable", DisableProvider);
 
+        app.MapGet("/health", Health);
+
         // Connector source lifecycle
         app.MapGet("/api/sources", Sources);
         app.MapPost("/api/sources/start", StartSource);
@@ -263,6 +265,19 @@ public sealed class ApiHandler
         return _fab.DisableProvider(name, 60)
             ? Results.Json(new { status = "disabled", name })
             : Results.NotFound(new { error = "provider not found" });
+    }
+
+    // --- Health ---
+
+    private IResult Health()
+    {
+        var sources = _fab.GetSources();
+        return Results.Json(new
+        {
+            status = "healthy",
+            dlq = _fab.GetDLQ().Count,
+            sources = sources.Select(s => new { name = s.Name, type = s.Type, running = s.Running })
+        });
     }
 
     // --- Connector sources ---

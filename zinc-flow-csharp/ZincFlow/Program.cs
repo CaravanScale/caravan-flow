@@ -82,28 +82,19 @@ fab.Status();
 // Create output directory
 Directory.CreateDirectory("/tmp/zinc-flow-csharp/output");
 
-// HTTP connector source
-var httpSource = new HttpConnectorSource("http-ingest", store, fab.GetDLQ());
-fab.AddSource(httpSource);
-
-// Config-driven file sources
+// Config-driven sources
 var fileInputDir = GetConfigString(config, "sources.file.input_dir", "");
 if (!string.IsNullOrEmpty(fileInputDir))
 {
     var pattern = GetConfigString(config, "sources.file.pattern", "*");
     var pollMs = int.TryParse(GetConfigString(config, "sources.file.poll_interval_ms", "1000"), out var p) ? p : 1000;
-    var fileSource = new GetFileSource("file-ingest", fileInputDir, pattern, pollMs, store);
-    fab.AddSource(fileSource);
+    fab.AddSource(new GetFileSource("file-ingest", fileInputDir, pattern, pollMs, store));
 }
 
-// Config-driven ListenHTTP sources
-var listenPort = GetConfigString(config, "sources.listen_http.port", "");
-if (!string.IsNullOrEmpty(listenPort) && int.TryParse(listenPort, out var lPort))
-{
-    var listenPath = GetConfigString(config, "sources.listen_http.path", "/");
-    var listenSource = new ListenHttpSource("listen-http", lPort, listenPath, store);
-    fab.AddSource(listenSource);
-}
+// ListenHTTP source — default ingest on port 9092, configurable
+var ingestPort = GetConfigString(config, "sources.listen_http.port", "9092");
+var ingestPath = GetConfigString(config, "sources.listen_http.path", "/");
+fab.AddSource(new ListenHttpSource("http-ingest", int.Parse(ingestPort), ingestPath, store));
 
 // Build ASP.NET Minimal API app
 var builder = WebApplication.CreateBuilder(args);
@@ -122,10 +113,7 @@ builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
 
 var app = builder.Build();
 
-// Map routes — use RequestDelegate for HttpContext handlers
-app.Map("/ingest", (RequestDelegate)httpSource.HandleIngest);
-app.Map("/health", (RequestDelegate)httpSource.HandleHealth);
-
+// Management API only — ingestion goes through source connectors
 var api = new ApiHandler(fab);
 api.MapRoutes(app);
 
