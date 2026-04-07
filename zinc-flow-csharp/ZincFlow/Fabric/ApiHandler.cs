@@ -62,8 +62,7 @@ public sealed class ApiHandler
             name = r.Name,
             enabled = r.Enabled,
             destination = r.Destination,
-            attribute = r.Attribute,
-            @operator = r.Operator.ToString()
+            condition = FormatCondition(r.Condition)
         }));
     }
 
@@ -260,4 +259,31 @@ public sealed class ApiHandler
             ? Results.Json(new { status = "disabled", name })
             : Results.NotFound(new { error = "provider not found" });
     }
+
+    // --- Helpers ---
+
+    private static string FormatCondition(RuleCondition condition)
+    {
+        if (condition is BaseRule b)
+            return $"{b.Attribute} {FormatOp(b.Operator)} {b.Value}";
+        if (condition is CompositeRule c)
+        {
+            var join = c.Joiner == Joiner.And ? "AND" : "OR";
+            return $"({FormatCondition(c.Left)} {join} {FormatCondition(c.Right)})";
+        }
+        return "unknown";
+    }
+
+    private static string FormatOp(Operator op) => op switch
+    {
+        Operator.Eq => "==",
+        Operator.Neq => "!=",
+        Operator.Contains => "contains",
+        Operator.StartsWith => "startsWith",
+        Operator.EndsWith => "endsWith",
+        Operator.Exists => "exists",
+        Operator.Gt => ">",
+        Operator.Lt => "<",
+        _ => "?"
+    };
 }

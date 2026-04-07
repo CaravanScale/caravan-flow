@@ -8,25 +8,97 @@ public enum Operator
     Eq, Neq, Contains, StartsWith, EndsWith, Exists, Gt, Lt
 }
 
-public sealed class RoutingRule
+public enum Joiner { And, Or }
+
+// --- Rule condition: base or composite (AND/OR) ---
+
+public abstract class RuleCondition
 {
-    public string Name { get; }
+    public abstract bool Evaluate(AttributeMap attributes);
+}
+
+public sealed class BaseRule : RuleCondition
+{
     public string Attribute { get; }
     public Operator Operator { get; }
     public string Value { get; }
-    public string Destination { get; }
-    public bool Enabled { get; set; }
 
-    public RoutingRule(string name, string attribute, Operator op, string value, string destination, bool enabled = true)
+    public BaseRule(string attribute, Operator op, string value)
     {
-        Name = name;
         Attribute = attribute;
         Operator = op;
         Value = value;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public override bool Evaluate(AttributeMap attributes)
+    {
+        if (Operator == Operator.Exists)
+            return attributes.ContainsKey(Attribute);
+
+        if (!attributes.TryGetValue(Attribute, out var val))
+            return false;
+
+        return Operator switch
+        {
+            Operator.Eq => val == Value,
+            Operator.Neq => val != Value,
+            Operator.Contains => val.Contains(Value, StringComparison.Ordinal),
+            Operator.StartsWith => val.StartsWith(Value, StringComparison.Ordinal),
+            Operator.EndsWith => val.EndsWith(Value, StringComparison.Ordinal),
+            Operator.Gt => string.Compare(val, Value, StringComparison.Ordinal) > 0,
+            Operator.Lt => string.Compare(val, Value, StringComparison.Ordinal) < 0,
+            _ => false
+        };
+    }
+}
+
+public sealed class CompositeRule : RuleCondition
+{
+    public RuleCondition Left { get; }
+    public Joiner Joiner { get; }
+    public RuleCondition Right { get; }
+
+    public CompositeRule(RuleCondition left, Joiner joiner, RuleCondition right)
+    {
+        Left = left;
+        Joiner = joiner;
+        Right = right;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public override bool Evaluate(AttributeMap attributes)
+    {
+        return Joiner == Joiner.And
+            ? Left.Evaluate(attributes) && Right.Evaluate(attributes)
+            : Left.Evaluate(attributes) || Right.Evaluate(attributes);
+    }
+}
+
+// --- Routing rule ---
+
+public sealed class RoutingRule
+{
+    public string Name { get; }
+    public RuleCondition Condition { get; }
+    public string Destination { get; }
+    public bool Enabled { get; set; }
+
+    // Full constructor with condition object
+    public RoutingRule(string name, RuleCondition condition, string destination, bool enabled = true)
+    {
+        Name = name;
+        Condition = condition;
         Destination = destination;
         Enabled = enabled;
     }
+
+    // Convenience: simple BaseRule (backward compatible)
+    public RoutingRule(string name, string attribute, Operator op, string value, string destination, bool enabled = true)
+        : this(name, new BaseRule(attribute, op, value), destination, enabled) { }
 }
+
+// --- Rules engine ---
 
 public sealed class RulesEngine
 {
@@ -37,7 +109,6 @@ public sealed class RulesEngine
         _rulesets[name] = rules;
     }
 
-    // Hot path: zero-alloc — writes into caller's reusable buffer
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void GetDestinations(AttributeMap attributes, List<string> destinations)
     {
@@ -47,7 +118,7 @@ public sealed class RulesEngine
             foreach (var rule in rules)
             {
                 if (!rule.Enabled) continue;
-                if (Evaluate(rule, attributes))
+                if (rule.Condition.Evaluate(attributes))
                     destinations.Add(rule.Destination);
             }
         }
@@ -60,6 +131,8 @@ public sealed class RulesEngine
             result.AddRange(rules);
         return result;
     }
+
+    public List<string> GetRulesetNames() => new(_rulesets.Keys);
 
     public void ToggleRule(string ruleset, string ruleName)
     {
@@ -76,25 +149,5 @@ public sealed class RulesEngine
         }
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static bool Evaluate(RoutingRule rule, AttributeMap attributes)
-    {
-        if (rule.Operator == Operator.Exists)
-            return attributes.ContainsKey(rule.Attribute);
-
-        if (!attributes.TryGetValue(rule.Attribute, out var val))
-            return false;
-
-        return rule.Operator switch
-        {
-            Operator.Eq => val == rule.Value,
-            Operator.Neq => val != rule.Value,
-            Operator.Contains => val.Contains(rule.Value, StringComparison.Ordinal),
-            Operator.StartsWith => val.StartsWith(rule.Value, StringComparison.Ordinal),
-            Operator.EndsWith => val.EndsWith(rule.Value, StringComparison.Ordinal),
-            Operator.Gt => string.Compare(val, rule.Value, StringComparison.Ordinal) > 0,
-            Operator.Lt => string.Compare(val, rule.Value, StringComparison.Ordinal) < 0,
-            _ => false
-        };
-    }
+    public bool RemoveRuleset(string name) => _rulesets.Remove(name);
 }

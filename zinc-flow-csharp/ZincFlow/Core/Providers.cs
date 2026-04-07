@@ -71,13 +71,79 @@ public sealed class ConfigProvider : IProvider
     public string Name => "config";
     public string ProviderType => "config";
     public ComponentState State { get; private set; } = ComponentState.Disabled;
-    private readonly Dictionary<string, object> _config;
+    private readonly Dictionary<string, object?> _config;
 
-    public ConfigProvider(Dictionary<string, object> config) => _config = config;
+    public ConfigProvider(Dictionary<string, object?> config) => _config = config;
 
     public void Enable() => State = ComponentState.Enabled;
     public void Disable(int drainTimeout) => State = ComponentState.Disabled;
     public void Shutdown() => State = ComponentState.Disabled;
+
+    // --- Config access: dot-path navigation ---
+
+    public string GetString(string key, string defaultVal = "")
+    {
+        var val = Navigate(key);
+        return val?.ToString() ?? defaultVal;
+    }
+
+    public int GetInt(string key, int defaultVal = 0)
+    {
+        var val = Navigate(key);
+        if (val is int i) return i;
+        if (val is not null && int.TryParse(val.ToString(), out var parsed)) return parsed;
+        return defaultVal;
+    }
+
+    public bool GetBool(string key, bool defaultVal = false)
+    {
+        var val = Navigate(key);
+        if (val is bool b) return b;
+        if (val is not null && bool.TryParse(val.ToString(), out var parsed)) return parsed;
+        return defaultVal;
+    }
+
+    public bool Has(string key) => Navigate(key) is not null;
+
+    public Dictionary<string, string> GetStringMap(string key)
+    {
+        var val = Navigate(key);
+        var result = new Dictionary<string, string>();
+        if (val is Dictionary<string, object?> sd)
+            foreach (var (k, v) in sd) result[k] = v?.ToString() ?? "";
+        else if (val is Dictionary<object, object?> od)
+            foreach (var (k, v) in od) result[k.ToString()!] = v?.ToString() ?? "";
+        return result;
+    }
+
+    public List<string> GetSubKeys(string key)
+    {
+        var val = Navigate(key);
+        if (val is Dictionary<string, object?> sd) return new(sd.Keys);
+        if (val is Dictionary<object, object?> od) return od.Keys.Select(k => k.ToString()!).ToList();
+        return [];
+    }
+
+    public List<string> GetStringSlice(string key)
+    {
+        var val = Navigate(key);
+        if (val is List<object?> list)
+            return list.Where(x => x is not null).Select(x => x!.ToString()!).ToList();
+        return [];
+    }
+
+    private object? Navigate(string dotPath)
+    {
+        var parts = dotPath.Split('.');
+        object? current = _config;
+        foreach (var part in parts)
+        {
+            if (current is Dictionary<string, object?> sd && sd.TryGetValue(part, out current)) continue;
+            if (current is Dictionary<object, object?> od && od.TryGetValue(part, out current)) continue;
+            return null;
+        }
+        return current;
+    }
 }
 
 public sealed class LoggingProvider : IProvider

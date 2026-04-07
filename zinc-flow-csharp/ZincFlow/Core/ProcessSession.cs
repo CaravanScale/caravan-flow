@@ -77,6 +77,28 @@ public sealed class ProcessSession
             // else: nacked — entry goes back to visible, don't return anything
             return true;
         }
+        else if (result is MultipleResult multiple)
+        {
+            // Route each output FlowFile — all-or-nothing
+            bool allRouted = true;
+            foreach (var ff in multiple.FlowFiles)
+            {
+                if (!RouteResult(ff, entry))
+                {
+                    allRouted = false;
+                    break;
+                }
+            }
+            if (allRouted)
+                _source.Ack(entry.Id);
+            return true;
+        }
+        else if (result is RoutedResult routed)
+        {
+            if (RouteResult(routed.FlowFile, entry))
+                _source.Ack(entry.Id);
+            return true;
+        }
         else if (result is DroppedResult)
         {
             var inputFf = entry.FlowFile;

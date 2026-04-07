@@ -282,6 +282,12 @@ public sealed class FlowFile
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static FlowFile CreateWithContent(Content content, Dictionary<string, string> attributes)
+    {
+        return Rent(Interlocked.Increment(ref _idCounter), AttributeMap.FromDict(attributes), content, Environment.TickCount64);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static FlowFile WithAttribute(FlowFile ff, string key, string value)
     {
         return Rent(ff.NumericId, ff.Attributes.With(key, value), ff.Content, ff.Timestamp);
@@ -318,6 +324,19 @@ public sealed class SingleResult : ProcessorResult
         r.FlowFile = null!;
         Pool<SingleResult>.Return(r);
     }
+}
+
+public sealed class MultipleResult : ProcessorResult
+{
+    public List<FlowFile> FlowFiles { get; }
+    public MultipleResult(List<FlowFile> ffs) => FlowFiles = ffs;
+}
+
+public sealed class RoutedResult : ProcessorResult
+{
+    public string Route { get; }
+    public FlowFile FlowFile { get; }
+    public RoutedResult(string route, FlowFile ff) { Route = route; FlowFile = ff; }
 }
 
 public sealed class DroppedResult : ProcessorResult

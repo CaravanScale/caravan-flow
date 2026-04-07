@@ -15,6 +15,12 @@ if (mode == "--bench" || mode == "bench")
     return;
 }
 
+if (mode == "--test" || mode == "test")
+{
+    var failures = ZincFlow.Tests.TestSuite.Run();
+    return;
+}
+
 // --- Production server mode ---
 Console.WriteLine("zinc-flow-csharp starting");
 
@@ -45,7 +51,7 @@ var store = new FileContentStore(contentDir);
 var contentProvider = new ContentProvider("content", store);
 contentProvider.Enable();
 
-var configProvider = new ConfigProvider(new Dictionary<string, object>());
+var configProvider = new ConfigProvider(config);
 configProvider.Enable();
 
 var loggingProvider = new LoggingProvider();

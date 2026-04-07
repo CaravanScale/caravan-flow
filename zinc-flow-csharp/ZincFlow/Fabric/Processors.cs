@@ -151,14 +151,22 @@ public sealed class JsonToRecords : IProcessor
 
 public sealed class RecordsToJson : IProcessor
 {
-    private readonly JsonRecordWriter _writer = new();
-
     public ProcessorResult Process(FlowFile ff)
     {
-        if (ff.Content is RecordContent)
+        if (ff.Content is RecordContent rc)
         {
-            // Pass through for now — full record reconstruction needs schema tracking
-            return SingleResult.Rent(ff);
+            // Serialize the stored record dicts back to JSON
+            byte[] bytes;
+            try
+            {
+                bytes = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(rc.Records);
+            }
+            catch
+            {
+                return new FailureResult("failed to serialize records to JSON", ff);
+            }
+            var updated = FlowFile.WithContent(ff, new Raw(bytes));
+            return SingleResult.Rent(updated);
         }
         return SingleResult.Rent(ff); // pass through Raw/Claim
     }

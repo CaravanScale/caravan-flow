@@ -139,7 +139,25 @@ AOT_EOF
         echo "" >> "$CSPROJ"
     fi
 
+    # Exclude test files from production build
+    cat >> "$CSPROJ" <<EXCLUDE_EOF
+  <ItemGroup>
+    <Compile Remove="Tests/**" />
+  </ItemGroup>
+
+EXCLUDE_EOF
+
     echo "</Project>" >> "$CSPROJ"
+}
+
+# Generate test csproj — includes Tests/ and swaps the entry point
+generate_test_csproj() {
+    generate_csproj  # base config
+    local test_csproj="$PROJECT_DIR/ZincFlow.Tests.csproj"
+    # Copy the main csproj, then remove AOT + add test files
+    sed 's|<PublishAot>true</PublishAot>|<PublishAot>false</PublishAot>|' "$CSPROJ" > "$test_csproj"
+    # Remove the test exclusion so Tests/ is included
+    sed -i '/<Compile Remove="Tests\/\*\*"/d' "$test_csproj"
 }
 
 # --- Detect RID ---
@@ -206,9 +224,14 @@ cmd_bench() {
 }
 
 cmd_test() {
-    generate_csproj
+    generate_test_csproj
     export PATH="$HOME/.dotnet:$PATH"
-    dotnet test "$PROJECT_DIR" -c Release
+    echo "Running tests..."
+    dotnet run --project "$PROJECT_DIR/ZincFlow.Tests.csproj" -c Release -- --test
+    local exit_code=$?
+    # Clean up test csproj
+    rm -f "$PROJECT_DIR/ZincFlow.Tests.csproj"
+    return $exit_code
 }
 
 cmd_clean() {
