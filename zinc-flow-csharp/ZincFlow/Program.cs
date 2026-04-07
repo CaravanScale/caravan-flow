@@ -87,13 +87,22 @@ var httpSource = new HttpConnectorSource("http-ingest", store, fab.GetDLQ());
 fab.AddSource(httpSource);
 
 // Config-driven file sources
-var sourcesConfig = GetConfigString(config, "sources.file.input_dir", "");
-if (!string.IsNullOrEmpty(sourcesConfig))
+var fileInputDir = GetConfigString(config, "sources.file.input_dir", "");
+if (!string.IsNullOrEmpty(fileInputDir))
 {
     var pattern = GetConfigString(config, "sources.file.pattern", "*");
     var pollMs = int.TryParse(GetConfigString(config, "sources.file.poll_interval_ms", "1000"), out var p) ? p : 1000;
-    var fileSource = new GetFileSource("file-ingest", sourcesConfig, pattern, pollMs, store);
+    var fileSource = new GetFileSource("file-ingest", fileInputDir, pattern, pollMs, store);
     fab.AddSource(fileSource);
+}
+
+// Config-driven ListenHTTP sources
+var listenPort = GetConfigString(config, "sources.listen_http.port", "");
+if (!string.IsNullOrEmpty(listenPort) && int.TryParse(listenPort, out var lPort))
+{
+    var listenPath = GetConfigString(config, "sources.listen_http.path", "/");
+    var listenSource = new ListenHttpSource("listen-http", lPort, listenPath, store);
+    fab.AddSource(listenSource);
 }
 
 // Build ASP.NET Minimal API app

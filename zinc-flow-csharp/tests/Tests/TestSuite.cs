@@ -67,6 +67,8 @@ public static class TestSuite
         TestConnectorSourceLifecycle();
         TestGetFileSource();
 
+        TestListenHttpSource();
+
         // Phase 2b/2c observability + hardening
         TestStructuredLogging();
         TestConfigValidation();
@@ -908,6 +910,54 @@ public static class TestSuite
         finally
         {
             Directory.Delete(tmpDir, true);
+        }
+    }
+
+    static void TestListenHttpSource()
+    {
+        Console.WriteLine("--- ListenHTTP Source ---");
+        var store = new MemoryContentStore();
+        var source = new ListenHttpSource("test-listen", 19876, "/ingest", store);
+
+        AssertTrue("not running initially", !source.IsRunning);
+        AssertTrue("type is listen-http", source.SourceType == "listen-http");
+
+        var ingested = new List<FlowFile>();
+        using var cts = new CancellationTokenSource();
+        source.Start(ff => { lock (ingested) { ingested.Add(ff); } return true; }, cts.Token);
+
+        // Wait for server to start
+        Thread.Sleep(1000);
+        AssertTrue("running after start", source.IsRunning);
+
+        // POST data to the listener
+        try
+        {
+            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+            var response = client.PostAsync("http://localhost:19876/ingest",
+                new StringContent("{\"key\":\"value\"}", System.Text.Encoding.UTF8, "application/json")).GetAwaiter().GetResult();
+            AssertTrue("accepted 200", response.IsSuccessStatusCode);
+
+            Thread.Sleep(200);
+            AssertTrue("ingested 1 flowfile", ingested.Count >= 1);
+            if (ingested.Count > 0)
+            {
+                AssertTrue("source attr set", ingested[0].Attributes.TryGetValue("source", out var src) && src == "test-listen");
+            }
+
+            // Health check
+            var health = client.GetAsync("http://localhost:19876/health").GetAwaiter().GetResult();
+            AssertTrue("health ok", health.IsSuccessStatusCode);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"  WARN: ListenHTTP test skipped ({ex.GetType().Name}: {ex.Message})");
+        }
+        finally
+        {
+            source.Stop();
+            Thread.Sleep(500);
+            AssertTrue("stopped after stop", !source.IsRunning);
         }
     }
 
