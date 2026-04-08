@@ -124,6 +124,7 @@ var app = builder.Build();
 
 // Management API only — ingestion goes through source connectors
 var api = new ApiHandler(fab);
+api.SetConfigPath(configPath);
 api.MapRoutes(app);
 
 // Prometheus metrics
@@ -144,6 +145,42 @@ _ = Task.Run(async () =>
 var sweepMs = int.TryParse(GetConfigString(config, "content.sweep_interval_ms", "300000"), out var si) ? si : 300_000;
 var appCts = new CancellationTokenSource();
 cleanup.StartPeriodicSweep(sweepMs, appCts.Token);
+
+// Hot reload: watch config.yaml for changes
+if (File.Exists(configPath))
+{
+    var configDir = Path.GetDirectoryName(Path.GetFullPath(configPath))!;
+    var configFile = Path.GetFileName(configPath);
+    var watcher = new FileSystemWatcher(configDir, configFile);
+    var reloadTimer = new System.Threading.Timer(_ =>
+    {
+        try
+        {
+            Console.WriteLine("[hot-reload] config.yaml changed, reloading...");
+            var yaml = File.ReadAllText(configPath);
+            var deserializer = new DeserializerBuilder()
+                .WithNamingConvention(UnderscoredNamingConvention.Instance)
+                .Build();
+            var newConfig = deserializer.Deserialize<Dictionary<string, object?>>(yaml) ?? new();
+            var errors = ConfigValidator.Validate(newConfig, reg);
+            if (errors.Count > 0)
+            {
+                Console.Error.WriteLine("[hot-reload] validation warnings:");
+                foreach (var err in errors)
+                    Console.Error.WriteLine($"  {err}");
+            }
+            fab.ReloadFlow(newConfig);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[hot-reload] reload failed: {ex.Message}");
+        }
+    });
+    watcher.Changed += (_, _) => reloadTimer.Change(500, Timeout.Infinite);
+    watcher.NotifyFilter = NotifyFilters.LastWrite;
+    watcher.EnableRaisingEvents = true;
+    Console.WriteLine($"[hot-reload] watching {configPath}");
+}
 
 Console.WriteLine($"Listening on port {port}");
 

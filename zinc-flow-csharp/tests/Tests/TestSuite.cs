@@ -93,6 +93,14 @@ public static class TestSuite
         TestE2EProvenanceChain();
         TestE2EListenHTTPPipeline();
 
+        // Hot reload
+        TestHotReloadAddProcessor();
+        TestHotReloadRemoveProcessor();
+        TestHotReloadUpdateProcessor();
+        TestHotReloadRoutes();
+        TestHotReloadNoChange();
+        TestHotReloadEndToEnd();
+
         Console.WriteLine();
         Console.WriteLine($"=== {_pass} passed, {_fail} failed ({_pass + _fail} total) ===");
         return _fail;
@@ -1565,5 +1573,252 @@ public static class TestSuite
         {
             if (Directory.Exists(tmpDir)) Directory.Delete(tmpDir, true);
         }
+    }
+
+    // --- Hot reload tests ---
+
+    static (ZincFlow.Fabric.Fabric, ProcessorContext, Registry) CreateFabricWithConfig(Dictionary<string, object?> config)
+    {
+        var reg = new Registry();
+        BuiltinProcessors.RegisterAll(reg);
+        var ctx = new ProcessorContext();
+        ctx.AddProvider(new ContentProvider("content", new MemoryContentStore()));
+        ctx.GetProvider("content")!.Enable();
+        var log = new LoggingProvider();
+        log.Enable();
+        ctx.AddProvider(log);
+        var prov = new ProvenanceProvider();
+        prov.Enable();
+        ctx.AddProvider(prov);
+        var fab = new ZincFlow.Fabric.Fabric(reg, ctx);
+        fab.LoadFlow(config);
+        return (fab, ctx, reg);
+    }
+
+    static Dictionary<string, object?> MakeFlowConfig(
+        Dictionary<string, object?> processors,
+        Dictionary<string, object?>? routes = null)
+    {
+        var flow = new Dictionary<string, object?> { ["processors"] = processors };
+        if (routes is not null) flow["routes"] = routes;
+        return new Dictionary<string, object?> { ["flow"] = flow };
+    }
+
+    static Dictionary<string, object?> MakeProc(string type, Dictionary<string, string> config, List<string>? requires = null)
+    {
+        // Convert to Dictionary<string, object?> to match YAML deserialization shape
+        var cfgObj = config.ToDictionary(kv => kv.Key, kv => (object?)kv.Value);
+        var def = new Dictionary<string, object?> { ["type"] = type, ["config"] = cfgObj };
+        if (requires is not null)
+            def["requires"] = requires.Cast<object?>().ToList();
+        return def;
+    }
+
+    static Dictionary<string, object?> MakeRoute(string attr, string op, string dest, string value = "")
+    {
+        var cond = new Dictionary<string, object?> { ["attribute"] = attr, ["operator"] = op, ["value"] = value };
+        return new Dictionary<string, object?> { ["condition"] = cond, ["destination"] = dest };
+    }
+
+    static void TestHotReloadAddProcessor()
+    {
+        Console.WriteLine("--- Hot Reload: Add Processor ---");
+        var config1 = MakeFlowConfig(new Dictionary<string, object?>
+        {
+            ["tag-env"] = MakeProc("UpdateAttribute", new() { ["key"] = "env", ["value"] = "dev" })
+        });
+        var (fab, ctx, reg) = CreateFabricWithConfig(config1);
+        fab.StartAsync();
+
+        AssertIntEqual("initial proc count", fab.GetProcessorNames().Count, 1);
+
+        // Reload with an added processor
+        var config2 = MakeFlowConfig(new Dictionary<string, object?>
+        {
+            ["tag-env"] = MakeProc("UpdateAttribute", new() { ["key"] = "env", ["value"] = "dev" }),
+            ["tag-src"] = MakeProc("UpdateAttribute", new() { ["key"] = "source", ["value"] = "api" })
+        });
+        var (added, removed, updated, routes) = fab.ReloadFlow(config2);
+        AssertIntEqual("added", added, 1);
+        AssertIntEqual("removed", removed, 0);
+        AssertIntEqual("updated", updated, 0);
+        AssertIntEqual("proc count after add", fab.GetProcessorNames().Count, 2);
+        AssertTrue("new proc exists", fab.GetProcessorNames().Contains("tag-src"));
+
+        fab.StopAsync();
+    }
+
+    static void TestHotReloadRemoveProcessor()
+    {
+        Console.WriteLine("--- Hot Reload: Remove Processor ---");
+        var config1 = MakeFlowConfig(new Dictionary<string, object?>
+        {
+            ["tag-env"] = MakeProc("UpdateAttribute", new() { ["key"] = "env", ["value"] = "dev" }),
+            ["tag-src"] = MakeProc("UpdateAttribute", new() { ["key"] = "source", ["value"] = "api" })
+        });
+        var (fab, ctx, reg) = CreateFabricWithConfig(config1);
+        fab.StartAsync();
+
+        AssertIntEqual("initial proc count", fab.GetProcessorNames().Count, 2);
+
+        // Reload without tag-src
+        var config2 = MakeFlowConfig(new Dictionary<string, object?>
+        {
+            ["tag-env"] = MakeProc("UpdateAttribute", new() { ["key"] = "env", ["value"] = "dev" })
+        });
+        var (added, removed, updated, _) = fab.ReloadFlow(config2);
+        AssertIntEqual("added", added, 0);
+        AssertIntEqual("removed", removed, 1);
+        AssertIntEqual("updated", updated, 0);
+        AssertIntEqual("proc count after remove", fab.GetProcessorNames().Count, 1);
+        AssertFalse("removed proc gone", fab.GetProcessorNames().Contains("tag-src"));
+
+        fab.StopAsync();
+    }
+
+    static void TestHotReloadUpdateProcessor()
+    {
+        Console.WriteLine("--- Hot Reload: Update Processor ---");
+        var config1 = MakeFlowConfig(new Dictionary<string, object?>
+        {
+            ["tag-env"] = MakeProc("UpdateAttribute", new() { ["key"] = "env", ["value"] = "dev" })
+        });
+        var (fab, ctx, reg) = CreateFabricWithConfig(config1);
+        fab.StartAsync();
+
+        // Change the value config
+        var config2 = MakeFlowConfig(new Dictionary<string, object?>
+        {
+            ["tag-env"] = MakeProc("UpdateAttribute", new() { ["key"] = "env", ["value"] = "prod" })
+        });
+        var (added, removed, updated, _) = fab.ReloadFlow(config2);
+        AssertIntEqual("added", added, 0);
+        AssertIntEqual("removed", removed, 0);
+        AssertIntEqual("updated", updated, 1);
+        AssertIntEqual("proc count unchanged", fab.GetProcessorNames().Count, 1);
+
+        // Verify the processor uses new config by processing a FlowFile
+        var ff = FlowFile.Create("test"u8, new() { ["type"] = "order" });
+        fab.Ingest(ff);
+        Thread.Sleep(200);
+
+        fab.StopAsync();
+    }
+
+    static void TestHotReloadRoutes()
+    {
+        Console.WriteLine("--- Hot Reload: Routes ---");
+        var config1 = MakeFlowConfig(
+            new Dictionary<string, object?>
+            {
+                ["tag-env"] = MakeProc("UpdateAttribute", new() { ["key"] = "env", ["value"] = "dev" })
+            },
+            new Dictionary<string, object?>
+            {
+                ["r1"] = MakeRoute("type", "EXISTS", "tag-env")
+            });
+        var (fab, ctx, reg) = CreateFabricWithConfig(config1);
+        fab.StartAsync();
+
+        var rulesBefore = fab.GetEngine().GetAllRules();
+        AssertIntEqual("initial route count", rulesBefore.Count, 1);
+
+        // Reload with different routes
+        var config2 = MakeFlowConfig(
+            new Dictionary<string, object?>
+            {
+                ["tag-env"] = MakeProc("UpdateAttribute", new() { ["key"] = "env", ["value"] = "dev" })
+            },
+            new Dictionary<string, object?>
+            {
+                ["r1"] = MakeRoute("type", "EXISTS", "tag-env"),
+                ["r2"] = MakeRoute("env", "EQ", "tag-env", "dev")
+            });
+        var (added, removed, updated, routesChanged) = fab.ReloadFlow(config2);
+        AssertTrue("routes changed", routesChanged > 0);
+        var rulesAfter = fab.GetEngine().GetAllRules();
+        AssertIntEqual("route count after", rulesAfter.Count, 2);
+
+        fab.StopAsync();
+    }
+
+    static void TestHotReloadNoChange()
+    {
+        Console.WriteLine("--- Hot Reload: No Change ---");
+        var config = MakeFlowConfig(
+            new Dictionary<string, object?>
+            {
+                ["tag-env"] = MakeProc("UpdateAttribute", new() { ["key"] = "env", ["value"] = "dev" })
+            },
+            new Dictionary<string, object?>
+            {
+                ["r1"] = MakeRoute("type", "EXISTS", "tag-env")
+            });
+        var (fab, ctx, reg) = CreateFabricWithConfig(config);
+        fab.StartAsync();
+
+        var (added, removed, updated, routesChanged) = fab.ReloadFlow(config);
+        AssertIntEqual("no adds", added, 0);
+        AssertIntEqual("no removes", removed, 0);
+        AssertIntEqual("no updates", updated, 0);
+        AssertIntEqual("no route changes", routesChanged, 0);
+
+        fab.StopAsync();
+    }
+
+    static void TestHotReloadEndToEnd()
+    {
+        Console.WriteLine("--- Hot Reload: E2E Pipeline Swap ---");
+
+        // Start with tag-env → sets env=dev
+        var config1 = MakeFlowConfig(
+            new Dictionary<string, object?>
+            {
+                ["tagger"] = MakeProc("UpdateAttribute", new() { ["key"] = "env", ["value"] = "dev" })
+            },
+            new Dictionary<string, object?>
+            {
+                ["route-all"] = MakeRoute("type", "EXISTS", "tagger")
+            });
+        var (fab, ctx, reg) = CreateFabricWithConfig(config1);
+        fab.StartAsync();
+        Thread.Sleep(100);
+
+        // Ingest a FlowFile and let it process
+        var ff1 = FlowFile.Create("hello"u8, new() { ["type"] = "order" });
+        fab.Ingest(ff1);
+        Thread.Sleep(300);
+
+        var stats1 = fab.GetStats();
+        AssertTrue("processed before reload", stats1["processed"] > 0);
+
+        // Hot reload: change tagger value from dev → prod, add a second processor
+        var config2 = MakeFlowConfig(
+            new Dictionary<string, object?>
+            {
+                ["tagger"] = MakeProc("UpdateAttribute", new() { ["key"] = "env", ["value"] = "prod" }),
+                ["logger"] = MakeProc("LogAttribute", new() { ["prefix"] = "reload-test" })
+            },
+            new Dictionary<string, object?>
+            {
+                ["route-all"] = MakeRoute("type", "EXISTS", "tagger"),
+                ["route-log"] = MakeRoute("env", "EXISTS", "logger")
+            });
+
+        var (added, removed, updated, routesChanged) = fab.ReloadFlow(config2);
+        AssertIntEqual("e2e added", added, 1);
+        AssertIntEqual("e2e updated", updated, 1);
+        AssertTrue("e2e routes changed", routesChanged > 0);
+        AssertIntEqual("e2e proc count", fab.GetProcessorNames().Count, 2);
+
+        // Ingest another FlowFile — should flow through updated pipeline
+        var ff2 = FlowFile.Create("world"u8, new() { ["type"] = "order" });
+        fab.Ingest(ff2);
+        Thread.Sleep(300);
+
+        var stats2 = fab.GetStats();
+        AssertTrue("processed after reload", stats2["processed"] > stats1["processed"]);
+
+        fab.StopAsync();
     }
 }

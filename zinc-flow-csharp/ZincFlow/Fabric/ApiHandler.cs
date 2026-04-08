@@ -1,3 +1,5 @@
+using YamlDotNet.Serialization;
+using YamlDotNet.Serialization.NamingConventions;
 using ZincFlow.Core;
 
 namespace ZincFlow.Fabric;
@@ -9,8 +11,11 @@ namespace ZincFlow.Fabric;
 public sealed class ApiHandler
 {
     private readonly Fabric _fab;
+    private string? _configPath;
 
     public ApiHandler(Fabric fab) => _fab = fab;
+
+    public void SetConfigPath(string path) => _configPath = path;
 
     public void MapRoutes(WebApplication app)
     {
@@ -39,6 +44,9 @@ public sealed class ApiHandler
         app.MapGet("/health", Health);
         app.MapGet("/api/provenance", ProvenanceRecent);
         app.MapGet("/api/provenance/{id}", ProvenanceById);
+
+        // Hot reload
+        app.MapPost("/api/reload", Reload);
 
         // Connector source lifecycle
         app.MapGet("/api/sources", Sources);
@@ -296,6 +304,28 @@ public sealed class ApiHandler
             dlq = _fab.GetDLQ().Count,
             sources = sources.Select(s => new { name = s.Name, type = s.Type, running = s.Running })
         });
+    }
+
+    // --- Hot reload ---
+
+    private IResult Reload()
+    {
+        if (_configPath is null || !File.Exists(_configPath))
+            return Results.Json(new { error = "config path not set or file missing" });
+        try
+        {
+            var yaml = File.ReadAllText(_configPath);
+            var deserializer = new DeserializerBuilder()
+                .WithNamingConvention(UnderscoredNamingConvention.Instance)
+                .Build();
+            var config = deserializer.Deserialize<Dictionary<string, object?>>(yaml) ?? new();
+            var (added, removed, updated, routesChanged) = _fab.ReloadFlow(config);
+            return Results.Json(new { status = "reloaded", added, removed, updated, routesChanged });
+        }
+        catch (Exception ex)
+        {
+            return Results.Json(new { error = $"reload failed: {ex.Message}" });
+        }
     }
 
     // --- Provenance ---

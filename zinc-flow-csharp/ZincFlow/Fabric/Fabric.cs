@@ -21,6 +21,8 @@ public sealed class Fabric
     private readonly DLQ _dlq = new();
     private readonly Dictionary<string, IConnectorSource> _sources = new();
     private readonly CancellationTokenSource _cts = new();
+    private readonly Dictionary<string, CancellationTokenSource> _processorCts = new();
+    private readonly Dictionary<string, (string Type, Dictionary<string, string> Config, List<string> Requires)> _processorDefs = new();
 
     private long _processedCount;
     private volatile bool _running;
@@ -107,6 +109,7 @@ public sealed class Fabric
                     _procs[name] = proc;
                     _processorNames.Add(name);
                     _processorStates[name] = ComponentState.Enabled;
+                    _processorDefs[name] = (typeName, new Dictionary<string, string>(procConfig), new List<string>(requires));
 
                     QueueWAL? qWal = _walDir != "" ? new QueueWAL(Path.Combine(_walDir, $"{name}.wal"), _walMaxSizeMb, _walCompactIntervalMs) : null;
                     var queue = new FlowQueue(name, _queueMaxCount, _queueMaxBytes, _visibilityTimeoutMs, qWal);
@@ -175,8 +178,10 @@ public sealed class Fabric
         {
             _queues[name].StartReaper(_cts.Token);
             _queues[name].StartWALCompaction(_cts.Token);
+            var procCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
+            _processorCts[name] = procCts;
             var procName = name;
-            _ = Task.Run(() => ProcessorLoop(procName), _cts.Token);
+            _ = Task.Run(() => ProcessorLoop(procName, procCts.Token), _cts.Token);
         }
 
         // Ingest router loop
@@ -194,16 +199,16 @@ public sealed class Fabric
         Console.WriteLine($"[fabric] started ({_processorNames.Count} processors, {_sources.Count} sources)");
     }
 
-    private void ProcessorLoop(string procName)
+    private void ProcessorLoop(string procName, CancellationToken ct)
     {
-        while (_running)
+        while (_running && !ct.IsCancellationRequested)
         {
             if (_processorStates.GetValueOrDefault(procName) != ComponentState.Enabled)
             {
                 Thread.Sleep(100);
                 continue;
             }
-            if (_sessions[procName].Execute())
+            if (_sessions.TryGetValue(procName, out var session) && session.Execute())
                 Interlocked.Increment(ref _processedCount);
             else
                 Thread.Sleep(10);
@@ -411,15 +416,20 @@ public sealed class Fabric
 
     // --- Dynamic processor/route management ---
 
-    public bool AddProcessor(string name, string typeName, Dictionary<string, string> config)
+    public bool AddProcessor(string name, string typeName, Dictionary<string, string> config, List<string>? requires = null)
     {
         if (_procs.ContainsKey(name) || !_reg.Has(typeName)) return false;
-        var ctx = BuildScopedContext([]);
+        requires ??= [];
+        _processorRequires[name] = requires;
+        foreach (var pn in requires)
+            _globalCtx.RegisterDependent(pn, name);
+
+        var ctx = BuildScopedContext(requires);
         var proc = _reg.Create(typeName, ctx, config);
         _procs[name] = proc;
         _processorNames.Add(name);
         _processorStates[name] = ComponentState.Enabled;
-        _processorRequires[name] = [];
+        _processorDefs[name] = (typeName, new Dictionary<string, string>(config), new List<string>(requires));
 
         QueueWAL? qWal = _walDir != "" ? new QueueWAL(Path.Combine(_walDir, $"{name}.wal"), _walMaxSizeMb, _walCompactIntervalMs) : null;
         var queue = new FlowQueue(name, _queueMaxCount, _queueMaxBytes, _visibilityTimeoutMs, qWal);
@@ -430,7 +440,10 @@ public sealed class Fabric
         if (_running)
         {
             queue.StartReaper(_cts.Token);
-            _ = Task.Run(() => ProcessorLoop(name), _cts.Token);
+            queue.StartWALCompaction(_cts.Token);
+            var procCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
+            _processorCts[name] = procCts;
+            _ = Task.Run(() => ProcessorLoop(name, procCts.Token), _cts.Token);
         }
         return true;
     }
@@ -439,8 +452,16 @@ public sealed class Fabric
     {
         if (!_procs.ContainsKey(name)) return false;
         _processorStates[name] = ComponentState.Disabled;
+        if (_processorCts.TryGetValue(name, out var cts))
+        {
+            cts.Cancel();
+            _processorCts.Remove(name);
+        }
         _procs.Remove(name);
         _processorNames.Remove(name);
+        _sessions.Remove(name);
+        _processorDefs.Remove(name);
+        _processorRequires.Remove(name);
         return true;
     }
 
@@ -466,6 +487,187 @@ public sealed class Fabric
         var exists = _engine.GetAllRules().Any(r => r.Name == name);
         if (!exists) return false;
         _engine.ToggleRule("flow", name);
+        return true;
+    }
+
+    // --- Hot reload ---
+
+    /// <summary>
+    /// Reload flow from new config. Diffs processors and routes against current state.
+    /// Returns (added, removed, updated, routesChanged).
+    /// Does NOT reload sources or providers (those are infrastructure — require restart).
+    /// </summary>
+    public (int Added, int Removed, int Updated, int RoutesChanged) ReloadFlow(Dictionary<string, object?> config)
+    {
+        int added = 0, removed = 0, updated = 0, routesChanged = 0;
+
+        // Read new defaults
+        if (TryGetConfig<int>(config, "defaults.backpressure.max_count", out var mc)) _queueMaxCount = mc;
+        if (TryGetConfig<int>(config, "defaults.backpressure.max_retries", out var mr)) _maxRetries = mr;
+        if (TryGetConfig<int>(config, "defaults.backpressure.drain_timeout", out var dt)) _drainTimeoutSeconds = dt;
+        if (TryGetConfig<int>(config, "defaults.backpressure.max_hops", out var mh)) _maxHops = mh;
+
+        // Parse new processor defs from config
+        var newDefs = new Dictionary<string, (string Type, Dictionary<string, string> Config, List<string> Requires)>();
+        var flowDict = AsStringDict(config.GetValueOrDefault("flow"));
+        if (flowDict is not null)
+        {
+            var procDefs = AsStringDict(flowDict.GetValueOrDefault("processors"));
+            if (procDefs is not null)
+            {
+                foreach (var (name, defObj) in procDefs)
+                {
+                    var def = AsStringDict(defObj);
+                    if (def is null) continue;
+                    var typeName = GetStr(def, "type");
+                    if (!_reg.Has(typeName)) continue;
+                    var procConfig = new Dictionary<string, string>();
+                    var cfgDict = AsStringDict(def.GetValueOrDefault("config"));
+                    if (cfgDict is not null)
+                        foreach (var (k, v) in cfgDict)
+                            procConfig[k] = v?.ToString() ?? "";
+                    var requires = GetStringList(def, "requires") ?? [];
+                    newDefs[name] = (typeName, procConfig, requires);
+                }
+            }
+        }
+
+        // Remove processors no longer in config
+        var currentNames = new List<string>(_processorDefs.Keys);
+        foreach (var name in currentNames)
+        {
+            if (!newDefs.ContainsKey(name))
+            {
+                RemoveProcessor(name);
+                removed++;
+                _log?.Log("INFO", "hot-reload", $"removed processor: {name}");
+            }
+        }
+
+        // Add new processors
+        foreach (var (name, def) in newDefs)
+        {
+            if (!_processorDefs.ContainsKey(name))
+            {
+                if (AddProcessor(name, def.Type, def.Config, def.Requires))
+                {
+                    added++;
+                    _log?.Log("INFO", "hot-reload", $"added processor: {name} (type={def.Type})");
+                }
+            }
+        }
+
+        // Update changed processors (different type or config)
+        foreach (var (name, newDef) in newDefs)
+        {
+            if (!_processorDefs.TryGetValue(name, out var oldDef)) continue;
+            if (oldDef.Type == newDef.Type && DictEqual(oldDef.Config, newDef.Config) && ListEqual(oldDef.Requires, newDef.Requires))
+                continue;
+
+            // Drain the queue before swapping — keep the queue, replace the processor + session
+            _processorStates[name] = ComponentState.Disabled;
+            if (_processorCts.TryGetValue(name, out var cts))
+            {
+                cts.Cancel();
+                _processorCts.Remove(name);
+            }
+
+            // Rebuild processor with new config
+            var ctx = BuildScopedContext(newDef.Requires);
+            var proc = _reg.Create(newDef.Type, ctx, newDef.Config);
+            _procs[name] = proc;
+            _processorRequires[name] = newDef.Requires;
+            _processorDefs[name] = (newDef.Type, new Dictionary<string, string>(newDef.Config), new List<string>(newDef.Requires));
+
+            // Rebuild session pointing to the same queue
+            var session = new ProcessSession(_queues[name], proc, name, _engine, _queues, _dlq, _maxRetries, _provenance, _maxHops);
+            _sessions[name] = session;
+            _processorStates[name] = ComponentState.Enabled;
+
+            if (_running)
+            {
+                var procCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
+                _processorCts[name] = procCts;
+                _ = Task.Run(() => ProcessorLoop(name, procCts.Token), _cts.Token);
+            }
+
+            updated++;
+            _log?.Log("INFO", "hot-reload", $"updated processor: {name} (type={newDef.Type})");
+        }
+
+        // Reload routes
+        if (flowDict is not null)
+        {
+            var newRules = ParseRoutes(flowDict);
+            var oldRules = _engine.GetAllRules();
+            if (!RulesEqual(oldRules, newRules))
+            {
+                _engine.AddOrReplaceRuleset("flow", newRules);
+                routesChanged = newRules.Count;
+                _log?.Log("INFO", "hot-reload", $"routes updated: {newRules.Count} rules");
+            }
+        }
+
+        var total = added + removed + updated + routesChanged;
+        if (total > 0)
+            Console.WriteLine($"[hot-reload] applied: +{added} -{removed} ~{updated} processors, {routesChanged} routes");
+        else
+            Console.WriteLine("[hot-reload] no changes detected");
+
+        return (added, removed, updated, routesChanged);
+    }
+
+    private List<RoutingRule> ParseRoutes(Dictionary<string, object?> flowDict)
+    {
+        var rules = new List<RoutingRule>();
+        var routeDefs = AsStringDict(flowDict.GetValueOrDefault("routes"));
+        if (routeDefs is null) return rules;
+        foreach (var (ruleName, rObj) in routeDefs)
+        {
+            var rDef = AsStringDict(rObj);
+            if (rDef is null) continue;
+            var dest = GetStr(rDef, "destination");
+            var condDict = AsStringDict(rDef.GetValueOrDefault("condition"));
+            if (condDict is null) continue;
+            var attr = GetStr(condDict, "attribute");
+            var op = GetStr(condDict, "operator");
+            var val = GetStr(condDict, "value");
+            rules.Add(new RoutingRule(ruleName, attr, ParseOperator(op), val, dest));
+        }
+        return rules;
+    }
+
+    private static bool DictEqual(Dictionary<string, string> a, Dictionary<string, string> b)
+    {
+        if (a.Count != b.Count) return false;
+        foreach (var (k, v) in a)
+            if (!b.TryGetValue(k, out var bv) || v != bv) return false;
+        return true;
+    }
+
+    private static bool ListEqual(List<string> a, List<string> b)
+    {
+        if (a.Count != b.Count) return false;
+        for (int i = 0; i < a.Count; i++)
+            if (a[i] != b[i]) return false;
+        return true;
+    }
+
+    private static bool RulesEqual(List<RoutingRule> a, List<RoutingRule> b)
+    {
+        if (a.Count != b.Count) return false;
+        for (int i = 0; i < a.Count; i++)
+        {
+            if (a[i].Name != b[i].Name || a[i].Destination != b[i].Destination || a[i].Enabled != b[i].Enabled)
+                return false;
+            // Compare conditions
+            if (a[i].Condition is BaseRule ab && b[i].Condition is BaseRule bb)
+            {
+                if (ab.Attribute != bb.Attribute || ab.Operator != bb.Operator || ab.Value != bb.Value)
+                    return false;
+            }
+            else return false;
+        }
         return true;
     }
 
