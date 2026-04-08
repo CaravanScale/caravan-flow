@@ -109,31 +109,156 @@ public static class ConfigValidator
                 errors.Add(new($"flow.processors.{name}.type", $"unknown processor type: {typeName}"));
         }
 
-        // Check routes reference valid destinations + build adjacency for cycle detection
-        var routeDefs = Fabric.AsStringDict(flowDict.GetValueOrDefault("routes"));
-        // adjacency: every processor can potentially route to these destinations
-        var allDestinations = new HashSet<string>();
-        if (routeDefs is not null)
+        // Check connections reference valid destinations
+        foreach (var (name, defObj) in procDefs)
         {
-            foreach (var (ruleName, rObj) in routeDefs)
+            var def = Fabric.AsStringDict(defObj);
+            if (def is null) continue;
+            var connDefs = Fabric.AsStringDict(def.GetValueOrDefault("connections"));
+            if (connDefs is null) continue;
+            foreach (var (rel, destObj) in connDefs)
             {
-                var rDef = Fabric.AsStringDict(rObj);
-                if (rDef is null) continue;
-
-                var dest = Fabric.GetStr(rDef, "destination");
-                if (string.IsNullOrEmpty(dest))
-                    errors.Add(new($"flow.routes.{ruleName}.destination", "missing destination"));
-                else if (!procNames.Contains(dest))
-                    errors.Add(new($"flow.routes.{ruleName}.destination", $"destination '{dest}' is not a defined processor"));
-                else
-                    allDestinations.Add(dest);
-
-                var condDict = Fabric.AsStringDict(rDef.GetValueOrDefault("condition"));
-                if (condDict is null)
-                    errors.Add(new($"flow.routes.{ruleName}.condition", "missing condition"));
+                var dests = Fabric.GetStringList(connDefs, rel);
+                if (dests is null) continue;
+                foreach (var dest in dests)
+                {
+                    if (!procNames.Contains(dest))
+                        errors.Add(new($"flow.processors.{name}.connections.{rel}", $"target '{dest}' is not a defined processor"));
+                }
             }
         }
 
+        // DAG validation
+        var connections = new Dictionary<string, Dictionary<string, List<string>>>();
+        foreach (var (name, defObj) in procDefs)
+        {
+            var def = Fabric.AsStringDict(defObj);
+            if (def is null) continue;
+            var parsed = Fabric.ParseConnections(def);
+            connections[name] = parsed;
+        }
+        var dagResult = DagValidator.Validate(connections);
+        foreach (var err in dagResult.Errors)
+            errors.Add(new("flow.dag", err));
+        foreach (var warn in dagResult.Warnings)
+            errors.Add(new("flow.dag", warn));
+
         return errors;
+    }
+}
+
+/// <summary>
+/// DAG validator: validates the processor connection graph for cycles,
+/// invalid targets, unreachable processors, and computes entry points.
+/// </summary>
+public static class DagValidator
+{
+    public sealed class DagResult
+    {
+        public List<string> Errors { get; } = new();
+        public List<string> Warnings { get; } = new();
+        public List<string> EntryPoints { get; } = new();
+    }
+
+    public static DagResult Validate(Dictionary<string, Dictionary<string, List<string>>> processorConnections)
+    {
+        var result = new DagResult();
+        var allProcessors = new HashSet<string>(processorConnections.Keys);
+
+        // Build adjacency list (flatten all relationships)
+        var adjacency = new Dictionary<string, List<string>>();
+        var referenced = new HashSet<string>();
+        foreach (var (proc, connections) in processorConnections)
+        {
+            var targets = new List<string>();
+            foreach (var (_, dests) in connections)
+            {
+                foreach (var dest in dests)
+                {
+                    targets.Add(dest);
+                    referenced.Add(dest);
+                    if (!allProcessors.Contains(dest))
+                        result.Errors.Add($"processor '{proc}' connects to unknown target '{dest}'");
+                }
+            }
+            adjacency[proc] = targets;
+        }
+
+        // Entry points: processors not referenced as a target by any other processor
+        foreach (var proc in allProcessors)
+        {
+            if (!referenced.Contains(proc))
+                result.EntryPoints.Add(proc);
+        }
+
+        if (result.EntryPoints.Count == 0 && allProcessors.Count > 0)
+            result.Warnings.Add("no entry-point processors detected (all processors are downstream targets)");
+
+        // Cycle detection: DFS 3-color (0=white, 1=gray, 2=black)
+        var color = new Dictionary<string, int>();
+        foreach (var proc in allProcessors)
+            color[proc] = 0;
+
+        foreach (var proc in allProcessors)
+        {
+            if (color[proc] == 0)
+                DetectCycles(proc, adjacency, color, new List<string>(), result, allProcessors);
+        }
+
+        // Unreachable detection: BFS from entry points
+        if (result.EntryPoints.Count > 0)
+        {
+            var reachable = new HashSet<string>();
+            var queue = new Queue<string>(result.EntryPoints);
+            while (queue.Count > 0)
+            {
+                var current = queue.Dequeue();
+                if (!reachable.Add(current)) continue;
+                if (adjacency.TryGetValue(current, out var targets))
+                {
+                    foreach (var t in targets)
+                    {
+                        if (allProcessors.Contains(t) && !reachable.Contains(t))
+                            queue.Enqueue(t);
+                    }
+                }
+            }
+            foreach (var proc in allProcessors)
+            {
+                if (!reachable.Contains(proc))
+                    result.Warnings.Add($"processor '{proc}' is not reachable from any entry point");
+            }
+        }
+
+        return result;
+    }
+
+    private static void DetectCycles(string node, Dictionary<string, List<string>> adjacency,
+        Dictionary<string, int> color, List<string> path, DagResult result, HashSet<string> allProcessors)
+    {
+        color[node] = 1; // gray
+        path.Add(node);
+
+        if (adjacency.TryGetValue(node, out var targets))
+        {
+            foreach (var target in targets)
+            {
+                if (!allProcessors.Contains(target)) continue;
+                if (!color.TryGetValue(target, out var c)) continue;
+                if (c == 1) // gray = back edge = cycle
+                {
+                    var cycleStart = path.IndexOf(target);
+                    var cycle = string.Join(" → ", path.Skip(cycleStart)) + " → " + target;
+                    result.Warnings.Add($"cycle detected: {cycle}");
+                }
+                else if (c == 0)
+                {
+                    DetectCycles(target, adjacency, color, path, result, allProcessors);
+                }
+            }
+        }
+
+        path.RemoveAt(path.Count - 1);
+        color[node] = 2; // black
     }
 }

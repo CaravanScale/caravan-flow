@@ -4,16 +4,16 @@ using ZincFlow.Fabric;
 namespace ZincFlow.Core;
 
 /// <summary>
-/// Transaction boundary: claim → process → route → ack.
+/// Transaction boundary: claim → process → route via connections → ack.
 /// All-or-nothing fan-out with backpressure.
-/// Returns pooled objects after consumption to minimize GC pressure.
+/// Connections map relationship names (success, failure, custom) to destination queues.
 /// </summary>
 public sealed class ProcessSession
 {
     private readonly FlowQueue _source;
     private readonly IProcessor _processor;
     private readonly string _processorName;
-    private readonly RulesEngine _engine;
+    private readonly Dictionary<string, List<string>> _connections;
     private readonly Dictionary<string, FlowQueue> _destQueues;
     private readonly DLQ _dlq;
     private readonly int _maxRetries;
@@ -27,7 +27,7 @@ public sealed class ProcessSession
         FlowQueue source,
         IProcessor processor,
         string processorName,
-        RulesEngine engine,
+        Dictionary<string, List<string>> connections,
         Dictionary<string, FlowQueue> destQueues,
         DLQ dlq,
         int maxRetries,
@@ -37,7 +37,7 @@ public sealed class ProcessSession
         _source = source;
         _processor = processor;
         _processorName = processorName;
-        _engine = engine;
+        _connections = connections;
         _destQueues = destQueues;
         _dlq = dlq;
         _maxRetries = maxRetries;
@@ -80,23 +80,19 @@ public sealed class ProcessSession
 
             if (RouteResult(outFf, entry))
             {
-                // Route succeeded — return the input FlowFile to pool
                 var inputFf = entry.FlowFile;
-                _source.Ack(entry.Id); // returns QueueEntry to pool
+                _source.Ack(entry.Id);
                 if (!ReferenceEquals(inputFf, outFf))
                 {
                     FlowFile.Return(inputFf);
-                    // If no destinations matched, output FF is orphaned — return it too
                     if (_destBuffer.Count == 0)
                         FlowFile.Return(outFf);
                 }
             }
-            // else: nacked — entry goes back to visible, don't return anything
             return true;
         }
         else if (result is MultipleResult multiple)
         {
-            // Route each output FlowFile — all-or-nothing
             bool allRouted = true;
             foreach (var ff in multiple.FlowFiles)
             {
@@ -114,8 +110,9 @@ public sealed class ProcessSession
         else if (result is RoutedResult routed)
         {
             var routedFf = routed.FlowFile;
+            var relationship = routed.Route;
             RoutedResult.Return(routed);
-            if (RouteResult(routedFf, entry))
+            if (RouteResult(routedFf, entry, relationship))
                 _source.Ack(entry.Id);
             return true;
         }
@@ -129,10 +126,22 @@ public sealed class ProcessSession
         }
         else if (result is FailureResult failure)
         {
-            _provenance?.Record(failure.FlowFile.NumericId, ProvenanceEventType.DLQ, _processorName, failure.Reason);
-            _dlq.Add(failure.FlowFile, _processorName, _source.Name, entry.AttemptCount, failure.Reason);
-            FailureResult.Return(failure);
-            _source.Ack(entry.Id);
+            if (_connections.ContainsKey("failure"))
+            {
+                // Route to failure connection targets
+                var failFf = failure.FlowFile;
+                FailureResult.Return(failure);
+                if (RouteResult(failFf, entry, "failure"))
+                    _source.Ack(entry.Id);
+            }
+            else
+            {
+                // No failure connection — DLQ
+                _provenance?.Record(failure.FlowFile.NumericId, ProvenanceEventType.DLQ, _processorName, failure.Reason);
+                _dlq.Add(failure.FlowFile, _processorName, _source.Name, entry.AttemptCount, failure.Reason);
+                FailureResult.Return(failure);
+                _source.Ack(entry.Id);
+            }
             return true;
         }
 
@@ -141,12 +150,18 @@ public sealed class ProcessSession
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private bool RouteResult(FlowFile ff, QueueEntry entry)
+    private bool RouteResult(FlowFile ff, QueueEntry entry, string relationship = "success")
     {
-        _engine.GetDestinations(ff.Attributes, _destBuffer);
+        _destBuffer.Clear();
+
+        if (_connections.TryGetValue(relationship, out var targets))
+        {
+            foreach (var t in targets)
+                _destBuffer.Add(t);
+        }
 
         if (_destBuffer.Count == 0)
-            return true;
+            return true; // No connections = terminal/sink
 
         // Pre-check all destinations (all-or-nothing)
         foreach (var dest in _destBuffer)

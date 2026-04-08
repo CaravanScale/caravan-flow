@@ -22,8 +22,8 @@ public sealed class ApiHandler
         app.MapGet("/api/stats", Stats);
         app.MapGet("/api/processors", Processors);
         app.MapGet("/api/registry", RegistryList);
-        app.MapGet("/api/routes", Routes);
         app.MapGet("/api/flow", Flow);
+        app.MapGet("/api/connections", Connections);
         app.MapGet("/api/queues", Queues);
         app.MapGet("/api/dlq", DlqList);
         app.MapPost("/api/dlq/replay", DlqReplay);
@@ -34,9 +34,6 @@ public sealed class ApiHandler
         app.MapPost("/api/processors/enable", EnableProcessor);
         app.MapPost("/api/processors/disable", DisableProcessor);
         app.MapPost("/api/processors/state", ProcessorState);
-        app.MapPost("/api/routes/add", AddRoute);
-        app.MapDelete("/api/routes/remove", RemoveRoute);
-        app.MapPut("/api/routes/toggle", ToggleRoute);
         app.MapGet("/api/providers", Providers);
         app.MapPost("/api/providers/enable", EnableProvider);
         app.MapPost("/api/providers/disable", DisableProvider);
@@ -71,16 +68,9 @@ public sealed class ApiHandler
         }));
     }
 
-    private IResult Routes()
+    private IResult Connections()
     {
-        var rules = _fab.GetEngine().GetAllRules();
-        return Results.Json(rules.Select(r => new
-        {
-            name = r.Name,
-            enabled = r.Enabled,
-            destination = r.Destination,
-            condition = FormatCondition(r.Condition)
-        }));
+        return Results.Json(_fab.GetConnections());
     }
 
     private IResult Flow()
@@ -92,15 +82,10 @@ public sealed class ApiHandler
             {
                 name,
                 state = _fab.GetProcessorState(name).ToString().ToUpperInvariant(),
-                queue = queueStats.TryGetValue(name, out var qs) ? qs : null
+                queue = queueStats.TryGetValue(name, out var qs) ? qs : null,
+                connections = _fab.GetConnections().GetValueOrDefault(name)
             }),
-            routes = _fab.GetEngine().GetAllRules().Select(r => new
-            {
-                name = r.Name,
-                enabled = r.Enabled,
-                destination = r.Destination,
-                condition = FormatCondition(r.Condition)
-            }),
+            entryPoints = _fab.GetEntryPoints(),
             sources = _fab.GetSources().Select(s => new { name = s.Name, type = s.Type, running = s.Running }),
             providers = _fab.GetContext().ListProviders().Select(name =>
             {
@@ -224,43 +209,6 @@ public sealed class ApiHandler
         return Results.Json(new { name, state = _fab.GetProcessorState(name).ToString().ToUpperInvariant() });
     }
 
-    // --- Route management ---
-
-    private async Task<IResult> AddRoute(HttpContext ctx)
-    {
-        var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>();
-        if (req is null) return Results.BadRequest(new { error = "invalid json" });
-        var name = req.GetValueOrDefault("name") ?? "";
-        var attr = req.GetValueOrDefault("attribute") ?? "";
-        var op = req.GetValueOrDefault("operator") ?? "";
-        var val = req.GetValueOrDefault("value") ?? "";
-        var dest = req.GetValueOrDefault("destination") ?? "";
-        if (name == "" || attr == "" || dest == "")
-            return Results.BadRequest(new { error = "name, attribute, and destination required" });
-        _fab.AddRoute(name, attr, op, val, dest);
-        return Results.Created($"/api/routes/{name}", new { status = "created", name });
-    }
-
-    private async Task<IResult> RemoveRoute(HttpContext ctx)
-    {
-        var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>();
-        var name = req?.GetValueOrDefault("name") ?? "";
-        if (name == "") return Results.BadRequest(new { error = "name required" });
-        return _fab.RemoveRoute(name)
-            ? Results.Json(new { status = "removed", name })
-            : Results.NotFound(new { error = "route not found" });
-    }
-
-    private async Task<IResult> ToggleRoute(HttpContext ctx)
-    {
-        var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>();
-        var name = req?.GetValueOrDefault("name") ?? "";
-        if (name == "") return Results.BadRequest(new { error = "name required" });
-        return _fab.ToggleRoute(name)
-            ? Results.Json(new { status = "toggled", name })
-            : Results.NotFound(new { error = "route not found" });
-    }
-
     // --- Providers ---
 
     private IResult Providers()
@@ -319,8 +267,8 @@ public sealed class ApiHandler
                 .WithNamingConvention(UnderscoredNamingConvention.Instance)
                 .Build();
             var config = deserializer.Deserialize<Dictionary<string, object?>>(yaml) ?? new();
-            var (added, removed, updated, routesChanged) = _fab.ReloadFlow(config);
-            return Results.Json(new { status = "reloaded", added, removed, updated, routesChanged });
+            var (added, removed, updated, connectionsChanged) = _fab.ReloadFlow(config);
+            return Results.Json(new { status = "reloaded", added, removed, updated, connectionsChanged });
         }
         catch (Exception ex)
         {
@@ -387,31 +335,4 @@ public sealed class ApiHandler
             ? Results.Json(new { status = "stopped", name })
             : Results.NotFound(new { error = "source not found" });
     }
-
-    // --- Helpers ---
-
-    private static string FormatCondition(RuleCondition condition)
-    {
-        if (condition is BaseRule b)
-            return $"{b.Attribute} {FormatOp(b.Operator)} {b.Value}";
-        if (condition is CompositeRule c)
-        {
-            var join = c.Joiner == Joiner.And ? "AND" : "OR";
-            return $"({FormatCondition(c.Left)} {join} {FormatCondition(c.Right)})";
-        }
-        return "unknown";
-    }
-
-    private static string FormatOp(Operator op) => op switch
-    {
-        Operator.Eq => "==",
-        Operator.Neq => "!=",
-        Operator.Contains => "contains",
-        Operator.StartsWith => "startsWith",
-        Operator.EndsWith => "endsWith",
-        Operator.Exists => "exists",
-        Operator.Gt => ">",
-        Operator.Lt => "<",
-        _ => "?"
-    };
 }

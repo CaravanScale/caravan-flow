@@ -3,13 +3,13 @@ using ZincFlow.Core;
 namespace ZincFlow.Fabric;
 
 /// <summary>
-/// Fabric: main runtime — wires processors, queues, routing, and lifecycle.
+/// Fabric: main runtime — wires processors, queues, connections, and lifecycle.
+/// Uses NiFi-style explicit processor connections instead of global routing rules.
 /// Async processor loops run on ThreadPool threads.
 /// </summary>
 public sealed class Fabric
 {
     private readonly Registry _reg;
-    private readonly RulesEngine _engine = new();
     private readonly ProcessorContext _globalCtx;
     private readonly Dictionary<string, IProcessor> _procs = new();
     private readonly List<string> _processorNames = new();
@@ -17,12 +17,14 @@ public sealed class Fabric
     private readonly Dictionary<string, ProcessSession> _sessions = new();
     private readonly Dictionary<string, ComponentState> _processorStates = new();
     private readonly Dictionary<string, List<string>> _processorRequires = new();
+    private readonly Dictionary<string, Dictionary<string, List<string>>> _processorConnections = new();
     private FlowQueue _ingestQueue;
     private readonly DLQ _dlq = new();
     private readonly Dictionary<string, IConnectorSource> _sources = new();
     private readonly CancellationTokenSource _cts = new();
     private readonly Dictionary<string, CancellationTokenSource> _processorCts = new();
     private readonly Dictionary<string, (string Type, Dictionary<string, string> Config, List<string> Requires)> _processorDefs = new();
+    private volatile List<string> _entryPoints = new();
 
     private long _processedCount;
     private volatile bool _running;
@@ -104,6 +106,10 @@ public sealed class Fabric
                     foreach (var pn in requires)
                         _globalCtx.RegisterDependent(pn, name);
 
+                    // Connections
+                    var connections = ParseConnections(def);
+                    _processorConnections[name] = connections;
+
                     var ctx = BuildScopedContext(requires);
                     var proc = _reg.Create(typeName, ctx, procConfig);
                     _procs[name] = proc;
@@ -117,39 +123,23 @@ public sealed class Fabric
 
                     Console.WriteLine($"[fabric] processor created: {name} (type={typeName})");
                 }
-            }
 
-            // Read routes
-            var routeDefs = AsStringDict(flowDict.GetValueOrDefault("routes"));
-            if (routeDefs is not null)
-            {
-                var rules = new List<RoutingRule>();
-                foreach (var (ruleName, rObj) in routeDefs)
-                {
-                    var rDef = AsStringDict(rObj);
-                    if (rDef is null) continue;
-                    var dest = GetStr(rDef, "destination");
-                    var condDict = AsStringDict(rDef.GetValueOrDefault("condition"));
-                    if (condDict is null) continue;
-
-                    var attr = GetStr(condDict, "attribute");
-                    var op = GetStr(condDict, "operator");
-                    var val = GetStr(condDict, "value");
-
-                    rules.Add(new RoutingRule(ruleName, attr, ParseOperator(op), val, dest));
-                }
-                if (rules.Count > 0)
-                {
-                    _engine.AddOrReplaceRuleset("flow", rules);
-                    Console.WriteLine($"[fabric] routes configured: {rules.Count}");
-                }
+                // DAG validation and entry-point computation
+                var dagResult = DagValidator.Validate(_processorConnections);
+                foreach (var err in dagResult.Errors)
+                    Console.Error.WriteLine($"[fabric] DAG error: {err}");
+                foreach (var warn in dagResult.Warnings)
+                    Console.WriteLine($"[fabric] DAG warning: {warn}");
+                _entryPoints = dagResult.EntryPoints;
+                Console.WriteLine($"[fabric] entry points: [{string.Join(", ", _entryPoints)}]");
             }
         }
 
-        // Create sessions
+        // Create sessions with per-processor connections
         foreach (var name in _processorNames)
         {
-            var session = new ProcessSession(_queues[name], _procs[name], name, _engine, _queues, _dlq, _maxRetries, _provenance, _maxHops);
+            var connections = _processorConnections.GetValueOrDefault(name) ?? new();
+            var session = new ProcessSession(_queues[name], _procs[name], name, connections, _queues, _dlq, _maxRetries, _provenance, _maxHops);
             _sessions[name] = session;
         }
     }
@@ -184,8 +174,8 @@ public sealed class Fabric
             _ = Task.Run(() => ProcessorLoop(procName, procCts.Token), _cts.Token);
         }
 
-        // Ingest router loop
-        _ = Task.Run(IngestRouterLoop, _cts.Token);
+        // Ingest fan-out loop
+        _ = Task.Run(IngestFanOutLoop, _cts.Token);
 
         // Start all connector sources
         foreach (var (name, source) in _sources)
@@ -215,11 +205,12 @@ public sealed class Fabric
         }
     }
 
-    private void IngestRouterLoop()
+    /// <summary>
+    /// Fan-out ingested FlowFiles to all entry-point processor queues.
+    /// Entry points are processors not referenced as a target in any connection.
+    /// </summary>
+    private void IngestFanOutLoop()
     {
-        // Reusable destination buffer for ingest routing
-        var destBuffer = new List<string>();
-
         while (_running)
         {
             var entry = _ingestQueue.Claim();
@@ -229,21 +220,20 @@ public sealed class Fabric
                 continue;
             }
 
-            _engine.GetDestinations(entry.FlowFile.Attributes, destBuffer);
-            if (destBuffer.Count == 0)
+            var entryPoints = _entryPoints; // volatile read
+            if (entryPoints.Count == 0)
             {
-                _log?.Log("WARN", "fabric", $"no routes matched for ff-{entry.FlowFile.NumericId}, dropping");
-                var ff = entry.FlowFile;
+                _log?.Log("WARN", "fabric", $"no entry-point processors, dropping ff-{entry.FlowFile.NumericId}");
                 _ingestQueue.Ack(entry.Id);
-                FlowFile.Return(ff);
+                FlowFile.Return(entry.FlowFile);
                 continue;
             }
 
-            // Pre-check all destinations
+            // Pre-check all entry-point queues
             bool allReady = true;
-            foreach (var dest in destBuffer)
+            foreach (var ep in entryPoints)
             {
-                if (_queues.TryGetValue(dest, out var q) && !q.HasCapacity())
+                if (_queues.TryGetValue(ep, out var q) && !q.HasCapacity())
                 {
                     allReady = false;
                     break;
@@ -257,10 +247,10 @@ public sealed class Fabric
                 continue;
             }
 
-            // All-or-nothing commit
-            foreach (var dest in destBuffer)
+            // Fan out to all entry-point queues
+            foreach (var ep in entryPoints)
             {
-                if (_queues.TryGetValue(dest, out var q))
+                if (_queues.TryGetValue(ep, out var q))
                     q.Offer(entry.FlowFile);
             }
             _ingestQueue.Ack(entry.Id);
@@ -326,7 +316,8 @@ public sealed class Fabric
     public ProvenanceProvider? GetProvenance() => _provenance;
     public List<string> GetProcessorNames() => new(_processorNames);
     public Registry GetRegistry() => _reg;
-    public RulesEngine GetEngine() => _engine;
+    public Dictionary<string, Dictionary<string, List<string>>> GetConnections() => new(_processorConnections);
+    public List<string> GetEntryPoints() => new(_entryPoints);
 
     public Dictionary<string, int> GetStats() => new()
     {
@@ -414,13 +405,16 @@ public sealed class Fabric
         return true;
     }
 
-    // --- Dynamic processor/route management ---
+    // --- Dynamic processor management ---
 
-    public bool AddProcessor(string name, string typeName, Dictionary<string, string> config, List<string>? requires = null)
+    public bool AddProcessor(string name, string typeName, Dictionary<string, string> config,
+        List<string>? requires = null, Dictionary<string, List<string>>? connections = null)
     {
         if (_procs.ContainsKey(name) || !_reg.Has(typeName)) return false;
         requires ??= [];
+        connections ??= new();
         _processorRequires[name] = requires;
+        _processorConnections[name] = connections;
         foreach (var pn in requires)
             _globalCtx.RegisterDependent(pn, name);
 
@@ -434,8 +428,10 @@ public sealed class Fabric
         QueueWAL? qWal = _walDir != "" ? new QueueWAL(Path.Combine(_walDir, $"{name}.wal"), _walMaxSizeMb, _walCompactIntervalMs) : null;
         var queue = new FlowQueue(name, _queueMaxCount, _queueMaxBytes, _visibilityTimeoutMs, qWal);
         _queues[name] = queue;
-        var session = new ProcessSession(queue, proc, name, _engine, _queues, _dlq, _maxRetries, _provenance, _maxHops);
+        var session = new ProcessSession(queue, proc, name, connections, _queues, _dlq, _maxRetries, _provenance, _maxHops);
         _sessions[name] = session;
+
+        RecomputeEntryPoints();
 
         if (_running)
         {
@@ -462,44 +458,21 @@ public sealed class Fabric
         _sessions.Remove(name);
         _processorDefs.Remove(name);
         _processorRequires.Remove(name);
-        return true;
-    }
-
-    public void AddRoute(string name, string attr, string op, string value, string dest)
-    {
-        var rule = new RoutingRule(name, attr, ParseOperator(op), value, dest);
-        var existing = _engine.GetAllRules();
-        existing.Add(rule);
-        _engine.AddOrReplaceRuleset("flow", existing);
-    }
-
-    public bool RemoveRoute(string name)
-    {
-        var existing = _engine.GetAllRules();
-        var updated = existing.Where(r => r.Name != name).ToList();
-        if (updated.Count == existing.Count) return false;
-        _engine.AddOrReplaceRuleset("flow", updated);
-        return true;
-    }
-
-    public bool ToggleRoute(string name)
-    {
-        var exists = _engine.GetAllRules().Any(r => r.Name == name);
-        if (!exists) return false;
-        _engine.ToggleRule("flow", name);
+        _processorConnections.Remove(name);
+        RecomputeEntryPoints();
         return true;
     }
 
     // --- Hot reload ---
 
     /// <summary>
-    /// Reload flow from new config. Diffs processors and routes against current state.
-    /// Returns (added, removed, updated, routesChanged).
+    /// Reload flow from new config. Diffs processors and connections against current state.
+    /// Returns (added, removed, updated, connectionsChanged).
     /// Does NOT reload sources or providers (those are infrastructure — require restart).
     /// </summary>
-    public (int Added, int Removed, int Updated, int RoutesChanged) ReloadFlow(Dictionary<string, object?> config)
+    public (int Added, int Removed, int Updated, int ConnectionsChanged) ReloadFlow(Dictionary<string, object?> config)
     {
-        int added = 0, removed = 0, updated = 0, routesChanged = 0;
+        int added = 0, removed = 0, updated = 0, connectionsChanged = 0;
 
         // Read new defaults
         if (TryGetConfig<int>(config, "defaults.backpressure.max_count", out var mc)) _queueMaxCount = mc;
@@ -508,7 +481,7 @@ public sealed class Fabric
         if (TryGetConfig<int>(config, "defaults.backpressure.max_hops", out var mh)) _maxHops = mh;
 
         // Parse new processor defs from config
-        var newDefs = new Dictionary<string, (string Type, Dictionary<string, string> Config, List<string> Requires)>();
+        var newDefs = new Dictionary<string, (string Type, Dictionary<string, string> Config, List<string> Requires, Dictionary<string, List<string>> Connections)>();
         var flowDict = AsStringDict(config.GetValueOrDefault("flow"));
         if (flowDict is not null)
         {
@@ -527,7 +500,8 @@ public sealed class Fabric
                         foreach (var (k, v) in cfgDict)
                             procConfig[k] = v?.ToString() ?? "";
                     var requires = GetStringList(def, "requires") ?? [];
-                    newDefs[name] = (typeName, procConfig, requires);
+                    var connections = ParseConnections(def);
+                    newDefs[name] = (typeName, procConfig, requires, connections);
                 }
             }
         }
@@ -549,7 +523,7 @@ public sealed class Fabric
         {
             if (!_processorDefs.ContainsKey(name))
             {
-                if (AddProcessor(name, def.Type, def.Config, def.Requires))
+                if (AddProcessor(name, def.Type, def.Config, def.Requires, def.Connections))
                 {
                     added++;
                     _log?.Log("INFO", "hot-reload", $"added processor: {name} (type={def.Type})");
@@ -557,118 +531,72 @@ public sealed class Fabric
             }
         }
 
-        // Update changed processors (different type or config)
+        // Update changed processors or connections
         foreach (var (name, newDef) in newDefs)
         {
             if (!_processorDefs.TryGetValue(name, out var oldDef)) continue;
-            if (oldDef.Type == newDef.Type && DictEqual(oldDef.Config, newDef.Config) && ListEqual(oldDef.Requires, newDef.Requires))
-                continue;
+            var oldConn = _processorConnections.GetValueOrDefault(name) ?? new();
+            bool procChanged = oldDef.Type != newDef.Type || !DictEqual(oldDef.Config, newDef.Config) || !ListEqual(oldDef.Requires, newDef.Requires);
+            bool connChanged = !ConnectionsEqual(oldConn, newDef.Connections);
 
-            // Drain the queue before swapping — keep the queue, replace the processor + session
-            _processorStates[name] = ComponentState.Disabled;
-            if (_processorCts.TryGetValue(name, out var cts))
+            if (!procChanged && !connChanged) continue;
+
+            if (procChanged)
             {
-                cts.Cancel();
-                _processorCts.Remove(name);
+                // Processor type/config changed — rebuild processor + session
+                _processorStates[name] = ComponentState.Disabled;
+                if (_processorCts.TryGetValue(name, out var cts))
+                {
+                    cts.Cancel();
+                    _processorCts.Remove(name);
+                }
+
+                var ctx = BuildScopedContext(newDef.Requires);
+                var proc = _reg.Create(newDef.Type, ctx, newDef.Config);
+                _procs[name] = proc;
+                _processorRequires[name] = newDef.Requires;
+                _processorDefs[name] = (newDef.Type, new Dictionary<string, string>(newDef.Config), new List<string>(newDef.Requires));
+                _processorConnections[name] = newDef.Connections;
+
+                var session = new ProcessSession(_queues[name], proc, name, newDef.Connections, _queues, _dlq, _maxRetries, _provenance, _maxHops);
+                _sessions[name] = session;
+                _processorStates[name] = ComponentState.Enabled;
+
+                if (_running)
+                {
+                    var procCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
+                    _processorCts[name] = procCts;
+                    _ = Task.Run(() => ProcessorLoop(name, procCts.Token), _cts.Token);
+                }
+                updated++;
+                _log?.Log("INFO", "hot-reload", $"updated processor: {name} (type={newDef.Type})");
             }
-
-            // Rebuild processor with new config
-            var ctx = BuildScopedContext(newDef.Requires);
-            var proc = _reg.Create(newDef.Type, ctx, newDef.Config);
-            _procs[name] = proc;
-            _processorRequires[name] = newDef.Requires;
-            _processorDefs[name] = (newDef.Type, new Dictionary<string, string>(newDef.Config), new List<string>(newDef.Requires));
-
-            // Rebuild session pointing to the same queue
-            var session = new ProcessSession(_queues[name], proc, name, _engine, _queues, _dlq, _maxRetries, _provenance, _maxHops);
-            _sessions[name] = session;
-            _processorStates[name] = ComponentState.Enabled;
-
-            if (_running)
+            else
             {
-                var procCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
-                _processorCts[name] = procCts;
-                _ = Task.Run(() => ProcessorLoop(name, procCts.Token), _cts.Token);
+                // Only connections changed — rebuild session with same processor
+                _processorConnections[name] = newDef.Connections;
+                var session = new ProcessSession(_queues[name], _procs[name], name, newDef.Connections, _queues, _dlq, _maxRetries, _provenance, _maxHops);
+                _sessions[name] = session;
+                connectionsChanged++;
+                _log?.Log("INFO", "hot-reload", $"updated connections: {name}");
             }
-
-            updated++;
-            _log?.Log("INFO", "hot-reload", $"updated processor: {name} (type={newDef.Type})");
         }
 
-        // Reload routes
-        if (flowDict is not null)
-        {
-            var newRules = ParseRoutes(flowDict);
-            var oldRules = _engine.GetAllRules();
-            if (!RulesEqual(oldRules, newRules))
-            {
-                _engine.AddOrReplaceRuleset("flow", newRules);
-                routesChanged = newRules.Count;
-                _log?.Log("INFO", "hot-reload", $"routes updated: {newRules.Count} rules");
-            }
-        }
+        RecomputeEntryPoints();
 
-        var total = added + removed + updated + routesChanged;
+        var total = added + removed + updated + connectionsChanged;
         if (total > 0)
-            Console.WriteLine($"[hot-reload] applied: +{added} -{removed} ~{updated} processors, {routesChanged} routes");
+            Console.WriteLine($"[hot-reload] applied: +{added} -{removed} ~{updated} processors, {connectionsChanged} connections");
         else
             Console.WriteLine("[hot-reload] no changes detected");
 
-        return (added, removed, updated, routesChanged);
+        return (added, removed, updated, connectionsChanged);
     }
 
-    private List<RoutingRule> ParseRoutes(Dictionary<string, object?> flowDict)
+    private void RecomputeEntryPoints()
     {
-        var rules = new List<RoutingRule>();
-        var routeDefs = AsStringDict(flowDict.GetValueOrDefault("routes"));
-        if (routeDefs is null) return rules;
-        foreach (var (ruleName, rObj) in routeDefs)
-        {
-            var rDef = AsStringDict(rObj);
-            if (rDef is null) continue;
-            var dest = GetStr(rDef, "destination");
-            var condDict = AsStringDict(rDef.GetValueOrDefault("condition"));
-            if (condDict is null) continue;
-            var attr = GetStr(condDict, "attribute");
-            var op = GetStr(condDict, "operator");
-            var val = GetStr(condDict, "value");
-            rules.Add(new RoutingRule(ruleName, attr, ParseOperator(op), val, dest));
-        }
-        return rules;
-    }
-
-    private static bool DictEqual(Dictionary<string, string> a, Dictionary<string, string> b)
-    {
-        if (a.Count != b.Count) return false;
-        foreach (var (k, v) in a)
-            if (!b.TryGetValue(k, out var bv) || v != bv) return false;
-        return true;
-    }
-
-    private static bool ListEqual(List<string> a, List<string> b)
-    {
-        if (a.Count != b.Count) return false;
-        for (int i = 0; i < a.Count; i++)
-            if (a[i] != b[i]) return false;
-        return true;
-    }
-
-    private static bool RulesEqual(List<RoutingRule> a, List<RoutingRule> b)
-    {
-        if (a.Count != b.Count) return false;
-        for (int i = 0; i < a.Count; i++)
-        {
-            if (a[i].Name != b[i].Name || a[i].Destination != b[i].Destination || a[i].Enabled != b[i].Enabled)
-                return false;
-            // Compare conditions
-            if (a[i].Condition is BaseRule ab && b[i].Condition is BaseRule bb)
-            {
-                if (ab.Attribute != bb.Attribute || ab.Operator != bb.Operator || ab.Value != bb.Value)
-                    return false;
-            }
-            else return false;
-        }
-        return true;
+        var dagResult = DagValidator.Validate(_processorConnections);
+        _entryPoints = dagResult.EntryPoints;
     }
 
     public void Status()
@@ -700,17 +628,53 @@ public sealed class Fabric
         return new ScopedContext(scoped);
     }
 
-    private static Operator ParseOperator(string op) => op.ToUpperInvariant() switch
+    internal static Dictionary<string, List<string>> ParseConnections(Dictionary<string, object?> def)
     {
-        "EQ" => Operator.Eq,
-        "NEQ" => Operator.Neq,
-        "CONTAINS" => Operator.Contains,
-        "STARTSWITH" => Operator.StartsWith,
-        "ENDSWITH" => Operator.EndsWith,
-        "GT" => Operator.Gt,
-        "LT" => Operator.Lt,
-        _ => Operator.Exists
-    };
+        var connections = new Dictionary<string, List<string>>();
+        var connDefs = AsStringDict(def.GetValueOrDefault("connections"));
+        if (connDefs is null) return connections;
+        foreach (var (rel, _) in connDefs)
+        {
+            var dests = GetStringList(connDefs, rel);
+            if (dests is not null && dests.Count > 0)
+                connections[rel] = dests;
+            else
+            {
+                // Handle single string value (not a list)
+                var single = GetStr(connDefs, rel);
+                if (!string.IsNullOrEmpty(single))
+                    connections[rel] = [single];
+            }
+        }
+        return connections;
+    }
+
+    private static bool DictEqual(Dictionary<string, string> a, Dictionary<string, string> b)
+    {
+        if (a.Count != b.Count) return false;
+        foreach (var (k, v) in a)
+            if (!b.TryGetValue(k, out var bv) || v != bv) return false;
+        return true;
+    }
+
+    private static bool ListEqual(List<string> a, List<string> b)
+    {
+        if (a.Count != b.Count) return false;
+        for (int i = 0; i < a.Count; i++)
+            if (a[i] != b[i]) return false;
+        return true;
+    }
+
+    private static bool ConnectionsEqual(Dictionary<string, List<string>> a, Dictionary<string, List<string>> b)
+    {
+        if (a.Count != b.Count) return false;
+        foreach (var (k, v) in a)
+        {
+            if (!b.TryGetValue(k, out var bv)) return false;
+            if (!ListEqual(v, bv)) return false;
+        }
+        return true;
+    }
 
     private static bool TryGetConfig<T>(Dictionary<string, object?> config, string dotPath, out T value)
     {

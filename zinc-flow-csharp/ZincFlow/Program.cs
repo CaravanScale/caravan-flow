@@ -295,16 +295,12 @@ static void BenchSessionThroughput(int n, bool quiet = false)
     var sinkQ = new FlowQueue("sink", n + 100, 0, 30_000);
     var queues = new Dictionary<string, FlowQueue> { ["tag"] = tagQ, ["sink"] = sinkQ };
 
-    var tagEngine = new RulesEngine();
-    tagEngine.AddOrReplaceRuleset("flow", new List<RoutingRule>
-    {
-        new RoutingRule("to-sink", "env", Operator.Exists, "", "sink")
-    });
-    var sinkEngine = new RulesEngine();
+    var tagConnections = new Dictionary<string, List<string>> { ["success"] = ["sink"] };
+    var sinkConnections = new Dictionary<string, List<string>>(); // terminal
 
     var dlq = new DLQ();
-    var tagSession = new ProcessSession(tagQ, tag, "tag", tagEngine, queues, dlq, 5);
-    var sinkSession = new ProcessSession(sinkQ, sink, "sink", sinkEngine, queues, dlq, 5);
+    var tagSession = new ProcessSession(tagQ, tag, "tag", tagConnections, queues, dlq, 5);
+    var sinkSession = new ProcessSession(sinkQ, sink, "sink", sinkConnections, queues, dlq, 5);
 
     // Setup phase — allocate FlowFiles outside timed section
     var payload = "bench payload data here"u8.ToArray();

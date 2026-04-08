@@ -118,11 +118,19 @@ public static class TestSuite
         TestEvaluateExpressionFunctions();
         TestTransformRecord();
 
+        // DAG validator + connection tests
+        TestDagValidatorValid();
+        TestDagValidatorCycle();
+        TestDagValidatorInvalidTarget();
+        TestDagValidatorEntryPoints();
+        TestConnectionFanOut();
+        TestSinkNoConnections();
+
         // Hot reload
         TestHotReloadAddProcessor();
         TestHotReloadRemoveProcessor();
         TestHotReloadUpdateProcessor();
-        TestHotReloadRoutes();
+        TestHotReloadConnections();
         TestHotReloadNoChange();
         TestHotReloadEndToEnd();
 
@@ -687,13 +695,12 @@ public static class TestSuite
         var logQueue = new FlowQueue("logger", 100, 1024 * 1024, 30_000);
         var allQueues = new Dictionary<string, FlowQueue> { ["tag-env"] = tagQueue, ["logger"] = logQueue };
 
-        var tagEngine = new RulesEngine();
-        tagEngine.AddOrReplaceRuleset("flow", [new RoutingRule("to-logger", "env", Operator.Exists, "", "logger")]);
-        var logEngine = new RulesEngine();
+        var tagConnections = new Dictionary<string, List<string>> { ["success"] = ["logger"] };
+        var logConnections = new Dictionary<string, List<string>>();
 
         var dlq = new DLQ();
-        var tagSession = new ProcessSession(tagQueue, tagger, "tag-env", tagEngine, allQueues, dlq, 5);
-        var logSession = new ProcessSession(logQueue, logger, "logger", logEngine, allQueues, dlq, 5);
+        var tagSession = new ProcessSession(tagQueue, tagger, "tag-env", tagConnections, allQueues, dlq, 5);
+        var logSession = new ProcessSession(logQueue, logger, "logger", logConnections, allQueues, dlq, 5);
 
         tagQueue.Offer(FlowFile.Create("hello"u8, new() { ["type"] = "order" }));
         AssertIntEqual("tag queue has 1", tagQueue.VisibleCount, 1);
@@ -714,12 +721,11 @@ public static class TestSuite
         var downstreamQueue = new FlowQueue("downstream", 3, 1024, 30_000);
         var allQueues = new Dictionary<string, FlowQueue> { ["small"] = smallQueue, ["downstream"] = downstreamQueue };
 
-        var engine = new RulesEngine();
-        engine.AddOrReplaceRuleset("flow", [new RoutingRule("forward", "type", Operator.Exists, "", "downstream")]);
+        var connections = new Dictionary<string, List<string>> { ["success"] = ["downstream"] };
 
         var proc = new LogAttribute("bp-test");
         var dlq = new DLQ();
-        var session = new ProcessSession(smallQueue, proc, "small", engine, allQueues, dlq, 5);
+        var session = new ProcessSession(smallQueue, proc, "small", connections, allQueues, dlq, 5);
 
         for (int i = 0; i < 3; i++)
             downstreamQueue.Offer(FlowFile.Create("fill"u8, new() { ["type"] = "x" }));
@@ -740,12 +746,11 @@ public static class TestSuite
         var destQueue = new FlowQueue("dest", 0, 0, 30_000); // zero capacity
         var allQueues = new Dictionary<string, FlowQueue> { ["dest"] = destQueue };
 
-        var engine = new RulesEngine();
-        engine.AddOrReplaceRuleset("flow", [new RoutingRule("to-dest", "type", Operator.Exists, "", "dest")]);
+        var connections = new Dictionary<string, List<string>> { ["success"] = ["dest"] };
 
         var dlq = new DLQ();
         int maxRetries = 3;
-        var session = new ProcessSession(sourceQueue, new LogAttribute("retry"), "source", engine, allQueues, dlq, maxRetries);
+        var session = new ProcessSession(sourceQueue, new LogAttribute("retry"), "source", connections, allQueues, dlq, maxRetries);
 
         sourceQueue.Offer(FlowFile.Create("will-fail"u8, new() { ["type"] = "test" }));
 
@@ -797,7 +802,7 @@ public static class TestSuite
 
     static void TestScenarioIRSFanOut()
     {
-        Console.WriteLine("--- Scenario: IRS Fan-Out ---");
+        Console.WriteLine("--- Scenario: Connection Fan-Out ---");
         var tagger = new UpdateAttribute("env", "prod");
 
         var srcQueue = new FlowQueue("source", 100, 1024 * 1024, 30_000);
@@ -809,15 +814,10 @@ public static class TestSuite
             ["source"] = srcQueue, ["dest-a"] = destA, ["dest-b"] = destB, ["dest-c"] = destC
         };
 
-        var engine = new RulesEngine();
-        engine.AddOrReplaceRuleset("flow", [
-            new RoutingRule("to-a", "env", Operator.Exists, "", "dest-a"),
-            new RoutingRule("to-b", "env", Operator.Exists, "", "dest-b"),
-            new RoutingRule("to-c", "env", Operator.Exists, "", "dest-c")
-        ]);
+        var connections = new Dictionary<string, List<string>> { ["success"] = ["dest-a", "dest-b", "dest-c"] };
 
         var dlq = new DLQ();
-        var session = new ProcessSession(srcQueue, tagger, "source", engine, allQueues, dlq, 5);
+        var session = new ProcessSession(srcQueue, tagger, "source", connections, allQueues, dlq, 5);
 
         srcQueue.Offer(FlowFile.Create("fanout"u8, new() { ["type"] = "order" }));
         session.Execute();
@@ -1055,11 +1055,8 @@ public static class TestSuite
             {
                 ["processors"] = new Dictionary<string, object?>
                 {
-                    ["tagger"] = new Dictionary<string, object?> { ["type"] = "UpdateAttribute", ["config"] = new Dictionary<string, object?> { ["key"] = "env", ["value"] = "prod" } }
-                },
-                ["routes"] = new Dictionary<string, object?>
-                {
-                    ["to-tagger"] = new Dictionary<string, object?> { ["destination"] = "tagger", ["condition"] = new Dictionary<string, object?> { ["attribute"] = "type", ["operator"] = "EXISTS" } }
+                    ["tagger"] = new Dictionary<string, object?> { ["type"] = "UpdateAttribute", ["config"] = new Dictionary<string, object?> { ["key"] = "env", ["value"] = "prod" } },
+                    ["logger"] = new Dictionary<string, object?> { ["type"] = "LogAttribute", ["config"] = new Dictionary<string, object?> { ["prefix"] = "test" } }
                 }
             }
         };
@@ -1085,23 +1082,20 @@ public static class TestSuite
         errors = ConfigValidator.Validate(badType, reg);
         AssertTrue("unknown type error", errors.Any(e => e.Message.Contains("unknown processor type")));
 
-        // Route to nonexistent processor
-        var badRoute = new Dictionary<string, object?>
+        // Connection to nonexistent processor
+        var badConn = new Dictionary<string, object?>
         {
             ["flow"] = new Dictionary<string, object?>
             {
                 ["processors"] = new Dictionary<string, object?>
                 {
-                    ["tagger"] = new Dictionary<string, object?> { ["type"] = "UpdateAttribute" }
-                },
-                ["routes"] = new Dictionary<string, object?>
-                {
-                    ["bad-route"] = new Dictionary<string, object?> { ["destination"] = "missing", ["condition"] = new Dictionary<string, object?> { ["attribute"] = "x" } }
+                    ["tagger"] = new Dictionary<string, object?> { ["type"] = "UpdateAttribute",
+                        ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "missing" } } }
                 }
             }
         };
-        errors = ConfigValidator.Validate(badRoute, reg);
-        AssertTrue("bad route error", errors.Any(e => e.Message.Contains("not a defined processor")));
+        errors = ConfigValidator.Validate(badConn, reg);
+        AssertTrue("bad connection error", errors.Any(e => e.Message.Contains("not a defined processor")));
     }
 
     static void TestProvenance()
@@ -1114,13 +1108,9 @@ public static class TestSuite
         var q = new FlowQueue("prov", 100, 0, 30_000);
         var outQ = new FlowQueue("out", 100, 0, 30_000);
         var queues = new Dictionary<string, FlowQueue> { ["prov"] = q, ["out"] = outQ };
-        var engine = new RulesEngine();
-        engine.AddOrReplaceRuleset("flow", new List<RoutingRule>
-        {
-            new RoutingRule("to-out", "env", Operator.Exists, "", "out")
-        });
+        var connections = new Dictionary<string, List<string>> { ["success"] = ["out"] };
         var dlq = new DLQ();
-        var session = new ProcessSession(q, tag, "tagger", engine, queues, dlq, 5, prov);
+        var session = new ProcessSession(q, tag, "tagger", connections, queues, dlq, 5, prov);
 
         var ff = FlowFile.Create("test"u8, new() { ["type"] = "order" });
         q.Offer(ff);
@@ -1258,19 +1248,17 @@ public static class TestSuite
         var qB = new FlowQueue("b", 1000, 0, 30_000);
         var queues = new Dictionary<string, FlowQueue> { ["a"] = qA, ["b"] = qB };
 
-        // Both route to each other — infinite cycle
-        var engineA = new RulesEngine();
-        engineA.AddOrReplaceRuleset("flow", [new RoutingRule("a-to-b", "hop", Operator.Exists, "", "b")]);
-        var engineB = new RulesEngine();
-        engineB.AddOrReplaceRuleset("flow", [new RoutingRule("b-to-a", "hop", Operator.Exists, "", "a")]);
+        // Both connect to each other — infinite cycle
+        var connA = new Dictionary<string, List<string>> { ["success"] = ["b"] };
+        var connB = new Dictionary<string, List<string>> { ["success"] = ["a"] };
 
         var dlq = new DLQ();
         var prov = new ProvenanceProvider();
         prov.Enable();
 
         // maxHops = 5 — should DLQ after 5 hops instead of looping forever
-        var sessionA = new ProcessSession(qA, procA, "proc-a", engineA, queues, dlq, 5, prov, maxHops: 5);
-        var sessionB = new ProcessSession(qB, procB, "proc-b", engineB, queues, dlq, 5, prov, maxHops: 5);
+        var sessionA = new ProcessSession(qA, procA, "proc-a", connA, queues, dlq, 5, prov, maxHops: 5);
+        var sessionB = new ProcessSession(qB, procB, "proc-b", connB, queues, dlq, 5, prov, maxHops: 5);
 
         // Start the cycle
         qA.Offer(FlowFile.Create("cycle-test"u8, new() { ["type"] = "test" }));
@@ -1318,24 +1306,18 @@ public static class TestSuite
 
             var fab = new ZincFlow.Fabric.Fabric(reg, globalCtx);
 
-            // Stage attribute advances through the pipeline: 0 → 1 → 2 → 3.
-            // Each processor sets stage to the next value, so previous routes
-            // don't re-match (EQ checks exact value, not EXISTS).
+            // 3-stage pipeline: tagger → logger → sink via explicit connections.
             var config = new Dictionary<string, object?>
             {
                 ["flow"] = new Dictionary<string, object?>
                 {
                     ["processors"] = new Dictionary<string, object?>
                     {
-                        ["tagger"] = new Dictionary<string, object?> { ["type"] = "UpdateAttribute", ["config"] = new Dictionary<string, object?> { ["key"] = "stage", ["value"] = "1" } },
-                        ["logger"] = new Dictionary<string, object?> { ["type"] = "UpdateAttribute", ["config"] = new Dictionary<string, object?> { ["key"] = "stage", ["value"] = "2" } },
+                        ["tagger"] = new Dictionary<string, object?> { ["type"] = "UpdateAttribute", ["config"] = new Dictionary<string, object?> { ["key"] = "stage", ["value"] = "1" },
+                            ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "logger" } } },
+                        ["logger"] = new Dictionary<string, object?> { ["type"] = "UpdateAttribute", ["config"] = new Dictionary<string, object?> { ["key"] = "stage", ["value"] = "2" },
+                            ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "sink" } } },
                         ["sink"] = new Dictionary<string, object?> { ["type"] = "UpdateAttribute", ["config"] = new Dictionary<string, object?> { ["key"] = "stage", ["value"] = "3" } }
-                    },
-                    ["routes"] = new Dictionary<string, object?>
-                    {
-                        ["to-tagger"] = new Dictionary<string, object?> { ["destination"] = "tagger", ["condition"] = new Dictionary<string, object?> { ["attribute"] = "stage", ["operator"] = "EQ", ["value"] = "0" } },
-                        ["to-logger"] = new Dictionary<string, object?> { ["destination"] = "logger", ["condition"] = new Dictionary<string, object?> { ["attribute"] = "stage", ["operator"] = "EQ", ["value"] = "1" } },
-                        ["to-sink"] = new Dictionary<string, object?> { ["destination"] = "sink", ["condition"] = new Dictionary<string, object?> { ["attribute"] = "stage", ["operator"] = "EQ", ["value"] = "2" } }
                     }
                 }
             };
@@ -1483,16 +1465,14 @@ public static class TestSuite
         var q3 = new FlowQueue("q3", 100, 0, 30_000);
         var queues = new Dictionary<string, FlowQueue> { ["q1"] = q1, ["q2"] = q2, ["q3"] = q3 };
 
-        var engine1 = new RulesEngine();
-        engine1.AddOrReplaceRuleset("flow", [new RoutingRule("to-q2", "env", Operator.Exists, "", "q2")]);
-        var engine2 = new RulesEngine();
-        engine2.AddOrReplaceRuleset("flow", [new RoutingRule("to-q3", "env", Operator.Exists, "", "q3")]);
-        var engine3 = new RulesEngine();
+        var conn1 = new Dictionary<string, List<string>> { ["success"] = ["q2"] };
+        var conn2 = new Dictionary<string, List<string>> { ["success"] = ["q3"] };
+        var conn3 = new Dictionary<string, List<string>>();
 
         var dlq = new DLQ();
-        var s1 = new ProcessSession(q1, tagger, "tagger", engine1, queues, dlq, 5, prov);
-        var s2 = new ProcessSession(q2, logger, "logger", engine2, queues, dlq, 5, prov);
-        var s3 = new ProcessSession(q3, sink, "sink", engine3, queues, dlq, 5, prov);
+        var s1 = new ProcessSession(q1, tagger, "tagger", conn1, queues, dlq, 5, prov);
+        var s2 = new ProcessSession(q2, logger, "logger", conn2, queues, dlq, 5, prov);
+        var s3 = new ProcessSession(q3, sink, "sink", conn3, queues, dlq, 5, prov);
 
         var ff = FlowFile.Create("chain-test"u8, new() { ["type"] = "order" });
         var ffId = ff.NumericId;
@@ -1548,10 +1528,6 @@ public static class TestSuite
                     ["processors"] = new Dictionary<string, object?>
                     {
                         ["writer"] = new Dictionary<string, object?> { ["type"] = "PutFile", ["config"] = new Dictionary<string, object?> { ["output_dir"] = outputDir } }
-                    },
-                    ["routes"] = new Dictionary<string, object?>
-                    {
-                        ["all-to-writer"] = new Dictionary<string, object?> { ["destination"] = "writer", ["condition"] = new Dictionary<string, object?> { ["attribute"] = "source", ["operator"] = "EXISTS" } }
                     }
                 }
             };
@@ -1960,6 +1936,102 @@ public static class TestSuite
         AssertEqual("age preserved", rec["age"]?.ToString() ?? "", "30");
     }
 
+    // --- DAG validator + connection tests ---
+
+    static void TestDagValidatorValid()
+    {
+        Console.WriteLine("--- DagValidator: Valid DAG ---");
+        var connections = new Dictionary<string, Dictionary<string, List<string>>>
+        {
+            ["tagger"] = new() { ["success"] = ["logger"] },
+            ["logger"] = new() { ["success"] = ["sink"] },
+            ["sink"] = new()
+        };
+        var result = DagValidator.Validate(connections);
+        AssertIntEqual("no errors", result.Errors.Count, 0);
+        AssertIntEqual("no warnings", result.Warnings.Count, 0);
+        AssertIntEqual("1 entry point", result.EntryPoints.Count, 1);
+        AssertEqual("entry point is tagger", result.EntryPoints[0], "tagger");
+    }
+
+    static void TestDagValidatorCycle()
+    {
+        Console.WriteLine("--- DagValidator: Cycle Detection ---");
+        var connections = new Dictionary<string, Dictionary<string, List<string>>>
+        {
+            ["a"] = new() { ["success"] = ["b"] },
+            ["b"] = new() { ["success"] = ["a"] }
+        };
+        var result = DagValidator.Validate(connections);
+        AssertTrue("cycle warning", result.Warnings.Any(w => w.Contains("cycle detected")));
+    }
+
+    static void TestDagValidatorInvalidTarget()
+    {
+        Console.WriteLine("--- DagValidator: Invalid Target ---");
+        var connections = new Dictionary<string, Dictionary<string, List<string>>>
+        {
+            ["a"] = new() { ["success"] = ["nonexistent"] }
+        };
+        var result = DagValidator.Validate(connections);
+        AssertTrue("invalid target error", result.Errors.Any(e => e.Contains("unknown target")));
+    }
+
+    static void TestDagValidatorEntryPoints()
+    {
+        Console.WriteLine("--- DagValidator: Entry Points ---");
+        // Two entry points: src1 → shared, src2 → shared
+        var connections = new Dictionary<string, Dictionary<string, List<string>>>
+        {
+            ["src1"] = new() { ["success"] = ["shared"] },
+            ["src2"] = new() { ["success"] = ["shared"] },
+            ["shared"] = new()
+        };
+        var result = DagValidator.Validate(connections);
+        AssertIntEqual("2 entry points", result.EntryPoints.Count, 2);
+        AssertTrue("src1 is entry", result.EntryPoints.Contains("src1"));
+        AssertTrue("src2 is entry", result.EntryPoints.Contains("src2"));
+    }
+
+    static void TestConnectionFanOut()
+    {
+        Console.WriteLine("--- Connection: Fan-Out ---");
+        var proc = new LogAttribute("fanout");
+        var srcQ = new FlowQueue("src", 100, 0, 30_000);
+        var qA = new FlowQueue("a", 100, 0, 30_000);
+        var qB = new FlowQueue("b", 100, 0, 30_000);
+        var qC = new FlowQueue("c", 100, 0, 30_000);
+        var queues = new Dictionary<string, FlowQueue> { ["src"] = srcQ, ["a"] = qA, ["b"] = qB, ["c"] = qC };
+        var conn = new Dictionary<string, List<string>> { ["success"] = ["a", "b", "c"] };
+        var dlq = new DLQ();
+        var session = new ProcessSession(srcQ, proc, "src", conn, queues, dlq, 5);
+
+        srcQ.Offer(FlowFile.Create("fanout"u8, new()));
+        session.Execute();
+
+        AssertIntEqual("a has 1", qA.VisibleCount, 1);
+        AssertIntEqual("b has 1", qB.VisibleCount, 1);
+        AssertIntEqual("c has 1", qC.VisibleCount, 1);
+        AssertIntEqual("src empty", srcQ.VisibleCount, 0);
+    }
+
+    static void TestSinkNoConnections()
+    {
+        Console.WriteLine("--- Sink: No Connections (terminal) ---");
+        var proc = new UpdateAttribute("done", "true");
+        var srcQ = new FlowQueue("sink", 100, 0, 30_000);
+        var queues = new Dictionary<string, FlowQueue> { ["sink"] = srcQ };
+        var conn = new Dictionary<string, List<string>>(); // empty = terminal
+        var dlq = new DLQ();
+        var session = new ProcessSession(srcQ, proc, "sink", conn, queues, dlq, 5);
+
+        srcQ.Offer(FlowFile.Create("terminal"u8, new()));
+        session.Execute();
+
+        AssertIntEqual("sink queue empty", srcQ.VisibleCount, 0);
+        AssertIntEqual("no dlq", dlq.Count, 0);
+    }
+
     // --- Hot reload tests ---
 
     static (ZincFlow.Fabric.Fabric, ProcessorContext, Registry) CreateFabricWithConfig(Dictionary<string, object?> config)
@@ -1980,29 +2052,28 @@ public static class TestSuite
         return (fab, ctx, reg);
     }
 
-    static Dictionary<string, object?> MakeFlowConfig(
-        Dictionary<string, object?> processors,
-        Dictionary<string, object?>? routes = null)
+    static Dictionary<string, object?> MakeFlowConfig(Dictionary<string, object?> processors)
     {
         var flow = new Dictionary<string, object?> { ["processors"] = processors };
-        if (routes is not null) flow["routes"] = routes;
         return new Dictionary<string, object?> { ["flow"] = flow };
     }
 
-    static Dictionary<string, object?> MakeProc(string type, Dictionary<string, string> config, List<string>? requires = null)
+    static Dictionary<string, object?> MakeProc(string type, Dictionary<string, string> config,
+        List<string>? requires = null, Dictionary<string, List<string>>? connections = null)
     {
         // Convert to Dictionary<string, object?> to match YAML deserialization shape
         var cfgObj = config.ToDictionary(kv => kv.Key, kv => (object?)kv.Value);
         var def = new Dictionary<string, object?> { ["type"] = type, ["config"] = cfgObj };
         if (requires is not null)
             def["requires"] = requires.Cast<object?>().ToList();
+        if (connections is not null)
+        {
+            var connDict = new Dictionary<string, object?>();
+            foreach (var (rel, dests) in connections)
+                connDict[rel] = dests.Cast<object?>().ToList();
+            def["connections"] = connDict;
+        }
         return def;
-    }
-
-    static Dictionary<string, object?> MakeRoute(string attr, string op, string dest, string value = "")
-    {
-        var cond = new Dictionary<string, object?> { ["attribute"] = attr, ["operator"] = op, ["value"] = value };
-        return new Dictionary<string, object?> { ["condition"] = cond, ["destination"] = dest };
     }
 
     static void TestHotReloadAddProcessor()
@@ -2023,7 +2094,7 @@ public static class TestSuite
             ["tag-env"] = MakeProc("UpdateAttribute", new() { ["key"] = "env", ["value"] = "dev" }),
             ["tag-src"] = MakeProc("UpdateAttribute", new() { ["key"] = "source", ["value"] = "api" })
         });
-        var (added, removed, updated, routes) = fab.ReloadFlow(config2);
+        var (added, removed, updated, connectionsChanged) = fab.ReloadFlow(config2);
         AssertIntEqual("added", added, 1);
         AssertIntEqual("removed", removed, 0);
         AssertIntEqual("updated", updated, 0);
@@ -2090,39 +2161,32 @@ public static class TestSuite
         fab.StopAsync();
     }
 
-    static void TestHotReloadRoutes()
+    static void TestHotReloadConnections()
     {
-        Console.WriteLine("--- Hot Reload: Routes ---");
-        var config1 = MakeFlowConfig(
-            new Dictionary<string, object?>
-            {
-                ["tag-env"] = MakeProc("UpdateAttribute", new() { ["key"] = "env", ["value"] = "dev" })
-            },
-            new Dictionary<string, object?>
-            {
-                ["r1"] = MakeRoute("type", "EXISTS", "tag-env")
-            });
+        Console.WriteLine("--- Hot Reload: Connections ---");
+        var config1 = MakeFlowConfig(new Dictionary<string, object?>
+        {
+            ["tag-env"] = MakeProc("UpdateAttribute", new() { ["key"] = "env", ["value"] = "dev" }),
+            ["logger"] = MakeProc("LogAttribute", new() { ["prefix"] = "test" })
+        });
         var (fab, ctx, reg) = CreateFabricWithConfig(config1);
         fab.StartAsync();
 
-        var rulesBefore = fab.GetEngine().GetAllRules();
-        AssertIntEqual("initial route count", rulesBefore.Count, 1);
+        var connBefore = fab.GetConnections();
+        AssertIntEqual("tag-env no connections initially", connBefore.GetValueOrDefault("tag-env")?.Count ?? 0, 0);
 
-        // Reload with different routes
-        var config2 = MakeFlowConfig(
-            new Dictionary<string, object?>
-            {
-                ["tag-env"] = MakeProc("UpdateAttribute", new() { ["key"] = "env", ["value"] = "dev" })
-            },
-            new Dictionary<string, object?>
-            {
-                ["r1"] = MakeRoute("type", "EXISTS", "tag-env"),
-                ["r2"] = MakeRoute("env", "EQ", "tag-env", "dev")
-            });
-        var (added, removed, updated, routesChanged) = fab.ReloadFlow(config2);
-        AssertTrue("routes changed", routesChanged > 0);
-        var rulesAfter = fab.GetEngine().GetAllRules();
-        AssertIntEqual("route count after", rulesAfter.Count, 2);
+        // Reload with connections: tag-env → logger
+        var config2 = MakeFlowConfig(new Dictionary<string, object?>
+        {
+            ["tag-env"] = MakeProc("UpdateAttribute", new() { ["key"] = "env", ["value"] = "dev" },
+                connections: new() { ["success"] = ["logger"] }),
+            ["logger"] = MakeProc("LogAttribute", new() { ["prefix"] = "test" })
+        });
+        var (added, removed, updated, connectionsChanged) = fab.ReloadFlow(config2);
+        AssertTrue("connections changed", connectionsChanged > 0);
+        var connAfter = fab.GetConnections();
+        AssertTrue("tag-env has success connection", connAfter.ContainsKey("tag-env") && connAfter["tag-env"].ContainsKey("success"));
+        AssertIntEqual("tag-env success targets", connAfter["tag-env"]["success"].Count, 1);
 
         fab.StopAsync();
     }
@@ -2130,23 +2194,20 @@ public static class TestSuite
     static void TestHotReloadNoChange()
     {
         Console.WriteLine("--- Hot Reload: No Change ---");
-        var config = MakeFlowConfig(
-            new Dictionary<string, object?>
-            {
-                ["tag-env"] = MakeProc("UpdateAttribute", new() { ["key"] = "env", ["value"] = "dev" })
-            },
-            new Dictionary<string, object?>
-            {
-                ["r1"] = MakeRoute("type", "EXISTS", "tag-env")
-            });
+        var config = MakeFlowConfig(new Dictionary<string, object?>
+        {
+            ["tag-env"] = MakeProc("UpdateAttribute", new() { ["key"] = "env", ["value"] = "dev" },
+                connections: new() { ["success"] = ["logger"] }),
+            ["logger"] = MakeProc("LogAttribute", new() { ["prefix"] = "test" })
+        });
         var (fab, ctx, reg) = CreateFabricWithConfig(config);
         fab.StartAsync();
 
-        var (added, removed, updated, routesChanged) = fab.ReloadFlow(config);
+        var (added, removed, updated, connectionsChanged) = fab.ReloadFlow(config);
         AssertIntEqual("no adds", added, 0);
         AssertIntEqual("no removes", removed, 0);
         AssertIntEqual("no updates", updated, 0);
-        AssertIntEqual("no route changes", routesChanged, 0);
+        AssertIntEqual("no connection changes", connectionsChanged, 0);
 
         fab.StopAsync();
     }
@@ -2155,16 +2216,11 @@ public static class TestSuite
     {
         Console.WriteLine("--- Hot Reload: E2E Pipeline Swap ---");
 
-        // Start with tag-env → sets env=dev
-        var config1 = MakeFlowConfig(
-            new Dictionary<string, object?>
-            {
-                ["tagger"] = MakeProc("UpdateAttribute", new() { ["key"] = "env", ["value"] = "dev" })
-            },
-            new Dictionary<string, object?>
-            {
-                ["route-all"] = MakeRoute("type", "EXISTS", "tagger")
-            });
+        // Start with tagger (entry point, no connections = terminal)
+        var config1 = MakeFlowConfig(new Dictionary<string, object?>
+        {
+            ["tagger"] = MakeProc("UpdateAttribute", new() { ["key"] = "env", ["value"] = "dev" })
+        });
         var (fab, ctx, reg) = CreateFabricWithConfig(config1);
         fab.StartAsync();
         Thread.Sleep(100);
@@ -2177,23 +2233,19 @@ public static class TestSuite
         var stats1 = fab.GetStats();
         AssertTrue("processed before reload", stats1["processed"] > 0);
 
-        // Hot reload: change tagger value from dev → prod, add a second processor
-        var config2 = MakeFlowConfig(
-            new Dictionary<string, object?>
-            {
-                ["tagger"] = MakeProc("UpdateAttribute", new() { ["key"] = "env", ["value"] = "prod" }),
-                ["logger"] = MakeProc("LogAttribute", new() { ["prefix"] = "reload-test" })
-            },
-            new Dictionary<string, object?>
-            {
-                ["route-all"] = MakeRoute("type", "EXISTS", "tagger"),
-                ["route-log"] = MakeRoute("env", "EXISTS", "logger")
-            });
+        // Hot reload: change tagger value from dev → prod, add a second processor with connection
+        var config2 = MakeFlowConfig(new Dictionary<string, object?>
+        {
+            ["tagger"] = MakeProc("UpdateAttribute", new() { ["key"] = "env", ["value"] = "prod" },
+                connections: new() { ["success"] = ["logger"] }),
+            ["logger"] = MakeProc("LogAttribute", new() { ["prefix"] = "reload-test" })
+        });
 
-        var (added, removed, updated, routesChanged) = fab.ReloadFlow(config2);
+        var (added, removed, updated, connectionsChanged) = fab.ReloadFlow(config2);
         AssertIntEqual("e2e added", added, 1);
         AssertIntEqual("e2e updated", updated, 1);
-        AssertTrue("e2e routes changed", routesChanged > 0);
+        // tagger config changed → counted as update (connections bundled with processor update)
+        AssertTrue("e2e changes applied", added + updated + connectionsChanged >= 2);
         AssertIntEqual("e2e proc count", fab.GetProcessorNames().Count, 2);
 
         // Ingest another FlowFile — should flow through updated pipeline
