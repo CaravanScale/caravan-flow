@@ -122,9 +122,9 @@ public sealed class ConvertRecordToJSON : IProcessor
             {
                 bytes = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(rc.Records);
             }
-            catch
+            catch (Exception ex)
             {
-                return FailureResult.Rent("failed to serialize records to JSON", ff);
+                return FailureResult.Rent($"failed to serialize records to JSON: {ex.Message}", ff);
             }
             var updated = FlowFile.WithContent(ff, Raw.Rent(bytes));
             return SingleResult.Rent(updated);

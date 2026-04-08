@@ -8,12 +8,33 @@ public sealed class JsonRecordReader : IRecordReader
 {
     public List<GenericRecord> Read(byte[] data, Schema schema)
     {
-        List<Dictionary<string, object?>>? rawList;
-        try
+        if (data.Length == 0) return [];
+
+        // Peek first non-whitespace byte to determine JSON shape
+        int firstChar = -1;
+        for (int i = 0; i < data.Length; i++)
         {
-            rawList = JsonSerializer.Deserialize<List<Dictionary<string, object?>>>(data);
+            if (data[i] != ' ' && data[i] != '\t' && data[i] != '\n' && data[i] != '\r')
+            {
+                firstChar = data[i];
+                break;
+            }
         }
-        catch
+        if (firstChar < 0) return [];
+
+        List<Dictionary<string, object?>>? rawList;
+        if (firstChar == '[')
+        {
+            if (!TryDeserializeArray(data, out rawList))
+                return [];
+        }
+        else if (firstChar == '{')
+        {
+            if (!TryDeserializeObject(data, out var single))
+                return [];
+            rawList = single is not null ? [single] : null;
+        }
+        else
         {
             return [];
         }
@@ -84,6 +105,18 @@ public sealed class JsonRecordReader : IRecordReader
         double => FieldType.Double,
         _ => FieldType.String
     };
+
+    private static bool TryDeserializeArray(byte[] data, out List<Dictionary<string, object?>>? result)
+    {
+        try { result = JsonSerializer.Deserialize<List<Dictionary<string, object?>>>(data); return true; }
+        catch (JsonException) { result = null; return false; }
+    }
+
+    private static bool TryDeserializeObject(byte[] data, out Dictionary<string, object?>? result)
+    {
+        try { result = JsonSerializer.Deserialize<Dictionary<string, object?>>(data); return true; }
+        catch (JsonException) { result = null; return false; }
+    }
 }
 
 // --- JSON RecordWriter: GenericRecords → JSON array ---

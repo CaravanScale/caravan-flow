@@ -61,6 +61,22 @@ public sealed class ScopedContext
         return p;
     }
 
+    public bool TryGetProvider<T>(string name, out T? provider) where T : class, IProvider
+    {
+        provider = null;
+        if (!_providers.TryGetValue(name, out var p)) return false;
+        if (!p.IsEnabled) return false;
+        provider = p as T;
+        return provider is not null;
+    }
+
+    public IContentStore GetContentStoreOrDefault()
+    {
+        if (TryGetProvider<ContentProvider>("content", out var cp))
+            return cp!.Store;
+        return new MemoryContentStore();
+    }
+
     public List<string> ListProviders() => new(_providers.Keys);
 }
 

@@ -18,21 +18,15 @@ public static class BuiltinProcessors
             new ProcessorInfo("LogAttribute", "Logs FlowFile attributes and passes through", ["prefix"]),
             (ctx, config) =>
             {
-                LoggingProvider? log = null;
-                try { log = ctx.GetProvider("logging") as LoggingProvider; } catch { }
+                ctx.TryGetProvider<LoggingProvider>("logging", out var log);
                 return new LogAttribute(config.GetValueOrDefault("prefix", "flow"), log);
             });
 
         reg.Register(
             new ProcessorInfo("ConvertJSONToRecord", "Parses JSON content into records", ["schema_name"]),
-            (ctx, config) =>
-            {
-                var schemaName = config.GetValueOrDefault("schema_name", "default");
-                IContentStore store;
-                try { store = ((ContentProvider)ctx.GetProvider("content")).Store; }
-                catch { store = new MemoryContentStore(); }
-                return new ConvertJSONToRecord(schemaName, store);
-            });
+            (ctx, config) => new ConvertJSONToRecord(
+                config.GetValueOrDefault("schema_name", "default"),
+                ctx.GetContentStoreOrDefault()));
 
         reg.Register(
             new ProcessorInfo("ConvertRecordToJSON", "Serializes records back to JSON", []),
@@ -40,93 +34,59 @@ public static class BuiltinProcessors
 
         reg.Register(
             new ProcessorInfo("PutHTTP", "POST FlowFile to downstream HTTP endpoint", ["endpoint"]),
-            (ctx, config) =>
-            {
-                IContentStore store;
-                try { store = ((ContentProvider)ctx.GetProvider("content")).Store; }
-                catch { store = new MemoryContentStore(); }
-                return new PutHTTP(config["endpoint"], config.GetValueOrDefault("format", "raw"), store);
-            });
+            (ctx, config) => new PutHTTP(
+                config["endpoint"],
+                config.GetValueOrDefault("format", "raw"),
+                ctx.GetContentStoreOrDefault()));
 
         reg.Register(
             new ProcessorInfo("PutFile", "Write FlowFile content to directory", ["output_dir"]),
-            (ctx, config) =>
-            {
-                IContentStore store;
-                try { store = ((ContentProvider)ctx.GetProvider("content")).Store; }
-                catch { store = new MemoryContentStore(); }
-                return new PutFile(
-                    config["output_dir"],
-                    config.GetValueOrDefault("naming_attribute", "filename"),
-                    config.GetValueOrDefault("prefix", ""),
-                    config.GetValueOrDefault("suffix", ""),
-                    store);
-            });
+            (ctx, config) => new PutFile(
+                config["output_dir"],
+                config.GetValueOrDefault("naming_attribute", "filename"),
+                config.GetValueOrDefault("prefix", ""),
+                config.GetValueOrDefault("suffix", ""),
+                ctx.GetContentStoreOrDefault()));
 
         reg.Register(
             new ProcessorInfo("PutStdout", "Write FlowFile content to stdout", []),
-            (ctx, config) =>
-            {
-                IContentStore store;
-                try { store = ((ContentProvider)ctx.GetProvider("content")).Store; }
-                catch { store = new MemoryContentStore(); }
-                return new PutStdout(config.GetValueOrDefault("format", "text"), store);
-            });
+            (ctx, config) => new PutStdout(
+                config.GetValueOrDefault("format", "text"),
+                ctx.GetContentStoreOrDefault()));
 
         // --- Text processors ---
 
         reg.Register(
             new ProcessorInfo("ReplaceText", "Regex find/replace on content", ["pattern", "replacement"]),
-            (ctx, config) =>
-            {
-                IContentStore store;
-                try { store = ((ContentProvider)ctx.GetProvider("content")).Store; }
-                catch { store = new MemoryContentStore(); }
-                return new ReplaceText(
-                    config["pattern"],
-                    config.GetValueOrDefault("replacement", ""),
-                    config.GetValueOrDefault("mode", "all"),
-                    store);
-            });
+            (ctx, config) => new ReplaceText(
+                config["pattern"],
+                config.GetValueOrDefault("replacement", ""),
+                config.GetValueOrDefault("mode", "all"),
+                ctx.GetContentStoreOrDefault()));
 
         reg.Register(
             new ProcessorInfo("ExtractText", "Regex capture groups → attributes", ["pattern"]),
-            (ctx, config) =>
-            {
-                IContentStore store;
-                try { store = ((ContentProvider)ctx.GetProvider("content")).Store; }
-                catch { store = new MemoryContentStore(); }
-                return new ExtractText(
-                    config["pattern"],
-                    config.GetValueOrDefault("group_names", ""),
-                    store);
-            });
+            (ctx, config) => new ExtractText(
+                config["pattern"],
+                config.GetValueOrDefault("group_names", ""),
+                ctx.GetContentStoreOrDefault()));
 
         reg.Register(
             new ProcessorInfo("SplitText", "Split content by delimiter into multiple FlowFiles", ["delimiter"]),
             (ctx, config) =>
             {
-                IContentStore store;
-                try { store = ((ContentProvider)ctx.GetProvider("content")).Store; }
-                catch { store = new MemoryContentStore(); }
                 int headerLines = int.TryParse(config.GetValueOrDefault("header_lines", "0"), out var h) ? h : 0;
-                return new SplitText(config["delimiter"], headerLines, store);
+                return new SplitText(config["delimiter"], headerLines, ctx.GetContentStoreOrDefault());
             });
 
         // --- Record conversion ---
 
         reg.Register(
             new ProcessorInfo("ConvertAvroToRecord", "Decode Avro binary into records", ["fields"]),
-            (ctx, config) =>
-            {
-                IContentStore store;
-                try { store = ((ContentProvider)ctx.GetProvider("content")).Store; }
-                catch { store = new MemoryContentStore(); }
-                return new ConvertAvroToRecord(
-                    config.GetValueOrDefault("schema_name", "default"),
-                    config.GetValueOrDefault("fields", ""),
-                    store);
-            });
+            (ctx, config) => new ConvertAvroToRecord(
+                config.GetValueOrDefault("schema_name", "default"),
+                config.GetValueOrDefault("fields", ""),
+                ctx.GetContentStoreOrDefault()));
 
         reg.Register(
             new ProcessorInfo("ConvertRecordToAvro", "Encode records to Avro binary", []),
@@ -136,16 +96,13 @@ public static class BuiltinProcessors
             new ProcessorInfo("ConvertCSVToRecord", "Parse CSV content into records", []),
             (ctx, config) =>
             {
-                IContentStore store;
-                try { store = ((ContentProvider)ctx.GetProvider("content")).Store; }
-                catch { store = new MemoryContentStore(); }
                 var delim = config.GetValueOrDefault("delimiter", ",");
                 var hasHeader = config.GetValueOrDefault("has_header", "true") != "false";
                 return new ConvertCSVToRecord(
                     config.GetValueOrDefault("schema_name", "default"),
                     delim.Length > 0 ? delim[0] : ',',
                     hasHeader,
-                    store);
+                    ctx.GetContentStoreOrDefault());
             });
 
         reg.Register(
@@ -163,7 +120,6 @@ public static class BuiltinProcessors
             new ProcessorInfo("EvaluateExpression", "Compute attributes from expressions", ["expressions"]),
             (ctx, config) =>
             {
-                // Parse expressions: "target1=expr1;target2=expr2"
                 var exprs = new Dictionary<string, string>();
                 var raw = config.GetValueOrDefault("expressions", "");
                 foreach (var pair in raw.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
