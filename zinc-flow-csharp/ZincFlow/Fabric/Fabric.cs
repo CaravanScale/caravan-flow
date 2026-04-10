@@ -404,12 +404,12 @@ public sealed class Fabric
         ["sources"] = _sources.Count
     };
 
-    public Dictionary<string, Dictionary<string, long>> GetProcessorStats()
+    public Dictionary<string, Dictionary<string, object>> GetProcessorStats()
     {
-        var stats = new Dictionary<string, Dictionary<string, long>>();
+        var stats = new Dictionary<string, Dictionary<string, object>>();
         foreach (var name in _graph.ProcessorNames)
         {
-            stats[name] = new Dictionary<string, long>
+            stats[name] = new Dictionary<string, object>
             {
                 ["processed"] = _processorCounts.GetValueOrDefault(name),
                 ["errors"] = _processorErrors.GetValueOrDefault(name)

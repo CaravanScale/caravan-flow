@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Text.Json.Serialization.Metadata;
 using ZincFlow.Core;
 using ZincFlow.Fabric;
 
@@ -9,15 +8,10 @@ namespace ZincFlow.StdLib;
 
 internal static class SourceHelpers
 {
-    private static readonly JsonSerializerOptions JsonOpts = new()
-    {
-        TypeInfoResolver = new DefaultJsonTypeInfoResolver()
-    };
-
     internal static Task WriteJson(HttpResponse response, object value)
     {
         response.ContentType = "application/json";
-        return response.WriteAsync(JsonSerializer.Serialize(value, JsonOpts));
+        return response.WriteAsync(JsonSerializer.Serialize(value, ZincFlow.Core.JsonOpts.Default));
     }
 }
 
@@ -158,7 +152,7 @@ public sealed class ListenHTTP : IConnectorSource
         if (ctx.Request.Method != "POST")
         {
             ctx.Response.StatusCode = 405;
-            await SourceHelpers.WriteJson(ctx.Response, new { error = "method not allowed" });
+            await SourceHelpers.WriteJson(ctx.Response, new Dictionary<string, object?> { ["error"] = "method not allowed" });
             return;
         }
 
@@ -177,7 +171,7 @@ public sealed class ListenHTTP : IConnectorSource
                 else
                     FlowFile.Return(ff); // return rejected FlowFiles to pool
             }
-            await SourceHelpers.WriteJson(ctx.Response, new { status = "accepted", count = accepted, source = Name });
+            await SourceHelpers.WriteJson(ctx.Response, new Dictionary<string, object?> { ["status"] = "accepted", ["count"] = accepted, ["source"] = Name });
             return;
         }
 
@@ -205,16 +199,16 @@ public sealed class ListenHTTP : IConnectorSource
         {
             FlowFile.Return(flowFile); // return to pool on backpressure
             ctx.Response.StatusCode = 503;
-            await SourceHelpers.WriteJson(ctx.Response, new { error = "backpressure", source = Name });
+            await SourceHelpers.WriteJson(ctx.Response, new Dictionary<string, object?> { ["error"] = "backpressure", ["source"] = Name });
             return;
         }
 
-        await SourceHelpers.WriteJson(ctx.Response, new { status = "accepted", id = flowFile.Id, source = Name });
+        await SourceHelpers.WriteJson(ctx.Response, new Dictionary<string, object?> { ["status"] = "accepted", ["id"] = flowFile.Id, ["source"] = Name });
     }
 
     private async Task HandleHealth(HttpContext ctx)
     {
-        await SourceHelpers.WriteJson(ctx.Response, new { status = "healthy", source = Name, running = IsRunning });
+        await SourceHelpers.WriteJson(ctx.Response, new Dictionary<string, object?> { ["status"] = "healthy", ["source"] = Name, ["running"] = IsRunning });
     }
 }
 

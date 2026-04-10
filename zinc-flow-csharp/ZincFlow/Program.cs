@@ -1,8 +1,6 @@
 using System.Diagnostics;
 using System.Runtime;
 using System.Text;
-using YamlDotNet.Serialization;
-using YamlDotNet.Serialization.NamingConventions;
 using ZincFlow.Core;
 using ZincFlow.Fabric;
 using ZincFlow.StdLib;
@@ -28,10 +26,7 @@ Dictionary<string, object?> config;
 if (File.Exists(configPath))
 {
     var yaml = File.ReadAllText(configPath);
-    var deserializer = new DeserializerBuilder()
-        .WithNamingConvention(UnderscoredNamingConvention.Instance)
-        .Build();
-    config = deserializer.Deserialize<Dictionary<string, object?>>(yaml) ?? new();
+    config = YamlParser.Parse(yaml);
     Console.WriteLine($"Config loaded from {configPath}");
 }
 else
@@ -179,10 +174,7 @@ if (File.Exists(configPath))
         {
             Console.WriteLine("[hot-reload] config.yaml changed, reloading...");
             var yaml = File.ReadAllText(configPath);
-            var deserializer = new DeserializerBuilder()
-                .WithNamingConvention(UnderscoredNamingConvention.Instance)
-                .Build();
-            var newConfig = deserializer.Deserialize<Dictionary<string, object?>>(yaml) ?? new();
+            var newConfig = YamlParser.Parse(yaml);
             var errors = ConfigValidator.Validate(newConfig, reg);
             if (errors.Count > 0)
             {

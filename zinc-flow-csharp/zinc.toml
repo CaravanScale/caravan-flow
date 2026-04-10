@@ -18,7 +18,7 @@ strip_symbols = true
 invariant_globalization = true
 optimization = "Size"
 stack_traces = false
-trim_metadata = true
+trim_metadata = false
 
 [csharp.gc]
 server = true

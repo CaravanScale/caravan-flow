@@ -203,8 +203,8 @@ public static class PipelineTests
         AssertTrue("execute ok", ok);
 
         var stats = fab.GetProcessorStats();
-        AssertTrue("error handler got 1", stats["error-handler"]["processed"] == 1);
-        AssertTrue("next not invoked", stats["next"]["processed"] == 0);
+        AssertTrue("error handler got 1", Stat(stats, "error-handler", "processed") == 1);
+        AssertTrue("next not invoked", Stat(stats, "next", "processed") == 0);
     }
 
     static void TestPipelineFailureNoHandler()
@@ -246,9 +246,9 @@ public static class PipelineTests
         AssertTrue("execute ok", ok);
 
         var stats = fab.GetProcessorStats();
-        AssertTrue("parser processed", stats["parser"]["processed"] == 1);
-        AssertTrue("parser has error", stats["parser"]["errors"] == 1);
-        AssertTrue("next not invoked", stats["next"]["processed"] == 0);
+        AssertTrue("parser processed", Stat(stats, "parser", "processed") == 1);
+        AssertTrue("parser has error", Stat(stats, "parser", "errors") == 1);
+        AssertTrue("next not invoked", Stat(stats, "next", "processed") == 0);
     }
 
     static void TestPipelineLargeContentOffload()

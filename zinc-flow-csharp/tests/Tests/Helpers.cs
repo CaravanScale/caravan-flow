@@ -8,6 +8,10 @@ namespace ZincFlow.Tests;
 
 public static class Helpers
 {
+    /// <summary>Extract a long stat value from processor stats (handles object boxing)</summary>
+    public static long Stat(Dictionary<string, Dictionary<string, object>> stats, string proc, string key)
+        => stats.TryGetValue(proc, out var d) && d.TryGetValue(key, out var v) ? Convert.ToInt64(v) : 0;
+
     public static ProcessorContext TestContext()
     {
         var store = new MemoryContentStore();

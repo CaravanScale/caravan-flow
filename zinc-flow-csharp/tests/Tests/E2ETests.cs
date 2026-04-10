@@ -69,9 +69,9 @@ public static class E2ETests
 
             // Verify stats — all 3 processors should have run
             var stats = fab.GetProcessorStats();
-            AssertTrue("tagger processed", stats["tagger"]["processed"] == 1);
-            AssertTrue("logger processed", stats["logger"]["processed"] == 1);
-            AssertTrue("sink processed", stats["sink"]["processed"] == 1);
+            AssertTrue("tagger processed", Stat(stats, "tagger", "processed") == 1);
+            AssertTrue("logger processed", Stat(stats, "logger", "processed") == 1);
+            AssertTrue("sink processed", Stat(stats, "sink", "processed") == 1);
 
             // Verify provenance chain — all 3 processors touched the FlowFile
             var events = prov.GetEvents(ffId);
@@ -309,10 +309,10 @@ public static class E2ETests
         var ok = fab.Execute(ff, "json-parse");
         AssertTrue("e2e formats: execute returns true", ok);
         var stats = fab.GetProcessorStats();
-        AssertTrue("e2e formats: json-parse processed=1", stats["json-parse"]["processed"] == 1);
-        AssertTrue("e2e formats: enrich processed=1", stats["enrich"]["processed"] == 1);
-        AssertTrue("e2e formats: to-csv processed=1", stats["to-csv"]["processed"] == 1);
-        AssertTrue("e2e formats: sink processed=1", stats["sink"]["processed"] == 1);
+        AssertTrue("e2e formats: json-parse processed=1", Stat(stats, "json-parse", "processed") == 1);
+        AssertTrue("e2e formats: enrich processed=1", Stat(stats, "enrich", "processed") == 1);
+        AssertTrue("e2e formats: to-csv processed=1", Stat(stats, "to-csv", "processed") == 1);
+        AssertTrue("e2e formats: sink processed=1", Stat(stats, "sink", "processed") == 1);
     }
 
     static void TestE2ECsvEtlPipeline()
@@ -526,11 +526,11 @@ public static class E2ETests
         fab.Execute(ff, "stage-a");
 
         var stats = fab.GetProcessorStats();
-        AssertTrue("cascade: a processed", stats["stage-a"]["processed"] == 1);
-        AssertTrue("cascade: b processed (then failed)", stats["stage-b"]["processed"] == 1);
-        AssertTrue("cascade: c processed (then failed)", stats["stage-c"]["processed"] == 1);
-        AssertTrue("cascade: d processed (caught)", stats["stage-d"]["processed"] == 1);
-        AssertTrue("cascade: never-reached=0", stats["never-reached"]["processed"] == 0);
+        AssertTrue("cascade: a processed", Stat(stats, "stage-a", "processed") == 1);
+        AssertTrue("cascade: b processed (then failed)", Stat(stats, "stage-b", "processed") == 1);
+        AssertTrue("cascade: c processed (then failed)", Stat(stats, "stage-c", "processed") == 1);
+        AssertTrue("cascade: d processed (caught)", Stat(stats, "stage-d", "processed") == 1);
+        AssertTrue("cascade: never-reached=0", Stat(stats, "never-reached", "processed") == 0);
 
         // Verify the final sink received the FlowFile with accumulated attributes
         AssertIntEqual("cascade: final-sink captured 1", finalSink.Captured.Count, 1);
@@ -727,8 +727,8 @@ public static class E2ETests
 
         // Verify all processors ran
         var stats = fab.GetProcessorStats();
-        AssertTrue("e2e-route: json-parse processed 3", stats["json-parse"]["processed"] == 3);
-        AssertTrue("e2e-route: extract processed 3", stats["extract"]["processed"] == 3);
-        AssertTrue("e2e-route: router processed 3", stats["router"]["processed"] == 3);
+        AssertTrue("e2e-route: json-parse processed 3", Stat(stats, "json-parse", "processed") == 3);
+        AssertTrue("e2e-route: extract processed 3", Stat(stats, "extract", "processed") == 3);
+        AssertTrue("e2e-route: router processed 3", Stat(stats, "router", "processed") == 3);
     }
 }

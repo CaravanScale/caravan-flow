@@ -97,8 +97,8 @@ public static class FabricTests
         AssertTrue("execute returns true", ok);
 
         var stats = fab.GetProcessorStats();
-        AssertTrue("tag-env processed", stats["tag-env"]["processed"] == 1);
-        AssertTrue("logger processed", stats["logger"]["processed"] == 1);
+        AssertTrue("tag-env processed", Stat(stats, "tag-env", "processed") == 1);
+        AssertTrue("logger processed", Stat(stats, "logger", "processed") == 1);
     }
 
     static void TestFabricDlqFromFailure()
@@ -144,18 +144,18 @@ public static class FabricTests
         var ok1 = fab.Execute(goodFf, "parser");
         AssertTrue("good execute ok", ok1);
         var pstats = fab.GetProcessorStats();
-        AssertTrue("parser processed good", pstats["parser"]["processed"] == 1);
-        AssertTrue("sink processed good", pstats["sink"]["processed"] == 1);
-        AssertTrue("error-handler not invoked for good", pstats["error-handler"]["processed"] == 0);
+        AssertTrue("parser processed good", Stat(pstats, "parser", "processed") == 1);
+        AssertTrue("sink processed good", Stat(pstats, "sink", "processed") == 1);
+        AssertTrue("error-handler not invoked for good", Stat(pstats, "error-handler", "processed") == 0);
 
         // Bad input goes to error-handler
         var badFf = FlowFile.Create("not-json"u8, new());
         var ok2 = fab.Execute(badFf, "parser");
         AssertTrue("bad execute ok", ok2);
         pstats = fab.GetProcessorStats();
-        AssertTrue("parser processed bad", pstats["parser"]["processed"] == 2);
-        AssertTrue("error-handler invoked for bad", pstats["error-handler"]["processed"] == 1);
-        AssertTrue("sink still 1", pstats["sink"]["processed"] == 1);
+        AssertTrue("parser processed bad", Stat(pstats, "parser", "processed") == 2);
+        AssertTrue("error-handler invoked for bad", Stat(pstats, "error-handler", "processed") == 1);
+        AssertTrue("sink still 1", Stat(pstats, "sink", "processed") == 1);
     }
 
     static void TestScopedContextAccess()
@@ -216,8 +216,8 @@ public static class FabricTests
         AssertTrue("chain execute ok", ok);
 
         var stats = fab.GetProcessorStats();
-        AssertTrue("tag-env processed 1", stats["tag-env"]["processed"] == 1);
-        AssertTrue("logger processed 1", stats["logger"]["processed"] == 1);
+        AssertTrue("tag-env processed 1", Stat(stats, "tag-env", "processed") == 1);
+        AssertTrue("logger processed 1", Stat(stats, "logger", "processed") == 1);
     }
 
     static void TestScenarioScopedProviderIsolation()
@@ -272,10 +272,10 @@ public static class FabricTests
         AssertTrue("fanout execute ok", ok);
 
         var stats = fab.GetProcessorStats();
-        AssertTrue("tagger processed 1", stats["tagger"]["processed"] == 1);
-        AssertTrue("dest-a processed 1", stats["dest-a"]["processed"] == 1);
-        AssertTrue("dest-b processed 1", stats["dest-b"]["processed"] == 1);
-        AssertTrue("dest-c processed 1", stats["dest-c"]["processed"] == 1);
+        AssertTrue("tagger processed 1", Stat(stats, "tagger", "processed") == 1);
+        AssertTrue("dest-a processed 1", Stat(stats, "dest-a", "processed") == 1);
+        AssertTrue("dest-b processed 1", Stat(stats, "dest-b", "processed") == 1);
+        AssertTrue("dest-c processed 1", Stat(stats, "dest-c", "processed") == 1);
     }
 
     static void TestMaxHopCycleDetection()
@@ -319,9 +319,9 @@ public static class FabricTests
 
         // Should have processed some hops then stopped at max
         var stats = fab.GetProcessorStats();
-        var totalProcessed = stats["proc-a"]["processed"] + stats["proc-b"]["processed"];
+        var totalProcessed = Stat(stats, "proc-a", "processed") + Stat(stats, "proc-b", "processed");
         AssertTrue("processed limited by max hops", totalProcessed <= 5);
-        AssertTrue("errors recorded for hop limit", stats["proc-a"]["errors"] + stats["proc-b"]["errors"] >= 1);
+        AssertTrue("errors recorded for hop limit", Stat(stats, "proc-a", "errors") + Stat(stats, "proc-b", "errors") >= 1);
     }
 
     static void TestDagValidatorValid()
@@ -418,10 +418,10 @@ public static class FabricTests
         fab.Execute(ff, "src");
 
         var stats = fab.GetProcessorStats();
-        AssertTrue("a has 1", stats["a"]["processed"] == 1);
-        AssertTrue("b has 1", stats["b"]["processed"] == 1);
-        AssertTrue("c has 1", stats["c"]["processed"] == 1);
-        AssertTrue("src processed", stats["src"]["processed"] == 1);
+        AssertTrue("a has 1", Stat(stats, "a", "processed") == 1);
+        AssertTrue("b has 1", Stat(stats, "b", "processed") == 1);
+        AssertTrue("c has 1", Stat(stats, "c", "processed") == 1);
+        AssertTrue("src processed", Stat(stats, "src", "processed") == 1);
     }
 
     static void TestSinkNoConnections()
@@ -448,8 +448,8 @@ public static class FabricTests
         AssertTrue("sink execute ok", ok);
 
         var stats = fab.GetProcessorStats();
-        AssertTrue("sink processed 1", stats["sink"]["processed"] == 1);
-        AssertTrue("sink no errors", stats["sink"]["errors"] == 0);
+        AssertTrue("sink processed 1", Stat(stats, "sink", "processed") == 1);
+        AssertTrue("sink no errors", Stat(stats, "sink", "errors") == 0);
     }
 
     static void TestHotReloadAddProcessor()
@@ -526,7 +526,7 @@ public static class FabricTests
         var ff = FlowFile.Create("test"u8, new() { ["type"] = "order" });
         fab.Execute(ff, "tag-env");
         var stats = fab.GetProcessorStats();
-        AssertTrue("tag-env processed", stats["tag-env"]["processed"] == 1);
+        AssertTrue("tag-env processed", Stat(stats, "tag-env", "processed") == 1);
     }
 
     static void TestHotReloadConnections()
@@ -637,8 +637,8 @@ public static class FabricTests
         var ok = fab.Execute(ff, "tag");
         AssertTrue("execute returns true", ok);
         var stats = fab.GetProcessorStats();
-        AssertTrue("tag processed", stats["tag"]["processed"] == 1);
-        AssertTrue("tag no errors", stats["tag"]["errors"] == 0);
+        AssertTrue("tag processed", Stat(stats, "tag", "processed") == 1);
+        AssertTrue("tag no errors", Stat(stats, "tag", "errors") == 0);
     }
 
     static void TestExecuteLinearPipeline()
@@ -675,9 +675,9 @@ public static class FabricTests
         var ok = fab.Execute(ff, "tag");
         AssertTrue("execute returns true", ok);
         var stats = fab.GetProcessorStats();
-        AssertTrue("tag processed", stats["tag"]["processed"] == 1);
-        AssertTrue("enrich processed", stats["enrich"]["processed"] == 1);
-        AssertTrue("sink processed", stats["sink"]["processed"] == 1);
+        AssertTrue("tag processed", Stat(stats, "tag", "processed") == 1);
+        AssertTrue("enrich processed", Stat(stats, "enrich", "processed") == 1);
+        AssertTrue("sink processed", Stat(stats, "sink", "processed") == 1);
     }
 
     static void TestExecuteFanOut()
@@ -713,9 +713,9 @@ public static class FabricTests
         var ok = fab.Execute(ff, "source");
         AssertTrue("execute returns true", ok);
         var stats = fab.GetProcessorStats();
-        AssertTrue("source processed 1", stats["source"]["processed"] == 1);
-        AssertTrue("branch-a processed 1", stats["branch-a"]["processed"] == 1);
-        AssertTrue("branch-b processed 1", stats["branch-b"]["processed"] == 1);
+        AssertTrue("source processed 1", Stat(stats, "source", "processed") == 1);
+        AssertTrue("branch-a processed 1", Stat(stats, "branch-a", "processed") == 1);
+        AssertTrue("branch-b processed 1", Stat(stats, "branch-b", "processed") == 1);
     }
 
     static void TestExecuteFailureRouting()
@@ -758,9 +758,9 @@ public static class FabricTests
         var ok = fab.Execute(ff, "parser");
         AssertTrue("execute ok", ok);
         var stats = fab.GetProcessorStats();
-        AssertTrue("parser processed", stats["parser"]["processed"] == 1);
-        AssertTrue("error-sink received failure", stats["error-sink"]["processed"] == 1);
-        AssertTrue("sink not invoked", stats["sink"]["processed"] == 0);
+        AssertTrue("parser processed", Stat(stats, "parser", "processed") == 1);
+        AssertTrue("error-sink received failure", Stat(stats, "error-sink", "processed") == 1);
+        AssertTrue("sink not invoked", Stat(stats, "sink", "processed") == 0);
     }
 
     static void TestExecuteFailureNoHandler()
@@ -800,9 +800,9 @@ public static class FabricTests
         var ok = fab.Execute(ff, "parser");
         AssertTrue("execute ok", ok);
         var stats = fab.GetProcessorStats();
-        AssertTrue("parser processed", stats["parser"]["processed"] == 1);
-        AssertTrue("parser error counted", stats["parser"]["errors"] == 1);
-        AssertTrue("sink not invoked", stats["sink"]["processed"] == 0);
+        AssertTrue("parser processed", Stat(stats, "parser", "processed") == 1);
+        AssertTrue("parser error counted", Stat(stats, "parser", "errors") == 1);
+        AssertTrue("sink not invoked", Stat(stats, "sink", "processed") == 0);
     }
 
     static void TestExecuteDropped()
@@ -846,10 +846,10 @@ public static class FabricTests
         AssertTrue("execute ok", ok);
 
         var stats = fab.GetProcessorStats();
-        AssertTrue("source processed", stats["source"]["processed"] == 1);
+        AssertTrue("source processed", Stat(stats, "source", "processed") == 1);
         // disabled-proc is skipped, FlowFile is returned to pool
-        AssertTrue("disabled-proc not processed", stats["disabled-proc"]["processed"] == 0);
-        AssertTrue("sink not reached", stats["sink"]["processed"] == 0);
+        AssertTrue("disabled-proc not processed", Stat(stats, "disabled-proc", "processed") == 0);
+        AssertTrue("sink not reached", Stat(stats, "sink", "processed") == 0);
     }
 
     static void TestExecuteMultipleResult()
@@ -883,8 +883,8 @@ public static class FabricTests
         AssertTrue("execute ok", ok);
 
         var stats = fab.GetProcessorStats();
-        AssertTrue("splitter processed 1", stats["splitter"]["processed"] == 1);
-        AssertTrue("sink processed 3 (one per split)", stats["sink"]["processed"] == 3);
+        AssertTrue("splitter processed 1", Stat(stats, "splitter", "processed") == 1);
+        AssertTrue("sink processed 3 (one per split)", Stat(stats, "sink", "processed") == 3);
     }
 
     static void TestExecuteMaxHops()
@@ -927,9 +927,9 @@ public static class FabricTests
         AssertTrue("execute completes (no infinite loop)", ok);
 
         var stats = fab.GetProcessorStats();
-        var totalProcessed = stats["a"]["processed"] + stats["b"]["processed"];
+        var totalProcessed = Stat(stats, "a", "processed") + Stat(stats, "b", "processed");
         AssertTrue("processed limited by max hops", totalProcessed <= 3);
-        var totalErrors = stats["a"]["errors"] + stats["b"]["errors"];
+        var totalErrors = Stat(stats, "a", "errors") + Stat(stats, "b", "errors");
         AssertTrue("hop limit errors recorded", totalErrors >= 1);
     }
 
@@ -968,7 +968,7 @@ public static class FabricTests
         AssertTrue("second execute ok (first finished)", ok2);
 
         var stats = fab.GetProcessorStats();
-        AssertTrue("tag processed 2", stats["tag"]["processed"] == 2);
+        AssertTrue("tag processed 2", Stat(stats, "tag", "processed") == 2);
     }
 
     static void TestProcessorException()
@@ -1013,9 +1013,9 @@ public static class FabricTests
         var ok1 = fab1.Execute(ff1, "thrower");
         AssertTrue("exception: execute returns true", ok1);
         var stats1 = fab1.GetProcessorStats();
-        AssertTrue("exception: thrower errors=1", stats1["thrower"]["errors"] == 1);
-        AssertTrue("exception: error-handler received flowfile", stats1["error-handler"]["processed"] == 1);
-        AssertTrue("exception: sink not invoked", stats1["sink"]["processed"] == 0);
+        AssertTrue("exception: thrower errors=1", Stat(stats1, "thrower", "errors") == 1);
+        AssertTrue("exception: error-handler received flowfile", Stat(stats1, "error-handler", "processed") == 1);
+        AssertTrue("exception: sink not invoked", Stat(stats1, "sink", "processed") == 0);
 
         // Case 2: Throwing processor WITHOUT failure connection — dropped gracefully
         var config2 = new Dictionary<string, object?>
@@ -1050,8 +1050,8 @@ public static class FabricTests
         var ok2 = fab2.Execute(ff2, "thrower");
         AssertTrue("exception no handler: execute returns true", ok2);
         var stats2 = fab2.GetProcessorStats();
-        AssertTrue("exception no handler: thrower errors=1", stats2["thrower"]["errors"] == 1);
-        AssertTrue("exception no handler: sink not invoked", stats2["sink"]["processed"] == 0);
+        AssertTrue("exception no handler: thrower errors=1", Stat(stats2, "thrower", "errors") == 1);
+        AssertTrue("exception no handler: sink not invoked", Stat(stats2, "sink", "processed") == 0);
     }
 
     static void TestFanOutMixedSuccess()
@@ -1107,11 +1107,11 @@ public static class FabricTests
         var ok = fab.Execute(ff, "source");
         AssertTrue("fan-out mixed: execute returns true", ok);
         var stats = fab.GetProcessorStats();
-        AssertTrue("fan-out mixed: source processed=1", stats["source"]["processed"] == 1);
-        AssertTrue("fan-out mixed: good-branch processed=1", stats["good-branch"]["processed"] == 1);
-        AssertTrue("fan-out mixed: bad-branch processed=1", stats["bad-branch"]["processed"] == 1);
-        AssertTrue("fan-out mixed: error-handler processed=1", stats["error-handler"]["processed"] == 1);
-        AssertTrue("fan-out mixed: never-reached processed=0", stats["never-reached"]["processed"] == 0);
+        AssertTrue("fan-out mixed: source processed=1", Stat(stats, "source", "processed") == 1);
+        AssertTrue("fan-out mixed: good-branch processed=1", Stat(stats, "good-branch", "processed") == 1);
+        AssertTrue("fan-out mixed: bad-branch processed=1", Stat(stats, "bad-branch", "processed") == 1);
+        AssertTrue("fan-out mixed: error-handler processed=1", Stat(stats, "error-handler", "processed") == 1);
+        AssertTrue("fan-out mixed: never-reached processed=0", Stat(stats, "never-reached", "processed") == 0);
     }
 
     static void TestPartialPipelineFailure()
@@ -1174,12 +1174,12 @@ public static class FabricTests
         var ok = fab.Execute(ff, "A");
         AssertTrue("partial failure: execute returns true", ok);
         var stats = fab.GetProcessorStats();
-        AssertTrue("partial failure: A processed=1", stats["A"]["processed"] == 1);
-        AssertTrue("partial failure: B processed=1", stats["B"]["processed"] == 1);
-        AssertTrue("partial failure: C processed=1", stats["C"]["processed"] == 1);
-        AssertTrue("partial failure: D processed=0", stats["D"]["processed"] == 0);
-        AssertTrue("partial failure: E processed=0", stats["E"]["processed"] == 0);
-        AssertTrue("partial failure: F processed=1", stats["F"]["processed"] == 1);
+        AssertTrue("partial failure: A processed=1", Stat(stats, "A", "processed") == 1);
+        AssertTrue("partial failure: B processed=1", Stat(stats, "B", "processed") == 1);
+        AssertTrue("partial failure: C processed=1", Stat(stats, "C", "processed") == 1);
+        AssertTrue("partial failure: D processed=0", Stat(stats, "D", "processed") == 0);
+        AssertTrue("partial failure: E processed=0", Stat(stats, "E", "processed") == 0);
+        AssertTrue("partial failure: F processed=1", Stat(stats, "F", "processed") == 1);
     }
 
     static void TestRoutedResultNoConnection()
@@ -1218,9 +1218,9 @@ public static class FabricTests
         var ok = fab.Execute(ff, "router");
         AssertTrue("routed no conn: execute completes", ok);
         var stats = fab.GetProcessorStats();
-        AssertTrue("routed no conn: router processed=1", stats["router"]["processed"] == 1);
-        AssertTrue("routed no conn: router errors=0", stats["router"]["errors"] == 0);
-        AssertTrue("routed no conn: sink not invoked", stats["sink"]["processed"] == 0);
+        AssertTrue("routed no conn: router processed=1", Stat(stats, "router", "processed") == 1);
+        AssertTrue("routed no conn: router errors=0", Stat(stats, "router", "errors") == 0);
+        AssertTrue("routed no conn: sink not invoked", Stat(stats, "sink", "processed") == 0);
     }
 
     static void TestDualSinkPipeline()
@@ -1263,18 +1263,18 @@ public static class FabricTests
         var ok1 = fab.Execute(ff1, "parser");
         AssertTrue("dual sink: valid JSON executes", ok1);
         var stats1 = fab.GetProcessorStats();
-        AssertTrue("dual sink: parser processed=1 (valid)", stats1["parser"]["processed"] == 1);
-        AssertTrue("dual sink: json-sink processed=1", stats1["json-sink"]["processed"] == 1);
-        AssertTrue("dual sink: error-sink processed=0", stats1["error-sink"]["processed"] == 0);
+        AssertTrue("dual sink: parser processed=1 (valid)", Stat(stats1, "parser", "processed") == 1);
+        AssertTrue("dual sink: json-sink processed=1", Stat(stats1, "json-sink", "processed") == 1);
+        AssertTrue("dual sink: error-sink processed=0", Stat(stats1, "error-sink", "processed") == 0);
 
         // Send invalid data -> error-sink gets it
         var ff2 = FlowFile.Create("this is not json"u8, new());
         var ok2 = fab.Execute(ff2, "parser");
         AssertTrue("dual sink: invalid data executes", ok2);
         var stats2 = fab.GetProcessorStats();
-        AssertTrue("dual sink: parser processed=2 (both)", stats2["parser"]["processed"] == 2);
-        AssertTrue("dual sink: json-sink still=1", stats2["json-sink"]["processed"] == 1);
-        AssertTrue("dual sink: error-sink processed=1", stats2["error-sink"]["processed"] == 1);
+        AssertTrue("dual sink: parser processed=2 (both)", Stat(stats2, "parser", "processed") == 2);
+        AssertTrue("dual sink: json-sink still=1", Stat(stats2, "json-sink", "processed") == 1);
+        AssertTrue("dual sink: error-sink processed=1", Stat(stats2, "error-sink", "processed") == 1);
     }
 
     static void TestMultipleResultEdgeCases()
@@ -1310,8 +1310,8 @@ public static class FabricTests
         var ok1 = fab1.Execute(ff1, "splitter");
         AssertTrue("split single line: execute ok", ok1);
         var stats1 = fab1.GetProcessorStats();
-        AssertTrue("split single line: splitter processed=1", stats1["splitter"]["processed"] == 1);
-        AssertTrue("split single line: sink processed=1 (pass-through)", stats1["sink"]["processed"] == 1);
+        AssertTrue("split single line: splitter processed=1", Stat(stats1, "splitter", "processed") == 1);
+        AssertTrue("split single line: sink processed=1 (pass-through)", Stat(stats1, "sink", "processed") == 1);
 
         // Case 2: Empty content -> SplitText splits "" by \n -> [""] -> length 1 -> SingleResult pass-through
         var ctx2 = TestContext();
@@ -1320,8 +1320,8 @@ public static class FabricTests
         var ok2 = fab2.Execute(ff2, "splitter");
         AssertTrue("split empty: execute ok", ok2);
         var stats2 = fab2.GetProcessorStats();
-        AssertTrue("split empty: splitter processed=1", stats2["splitter"]["processed"] == 1);
-        AssertTrue("split empty: sink processed=1 (pass-through)", stats2["sink"]["processed"] == 1);
+        AssertTrue("split empty: splitter processed=1", Stat(stats2, "splitter", "processed") == 1);
+        AssertTrue("split empty: sink processed=1 (pass-through)", Stat(stats2, "sink", "processed") == 1);
     }
 
     static void TestRouteOnAttributeInPipeline()
@@ -1432,10 +1432,10 @@ public static class FabricTests
         AssertTrue("valid json: execute ok", exec1);
 
         var stats1 = fab.GetProcessorStats();
-        AssertTrue("valid json: parser processed", stats1["parser"]["processed"] >= 1);
-        AssertTrue("valid json: parser no errors", stats1["parser"]["errors"] == 0);
-        AssertTrue("valid json: sink processed", stats1["sink"]["processed"] >= 1);
-        AssertTrue("valid json: err not invoked", stats1["err"]["processed"] == 0);
+        AssertTrue("valid json: parser processed", Stat(stats1, "parser", "processed") >= 1);
+        AssertTrue("valid json: parser no errors", Stat(stats1, "parser", "errors") == 0);
+        AssertTrue("valid json: sink processed", Stat(stats1, "sink", "processed") >= 1);
+        AssertTrue("valid json: err not invoked", Stat(stats1, "err", "processed") == 0);
 
         // Execute with invalid JSON — should flow: parser → err
         var ff2 = FlowFile.Create("not json"u8, new() { ["type"] = "bad" });
@@ -1443,6 +1443,6 @@ public static class FabricTests
         AssertTrue("bad json: execute ok", exec2);
 
         var stats2 = fab.GetProcessorStats();
-        AssertTrue("bad json: err processed", stats2["err"]["processed"] >= 1);
+        AssertTrue("bad json: err processed", Stat(stats2, "err", "processed") >= 1);
     }
 }

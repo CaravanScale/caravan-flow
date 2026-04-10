@@ -1,5 +1,4 @@
-using YamlDotNet.Serialization;
-using YamlDotNet.Serialization.NamingConventions;
+using System.Text.Json;
 using ZincFlow.Core;
 
 namespace ZincFlow.Fabric;
@@ -12,6 +11,10 @@ public sealed class ApiHandler
 {
     private readonly Fabric _fab;
     private string? _configPath;
+
+    // AOT-safe JSON serialization — use this instead of Json()
+    private static IResult Json(object value)
+        => Results.Content(JsonSerializer.Serialize(value, JsonOpts.Default), "application/json");
 
     public ApiHandler(Fabric fab) => _fab = fab;
 
@@ -49,47 +52,47 @@ public sealed class ApiHandler
 
     // --- Stats ---
 
-    private IResult Stats() => Results.Json(_fab.GetStats());
-    private IResult Processors() => Results.Json(_fab.GetProcessorNames());
-    private IResult ProcessorStats() => Results.Json(_fab.GetProcessorStats());
+    private IResult Stats() => Json(_fab.GetStats());
+    private IResult Processors() => Json(_fab.GetProcessorNames());
+    private IResult ProcessorStats() => Json(_fab.GetProcessorStats());
 
     private IResult RegistryList()
     {
         var infos = _fab.GetRegistry().List();
-        return Results.Json(infos.Select(i => new
+        return Json(infos.Select(i => new Dictionary<string, object?>
         {
-            name = i.Name,
-            description = i.Description,
-            configKeys = i.ConfigKeys
+            ["name"] = i.Name,
+            ["description"] = i.Description,
+            ["configKeys"] = i.ConfigKeys
         }));
     }
 
     private IResult Connections()
     {
-        return Results.Json(_fab.GetConnections());
+        return Json(_fab.GetConnections());
     }
 
     private IResult Flow()
     {
         var procStats = _fab.GetProcessorStats();
-        return Results.Json(new
+        return Json(new Dictionary<string, object?>
         {
-            processors = _fab.GetProcessorNames().Select(name => new
+            ["processors"] = _fab.GetProcessorNames().Select(name => new Dictionary<string, object?>
             {
-                name,
-                type = _fab.GetProcessorType(name),
-                state = _fab.GetProcessorState(name).ToString().ToUpperInvariant(),
-                stats = procStats.GetValueOrDefault(name),
-                connections = _fab.GetConnections().GetValueOrDefault(name)
-            }),
-            entryPoints = _fab.GetEntryPoints(),
-            sources = _fab.GetSources().Select(s => new { name = s.Name, type = s.Type, running = s.Running }),
-            providers = _fab.GetContext().ListProviders().Select(name =>
+                ["name"] = name,
+                ["type"] = _fab.GetProcessorType(name),
+                ["state"] = _fab.GetProcessorState(name).ToString().ToUpperInvariant(),
+                ["stats"] = procStats.GetValueOrDefault(name),
+                ["connections"] = _fab.GetConnections().GetValueOrDefault(name)
+            }).ToList(),
+            ["entryPoints"] = _fab.GetEntryPoints(),
+            ["sources"] = _fab.GetSources().Select(s => new Dictionary<string, object?> { ["name"] = s.Name, ["type"] = s.Type, ["running"] = s.Running }).ToList(),
+            ["providers"] = _fab.GetContext().ListProviders().Select(name =>
             {
                 var p = _fab.GetContext().GetProvider(name);
-                return new { name, type = p?.ProviderType ?? "unknown", state = p?.State.ToString().ToUpperInvariant() ?? "UNKNOWN" };
-            }),
-            stats = _fab.GetStats()
+                return new Dictionary<string, object?> { ["name"] = name, ["type"] = p?.ProviderType ?? "unknown", ["state"] = p?.State.ToString().ToUpperInvariant() ?? "UNKNOWN" };
+            }).ToList(),
+            ["stats"] = _fab.GetStats()
         });
     }
 
@@ -97,11 +100,11 @@ public sealed class ApiHandler
 
     private async Task<IResult> AddProcessor(HttpContext ctx)
     {
-        var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, object?>>();
-        if (req is null) return Results.BadRequest(new { error = "invalid json" });
+        var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, object?>>(JsonOpts.Default);
+        if (req is null) return Json(new Dictionary<string, object?> { ["error"] = "invalid json" });
         var name = req.GetValueOrDefault("name")?.ToString() ?? "";
         var type = req.GetValueOrDefault("type")?.ToString() ?? "";
-        if (name == "" || type == "") return Results.BadRequest(new { error = "name and type required" });
+        if (name == "" || type == "") return Json(new Dictionary<string, object?> { ["error"] = "name and type required" });
 
         var config = new Dictionary<string, string>();
         if (req.TryGetValue("config", out var cfgObj) && cfgObj is System.Text.Json.JsonElement je)
@@ -138,46 +141,46 @@ public sealed class ApiHandler
         }
 
         return _fab.AddProcessor(name, type, config, requires, connections)
-            ? Results.Created($"/api/processors/{name}", new { status = "created", name })
-            : Results.Conflict(new { error = "processor already exists or unknown type" });
+            ? Json(new Dictionary<string, object?> { ["status"] = "created", ["name"] = name })
+            : Json(new Dictionary<string, object?> { ["error"] = "processor already exists or unknown type" });
     }
 
     private async Task<IResult> RemoveProcessor(HttpContext ctx)
     {
-        var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>();
+        var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>(JsonOpts.Default);
         var name = req?.GetValueOrDefault("name") ?? "";
-        if (name == "") return Results.BadRequest(new { error = "name required" });
+        if (name == "") return Json(new Dictionary<string, object?> { ["error"] = "name required" });
         return _fab.RemoveProcessor(name)
-            ? Results.Json(new { status = "removed", name })
-            : Results.NotFound(new { error = "processor not found" });
+            ? Json(new Dictionary<string, object?> { ["status"] = "removed", ["name"] = name })
+            : Json(new Dictionary<string, object?> { ["error"] = "processor not found" });
     }
 
     private async Task<IResult> EnableProcessor(HttpContext ctx)
     {
-        var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>();
+        var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>(JsonOpts.Default);
         var name = req?.GetValueOrDefault("name") ?? "";
-        if (name == "") return Results.BadRequest(new { error = "name required" });
+        if (name == "") return Json(new Dictionary<string, object?> { ["error"] = "name required" });
         return _fab.EnableProcessor(name)
-            ? Results.Json(new { status = "enabled", name })
-            : Results.NotFound(new { error = "processor not found" });
+            ? Json(new Dictionary<string, object?> { ["status"] = "enabled", ["name"] = name })
+            : Json(new Dictionary<string, object?> { ["error"] = "processor not found" });
     }
 
     private async Task<IResult> DisableProcessor(HttpContext ctx)
     {
-        var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>();
+        var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>(JsonOpts.Default);
         var name = req?.GetValueOrDefault("name") ?? "";
-        if (name == "") return Results.BadRequest(new { error = "name required" });
+        if (name == "") return Json(new Dictionary<string, object?> { ["error"] = "name required" });
         return _fab.DisableProcessor(name)
-            ? Results.Json(new { status = "disabled", name })
-            : Results.NotFound(new { error = "processor not found" });
+            ? Json(new Dictionary<string, object?> { ["status"] = "disabled", ["name"] = name })
+            : Json(new Dictionary<string, object?> { ["error"] = "processor not found" });
     }
 
     private async Task<IResult> ProcessorState(HttpContext ctx)
     {
-        var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>();
+        var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>(JsonOpts.Default);
         var name = req?.GetValueOrDefault("name") ?? "";
-        if (name == "") return Results.BadRequest(new { error = "name required" });
-        return Results.Json(new { name, state = _fab.GetProcessorState(name).ToString().ToUpperInvariant() });
+        if (name == "") return Json(new Dictionary<string, object?> { ["error"] = "name required" });
+        return Json(new Dictionary<string, object?> { ["name"] = name, ["state"] = _fab.GetProcessorState(name).ToString().ToUpperInvariant() });
     }
 
     // --- Providers ---
@@ -185,31 +188,31 @@ public sealed class ApiHandler
     private IResult Providers()
     {
         var ctx = _fab.GetContext();
-        return Results.Json(ctx.ListProviders().Select(name =>
+        return Json(ctx.ListProviders().Select(name =>
         {
             var p = ctx.GetProvider(name);
-            return new { name, type = p?.ProviderType ?? "unknown", state = p?.State.ToString().ToUpperInvariant() ?? "UNKNOWN" };
-        }));
+            return new Dictionary<string, object?> { ["name"] = name, ["type"] = p?.ProviderType ?? "unknown", ["state"] = p?.State.ToString().ToUpperInvariant() ?? "UNKNOWN" };
+        }).ToList());
     }
 
     private async Task<IResult> EnableProvider(HttpContext ctx)
     {
-        var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>();
+        var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>(JsonOpts.Default);
         var name = req?.GetValueOrDefault("name") ?? "";
-        if (name == "") return Results.BadRequest(new { error = "name required" });
+        if (name == "") return Json(new Dictionary<string, object?> { ["error"] = "name required" });
         return _fab.EnableProvider(name)
-            ? Results.Json(new { status = "enabled", name })
-            : Results.NotFound(new { error = "provider not found" });
+            ? Json(new Dictionary<string, object?> { ["status"] = "enabled", ["name"] = name })
+            : Json(new Dictionary<string, object?> { ["error"] = "provider not found" });
     }
 
     private async Task<IResult> DisableProvider(HttpContext ctx)
     {
-        var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>();
+        var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>(JsonOpts.Default);
         var name = req?.GetValueOrDefault("name") ?? "";
-        if (name == "") return Results.BadRequest(new { error = "name required" });
+        if (name == "") return Json(new Dictionary<string, object?> { ["error"] = "name required" });
         return _fab.DisableProvider(name)
-            ? Results.Json(new { status = "disabled", name })
-            : Results.NotFound(new { error = "provider not found" });
+            ? Json(new Dictionary<string, object?> { ["status"] = "disabled", ["name"] = name })
+            : Json(new Dictionary<string, object?> { ["error"] = "provider not found" });
     }
 
     // --- Health ---
@@ -217,10 +220,10 @@ public sealed class ApiHandler
     private IResult Health()
     {
         var sources = _fab.GetSources();
-        return Results.Json(new
+        return Json(new Dictionary<string, object?>
         {
-            status = "healthy",
-            sources = sources.Select(s => new { name = s.Name, type = s.Type, running = s.Running })
+            ["status"] = "healthy",
+            ["sources"] = sources.Select(s => new Dictionary<string, object?> { ["name"] = s.Name, ["type"] = s.Type, ["running"] = s.Running }).ToList()
         });
     }
 
@@ -229,20 +232,17 @@ public sealed class ApiHandler
     private IResult Reload()
     {
         if (_configPath is null || !File.Exists(_configPath))
-            return Results.Json(new { error = "config path not set or file missing" });
+            return Json(new Dictionary<string, object?> { ["error"] = "config path not set or file missing" });
         try
         {
             var yaml = File.ReadAllText(_configPath);
-            var deserializer = new DeserializerBuilder()
-                .WithNamingConvention(UnderscoredNamingConvention.Instance)
-                .Build();
-            var config = deserializer.Deserialize<Dictionary<string, object?>>(yaml) ?? new();
+            var config = YamlParser.Parse(yaml);
             var (added, removed, updated, connectionsChanged) = _fab.ReloadFlow(config);
-            return Results.Json(new { status = "reloaded", added, removed, updated, connectionsChanged });
+            return Json(new Dictionary<string, object?> { ["status"] = "reloaded", ["added"] = added, ["removed"] = removed, ["updated"] = updated, ["connectionsChanged"] = connectionsChanged });
         }
         catch (Exception ex)
         {
-            return Results.Json(new { error = $"reload failed: {ex.Message}" });
+            return Json(new Dictionary<string, object?> { ["error"] = $"reload failed: {ex.Message}" });
         }
     }
 
@@ -251,58 +251,58 @@ public sealed class ApiHandler
     private IResult ProvenanceRecent(HttpContext ctx)
     {
         var prov = _fab.GetProvenance();
-        if (prov is null) return Results.Json(new { error = "provenance provider not enabled" });
+        if (prov is null) return Json(new Dictionary<string, object?> { ["error"] = "provenance provider not enabled" });
         var n = 50;
         if (ctx.Request.Query.TryGetValue("n", out var nStr) && int.TryParse(nStr, out var parsed))
             n = parsed;
-        return Results.Json(prov.GetRecent(n).Select(e => new
+        return Json(prov.GetRecent(n).Select(e => new Dictionary<string, object?>
         {
-            flowfile = $"ff-{e.FlowFileId}",
-            type = e.EventType.ToString(),
-            component = e.Component,
-            details = e.Details,
-            timestamp = e.Timestamp
-        }));
+            ["flowfile"] = $"ff-{e.FlowFileId}",
+            ["type"] = e.EventType.ToString(),
+            ["component"] = e.Component,
+            ["details"] = e.Details,
+            ["timestamp"] = e.Timestamp
+        }).ToList());
     }
 
     private IResult ProvenanceById(long id)
     {
         var prov = _fab.GetProvenance();
-        if (prov is null) return Results.Json(new { error = "provenance provider not enabled" });
-        return Results.Json(prov.GetEvents(id).Select(e => new
+        if (prov is null) return Json(new Dictionary<string, object?> { ["error"] = "provenance provider not enabled" });
+        return Json(prov.GetEvents(id).Select(e => new Dictionary<string, object?>
         {
-            flowfile = $"ff-{e.FlowFileId}",
-            type = e.EventType.ToString(),
-            component = e.Component,
-            details = e.Details,
-            timestamp = e.Timestamp
-        }));
+            ["flowfile"] = $"ff-{e.FlowFileId}",
+            ["type"] = e.EventType.ToString(),
+            ["component"] = e.Component,
+            ["details"] = e.Details,
+            ["timestamp"] = e.Timestamp
+        }).ToList());
     }
 
     // --- Connector sources ---
 
     private IResult Sources()
     {
-        return Results.Json(_fab.GetSources().Select(s => new { name = s.Name, type = s.Type, running = s.Running }));
+        return Json(_fab.GetSources().Select(s => new Dictionary<string, object?> { ["name"] = s.Name, ["type"] = s.Type, ["running"] = s.Running }).ToList());
     }
 
     private async Task<IResult> StartSource(HttpContext ctx)
     {
-        var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>();
+        var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>(JsonOpts.Default);
         var name = req?.GetValueOrDefault("name") ?? "";
-        if (name == "") return Results.BadRequest(new { error = "name required" });
+        if (name == "") return Json(new Dictionary<string, object?> { ["error"] = "name required" });
         return _fab.StartSource(name)
-            ? Results.Json(new { status = "started", name })
-            : Results.NotFound(new { error = "source not found" });
+            ? Json(new Dictionary<string, object?> { ["status"] = "started", ["name"] = name })
+            : Json(new Dictionary<string, object?> { ["error"] = "source not found" });
     }
 
     private async Task<IResult> StopSource(HttpContext ctx)
     {
-        var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>();
+        var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>(JsonOpts.Default);
         var name = req?.GetValueOrDefault("name") ?? "";
-        if (name == "") return Results.BadRequest(new { error = "name required" });
+        if (name == "") return Json(new Dictionary<string, object?> { ["error"] = "name required" });
         return _fab.StopSource(name)
-            ? Results.Json(new { status = "stopped", name })
-            : Results.NotFound(new { error = "source not found" });
+            ? Json(new Dictionary<string, object?> { ["status"] = "stopped", ["name"] = name })
+            : Json(new Dictionary<string, object?> { ["error"] = "source not found" });
     }
 }
