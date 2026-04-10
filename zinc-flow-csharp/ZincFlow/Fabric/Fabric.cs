@@ -1,44 +1,35 @@
+using System.Collections.Concurrent;
 using ZincFlow.Core;
 
 namespace ZincFlow.Fabric;
 
 /// <summary>
-/// Fabric: main runtime — wires processors, queues, connections, and lifecycle.
-/// Uses NiFi-style explicit processor connections instead of global routing rules.
-/// Async processor loops run on ThreadPool threads.
+/// Fabric: direct pipeline executor — wires processors into a DAG and executes
+/// FlowFiles through it synchronously. No inter-stage queues. Concurrency comes
+/// from sources (each source thread runs its own independent graph traversal).
 /// </summary>
 public sealed class Fabric
 {
     private readonly Registry _reg;
     private readonly ProcessorContext _globalCtx;
-    private readonly Dictionary<string, IProcessor> _procs = new();
-    private readonly List<string> _processorNames = new();
-    private readonly Dictionary<string, FlowQueue> _queues = new();
-    private readonly Dictionary<string, ProcessSession> _sessions = new();
-    private readonly Dictionary<string, ComponentState> _processorStates = new();
-    private readonly Dictionary<string, List<string>> _processorRequires = new();
-    private readonly Dictionary<string, Dictionary<string, List<string>>> _processorConnections = new();
-    private FlowQueue _ingestQueue;
-    private readonly DLQ _dlq = new();
     private readonly Dictionary<string, IConnectorSource> _sources = new();
     private readonly CancellationTokenSource _cts = new();
-    private readonly Dictionary<string, CancellationTokenSource> _processorCts = new();
-    private readonly Dictionary<string, (string Type, Dictionary<string, string> Config, List<string> Requires)> _processorDefs = new();
-    private volatile List<string> _entryPoints = new();
+    private readonly SemaphoreSlim _executionGate;
 
-    private long _processedCount;
+    // Pipeline graph — swapped atomically on hot reload
+    private volatile PipelineGraph _graph = PipelineGraph.Empty;
+
+    // Metrics
+    private readonly ConcurrentDictionary<string, long> _processorCounts = new();
+    private readonly ConcurrentDictionary<string, long> _processorErrors = new();
+    private int _activeExecutions;
+    private long _totalProcessed;
+
     private volatile bool _running;
 
     // Defaults (overridable from config)
-    private int _queueMaxCount = 10_000;
-    private long _queueMaxBytes = 100 * 1024 * 1024;
-    private long _visibilityTimeoutMs = 30_000;
-    private int _drainTimeoutSeconds = 60;
-    private int _maxRetries = 5;
     private int _maxHops = 50;
-    private string _walDir = "";
-    private int _walMaxSizeMb = 100;
-    private int _walCompactIntervalMs = 60_000;
+    private int _maxConcurrentExecutions = 100;
     private ProvenanceProvider? _provenance;
     private LoggingProvider? _log;
 
@@ -46,9 +37,9 @@ public sealed class Fabric
     {
         _reg = reg;
         _globalCtx = globalCtx;
-        _ingestQueue = new FlowQueue("ingest", _queueMaxCount, _queueMaxBytes, _visibilityTimeoutMs);
         _log = globalCtx.GetProvider("logging") as LoggingProvider;
         _provenance = globalCtx.GetProvider("provenance") as ProvenanceProvider;
+        _executionGate = new SemaphoreSlim(_maxConcurrentExecutions, _maxConcurrentExecutions);
     }
 
     // --- Config loading ---
@@ -56,24 +47,18 @@ public sealed class Fabric
     public void LoadFlow(Dictionary<string, object?> config)
     {
         // Read defaults
-        if (TryGetConfig<int>(config, "defaults.backpressure.max_count", out var mc)) _queueMaxCount = mc;
-        if (TryGetConfig<int>(config, "defaults.backpressure.max_retries", out var mr)) _maxRetries = mr;
-        if (TryGetConfig<int>(config, "defaults.backpressure.drain_timeout", out var dt)) _drainTimeoutSeconds = dt;
         if (TryGetConfig<int>(config, "defaults.backpressure.max_hops", out var mh)) _maxHops = mh;
-
-        // WAL config
-        _walDir = GetStr(config, "defaults.wal.dir");
-        if (string.IsNullOrEmpty(_walDir)) _walDir = "";
-        if (TryGetConfig<int>(config, "defaults.wal.max_size_mb", out var wsm)) _walMaxSizeMb = wsm;
-        if (TryGetConfig<int>(config, "defaults.wal.compact_interval_ms", out var wci)) _walCompactIntervalMs = wci;
-
-        // Recreate ingest queue with WAL if configured
-        if (_walDir != "")
+        if (TryGetConfig<int>(config, "defaults.max_concurrent_executions", out var mce))
         {
-            Directory.CreateDirectory(_walDir);
-            var ingestWal = new QueueWAL(Path.Combine(_walDir, "ingest.wal"), _walMaxSizeMb, _walCompactIntervalMs);
-            _ingestQueue = new FlowQueue("ingest", _queueMaxCount, _queueMaxBytes, _visibilityTimeoutMs, ingestWal);
+            _maxConcurrentExecutions = mce;
+            // Rebuild semaphore with new limit
         }
+
+        var processors = new Dictionary<string, IProcessor>();
+        var connections = new Dictionary<string, Dictionary<string, List<string>>>();
+        var processorNames = new List<string>();
+        var processorStates = new Dictionary<string, ComponentState>();
+        var processorDefs = new Dictionary<string, (string Type, Dictionary<string, string> Config, List<string> Requires)>();
 
         // Read processors
         var flowDict = AsStringDict(config.GetValueOrDefault("flow"));
@@ -101,47 +86,227 @@ public sealed class Fabric
 
                     // Requires
                     var requires = GetStringList(def, "requires") ?? [];
-                    _processorRequires[name] = requires;
-
                     foreach (var pn in requires)
                         _globalCtx.RegisterDependent(pn, name);
 
                     // Connections
-                    var connections = ParseConnections(def);
-                    _processorConnections[name] = connections;
+                    var conns = ParseConnections(def);
+                    connections[name] = conns;
 
                     var ctx = BuildScopedContext(requires);
                     var proc = _reg.Create(typeName, ctx, procConfig);
-                    _procs[name] = proc;
-                    _processorNames.Add(name);
-                    _processorStates[name] = ComponentState.Enabled;
-                    _processorDefs[name] = (typeName, new Dictionary<string, string>(procConfig), new List<string>(requires));
-
-                    QueueWAL? qWal = _walDir != "" ? new QueueWAL(Path.Combine(_walDir, $"{name}.wal"), _walMaxSizeMb, _walCompactIntervalMs) : null;
-                    var queue = new FlowQueue(name, _queueMaxCount, _queueMaxBytes, _visibilityTimeoutMs, qWal);
-                    _queues[name] = queue;
+                    processors[name] = proc;
+                    processorNames.Add(name);
+                    processorStates[name] = ComponentState.Enabled;
+                    processorDefs[name] = (typeName, new Dictionary<string, string>(procConfig), new List<string>(requires));
 
                     Console.WriteLine($"[fabric] processor created: {name} (type={typeName})");
                 }
-
-                // DAG validation and entry-point computation
-                var dagResult = DagValidator.Validate(_processorConnections);
-                foreach (var err in dagResult.Errors)
-                    Console.Error.WriteLine($"[fabric] DAG error: {err}");
-                foreach (var warn in dagResult.Warnings)
-                    Console.WriteLine($"[fabric] DAG warning: {warn}");
-                _entryPoints = dagResult.EntryPoints;
-                Console.WriteLine($"[fabric] entry points: [{string.Join(", ", _entryPoints)}]");
             }
         }
 
-        // Create sessions with per-processor connections
-        foreach (var name in _processorNames)
+        // DAG validation and entry-point computation
+        var dagResult = DagValidator.Validate(connections);
+        foreach (var err in dagResult.Errors)
+            Console.Error.WriteLine($"[fabric] DAG error: {err}");
+        foreach (var warn in dagResult.Warnings)
+            Console.WriteLine($"[fabric] DAG warning: {warn}");
+        Console.WriteLine($"[fabric] entry points: [{string.Join(", ", dagResult.EntryPoints)}]");
+
+        // Initialize per-processor counters
+        foreach (var name in processorNames)
         {
-            var connections = _processorConnections.GetValueOrDefault(name) ?? new();
-            var session = new ProcessSession(_queues[name], _procs[name], name, connections, _queues, _dlq, _maxRetries, _provenance, _maxHops);
-            _sessions[name] = session;
+            _processorCounts.TryAdd(name, 0);
+            _processorErrors.TryAdd(name, 0);
         }
+
+        // Build and swap graph
+        _graph = new PipelineGraph(processors, connections, dagResult.EntryPoints, processorNames, processorStates, processorDefs);
+    }
+
+    // --- Pipeline execution ---
+
+    /// <summary>
+    /// Execute a FlowFile through the pipeline starting at the given entry point.
+    /// Returns false if backpressure (semaphore full).
+    /// Called from source threads — each call is an independent synchronous traversal.
+    /// </summary>
+    public bool Execute(FlowFile ff, string entryPoint)
+    {
+        if (!_executionGate.Wait(0))
+            return false; // backpressure
+
+        try
+        {
+            Interlocked.Increment(ref _activeExecutions);
+            ExecuteGraph(ff, entryPoint);
+            return true;
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _activeExecutions);
+            _executionGate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Iterative work-stack graph traversal. Depth-first: each branch completes
+    /// before the next starts. No recursion, no stack overflow risk.
+    /// </summary>
+    private void ExecuteGraph(FlowFile ff, string entryPoint)
+    {
+        var graph = _graph; // volatile read — stable for this traversal
+        var work = new Stack<(FlowFile Ff, string Processor, int Hops)>();
+        work.Push((ff, entryPoint, 0));
+
+        while (work.Count > 0)
+        {
+            var (currentFf, procName, hops) = work.Pop();
+
+            // Hop limit
+            if (hops >= _maxHops)
+            {
+                _log?.Log("ERROR", procName, $"max hops exceeded ({_maxHops}), dropping ff-{currentFf.NumericId}");
+                _processorErrors.AddOrUpdate(procName, 1, (_, v) => v + 1);
+                FlowFile.Return(currentFf);
+                continue;
+            }
+
+            // Processor lookup
+            if (!graph.Processors.TryGetValue(procName, out var processor))
+            {
+                _log?.Log("ERROR", "fabric", $"unknown processor '{procName}', dropping ff-{currentFf.NumericId}");
+                FlowFile.Return(currentFf);
+                continue;
+            }
+
+            // Skip disabled processors
+            if (graph.ProcessorStates.GetValueOrDefault(procName) != ComponentState.Enabled)
+            {
+                FlowFile.Return(currentFf);
+                continue;
+            }
+
+            // Process
+            _provenance?.Record(currentFf.NumericId, ProvenanceEventType.Processed, procName);
+            var result = processor.Process(currentFf);
+            _processorCounts.AddOrUpdate(procName, 1, (_, v) => v + 1);
+            Interlocked.Increment(ref _totalProcessed);
+
+            // Route based on result type
+            switch (result)
+            {
+                case SingleResult single:
+                {
+                    var outFf = single.FlowFile;
+                    SingleResult.Return(single);
+                    PushDownstream(work, graph, outFf, procName, "success", hops + 1);
+                    break;
+                }
+
+                case MultipleResult multiple:
+                {
+                    // Push downstream before returning to pool (Return clears FlowFiles)
+                    foreach (var outFf in multiple.FlowFiles)
+                        PushDownstream(work, graph, outFf, procName, "success", hops + 1);
+                    MultipleResult.Return(multiple);
+                    break;
+                }
+
+                case RoutedResult routed:
+                {
+                    var outFf = routed.FlowFile;
+                    var route = routed.Route;
+                    RoutedResult.Return(routed);
+                    PushDownstream(work, graph, outFf, procName, route, hops + 1);
+                    break;
+                }
+
+                case DroppedResult:
+                    _provenance?.Record(currentFf.NumericId, ProvenanceEventType.Dropped, procName);
+                    FlowFile.Return(currentFf);
+                    break;
+
+                case FailureResult failure:
+                {
+                    var failFf = failure.FlowFile;
+                    var reason = failure.Reason;
+                    FailureResult.Return(failure);
+
+                    var conns = graph.Connections.GetValueOrDefault(procName);
+                    if (conns is not null && conns.ContainsKey("failure"))
+                    {
+                        PushDownstream(work, graph, failFf, procName, "failure", hops + 1);
+                    }
+                    else
+                    {
+                        _log?.Log("ERROR", procName, $"failure (no handler): {reason}, ff-{failFf.NumericId}");
+                        _processorErrors.AddOrUpdate(procName, 1, (_, v) => v + 1);
+                        FlowFile.Return(failFf);
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Push FlowFile to downstream targets on the work stack.
+    /// Fan-out: first target gets original, rest get clones.
+    /// </summary>
+    private void PushDownstream(Stack<(FlowFile, string, int)> work, PipelineGraph graph,
+        FlowFile ff, string fromProcessor, string relationship, int hops)
+    {
+        var conns = graph.Connections.GetValueOrDefault(fromProcessor);
+        if (conns is null || !conns.TryGetValue(relationship, out var targets) || targets.Count == 0)
+        {
+            // No downstream = sink/terminal
+            FlowFile.Return(ff);
+            return;
+        }
+
+        // Push in reverse order so first target pops first (depth-first)
+        for (int i = targets.Count - 1; i >= 1; i--)
+        {
+            ff.Content.AddRef();
+            var clone = FlowFile.Rent(ff.NumericId, ff.Attributes, ff.Content, ff.Timestamp, ff.HopCount);
+            _provenance?.Record(clone.NumericId, ProvenanceEventType.Routed, fromProcessor, targets[i]);
+            work.Push((clone, targets[i], hops));
+        }
+
+        _provenance?.Record(ff.NumericId, ProvenanceEventType.Routed, fromProcessor, targets[0]);
+        work.Push((ff, targets[0], hops));
+    }
+
+    // --- Ingest callback for sources ---
+
+    /// <summary>
+    /// Callback passed to connector sources. Fans out to all entry-point processors.
+    /// Returns false on backpressure.
+    /// </summary>
+    public bool IngestAndExecute(FlowFile ff)
+    {
+        var graph = _graph;
+        var entryPoints = graph.EntryPoints;
+
+        if (entryPoints.Count == 0)
+        {
+            _log?.Log("WARN", "fabric", $"no entry-point processors, dropping ff-{ff.NumericId}");
+            FlowFile.Return(ff);
+            return false;
+        }
+
+        if (entryPoints.Count == 1)
+            return Execute(ff, entryPoints[0]);
+
+        // Multiple entry points: clone for each, execute all
+        for (int i = 1; i < entryPoints.Count; i++)
+        {
+            ff.Content.AddRef();
+            var clone = FlowFile.Rent(ff.NumericId, ff.Attributes, ff.Content, ff.Timestamp, ff.HopCount);
+            Execute(clone, entryPoints[i]);
+        }
+        return Execute(ff, entryPoints[0]);
     }
 
     // --- Async start/stop ---
@@ -150,111 +315,16 @@ public sealed class Fabric
     {
         _running = true;
 
-        // Replay WAL for all queues before processing begins
-        int totalRestored = _ingestQueue.ReplayWAL();
-        foreach (var (name, queue) in _queues)
-            totalRestored += queue.ReplayWAL();
-        if (totalRestored > 0)
-        {
-            _log?.Log("INFO", "fabric", $"WAL replay: restored {totalRestored} entries");
-            Console.WriteLine($"[fabric] WAL replay: restored {totalRestored} entries");
-        }
-
-        _ingestQueue.StartReaper(_cts.Token);
-        _ingestQueue.StartWALCompaction(_cts.Token);
-
-        // Processor loops
-        foreach (var name in _processorNames)
-        {
-            _queues[name].StartReaper(_cts.Token);
-            _queues[name].StartWALCompaction(_cts.Token);
-            var procCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
-            _processorCts[name] = procCts;
-            var procName = name;
-            _ = Task.Run(() => ProcessorLoop(procName, procCts.Token), _cts.Token);
-        }
-
-        // Ingest fan-out loop
-        _ = Task.Run(IngestFanOutLoop, _cts.Token);
-
-        // Start all connector sources
+        // Start all connector sources — they call IngestAndExecute directly
         foreach (var (name, source) in _sources)
         {
             if (!source.IsRunning)
-                source.Start(Ingest, _cts.Token);
+                source.Start(IngestAndExecute, _cts.Token);
             Console.WriteLine($"[fabric] source started: {name} (type={source.SourceType})");
         }
 
-        _log?.Log("INFO", "fabric", $"started: {_processorNames.Count} processors, {_sources.Count} sources");
-        Console.WriteLine($"[fabric] started ({_processorNames.Count} processors, {_sources.Count} sources)");
-    }
-
-    private void ProcessorLoop(string procName, CancellationToken ct)
-    {
-        while (_running && !ct.IsCancellationRequested)
-        {
-            if (_processorStates.GetValueOrDefault(procName) != ComponentState.Enabled)
-            {
-                Thread.Sleep(100);
-                continue;
-            }
-            if (_sessions.TryGetValue(procName, out var session) && session.Execute())
-                Interlocked.Increment(ref _processedCount);
-            else
-                Thread.Sleep(10);
-        }
-    }
-
-    /// <summary>
-    /// Fan-out ingested FlowFiles to all entry-point processor queues.
-    /// Entry points are processors not referenced as a target in any connection.
-    /// </summary>
-    private void IngestFanOutLoop()
-    {
-        while (_running)
-        {
-            var entry = _ingestQueue.Claim();
-            if (entry is null)
-            {
-                Thread.Sleep(10);
-                continue;
-            }
-
-            var entryPoints = _entryPoints; // volatile read
-            if (entryPoints.Count == 0)
-            {
-                _log?.Log("WARN", "fabric", $"no entry-point processors, dropping ff-{entry.FlowFile.NumericId}");
-                _ingestQueue.Ack(entry.Id);
-                FlowFile.Return(entry.FlowFile);
-                continue;
-            }
-
-            // Pre-check all entry-point queues
-            bool allReady = true;
-            foreach (var ep in entryPoints)
-            {
-                if (_queues.TryGetValue(ep, out var q) && !q.HasCapacity())
-                {
-                    allReady = false;
-                    break;
-                }
-            }
-
-            if (!allReady)
-            {
-                _ingestQueue.Nack(entry.Id);
-                Thread.Sleep(10);
-                continue;
-            }
-
-            // Fan out to all entry-point queues
-            foreach (var ep in entryPoints)
-            {
-                if (_queues.TryGetValue(ep, out var q))
-                    q.Offer(entry.FlowFile);
-            }
-            _ingestQueue.Ack(entry.Id);
-        }
+        _log?.Log("INFO", "fabric", $"started: {_graph.ProcessorNames.Count} processors, {_sources.Count} sources");
+        Console.WriteLine($"[fabric] started ({_graph.ProcessorNames.Count} processors, {_sources.Count} sources)");
     }
 
     public void StopAsync()
@@ -271,14 +341,14 @@ public sealed class Fabric
     {
         _sources[source.Name] = source;
         if (_running)
-            source.Start(Ingest, _cts.Token);
+            source.Start(IngestAndExecute, _cts.Token);
     }
 
     public bool StartSource(string name)
     {
         if (!_sources.TryGetValue(name, out var source)) return false;
         if (!source.IsRunning)
-            source.Start(Ingest, _cts.Token);
+            source.Start(IngestAndExecute, _cts.Token);
         return true;
     }
 
@@ -297,44 +367,32 @@ public sealed class Fabric
         return result;
     }
 
-    // --- Ingest ---
-
-    public bool Ingest(FlowFile ff) => _ingestQueue.Offer(ff);
-
-    public bool ReplayToQueue(string queueName, FlowFile ff)
-    {
-        if (_queues.TryGetValue(queueName, out var q))
-            return q.Offer(ff);
-        return _ingestQueue.Offer(ff);
-    }
-
     // --- Accessors ---
 
     public ProcessorContext GetContext() => _globalCtx;
-    public FlowQueue GetIngestQueue() => _ingestQueue;
-    public DLQ GetDLQ() => _dlq;
     public ProvenanceProvider? GetProvenance() => _provenance;
-    public List<string> GetProcessorNames() => new(_processorNames);
+    public List<string> GetProcessorNames() => new(_graph.ProcessorNames);
     public Registry GetRegistry() => _reg;
-    public Dictionary<string, Dictionary<string, List<string>>> GetConnections() => new(_processorConnections);
-    public List<string> GetEntryPoints() => new(_entryPoints);
+    public Dictionary<string, Dictionary<string, List<string>>> GetConnections() => new(_graph.Connections);
+    public List<string> GetEntryPoints() => new(_graph.EntryPoints);
 
-    public Dictionary<string, int> GetStats() => new()
+    public Dictionary<string, object> GetStats() => new()
     {
-        ["processed"] = (int)Interlocked.Read(ref _processedCount),
-        ["dlq"] = _dlq.Count
+        ["processed"] = Interlocked.Read(ref _totalProcessed),
+        ["active_executions"] = Volatile.Read(ref _activeExecutions),
+        ["processors"] = _graph.ProcessorNames.Count,
+        ["sources"] = _sources.Count
     };
 
-    public Dictionary<string, Dictionary<string, int>> GetQueueStats()
+    public Dictionary<string, Dictionary<string, long>> GetProcessorStats()
     {
-        var stats = new Dictionary<string, Dictionary<string, int>>();
-        foreach (var name in _processorNames)
+        var stats = new Dictionary<string, Dictionary<string, long>>();
+        foreach (var name in _graph.ProcessorNames)
         {
-            stats[name] = new Dictionary<string, int>
+            stats[name] = new Dictionary<string, long>
             {
-                ["visible"] = _queues[name].VisibleCount,
-                ["invisible"] = _queues[name].InvisibleCount,
-                ["total"] = _queues[name].VisibleCount + _queues[name].InvisibleCount
+                ["processed"] = _processorCounts.GetValueOrDefault(name),
+                ["errors"] = _processorErrors.GetValueOrDefault(name)
             };
         }
         return stats;
@@ -342,43 +400,24 @@ public sealed class Fabric
 
     // --- Processor lifecycle ---
 
+    public ComponentState GetProcessorState(string name)
+        => _graph.ProcessorStates.GetValueOrDefault(name, ComponentState.Disabled);
+
     public bool EnableProcessor(string name)
     {
-        if (!_procs.ContainsKey(name)) return false;
-        if (_processorRequires.TryGetValue(name, out var requires))
-        {
-            foreach (var pn in requires)
-            {
-                var prov = _globalCtx.GetProvider(pn);
-                if (prov is null || !prov.IsEnabled) return false;
-            }
-        }
-        _processorStates[name] = ComponentState.Enabled;
+        var graph = _graph;
+        if (!graph.Processors.ContainsKey(name)) return false;
+        graph.ProcessorStates[name] = ComponentState.Enabled;
         return true;
     }
 
-    public bool DisableProcessor(string name, int drainSecs)
+    public bool DisableProcessor(string name)
     {
-        if (!_procs.ContainsKey(name)) return false;
-        _processorStates[name] = ComponentState.Draining;
-
-        _ = Task.Run(async () =>
-        {
-            var elapsed = 0;
-            while (elapsed < drainSecs)
-            {
-                var depth = _queues[name].VisibleCount + _queues[name].InvisibleCount;
-                if (depth == 0) break;
-                await Task.Delay(100);
-                elapsed++;
-            }
-            _processorStates[name] = ComponentState.Disabled;
-        });
+        var graph = _graph;
+        if (!graph.Processors.ContainsKey(name)) return false;
+        graph.ProcessorStates[name] = ComponentState.Disabled;
         return true;
     }
-
-    public ComponentState GetProcessorState(string name)
-        => _processorStates.GetValueOrDefault(name, ComponentState.Disabled);
 
     // --- Provider lifecycle ---
 
@@ -390,18 +429,18 @@ public sealed class Fabric
         return true;
     }
 
-    public bool DisableProvider(string name, int drainSecs)
+    public bool DisableProvider(string name)
     {
         var prov = _globalCtx.GetProvider(name);
         if (prov is null) return false;
 
-        // Cascade: drain dependent processors
+        // Cascade: disable dependent processors
         foreach (var procName in _globalCtx.GetDependents(name))
         {
-            if (_processorStates.GetValueOrDefault(procName) == ComponentState.Enabled)
-                DisableProcessor(procName, drainSecs);
+            if (_graph.ProcessorStates.GetValueOrDefault(procName) == ComponentState.Enabled)
+                DisableProcessor(procName);
         }
-        prov.Disable(drainSecs);
+        prov.Disable(0);
         return true;
     }
 
@@ -410,56 +449,51 @@ public sealed class Fabric
     public bool AddProcessor(string name, string typeName, Dictionary<string, string> config,
         List<string>? requires = null, Dictionary<string, List<string>>? connections = null)
     {
-        if (_procs.ContainsKey(name) || !_reg.Has(typeName)) return false;
+        var graph = _graph;
+        if (graph.Processors.ContainsKey(name) || !_reg.Has(typeName)) return false;
         requires ??= [];
         connections ??= new();
-        _processorRequires[name] = requires;
-        _processorConnections[name] = connections;
+
         foreach (var pn in requires)
             _globalCtx.RegisterDependent(pn, name);
 
         var ctx = BuildScopedContext(requires);
         var proc = _reg.Create(typeName, ctx, config);
-        _procs[name] = proc;
-        _processorNames.Add(name);
-        _processorStates[name] = ComponentState.Enabled;
-        _processorDefs[name] = (typeName, new Dictionary<string, string>(config), new List<string>(requires));
 
-        QueueWAL? qWal = _walDir != "" ? new QueueWAL(Path.Combine(_walDir, $"{name}.wal"), _walMaxSizeMb, _walCompactIntervalMs) : null;
-        var queue = new FlowQueue(name, _queueMaxCount, _queueMaxBytes, _visibilityTimeoutMs, qWal);
-        _queues[name] = queue;
-        var session = new ProcessSession(queue, proc, name, connections, _queues, _dlq, _maxRetries, _provenance, _maxHops);
-        _sessions[name] = session;
+        // Build new graph with the additional processor
+        var newProcessors = new Dictionary<string, IProcessor>(graph.Processors) { [name] = proc };
+        var newConnections = new Dictionary<string, Dictionary<string, List<string>>>(graph.Connections) { [name] = connections };
+        var newNames = new List<string>(graph.ProcessorNames) { name };
+        var newStates = new Dictionary<string, ComponentState>(graph.ProcessorStates) { [name] = ComponentState.Enabled };
+        var newDefs = new Dictionary<string, (string, Dictionary<string, string>, List<string>)>(graph.ProcessorDefs)
+            { [name] = (typeName, new Dictionary<string, string>(config), new List<string>(requires)) };
 
-        RecomputeEntryPoints();
+        var dagResult = DagValidator.Validate(newConnections);
+        _graph = new PipelineGraph(newProcessors, newConnections, dagResult.EntryPoints, newNames, newStates, newDefs);
 
-        if (_running)
-        {
-            queue.StartReaper(_cts.Token);
-            queue.StartWALCompaction(_cts.Token);
-            var procCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
-            _processorCts[name] = procCts;
-            _ = Task.Run(() => ProcessorLoop(name, procCts.Token), _cts.Token);
-        }
+        _processorCounts.TryAdd(name, 0);
+        _processorErrors.TryAdd(name, 0);
         return true;
     }
 
     public bool RemoveProcessor(string name)
     {
-        if (!_procs.ContainsKey(name)) return false;
-        _processorStates[name] = ComponentState.Disabled;
-        if (_processorCts.TryGetValue(name, out var cts))
-        {
-            cts.Cancel();
-            _processorCts.Remove(name);
-        }
-        _procs.Remove(name);
-        _processorNames.Remove(name);
-        _sessions.Remove(name);
-        _processorDefs.Remove(name);
-        _processorRequires.Remove(name);
-        _processorConnections.Remove(name);
-        RecomputeEntryPoints();
+        var graph = _graph;
+        if (!graph.Processors.ContainsKey(name)) return false;
+
+        var newProcessors = new Dictionary<string, IProcessor>(graph.Processors);
+        newProcessors.Remove(name);
+        var newConnections = new Dictionary<string, Dictionary<string, List<string>>>(graph.Connections);
+        newConnections.Remove(name);
+        var newNames = new List<string>(graph.ProcessorNames);
+        newNames.Remove(name);
+        var newStates = new Dictionary<string, ComponentState>(graph.ProcessorStates);
+        newStates.Remove(name);
+        var newDefs = new Dictionary<string, (string, Dictionary<string, string>, List<string>)>(graph.ProcessorDefs);
+        newDefs.Remove(name);
+
+        var dagResult = DagValidator.Validate(newConnections);
+        _graph = new PipelineGraph(newProcessors, newConnections, dagResult.EntryPoints, newNames, newStates, newDefs);
         return true;
     }
 
@@ -467,17 +501,14 @@ public sealed class Fabric
 
     /// <summary>
     /// Reload flow from new config. Diffs processors and connections against current state.
-    /// Returns (added, removed, updated, connectionsChanged).
-    /// Does NOT reload sources or providers (those are infrastructure — require restart).
+    /// Builds a new PipelineGraph and swaps atomically — in-flight executions complete
+    /// on the old graph, new executions use the new graph.
     /// </summary>
     public (int Added, int Removed, int Updated, int ConnectionsChanged) ReloadFlow(Dictionary<string, object?> config)
     {
         int added = 0, removed = 0, updated = 0, connectionsChanged = 0;
 
         // Read new defaults
-        if (TryGetConfig<int>(config, "defaults.backpressure.max_count", out var mc)) _queueMaxCount = mc;
-        if (TryGetConfig<int>(config, "defaults.backpressure.max_retries", out var mr)) _maxRetries = mr;
-        if (TryGetConfig<int>(config, "defaults.backpressure.drain_timeout", out var dt)) _drainTimeoutSeconds = dt;
         if (TryGetConfig<int>(config, "defaults.backpressure.max_hops", out var mh)) _maxHops = mh;
 
         // Parse new processor defs from config
@@ -506,83 +537,74 @@ public sealed class Fabric
             }
         }
 
-        // Remove processors no longer in config
-        var currentNames = new List<string>(_processorDefs.Keys);
-        foreach (var name in currentNames)
+        var oldGraph = _graph;
+        var newProcessors = new Dictionary<string, IProcessor>();
+        var newConnections = new Dictionary<string, Dictionary<string, List<string>>>();
+        var newNames = new List<string>();
+        var newStates = new Dictionary<string, ComponentState>();
+        var newProcessorDefs = new Dictionary<string, (string Type, Dictionary<string, string> Config, List<string> Requires)>();
+
+        // Detect removed processors
+        foreach (var name in oldGraph.ProcessorDefs.Keys)
         {
             if (!newDefs.ContainsKey(name))
             {
-                RemoveProcessor(name);
                 removed++;
                 _log?.Log("INFO", "hot-reload", $"removed processor: {name}");
             }
         }
 
-        // Add new processors
-        foreach (var (name, def) in newDefs)
-        {
-            if (!_processorDefs.ContainsKey(name))
-            {
-                if (AddProcessor(name, def.Type, def.Config, def.Requires, def.Connections))
-                {
-                    added++;
-                    _log?.Log("INFO", "hot-reload", $"added processor: {name} (type={def.Type})");
-                }
-            }
-        }
-
-        // Update changed processors or connections
+        // Build new graph — reuse unchanged processor instances
         foreach (var (name, newDef) in newDefs)
         {
-            if (!_processorDefs.TryGetValue(name, out var oldDef)) continue;
-            var oldConn = _processorConnections.GetValueOrDefault(name) ?? new();
-            bool procChanged = oldDef.Type != newDef.Type || !DictEqual(oldDef.Config, newDef.Config) || !ListEqual(oldDef.Requires, newDef.Requires);
-            bool connChanged = !ConnectionsEqual(oldConn, newDef.Connections);
+            var oldDef = oldGraph.ProcessorDefs.GetValueOrDefault(name);
+            bool isNew = oldDef == default;
+            bool procChanged = !isNew && (oldDef.Type != newDef.Type || !DictEqual(oldDef.Config, newDef.Config) || !ListEqual(oldDef.Requires, newDef.Requires));
+            var oldConn = oldGraph.Connections.GetValueOrDefault(name);
+            bool connChanged = !isNew && oldConn is not null && !ConnectionsEqual(oldConn, newDef.Connections);
 
-            if (!procChanged && !connChanged) continue;
-
-            if (procChanged)
+            if (isNew)
             {
-                // Processor type/config changed — rebuild processor + session
-                _processorStates[name] = ComponentState.Disabled;
-                if (_processorCts.TryGetValue(name, out var cts))
-                {
-                    cts.Cancel();
-                    _processorCts.Remove(name);
-                }
-
+                // New processor
+                foreach (var pn in newDef.Requires)
+                    _globalCtx.RegisterDependent(pn, name);
                 var ctx = BuildScopedContext(newDef.Requires);
-                var proc = _reg.Create(newDef.Type, ctx, newDef.Config);
-                _procs[name] = proc;
-                _processorRequires[name] = newDef.Requires;
-                _processorDefs[name] = (newDef.Type, new Dictionary<string, string>(newDef.Config), new List<string>(newDef.Requires));
-                _processorConnections[name] = newDef.Connections;
-
-                var session = new ProcessSession(_queues[name], proc, name, newDef.Connections, _queues, _dlq, _maxRetries, _provenance, _maxHops);
-                _sessions[name] = session;
-                _processorStates[name] = ComponentState.Enabled;
-
-                if (_running)
-                {
-                    var procCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
-                    _processorCts[name] = procCts;
-                    _ = Task.Run(() => ProcessorLoop(name, procCts.Token), _cts.Token);
-                }
+                newProcessors[name] = _reg.Create(newDef.Type, ctx, newDef.Config);
+                added++;
+                _log?.Log("INFO", "hot-reload", $"added processor: {name} (type={newDef.Type})");
+            }
+            else if (procChanged)
+            {
+                // Processor type/config changed — rebuild
+                var ctx = BuildScopedContext(newDef.Requires);
+                newProcessors[name] = _reg.Create(newDef.Type, ctx, newDef.Config);
                 updated++;
                 _log?.Log("INFO", "hot-reload", $"updated processor: {name} (type={newDef.Type})");
             }
             else
             {
-                // Only connections changed — rebuild session with same processor
-                _processorConnections[name] = newDef.Connections;
-                var session = new ProcessSession(_queues[name], _procs[name], name, newDef.Connections, _queues, _dlq, _maxRetries, _provenance, _maxHops);
-                _sessions[name] = session;
-                connectionsChanged++;
-                _log?.Log("INFO", "hot-reload", $"updated connections: {name}");
+                // Unchanged — reuse existing instance
+                newProcessors[name] = oldGraph.Processors[name];
+                if (connChanged)
+                {
+                    connectionsChanged++;
+                    _log?.Log("INFO", "hot-reload", $"updated connections: {name}");
+                }
             }
+
+            newConnections[name] = newDef.Connections;
+            newNames.Add(name);
+            newStates[name] = oldGraph.ProcessorStates.GetValueOrDefault(name, ComponentState.Enabled);
+            newProcessorDefs[name] = (newDef.Type, new Dictionary<string, string>(newDef.Config), new List<string>(newDef.Requires));
+
+            _processorCounts.TryAdd(name, 0);
+            _processorErrors.TryAdd(name, 0);
         }
 
-        RecomputeEntryPoints();
+        var dagResult = DagValidator.Validate(newConnections);
+
+        // Atomic swap
+        _graph = new PipelineGraph(newProcessors, newConnections, dagResult.EntryPoints, newNames, newStates, newProcessorDefs);
 
         var total = added + removed + updated + connectionsChanged;
         if (total > 0)
@@ -593,15 +615,9 @@ public sealed class Fabric
         return (added, removed, updated, connectionsChanged);
     }
 
-    private void RecomputeEntryPoints()
-    {
-        var dagResult = DagValidator.Validate(_processorConnections);
-        _entryPoints = dagResult.EntryPoints;
-    }
-
     public void Status()
     {
-        Console.WriteLine($"[fabric] processors={_processorNames.Count} processed={Interlocked.Read(ref _processedCount)} dlq={_dlq.Count}");
+        Console.WriteLine($"[fabric] processors={_graph.ProcessorNames.Count} processed={Interlocked.Read(ref _totalProcessed)} active={Volatile.Read(ref _activeExecutions)}");
     }
 
     // --- Helpers ---
@@ -730,4 +746,37 @@ public sealed class Fabric
             return list.Where(x => x is not null).Select(x => x!.ToString()!).ToList();
         return null;
     }
+}
+
+/// <summary>
+/// Immutable pipeline graph — processors, connections, entry points.
+/// Swapped atomically on hot reload via volatile write.
+/// </summary>
+internal sealed class PipelineGraph
+{
+    public readonly Dictionary<string, IProcessor> Processors;
+    public readonly Dictionary<string, Dictionary<string, List<string>>> Connections;
+    public readonly List<string> EntryPoints;
+    public readonly List<string> ProcessorNames;
+    public readonly Dictionary<string, ComponentState> ProcessorStates;
+    public readonly Dictionary<string, (string Type, Dictionary<string, string> Config, List<string> Requires)> ProcessorDefs;
+
+    public PipelineGraph(
+        Dictionary<string, IProcessor> processors,
+        Dictionary<string, Dictionary<string, List<string>>> connections,
+        List<string> entryPoints,
+        List<string> processorNames,
+        Dictionary<string, ComponentState> processorStates,
+        Dictionary<string, (string Type, Dictionary<string, string> Config, List<string> Requires)> processorDefs)
+    {
+        Processors = processors;
+        Connections = connections;
+        EntryPoints = entryPoints;
+        ProcessorNames = processorNames;
+        ProcessorStates = processorStates;
+        ProcessorDefs = processorDefs;
+    }
+
+    public static readonly PipelineGraph Empty = new(
+        new(), new(), new(), new(), new(), new());
 }

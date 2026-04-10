@@ -21,14 +21,10 @@ public sealed class ApiHandler
     {
         app.MapGet("/api/stats", Stats);
         app.MapGet("/api/processors", Processors);
+        app.MapGet("/api/processor-stats", ProcessorStats);
         app.MapGet("/api/registry", RegistryList);
         app.MapGet("/api/flow", Flow);
         app.MapGet("/api/connections", Connections);
-        app.MapGet("/api/queues", Queues);
-        app.MapGet("/api/dlq", DlqList);
-        app.MapPost("/api/dlq/replay", DlqReplay);
-        app.MapPost("/api/dlq/replay-all", DlqReplayAll);
-        app.MapDelete("/api/dlq/delete", DlqDelete);
         app.MapPost("/api/processors/add", AddProcessor);
         app.MapDelete("/api/processors/remove", RemoveProcessor);
         app.MapPost("/api/processors/enable", EnableProcessor);
@@ -55,7 +51,7 @@ public sealed class ApiHandler
 
     private IResult Stats() => Results.Json(_fab.GetStats());
     private IResult Processors() => Results.Json(_fab.GetProcessorNames());
-    private IResult Queues() => Results.Json(_fab.GetQueueStats());
+    private IResult ProcessorStats() => Results.Json(_fab.GetProcessorStats());
 
     private IResult RegistryList()
     {
@@ -75,14 +71,14 @@ public sealed class ApiHandler
 
     private IResult Flow()
     {
-        var queueStats = _fab.GetQueueStats();
+        var procStats = _fab.GetProcessorStats();
         return Results.Json(new
         {
             processors = _fab.GetProcessorNames().Select(name => new
             {
                 name,
                 state = _fab.GetProcessorState(name).ToString().ToUpperInvariant(),
-                queue = queueStats.TryGetValue(name, out var qs) ? qs : null,
+                stats = procStats.GetValueOrDefault(name),
                 connections = _fab.GetConnections().GetValueOrDefault(name)
             }),
             entryPoints = _fab.GetEntryPoints(),
@@ -94,59 +90,6 @@ public sealed class ApiHandler
             }),
             stats = _fab.GetStats()
         });
-    }
-
-    // --- DLQ ---
-
-    private IResult DlqList()
-    {
-        var dlq = _fab.GetDLQ();
-        var entries = dlq.ListEntries();
-        return Results.Json(new
-        {
-            count = dlq.Count,
-            entries = entries.Select(e => new
-            {
-                id = e.Id,
-                sourceProcessor = e.SourceProcessor,
-                sourceQueue = e.SourceQueue,
-                attemptCount = e.AttemptCount,
-                lastError = e.LastError,
-                flowFileId = e.FlowFile.Id
-            })
-        });
-    }
-
-    private async Task<IResult> DlqReplay(HttpContext ctx)
-    {
-        var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>();
-        var id = req?.GetValueOrDefault("id") ?? "";
-        if (id == "") return Results.BadRequest(new { error = "id is required" });
-
-        var dlq = _fab.GetDLQ();
-        var entry = dlq.Get(id);
-        if (entry is null) return Results.NotFound(new { error = "dlq entry not found" });
-
-        var ff = dlq.Replay(id);
-        if (ff is not null) _fab.ReplayToQueue(entry.SourceQueue, ff);
-        return Results.Json(new { status = "replayed", id, flowFileId = ff?.Id, queue = entry.SourceQueue });
-    }
-
-    private IResult DlqReplayAll()
-    {
-        var entries = _fab.GetDLQ().ReplayAll();
-        foreach (var entry in entries)
-            _fab.ReplayToQueue(entry.SourceQueue, entry.FlowFile);
-        return Results.Json(new { status = "replayed", count = entries.Count });
-    }
-
-    private async Task<IResult> DlqDelete(HttpContext ctx)
-    {
-        var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>();
-        var id = req?.GetValueOrDefault("id") ?? "";
-        if (id == "") return Results.BadRequest(new { error = "id is required" });
-        _fab.GetDLQ().Remove(id);
-        return Results.Json(new { status = "removed", id });
     }
 
     // --- Processor management ---
@@ -196,8 +139,8 @@ public sealed class ApiHandler
         var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>();
         var name = req?.GetValueOrDefault("name") ?? "";
         if (name == "") return Results.BadRequest(new { error = "name required" });
-        return _fab.DisableProcessor(name, 60)
-            ? Results.Json(new { status = "draining", name })
+        return _fab.DisableProcessor(name)
+            ? Results.Json(new { status = "disabled", name })
             : Results.NotFound(new { error = "processor not found" });
     }
 
@@ -236,7 +179,7 @@ public sealed class ApiHandler
         var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>();
         var name = req?.GetValueOrDefault("name") ?? "";
         if (name == "") return Results.BadRequest(new { error = "name required" });
-        return _fab.DisableProvider(name, 60)
+        return _fab.DisableProvider(name)
             ? Results.Json(new { status = "disabled", name })
             : Results.NotFound(new { error = "provider not found" });
     }
@@ -249,7 +192,6 @@ public sealed class ApiHandler
         return Results.Json(new
         {
             status = "healthy",
-            dlq = _fab.GetDLQ().Count,
             sources = sources.Select(s => new { name = s.Name, type = s.Type, running = s.Running })
         });
     }

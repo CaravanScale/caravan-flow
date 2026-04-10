@@ -6,7 +6,7 @@ using ZincFlow.StdLib;
 namespace ZincFlow.Tests;
 
 /// <summary>
-/// Test suite matching Zinc's test_main.zn — 40+ test functions, 137+ assertions.
+/// Test suite for zinc-flow-csharp — direct pipeline executor (Fabric.Execute).
 /// Run via: ./zinc test
 /// </summary>
 public static class TestSuite
@@ -48,16 +48,11 @@ public static class TestSuite
         TestRoutingComposite();
         TestRoutingNoMatch();
 
-        // Fabric integration
+        // Fabric integration (Execute-based)
         TestFabricMultiHop();
         TestFabricDlqFromFailure();
 
-        // Flow engine
-        TestFlowQueueOfferClaim();
-        TestFlowQueueBackpressure();
-        TestFlowQueueAckNack();
-        TestDLQAddAndList();
-        TestDLQReplay();
+        // Provider/context
         TestScopedContextAccess();
         TestProviderLifecycle();
 
@@ -73,22 +68,16 @@ public static class TestSuite
         TestConfigValidation();
         TestProvenance();
         TestContentStoreCleanup();
-        TestQueueWAL();
 
-        // Scenarios
+        // Scenarios (Execute-based)
         TestScenarioProcessorChain();
-        TestScenarioBackpressurePropagation();
-        TestScenarioRetryExhaustionToDLQ();
-        TestScenarioDLQReplayToSourceQueue();
         TestScenarioScopedProviderIsolation();
         TestScenarioIRSFanOut();
-        TestScenarioVisibilityTimeout();
 
         TestMaxHopCycleDetection();
 
-        // E2E integration tests
+        // E2E integration tests (Execute-based)
         TestE2EFullPipeline();
-        TestE2EWALPersistence();
         TestE2EContentStoreLifecycle();
         TestE2EProvenanceChain();
         TestE2EListenHTTPPipeline();
@@ -132,7 +121,7 @@ public static class TestSuite
         TestPipelineTextExtractAndRoute();
         TestPipelineSplitFanOutSink();
         TestPipelineFailureToErrorHandler();
-        TestPipelineFailureToDLQ();
+        TestPipelineFailureNoHandler();
         TestPipelineLargeContentOffload();
         TestPipelineSmallContentInline();
         TestPipelineExpressionChain();
@@ -149,6 +138,17 @@ public static class TestSuite
         TestHotReloadConnections();
         TestHotReloadNoChange();
         TestHotReloadEndToEnd();
+
+        // New Execute-based tests
+        TestExecuteSingleProcessor();
+        TestExecuteLinearPipeline();
+        TestExecuteFanOut();
+        TestExecuteFailureRouting();
+        TestExecuteFailureNoHandler();
+        TestExecuteDropped();
+        TestExecuteMultipleResult();
+        TestExecuteMaxHops();
+        TestExecuteBackpressure();
 
         Console.WriteLine();
         Console.WriteLine($"=== {_pass} passed, {_fail} failed ({_pass + _fail} total) ===");
@@ -195,6 +195,16 @@ public static class TestSuite
     }
 
     static byte[] TestJsonArray() => """[{"name": "Alice", "amount": 42}]"""u8.ToArray();
+
+    static ZincFlow.Fabric.Fabric BuildFabric(Dictionary<string, object?> config, ProcessorContext? ctx = null)
+    {
+        ctx ??= TestContext();
+        var reg = new Registry();
+        BuiltinProcessors.RegisterAll(reg);
+        var fab = new ZincFlow.Fabric.Fabric(reg, ctx);
+        fab.LoadFlow(config);
+        return fab;
+    }
 
     // --- Core: FlowFile ---
 
@@ -388,7 +398,7 @@ public static class TestSuite
             [new() { ["city"] = (object?)"Portland" }]);
         var ff = FlowFile.CreateWithContent(rc, new());
 
-        // Records → JSON
+        // Records -> JSON
         var toJson = new ConvertRecordToJSON();
         var step1 = toJson.Process(ff);
         AssertTrue("step1 returns single", step1 is SingleResult);
@@ -397,7 +407,7 @@ public static class TestSuite
         var (bytes, _) = ContentHelpers.Resolve(new MemoryContentStore(), jsonFf.Content);
         AssertTrue("json contains Portland", Encoding.UTF8.GetString(bytes).Contains("Portland"));
 
-        // JSON → Records
+        // JSON -> Records
         var toRec = new ConvertJSONToRecord("geo", new MemoryContentStore());
         var step2 = toRec.Process(jsonFf);
         AssertTrue("step2 returns single", step2 is SingleResult);
@@ -540,129 +550,96 @@ public static class TestSuite
         AssertEqual("only enabled matched", dests[0], "proc-1");
     }
 
-    // --- Fabric integration ---
+    // --- Fabric integration (Execute-based) ---
 
     static void TestFabricMultiHop()
     {
-        Console.WriteLine("--- Fabric: Multi-Hop ---");
-        var ctx = TestContext();
-        var reg = new Registry(); BuiltinProcessors.RegisterAll(reg);
-        var fab = new Fabric.Fabric(reg, ctx);
-
-        var engine = new RulesEngine();
-        engine.AddOrReplaceRuleset("flow", [
-            new RoutingRule("all-to-tag", "type", Operator.Exists, "", "tag-env"),
-            new RoutingRule("tagged-to-log", "env", Operator.Exists, "", "logger")
-        ]);
-
-        var dests1 = new List<string>();
-        engine.GetDestinations(AttributeMap.FromDict(new() { ["type"] = "order" }), dests1);
-        AssertIntEqual("first hop matches", dests1.Count, 1);
-
-        var dests2 = new List<string>();
-        engine.GetDestinations(AttributeMap.FromDict(new() { ["type"] = "order", ["env"] = "prod" }), dests2);
-        AssertIntEqual("second hop matches", dests2.Count, 2);
-
+        Console.WriteLine("--- Fabric: Multi-Hop via Execute ---");
+        var config = new Dictionary<string, object?>
+        {
+            ["flow"] = new Dictionary<string, object?>
+            {
+                ["processors"] = new Dictionary<string, object?>
+                {
+                    ["tag-env"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "env", ["value"] = "prod" },
+                        ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "logger" } }
+                    },
+                    ["logger"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "logged", ["value"] = "true" }
+                    }
+                }
+            }
+        };
+        var fab = BuildFabric(config);
         var ff = FlowFile.Create("multi-hop"u8, new() { ["type"] = "test" });
-        AssertTrue("ingest accepted", fab.Ingest(ff));
+        var ok = fab.Execute(ff, "tag-env");
+        AssertTrue("execute returns true", ok);
+
+        var stats = fab.GetProcessorStats();
+        AssertTrue("tag-env processed", stats["tag-env"]["processed"] == 1);
+        AssertTrue("logger processed", stats["logger"]["processed"] == 1);
     }
 
     static void TestFabricDlqFromFailure()
     {
-        Console.WriteLine("--- Fabric: DLQ from Failure ---");
+        Console.WriteLine("--- Fabric: Failure routing via connections ---");
         var ctx = TestContext();
-        var reg = new Registry(); BuiltinProcessors.RegisterAll(reg);
-        var fab = new Fabric.Fabric(reg, ctx);
-        AssertIntEqual("initial dlq", fab.GetDLQ().Count, 0);
+        var logProv = new LoggingProvider(); logProv.Enable();
+        ctx.AddProvider(logProv);
 
-        var ff = FlowFile.Create("test"u8, new() { ["type"] = "unknown" });
-        AssertTrue("ingest accepted", fab.Ingest(ff));
-        AssertIntEqual("no failures no dlq", fab.GetDLQ().Count, 0);
-    }
+        var config = new Dictionary<string, object?>
+        {
+            ["flow"] = new Dictionary<string, object?>
+            {
+                ["processors"] = new Dictionary<string, object?>
+                {
+                    ["parser"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "ConvertJSONToRecord",
+                        ["config"] = new Dictionary<string, object?> { ["schema_name"] = "test" },
+                        ["connections"] = new Dictionary<string, object?>
+                        {
+                            ["success"] = new List<object?> { "sink" },
+                            ["failure"] = new List<object?> { "error-handler" }
+                        }
+                    },
+                    ["sink"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "done", ["value"] = "true" }
+                    },
+                    ["error-handler"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "error", ["value"] = "true" }
+                    }
+                }
+            }
+        };
+        var fab = BuildFabric(config, ctx);
 
-    // --- Flow Engine: Queues ---
+        // Good input goes to sink
+        var goodFf = FlowFile.Create("""[{"key":"val"}]"""u8, new());
+        var ok1 = fab.Execute(goodFf, "parser");
+        AssertTrue("good execute ok", ok1);
+        var pstats = fab.GetProcessorStats();
+        AssertTrue("parser processed good", pstats["parser"]["processed"] == 1);
+        AssertTrue("sink processed good", pstats["sink"]["processed"] == 1);
+        AssertTrue("error-handler not invoked for good", pstats["error-handler"]["processed"] == 0);
 
-    static void TestFlowQueueOfferClaim()
-    {
-        Console.WriteLine("--- FlowQueue: Offer/Claim ---");
-        var q = new FlowQueue("test-q", 100, 1024 * 1024, 30_000);
-        var ff = FlowFile.Create("hello"u8, new() { ["key"] = "val" });
-
-        AssertTrue("offer accepted", q.Offer(ff));
-        AssertIntEqual("visible count", q.VisibleCount, 1);
-        AssertIntEqual("invisible count", q.InvisibleCount, 0);
-
-        var entry = q.Claim()!;
-        AssertTrue("claim non-null", entry is not null);
-        AssertIntEqual("after claim visible", q.VisibleCount, 0);
-        AssertIntEqual("after claim invisible", q.InvisibleCount, 1);
-
-        q.Ack(entry.Id);
-        AssertIntEqual("after ack visible", q.VisibleCount, 0);
-        AssertIntEqual("after ack invisible", q.InvisibleCount, 0);
-    }
-
-    static void TestFlowQueueBackpressure()
-    {
-        Console.WriteLine("--- FlowQueue: Backpressure ---");
-        var q = new FlowQueue("bp-q", 2, 1024, 30_000);
-
-        AssertTrue("first offer", q.Offer(FlowFile.Create("a"u8, new())));
-        AssertTrue("second offer", q.Offer(FlowFile.Create("b"u8, new())));
-        AssertFalse("third rejected (backpressure)", q.Offer(FlowFile.Create("c"u8, new())));
-        AssertFalse("no capacity", q.HasCapacity());
-    }
-
-    static void TestFlowQueueAckNack()
-    {
-        Console.WriteLine("--- FlowQueue: Ack/Nack ---");
-        var q = new FlowQueue("an-q", 100, 1024 * 1024, 30_000);
-        q.Offer(FlowFile.Create("test"u8, new()));
-
-        var entry = q.Claim()!;
-        AssertIntEqual("attempt before nack", entry.AttemptCount, 0);
-
-        q.Nack(entry.Id);
-        AssertIntEqual("after nack visible", q.VisibleCount, 1);
-        AssertIntEqual("after nack invisible", q.InvisibleCount, 0);
-
-        var retried = q.Claim()!;
-        AssertIntEqual("attempt after nack", retried.AttemptCount, 1);
-        q.Ack(retried.Id);
-    }
-
-    // --- DLQ ---
-
-    static void TestDLQAddAndList()
-    {
-        Console.WriteLine("--- DLQ: Add/List ---");
-        var dlq = new DLQ();
-        AssertIntEqual("initial count", dlq.Count, 0);
-
-        var ff = FlowFile.Create("failed"u8, new() { ["type"] = "test" });
-        dlq.Add(ff, "my-proc", "my-queue", 3, "processing error");
-        AssertIntEqual("after add count", dlq.Count, 1);
-
-        var entries = dlq.ListEntries();
-        AssertIntEqual("list length", entries.Count, 1);
-        AssertEqual("source processor", entries[0].SourceProcessor, "my-proc");
-        AssertEqual("last error", entries[0].LastError, "processing error");
-        AssertIntEqual("attempt count", entries[0].AttemptCount, 3);
-    }
-
-    static void TestDLQReplay()
-    {
-        Console.WriteLine("--- DLQ: Replay ---");
-        var dlq = new DLQ();
-        var ff = FlowFile.Create("replay-me"u8, new() { ["id"] = "123" });
-        dlq.Add(ff, "proc", "queue", 5, "max retries");
-        AssertIntEqual("before replay", dlq.Count, 1);
-
-        var entries = dlq.ListEntries();
-        var replayed = dlq.Replay(entries[0].Id);
-        AssertTrue("replayed not null", replayed is not null);
-        AssertTrue("replayed ff id matches", replayed!.NumericId == ff.NumericId);
-        AssertIntEqual("after replay", dlq.Count, 0);
+        // Bad input goes to error-handler
+        var badFf = FlowFile.Create("not-json"u8, new());
+        var ok2 = fab.Execute(badFf, "parser");
+        AssertTrue("bad execute ok", ok2);
+        pstats = fab.GetProcessorStats();
+        AssertTrue("parser processed bad", pstats["parser"]["processed"] == 2);
+        AssertTrue("error-handler invoked for bad", pstats["error-handler"]["processed"] == 1);
+        AssertTrue("sink still 1", pstats["sink"]["processed"] == 1);
     }
 
     // --- Scoped Context ---
@@ -697,111 +674,40 @@ public static class TestSuite
         AssertFalse("after shutdown", ((IProvider)cp).IsEnabled);
     }
 
-    // --- Scenarios ---
+    // --- Scenarios (Execute-based) ---
 
     static void TestScenarioProcessorChain()
     {
-        Console.WriteLine("--- Scenario: Processor Chain ---");
-        var scopedCtx = TestScopedCtx();
-        var reg = new Registry(); BuiltinProcessors.RegisterAll(reg);
-        var tagger = reg.Create("UpdateAttribute", scopedCtx, new() { ["key"] = "env", ["value"] = "dev" });
-        var logger = reg.Create("LogAttribute", scopedCtx, new() { ["prefix"] = "chain-test" });
+        Console.WriteLine("--- Scenario: Processor Chain via Execute ---");
+        var config = new Dictionary<string, object?>
+        {
+            ["flow"] = new Dictionary<string, object?>
+            {
+                ["processors"] = new Dictionary<string, object?>
+                {
+                    ["tag-env"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "env", ["value"] = "dev" },
+                        ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "logger" } }
+                    },
+                    ["logger"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "LogAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["prefix"] = "chain-test" }
+                    }
+                }
+            }
+        };
+        var fab = BuildFabric(config);
 
-        var tagQueue = new FlowQueue("tag-env", 100, 1024 * 1024, 30_000);
-        var logQueue = new FlowQueue("logger", 100, 1024 * 1024, 30_000);
-        var allQueues = new Dictionary<string, FlowQueue> { ["tag-env"] = tagQueue, ["logger"] = logQueue };
+        var ff = FlowFile.Create("hello"u8, new() { ["type"] = "order" });
+        var ok = fab.Execute(ff, "tag-env");
+        AssertTrue("chain execute ok", ok);
 
-        var tagConnections = new Dictionary<string, List<string>> { ["success"] = ["logger"] };
-        var logConnections = new Dictionary<string, List<string>>();
-
-        var dlq = new DLQ();
-        var tagSession = new ProcessSession(tagQueue, tagger, "tag-env", tagConnections, allQueues, dlq, 5);
-        var logSession = new ProcessSession(logQueue, logger, "logger", logConnections, allQueues, dlq, 5);
-
-        tagQueue.Offer(FlowFile.Create("hello"u8, new() { ["type"] = "order" }));
-        AssertIntEqual("tag queue has 1", tagQueue.VisibleCount, 1);
-
-        AssertTrue("tag session executed", tagSession.Execute());
-        AssertIntEqual("tag queue empty", tagQueue.VisibleCount, 0);
-        AssertIntEqual("log queue has 1", logQueue.VisibleCount, 1);
-
-        AssertTrue("log session executed", logSession.Execute());
-        AssertIntEqual("log queue empty", logQueue.VisibleCount, 0);
-        AssertIntEqual("no dlq entries", dlq.Count, 0);
-    }
-
-    static void TestScenarioBackpressurePropagation()
-    {
-        Console.WriteLine("--- Scenario: Backpressure Propagation ---");
-        var smallQueue = new FlowQueue("small", 3, 1024, 30_000);
-        var downstreamQueue = new FlowQueue("downstream", 3, 1024, 30_000);
-        var allQueues = new Dictionary<string, FlowQueue> { ["small"] = smallQueue, ["downstream"] = downstreamQueue };
-
-        var connections = new Dictionary<string, List<string>> { ["success"] = ["downstream"] };
-
-        var proc = new LogAttribute("bp-test");
-        var dlq = new DLQ();
-        var session = new ProcessSession(smallQueue, proc, "small", connections, allQueues, dlq, 5);
-
-        for (int i = 0; i < 3; i++)
-            downstreamQueue.Offer(FlowFile.Create("fill"u8, new() { ["type"] = "x" }));
-        AssertFalse("downstream full", downstreamQueue.HasCapacity());
-
-        smallQueue.Offer(FlowFile.Create("blocked"u8, new() { ["type"] = "test" }));
-        AssertTrue("session ran", session.Execute());
-        AssertIntEqual("item back in small queue", smallQueue.VisibleCount, 1);
-
-        var entry = smallQueue.Claim()!;
-        AssertIntEqual("attempt incremented", entry.AttemptCount, 1);
-    }
-
-    static void TestScenarioRetryExhaustionToDLQ()
-    {
-        Console.WriteLine("--- Scenario: Retry Exhaustion → DLQ ---");
-        var sourceQueue = new FlowQueue("source", 100, 1024 * 1024, 30_000);
-        var destQueue = new FlowQueue("dest", 0, 0, 30_000); // zero capacity
-        var allQueues = new Dictionary<string, FlowQueue> { ["dest"] = destQueue };
-
-        var connections = new Dictionary<string, List<string>> { ["success"] = ["dest"] };
-
-        var dlq = new DLQ();
-        int maxRetries = 3;
-        var session = new ProcessSession(sourceQueue, new LogAttribute("retry"), "source", connections, allQueues, dlq, maxRetries);
-
-        sourceQueue.Offer(FlowFile.Create("will-fail"u8, new() { ["type"] = "test" }));
-
-        for (int i = 0; i < maxRetries + 1; i++)
-            session.Execute();
-
-        AssertIntEqual("dlq has entry", dlq.Count, 1);
-        AssertIntEqual("source queue empty", sourceQueue.VisibleCount, 0);
-
-        var entries = dlq.ListEntries();
-        AssertEqual("dlq source processor", entries[0].SourceProcessor, "source");
-        AssertEqual("dlq error", entries[0].LastError, "max retries exceeded");
-    }
-
-    static void TestScenarioDLQReplayToSourceQueue()
-    {
-        Console.WriteLine("--- Scenario: DLQ Replay to Source Queue ---");
-        var dlq = new DLQ();
-        var sourceQueue = new FlowQueue("my-proc", 100, 1024 * 1024, 30_000);
-
-        var ff = FlowFile.Create("replay-test"u8, new() { ["type"] = "order" });
-        dlq.Add(ff, "my-proc", "my-proc", 5, "processing failed");
-        AssertIntEqual("dlq count", dlq.Count, 1);
-
-        var entries = dlq.ListEntries();
-        var replayed = dlq.Replay(entries[0].Id);
-        AssertTrue("replayed matches", replayed!.NumericId == ff.NumericId);
-        AssertIntEqual("dlq empty after replay", dlq.Count, 0);
-
-        sourceQueue.Offer(replayed);
-        AssertIntEqual("source queue has replayed item", sourceQueue.VisibleCount, 1);
-
-        var entry = sourceQueue.Claim()!;
-        sourceQueue.Ack(entry.Id);
-        AssertIntEqual("source queue empty after processing", sourceQueue.VisibleCount, 0);
+        var stats = fab.GetProcessorStats();
+        AssertTrue("tag-env processed 1", stats["tag-env"]["processed"] == 1);
+        AssertTrue("logger processed 1", stats["logger"]["processed"] == 1);
     }
 
     static void TestScenarioScopedProviderIsolation()
@@ -818,35 +724,48 @@ public static class TestSuite
 
     static void TestScenarioIRSFanOut()
     {
-        Console.WriteLine("--- Scenario: Connection Fan-Out ---");
-        var tagger = new UpdateAttribute("env", "prod");
-
-        var srcQueue = new FlowQueue("source", 100, 1024 * 1024, 30_000);
-        var destA = new FlowQueue("dest-a", 100, 1024 * 1024, 30_000);
-        var destB = new FlowQueue("dest-b", 100, 1024 * 1024, 30_000);
-        var destC = new FlowQueue("dest-c", 100, 1024 * 1024, 30_000);
-        var allQueues = new Dictionary<string, FlowQueue>
+        Console.WriteLine("--- Scenario: Connection Fan-Out via Execute ---");
+        var config = new Dictionary<string, object?>
         {
-            ["source"] = srcQueue, ["dest-a"] = destA, ["dest-b"] = destB, ["dest-c"] = destC
+            ["flow"] = new Dictionary<string, object?>
+            {
+                ["processors"] = new Dictionary<string, object?>
+                {
+                    ["tagger"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "env", ["value"] = "prod" },
+                        ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "dest-a", "dest-b", "dest-c" } }
+                    },
+                    ["dest-a"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "branch", ["value"] = "a" }
+                    },
+                    ["dest-b"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "branch", ["value"] = "b" }
+                    },
+                    ["dest-c"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "branch", ["value"] = "c" }
+                    }
+                }
+            }
         };
+        var fab = BuildFabric(config);
 
-        var connections = new Dictionary<string, List<string>> { ["success"] = ["dest-a", "dest-b", "dest-c"] };
+        var ff = FlowFile.Create("fanout"u8, new() { ["type"] = "order" });
+        var ok = fab.Execute(ff, "tagger");
+        AssertTrue("fanout execute ok", ok);
 
-        var dlq = new DLQ();
-        var session = new ProcessSession(srcQueue, tagger, "source", connections, allQueues, dlq, 5);
-
-        srcQueue.Offer(FlowFile.Create("fanout"u8, new() { ["type"] = "order" }));
-        session.Execute();
-
-        AssertIntEqual("dest-a has 1", destA.VisibleCount, 1);
-        AssertIntEqual("dest-b has 1", destB.VisibleCount, 1);
-        AssertIntEqual("dest-c has 1", destC.VisibleCount, 1);
-        AssertIntEqual("source empty", srcQueue.VisibleCount, 0);
-        AssertIntEqual("no dlq", dlq.Count, 0);
-
-        var entryA = destA.Claim()!;
-        AssertTrue("dest-a has env attr", entryA.FlowFile.Attributes.TryGetValue("env", out var env) && env == "prod");
-        destA.Ack(entryA.Id);
+        var stats = fab.GetProcessorStats();
+        AssertTrue("tagger processed 1", stats["tagger"]["processed"] == 1);
+        AssertTrue("dest-a processed 1", stats["dest-a"]["processed"] == 1);
+        AssertTrue("dest-b processed 1", stats["dest-b"]["processed"] == 1);
+        AssertTrue("dest-c processed 1", stats["dest-c"]["processed"] == 1);
     }
 
     // --- Phase 2: New Processors and Connectors ---
@@ -1119,30 +1038,44 @@ public static class TestSuite
         Console.WriteLine("--- Provenance Provider ---");
         var prov = new ProvenanceProvider();
         prov.Enable();
+        var ctx = TestContext();
+        ctx.AddProvider(prov);
 
-        var tag = new UpdateAttribute("env", "prod");
-        var q = new FlowQueue("prov", 100, 0, 30_000);
-        var outQ = new FlowQueue("out", 100, 0, 30_000);
-        var queues = new Dictionary<string, FlowQueue> { ["prov"] = q, ["out"] = outQ };
-        var connections = new Dictionary<string, List<string>> { ["success"] = ["out"] };
-        var dlq = new DLQ();
-        var session = new ProcessSession(q, tag, "tagger", connections, queues, dlq, 5, prov);
+        var config = new Dictionary<string, object?>
+        {
+            ["flow"] = new Dictionary<string, object?>
+            {
+                ["processors"] = new Dictionary<string, object?>
+                {
+                    ["tagger"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "env", ["value"] = "prod" },
+                        ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "sink" } }
+                    },
+                    ["sink"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "done", ["value"] = "true" }
+                    }
+                }
+            }
+        };
+        var fab = BuildFabric(config, ctx);
 
         var ff = FlowFile.Create("test"u8, new() { ["type"] = "order" });
-        q.Offer(ff);
-        session.Execute();
+        var ffId = ff.NumericId;
+        fab.Execute(ff, "tagger");
 
         // Provenance provider should have recorded events
-        var events = prov.GetEvents(ff.NumericId);
+        var events = prov.GetEvents(ffId);
         AssertTrue("has provenance events", events.Count >= 2);
         AssertTrue("processed event", events.Any(e => e.EventType == ProvenanceEventType.Processed && e.Component == "tagger"));
-        AssertTrue("routed event", events.Any(e => e.EventType == ProvenanceEventType.Routed && e.Component == "tagger" && e.Details == "out"));
+        AssertTrue("routed event", events.Any(e => e.EventType == ProvenanceEventType.Routed && e.Component == "tagger" && e.Details == "sink"));
 
         // Recent events API
         var recent = prov.GetRecent(10);
         AssertTrue("recent has events", recent.Count >= 2);
-
-        outQ.Claim();
     }
 
     static void TestContentStoreCleanup()
@@ -1180,138 +1113,66 @@ public static class TestSuite
         }
     }
 
-    static void TestQueueWAL()
-    {
-        Console.WriteLine("--- QueueWAL ---");
-        var walPath = Path.Combine(Path.GetTempPath(), $"zinc-test-wal-{Environment.TickCount64}.wal");
-        try
-        {
-            // Write some entries
-            using (var wal = new QueueWAL(walPath))
-            {
-                wal.Open();
-                wal.AppendOffer(1, "payload-1"u8.ToArray());
-                wal.AppendOffer(2, "payload-2"u8.ToArray());
-                wal.AppendOffer(3, "payload-3"u8.ToArray());
-                wal.AppendAck(2); // ack entry 2
-            }
-
-            // Replay — should have entries 1 and 3 (2 was acked)
-            using (var wal = new QueueWAL(walPath))
-            {
-                wal.Open();
-                var live = wal.Replay();
-                AssertIntEqual("2 live entries", live.Count, 2);
-
-                var ids = live.Select(e => e.Id).OrderBy(id => id).ToList();
-                AssertTrue("entry 1 live", ids.Contains(1));
-                AssertTrue("entry 3 live", ids.Contains(3));
-                AssertTrue("entry 2 acked", !ids.Contains(2));
-
-                // Verify payload
-                var entry1 = live.First(e => e.Id == 1);
-                AssertTrue("payload preserved", System.Text.Encoding.UTF8.GetString(entry1.V3Payload) == "payload-1");
-
-                // Compact
-                wal.Compact(live);
-                var afterCompact = wal.Replay();
-                AssertIntEqual("still 2 after compact", afterCompact.Count, 2);
-            }
-        }
-        finally
-        {
-            if (File.Exists(walPath)) File.Delete(walPath);
-            var tmpWal = walPath + ".tmp";
-            if (File.Exists(tmpWal)) File.Delete(tmpWal);
-        }
-    }
-
-    static void TestScenarioVisibilityTimeout()
-    {
-        Console.WriteLine("--- Scenario: Visibility Timeout ---");
-        var q = new FlowQueue("vis-test", 10, 1024, 500); // 500ms visibility timeout
-        q.StartReaper();
-
-        q.Offer(FlowFile.Create("timeout-test"u8, new() { ["type"] = "test" }));
-
-        var entry = q.Claim()!;
-        AssertTrue("claimed non-null", entry is not null);
-        AssertIntEqual("visible after claim", q.VisibleCount, 0);
-        AssertIntEqual("invisible after claim", q.InvisibleCount, 1);
-        AssertIntEqual("attempt before timeout", entry.AttemptCount, 0);
-
-        // Wait for visibility timeout + reaper cycle
-        Thread.Sleep(2000);
-
-        AssertIntEqual("visible after timeout", q.VisibleCount, 1);
-        AssertIntEqual("invisible after timeout", q.InvisibleCount, 0);
-
-        var reclaimed = q.Claim()!;
-        AssertTrue("reclaimed non-null", reclaimed is not null);
-        AssertIntEqual("attempt after timeout", reclaimed.AttemptCount, 1);
-        q.Ack(reclaimed.Id);
-        AssertIntEqual("clean after ack", q.VisibleCount, 0);
-    }
-
     static void TestMaxHopCycleDetection()
     {
-        Console.WriteLine("--- Max Hop Cycle Detection ---");
-        // Create a cycle: A routes to B, B routes to A
-        var procA = new UpdateAttribute("hop", "a");
-        var procB = new UpdateAttribute("hop", "b");
+        Console.WriteLine("--- Max Hop Cycle Detection via Execute ---");
+        var ctx = TestContext();
+        var logProv = new LoggingProvider(); logProv.Enable();
+        ctx.AddProvider(logProv);
 
-        var qA = new FlowQueue("a", 1000, 0, 30_000);
-        var qB = new FlowQueue("b", 1000, 0, 30_000);
-        var queues = new Dictionary<string, FlowQueue> { ["a"] = qA, ["b"] = qB };
-
-        // Both connect to each other — infinite cycle
-        var connA = new Dictionary<string, List<string>> { ["success"] = ["b"] };
-        var connB = new Dictionary<string, List<string>> { ["success"] = ["a"] };
-
-        var dlq = new DLQ();
-        var prov = new ProvenanceProvider();
-        prov.Enable();
-
-        // maxHops = 5 — should DLQ after 5 hops instead of looping forever
-        var sessionA = new ProcessSession(qA, procA, "proc-a", connA, queues, dlq, 5, prov, maxHops: 5);
-        var sessionB = new ProcessSession(qB, procB, "proc-b", connB, queues, dlq, 5, prov, maxHops: 5);
-
-        // Start the cycle
-        qA.Offer(FlowFile.Create("cycle-test"u8, new() { ["type"] = "test" }));
-
-        // Run enough iterations to hit the max hop limit
-        for (int i = 0; i < 20; i++)
+        // Create a cycle: A -> B -> A with max_hops = 5
+        var config = new Dictionary<string, object?>
         {
-            sessionA.Execute();
-            sessionB.Execute();
-        }
+            ["defaults"] = new Dictionary<string, object?>
+            {
+                ["backpressure"] = new Dictionary<string, object?>
+                {
+                    ["max_hops"] = 5
+                }
+            },
+            ["flow"] = new Dictionary<string, object?>
+            {
+                ["processors"] = new Dictionary<string, object?>
+                {
+                    ["proc-a"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "hop", ["value"] = "a" },
+                        ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "proc-b" } }
+                    },
+                    ["proc-b"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "hop", ["value"] = "b" },
+                        ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "proc-a" } }
+                    }
+                }
+            }
+        };
+        var fab = BuildFabric(config, ctx);
 
-        // FlowFile should be in DLQ, not bouncing forever
-        AssertTrue("cycle detected → DLQ", dlq.Count >= 1);
+        var ff = FlowFile.Create("cycle-test"u8, new() { ["type"] = "test" });
+        var ok = fab.Execute(ff, "proc-a");
+        AssertTrue("execute completes (no infinite loop)", ok);
 
-        // Provenance should show the cycle
-        var events = prov.GetRecent(50);
-        AssertTrue("has DLQ event", events.Any(e => e.EventType == ProvenanceEventType.DLQ));
-        var dlqEvent = events.First(e => e.EventType == ProvenanceEventType.DLQ);
-        AssertTrue("cycle reason", dlqEvent.Details.Contains("max hops exceeded"));
-
-        // Queues should be empty (everything DLQ'd)
-        AssertIntEqual("qA empty", qA.VisibleCount, 0);
-        AssertIntEqual("qB empty", qB.VisibleCount, 0);
+        // Should have processed some hops then stopped at max
+        var stats = fab.GetProcessorStats();
+        var totalProcessed = stats["proc-a"]["processed"] + stats["proc-b"]["processed"];
+        AssertTrue("processed limited by max hops", totalProcessed <= 5);
+        AssertTrue("errors recorded for hop limit", stats["proc-a"]["errors"] + stats["proc-b"]["errors"] >= 1);
     }
 
     // ===== E2E INTEGRATION TESTS =====
 
     static void TestE2EFullPipeline()
     {
-        Console.WriteLine("--- E2E: Full Pipeline (ingest → process → route → sink) ---");
+        Console.WriteLine("--- E2E: Full Pipeline (source -> Execute -> sink) ---");
         try
         {
             var store = new MemoryContentStore();
             var prov = new ProvenanceProvider();
             prov.Enable();
 
-            // Build a 3-stage pipeline: UpdateAttribute → LogAttribute → PutFile
             var reg = new Registry();
             BuiltinProcessors.RegisterAll(reg);
 
@@ -1322,7 +1183,7 @@ public static class TestSuite
 
             var fab = new ZincFlow.Fabric.Fabric(reg, globalCtx);
 
-            // 3-stage pipeline: tagger → logger → sink via explicit connections.
+            // 3-stage pipeline: tagger -> logger -> sink via explicit connections.
             var config = new Dictionary<string, object?>
             {
                 ["flow"] = new Dictionary<string, object?>
@@ -1339,20 +1200,18 @@ public static class TestSuite
             };
 
             fab.LoadFlow(config);
-            fab.StartAsync();
 
-            // Ingest a FlowFile
+            // Execute a FlowFile synchronously through the 3-stage pipeline
             var ff = FlowFile.Create("{\"order\":123}"u8, new() { ["type"] = "order", ["stage"] = "0" });
             var ffId = ff.NumericId;
-            AssertTrue("ingest accepted", fab.Ingest(ff));
+            var ok = fab.Execute(ff, "tagger");
+            AssertTrue("execute accepted", ok);
 
-            // Wait for async pipeline (3 hops + routing)
-            Thread.Sleep(4000);
-
-            // Verify stats
-            var stats = fab.GetStats();
-            AssertTrue("processed > 0", stats["processed"] > 0);
-            AssertIntEqual("no dlq entries", stats["dlq"], 0);
+            // Verify stats — all 3 processors should have run
+            var stats = fab.GetProcessorStats();
+            AssertTrue("tagger processed", stats["tagger"]["processed"] == 1);
+            AssertTrue("logger processed", stats["logger"]["processed"] == 1);
+            AssertTrue("sink processed", stats["sink"]["processed"] == 1);
 
             // Verify provenance chain — all 3 processors touched the FlowFile
             var events = prov.GetEvents(ffId);
@@ -1360,68 +1219,15 @@ public static class TestSuite
             AssertTrue("processed by tagger", events.Any(e => e.EventType == ProvenanceEventType.Processed && e.Component == "tagger"));
             AssertTrue("processed by logger", events.Any(e => e.EventType == ProvenanceEventType.Processed && e.Component == "logger"));
             AssertTrue("processed by sink", events.Any(e => e.EventType == ProvenanceEventType.Processed && e.Component == "sink"));
-
-            fab.StopAsync();
         }
         finally
         {
-        }
-    }
-
-    static void TestE2EWALPersistence()
-    {
-        Console.WriteLine("--- E2E: WAL Persistence (write → close → replay) ---");
-        var walDir = Path.Combine(Path.GetTempPath(), $"zinc-e2e-wal-{Environment.TickCount64}");
-        Directory.CreateDirectory(walDir);
-        try
-        {
-            var walPath = Path.Combine(walDir, "test.wal");
-
-            // Phase 1: create queue with WAL, offer items, ack some
-            {
-                var wal = new QueueWAL(walPath, maxSizeMb: 10, compactIntervalMs: 0);
-                var q = new FlowQueue("wal-test", 1000, 0, 30_000, wal);
-                q.ReplayWAL(); // opens WAL
-
-                q.Offer(FlowFile.Create("item-1"u8, new() { ["id"] = "1" }));
-                q.Offer(FlowFile.Create("item-2"u8, new() { ["id"] = "2" }));
-                q.Offer(FlowFile.Create("item-3"u8, new() { ["id"] = "3" }));
-
-                // Ack item 1
-                var e1 = q.Claim()!;
-                q.Ack(e1.Id);
-
-                AssertIntEqual("2 visible before close", q.VisibleCount, 2);
-                wal.Dispose();
-            }
-
-            // Phase 2: new queue, replay WAL — should restore items 2 and 3
-            {
-                var wal = new QueueWAL(walPath, maxSizeMb: 10, compactIntervalMs: 0);
-                var q = new FlowQueue("wal-test", 1000, 0, 30_000, wal);
-                int restored = q.ReplayWAL();
-
-                AssertIntEqual("restored 2 items", restored, 2);
-                AssertIntEqual("2 visible after replay", q.VisibleCount, 2);
-
-                // Verify content survived
-                var e2 = q.Claim()!;
-                if (e2.FlowFile.Content is Raw raw2)
-                    AssertTrue("content survived WAL", Encoding.UTF8.GetString(raw2.Data) == "item-2" || Encoding.UTF8.GetString(raw2.Data) == "item-3");
-                q.Ack(e2.Id);
-
-                wal.Dispose();
-            }
-        }
-        finally
-        {
-            if (Directory.Exists(walDir)) Directory.Delete(walDir, true);
         }
     }
 
     static void TestE2EContentStoreLifecycle()
     {
-        Console.WriteLine("--- E2E: Content Store Lifecycle (offload → process → cleanup) ---");
+        Console.WriteLine("--- E2E: Content Store Lifecycle (offload -> Execute -> cleanup) ---");
         var tmpDir = Path.Combine(Path.GetTempPath(), $"zinc-e2e-content-{Environment.TickCount64}");
         try
         {
@@ -1467,43 +1273,51 @@ public static class TestSuite
 
     static void TestE2EProvenanceChain()
     {
-        Console.WriteLine("--- E2E: Provenance Chain (multi-hop tracking) ---");
+        Console.WriteLine("--- E2E: Provenance Chain (multi-hop tracking via Execute) ---");
         var prov = new ProvenanceProvider();
         prov.Enable();
+        var ctx = TestContext();
+        ctx.AddProvider(prov);
 
-        // 3-hop pipeline: tagger → logger → sink
-        var tagger = new UpdateAttribute("env", "prod");
-        var logger = new LogAttribute("chain");
-        var sink = new UpdateAttribute("done", "true");
-
-        var q1 = new FlowQueue("q1", 100, 0, 30_000);
-        var q2 = new FlowQueue("q2", 100, 0, 30_000);
-        var q3 = new FlowQueue("q3", 100, 0, 30_000);
-        var queues = new Dictionary<string, FlowQueue> { ["q1"] = q1, ["q2"] = q2, ["q3"] = q3 };
-
-        var conn1 = new Dictionary<string, List<string>> { ["success"] = ["q2"] };
-        var conn2 = new Dictionary<string, List<string>> { ["success"] = ["q3"] };
-        var conn3 = new Dictionary<string, List<string>>();
-
-        var dlq = new DLQ();
-        var s1 = new ProcessSession(q1, tagger, "tagger", conn1, queues, dlq, 5, prov);
-        var s2 = new ProcessSession(q2, logger, "logger", conn2, queues, dlq, 5, prov);
-        var s3 = new ProcessSession(q3, sink, "sink", conn3, queues, dlq, 5, prov);
+        // 3-hop pipeline: tagger -> logger -> sink
+        var config = new Dictionary<string, object?>
+        {
+            ["flow"] = new Dictionary<string, object?>
+            {
+                ["processors"] = new Dictionary<string, object?>
+                {
+                    ["tagger"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "env", ["value"] = "prod" },
+                        ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "logger" } }
+                    },
+                    ["logger"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "LogAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["prefix"] = "chain" },
+                        ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "sink" } }
+                    },
+                    ["sink"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "done", ["value"] = "true" }
+                    }
+                }
+            }
+        };
+        var fab = BuildFabric(config, ctx);
 
         var ff = FlowFile.Create("chain-test"u8, new() { ["type"] = "order" });
         var ffId = ff.NumericId;
-        q1.Offer(ff);
-
-        s1.Execute();
-        s2.Execute();
-        s3.Execute();
+        fab.Execute(ff, "tagger");
 
         var events = prov.GetEvents(ffId);
         AssertTrue("chain has 5+ events", events.Count >= 5); // 3 processed + 2 routed
         AssertTrue("tagger processed", events.Any(e => e.Component == "tagger" && e.EventType == ProvenanceEventType.Processed));
-        AssertTrue("tagger routed to q2", events.Any(e => e.Component == "tagger" && e.EventType == ProvenanceEventType.Routed && e.Details == "q2"));
+        AssertTrue("tagger routed to logger", events.Any(e => e.Component == "tagger" && e.EventType == ProvenanceEventType.Routed && e.Details == "logger"));
         AssertTrue("logger processed", events.Any(e => e.Component == "logger" && e.EventType == ProvenanceEventType.Processed));
-        AssertTrue("logger routed to q3", events.Any(e => e.Component == "logger" && e.EventType == ProvenanceEventType.Routed && e.Details == "q3"));
+        AssertTrue("logger routed to sink", events.Any(e => e.Component == "logger" && e.EventType == ProvenanceEventType.Routed && e.Details == "sink"));
         AssertTrue("sink processed", events.Any(e => e.Component == "sink" && e.EventType == ProvenanceEventType.Processed));
 
         // Verify ordering — tagger before logger before sink
@@ -1515,7 +1329,7 @@ public static class TestSuite
 
     static void TestE2EListenHTTPPipeline()
     {
-        Console.WriteLine("--- E2E: ListenHTTP → Pipeline → PutFile ---");
+        Console.WriteLine("--- E2E: ListenHTTP -> Pipeline -> PutFile ---");
         var tmpDir = Path.Combine(Path.GetTempPath(), $"zinc-e2e-http-{Environment.TickCount64}");
         var outputDir = Path.Combine(tmpDir, "output");
         Directory.CreateDirectory(outputDir);
@@ -1763,7 +1577,7 @@ public static class TestSuite
         AssertEqual("extract orderId", orderId ?? "", "789");
         AssertEqual("extract customer", customer ?? "", "Alice");
 
-        // No match → pass through
+        // No match -> pass through
         var ff2 = FlowFile.Create("no match here"u8, new());
         var result2 = proc.Process(ff2);
         AssertTrue("no match pass through", result2 is SingleResult);
@@ -1861,19 +1675,19 @@ public static class TestSuite
 
     static void TestAvroJsonRoundtrip()
     {
-        Console.WriteLine("--- Avro ↔ JSON cross-format ---");
+        Console.WriteLine("--- Avro <-> JSON cross-format ---");
         var store = new MemoryContentStore();
-        // JSON → Record → Avro → Record → JSON
+        // JSON -> Record -> Avro -> Record -> JSON
         var json = "[{\"name\":\"Eve\",\"score\":99}]";
         var jsonToRec = new ConvertJSONToRecord("test", store);
         var ff1 = FlowFile.Create(Encoding.UTF8.GetBytes(json), new());
         var r1 = jsonToRec.Process(ff1);
-        AssertTrue("json→record ok", r1 is SingleResult);
+        AssertTrue("json->record ok", r1 is SingleResult);
         var recFf = ((SingleResult)r1).FlowFile;
 
         var recToAvro = new ConvertRecordToAvro();
         var r2 = recToAvro.Process(recFf);
-        AssertTrue("record→avro ok", r2 is SingleResult);
+        AssertTrue("record->avro ok", r2 is SingleResult);
         var avroFf = ((SingleResult)r2).FlowFile;
         AssertTrue("avro output is Raw", avroFf.Content is Raw);
 
@@ -1883,7 +1697,7 @@ public static class TestSuite
 
         var avroToRec = new ConvertAvroToRecord("test", schemaDef ?? "", store);
         var r3 = avroToRec.Process(avroFf);
-        AssertTrue("avro→record ok", r3 is SingleResult);
+        AssertTrue("avro->record ok", r3 is SingleResult);
         var recFf2 = ((SingleResult)r3).FlowFile;
 
         var recToJson = new ConvertRecordToJSON();
@@ -1996,7 +1810,7 @@ public static class TestSuite
     static void TestDagValidatorEntryPoints()
     {
         Console.WriteLine("--- DagValidator: Entry Points ---");
-        // Two entry points: src1 → shared, src2 → shared
+        // Two entry points: src1 -> shared, src2 -> shared
         var connections = new Dictionary<string, Dictionary<string, List<string>>>
         {
             ["src1"] = new() { ["success"] = ["shared"] },
@@ -2011,73 +1825,107 @@ public static class TestSuite
 
     static void TestConnectionFanOut()
     {
-        Console.WriteLine("--- Connection: Fan-Out ---");
-        var proc = new LogAttribute("fanout");
-        var srcQ = new FlowQueue("src", 100, 0, 30_000);
-        var qA = new FlowQueue("a", 100, 0, 30_000);
-        var qB = new FlowQueue("b", 100, 0, 30_000);
-        var qC = new FlowQueue("c", 100, 0, 30_000);
-        var queues = new Dictionary<string, FlowQueue> { ["src"] = srcQ, ["a"] = qA, ["b"] = qB, ["c"] = qC };
-        var conn = new Dictionary<string, List<string>> { ["success"] = ["a", "b", "c"] };
-        var dlq = new DLQ();
-        var session = new ProcessSession(srcQ, proc, "src", conn, queues, dlq, 5);
+        Console.WriteLine("--- Connection: Fan-Out via Execute ---");
+        var config = new Dictionary<string, object?>
+        {
+            ["flow"] = new Dictionary<string, object?>
+            {
+                ["processors"] = new Dictionary<string, object?>
+                {
+                    ["src"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "LogAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["prefix"] = "fanout" },
+                        ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "a", "b", "c" } }
+                    },
+                    ["a"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "branch", ["value"] = "a" }
+                    },
+                    ["b"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "branch", ["value"] = "b" }
+                    },
+                    ["c"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "branch", ["value"] = "c" }
+                    }
+                }
+            }
+        };
+        var fab = BuildFabric(config);
 
-        srcQ.Offer(FlowFile.Create("fanout"u8, new()));
-        session.Execute();
+        var ff = FlowFile.Create("fanout"u8, new());
+        fab.Execute(ff, "src");
 
-        AssertIntEqual("a has 1", qA.VisibleCount, 1);
-        AssertIntEqual("b has 1", qB.VisibleCount, 1);
-        AssertIntEqual("c has 1", qC.VisibleCount, 1);
-        AssertIntEqual("src empty", srcQ.VisibleCount, 0);
+        var stats = fab.GetProcessorStats();
+        AssertTrue("a has 1", stats["a"]["processed"] == 1);
+        AssertTrue("b has 1", stats["b"]["processed"] == 1);
+        AssertTrue("c has 1", stats["c"]["processed"] == 1);
+        AssertTrue("src processed", stats["src"]["processed"] == 1);
     }
 
     static void TestSinkNoConnections()
     {
-        Console.WriteLine("--- Sink: No Connections (terminal) ---");
-        var proc = new UpdateAttribute("done", "true");
-        var srcQ = new FlowQueue("sink", 100, 0, 30_000);
-        var queues = new Dictionary<string, FlowQueue> { ["sink"] = srcQ };
-        var conn = new Dictionary<string, List<string>>(); // empty = terminal
-        var dlq = new DLQ();
-        var session = new ProcessSession(srcQ, proc, "sink", conn, queues, dlq, 5);
+        Console.WriteLine("--- Sink: No Connections (terminal) via Execute ---");
+        var config = new Dictionary<string, object?>
+        {
+            ["flow"] = new Dictionary<string, object?>
+            {
+                ["processors"] = new Dictionary<string, object?>
+                {
+                    ["sink"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "done", ["value"] = "true" }
+                    }
+                }
+            }
+        };
+        var fab = BuildFabric(config);
 
-        srcQ.Offer(FlowFile.Create("terminal"u8, new()));
-        session.Execute();
+        var ff = FlowFile.Create("terminal"u8, new());
+        var ok = fab.Execute(ff, "sink");
+        AssertTrue("sink execute ok", ok);
 
-        AssertIntEqual("sink queue empty", srcQ.VisibleCount, 0);
-        AssertIntEqual("no dlq", dlq.Count, 0);
+        var stats = fab.GetProcessorStats();
+        AssertTrue("sink processed 1", stats["sink"]["processed"] == 1);
+        AssertTrue("sink no errors", stats["sink"]["errors"] == 0);
     }
 
     // --- Comprehensive processor pipeline scenarios ---
 
     static void TestPipelineJsonToAvroToCsv()
     {
-        Console.WriteLine("--- Pipeline: JSON → Record → Avro → Record → CSV ---");
+        Console.WriteLine("--- Pipeline: JSON -> Record -> Avro -> Record -> CSV ---");
         var store = new MemoryContentStore();
         var json = "[{\"name\":\"Alice\",\"age\":30},{\"name\":\"Bob\",\"age\":25}]";
 
-        // JSON → Record
+        // JSON -> Record
         var jsonToRec = new ConvertJSONToRecord("people", store);
         var ff1 = FlowFile.Create(Encoding.UTF8.GetBytes(json), new());
         var r1 = (SingleResult)jsonToRec.Process(ff1);
-        AssertTrue("json→record", r1.FlowFile.Content is RecordContent);
+        AssertTrue("json->record", r1.FlowFile.Content is RecordContent);
         var rc1 = (RecordContent)r1.FlowFile.Content;
         AssertIntEqual("2 records from json", rc1.Records.Count, 2);
 
-        // Record → Avro
+        // Record -> Avro
         var recToAvro = new ConvertRecordToAvro();
         var r2 = (SingleResult)recToAvro.Process(r1.FlowFile);
-        AssertTrue("record→avro raw", r2.FlowFile.Content is Raw);
+        AssertTrue("record->avro raw", r2.FlowFile.Content is Raw);
 
-        // Avro → Record (using schema from attribute)
+        // Avro -> Record (using schema from attribute)
         r2.FlowFile.Attributes.TryGetValue("avro.schema", out var schema);
         var avroToRec = new ConvertAvroToRecord("people", schema ?? "", store);
         var r3 = (SingleResult)avroToRec.Process(r2.FlowFile);
-        AssertTrue("avro→record", r3.FlowFile.Content is RecordContent);
+        AssertTrue("avro->record", r3.FlowFile.Content is RecordContent);
         var rc2 = (RecordContent)r3.FlowFile.Content;
         AssertIntEqual("2 records from avro", rc2.Records.Count, 2);
 
-        // Record → CSV
+        // Record -> CSV
         var recToCsv = new ConvertRecordToCSV(',', true);
         var r4 = (SingleResult)recToCsv.Process(r3.FlowFile);
         var (csvBytes, _) = ContentHelpers.Resolve(store, r4.FlowFile.Content);
@@ -2089,11 +1937,11 @@ public static class TestSuite
 
     static void TestPipelineCsvTransformEnrich()
     {
-        Console.WriteLine("--- Pipeline: CSV → Record → Transform → Enrich → CSV ---");
+        Console.WriteLine("--- Pipeline: CSV -> Record -> Transform -> Enrich -> CSV ---");
         var store = new MemoryContentStore();
         var csv = "email,name\nalice@test.com,alice\nbob@test.com,bob\n";
 
-        // CSV → Record
+        // CSV -> Record
         var csvToRec = new ConvertCSVToRecord("users", ',', true, store);
         var ff = FlowFile.Create(Encoding.UTF8.GetBytes(csv), new());
         var r1 = (SingleResult)csvToRec.Process(ff);
@@ -2114,7 +1962,7 @@ public static class TestSuite
         r3.FlowFile.Attributes.TryGetValue("processed_by", out var procBy);
         AssertEqual("enriched attr", procBy ?? "", "zinc-flow");
 
-        // Record → CSV
+        // Record -> CSV
         var recToCsv = new ConvertRecordToCSV(',', true);
         var r4 = (SingleResult)recToCsv.Process(r3.FlowFile);
         var (outBytes, _) = ContentHelpers.Resolve(store, r4.FlowFile.Content);
@@ -2125,7 +1973,7 @@ public static class TestSuite
 
     static void TestPipelineTextExtractAndRoute()
     {
-        Console.WriteLine("--- Pipeline: ExtractText → EvaluateExpression ---");
+        Console.WriteLine("--- Pipeline: ExtractText -> EvaluateExpression ---");
         var store = new MemoryContentStore();
 
         // Log line: extract fields
@@ -2157,7 +2005,7 @@ public static class TestSuite
 
     static void TestPipelineSplitFanOutSink()
     {
-        Console.WriteLine("--- Pipeline: SplitText → fan-out to multiple sinks ---");
+        Console.WriteLine("--- Pipeline: SplitText -> fan-out to multiple sinks ---");
         var store = new MemoryContentStore();
         var content = "line1\nline2\nline3";
         var split = new SplitText(@"\n", 0, store);
@@ -2185,70 +2033,98 @@ public static class TestSuite
 
     static void TestPipelineFailureToErrorHandler()
     {
-        Console.WriteLine("--- Pipeline: Failure → error handler connection ---");
-        var store = new MemoryContentStore();
+        Console.WriteLine("--- Pipeline: Failure -> error handler connection via Fabric ---");
+        var ctx = TestContext();
 
-        // Create a pipeline where bad JSON goes to error handler via failure connection
-        var badJson = "not valid json at all";
-        var jsonToRec = new ConvertJSONToRecord("data", store);
-        var ff = FlowFile.Create(Encoding.UTF8.GetBytes(badJson), new() { ["type"] = "order" });
-        var result = jsonToRec.Process(ff);
-        AssertTrue("bad json is FailureResult", result is FailureResult);
-
-        // Simulate ProcessSession routing to failure connection
-        var errorQ = new FlowQueue("error-handler", 100, 0, 30_000);
-        var sourceQ = new FlowQueue("parser", 100, 0, 30_000);
-        sourceQ.Offer(ff);
-        var connections = new Dictionary<string, List<string>>
+        // Pipeline: parser with failure connection to error-handler
+        var config = new Dictionary<string, object?>
         {
-            ["success"] = ["next"],
-            ["failure"] = ["error-handler"]
+            ["flow"] = new Dictionary<string, object?>
+            {
+                ["processors"] = new Dictionary<string, object?>
+                {
+                    ["parser"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "ConvertJSONToRecord",
+                        ["config"] = new Dictionary<string, object?> { ["schema_name"] = "data" },
+                        ["connections"] = new Dictionary<string, object?>
+                        {
+                            ["success"] = new List<object?> { "next" },
+                            ["failure"] = new List<object?> { "error-handler" }
+                        }
+                    },
+                    ["next"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "parsed", ["value"] = "true" }
+                    },
+                    ["error-handler"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "error", ["value"] = "true" }
+                    }
+                }
+            }
         };
-        var queues = new Dictionary<string, FlowQueue>
-        {
-            ["error-handler"] = errorQ,
-            ["next"] = new FlowQueue("next", 100, 0, 30_000)
-        };
-        var dlq = new DLQ();
-        var session = new ProcessSession(sourceQ, jsonToRec, "parser", connections, queues, dlq, 5);
-        session.Execute();
+        var fab = BuildFabric(config, ctx);
 
-        // Failure should route to error-handler, not DLQ
-        AssertIntEqual("error handler got 1", errorQ.VisibleCount, 1);
-        AssertIntEqual("dlq empty", dlq.Count, 0);
+        // Bad JSON -> should route to error-handler
+        var ff = FlowFile.Create("not valid json at all"u8, new() { ["type"] = "order" });
+        var ok = fab.Execute(ff, "parser");
+        AssertTrue("execute ok", ok);
+
+        var stats = fab.GetProcessorStats();
+        AssertTrue("error handler got 1", stats["error-handler"]["processed"] == 1);
+        AssertTrue("next not invoked", stats["next"]["processed"] == 0);
     }
 
-    static void TestPipelineFailureToDLQ()
+    static void TestPipelineFailureNoHandler()
     {
-        Console.WriteLine("--- Pipeline: Failure → DLQ (no failure connection) ---");
-        var store = new MemoryContentStore();
-        var badJson = "broken";
-        var jsonToRec = new ConvertJSONToRecord("data", store);
-        var ff = FlowFile.Create(Encoding.UTF8.GetBytes(badJson), new());
+        Console.WriteLine("--- Pipeline: Failure with no handler (log+drop) ---");
+        var ctx = TestContext();
+        var logProv = new LoggingProvider(); logProv.Enable();
+        ctx.AddProvider(logProv);
 
-        var sourceQ = new FlowQueue("parser", 100, 0, 30_000);
-        sourceQ.Offer(ff);
-        var connections = new Dictionary<string, List<string>>
+        // Pipeline: parser with NO failure connection
+        var config = new Dictionary<string, object?>
         {
-            ["success"] = ["next"]
+            ["flow"] = new Dictionary<string, object?>
+            {
+                ["processors"] = new Dictionary<string, object?>
+                {
+                    ["parser"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "ConvertJSONToRecord",
+                        ["config"] = new Dictionary<string, object?> { ["schema_name"] = "data" },
+                        ["connections"] = new Dictionary<string, object?>
+                        {
+                            ["success"] = new List<object?> { "next" }
+                        }
+                    },
+                    ["next"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "parsed", ["value"] = "true" }
+                    }
+                }
+            }
         };
-        var queues = new Dictionary<string, FlowQueue>
-        {
-            ["next"] = new FlowQueue("next", 100, 0, 30_000)
-        };
-        var dlq = new DLQ();
-        var session = new ProcessSession(sourceQ, jsonToRec, "parser", connections, queues, dlq, 5);
-        session.Execute();
+        var fab = BuildFabric(config, ctx);
 
-        // No failure connection → DLQ
-        AssertIntEqual("dlq has 1", dlq.Count, 1);
-        var entries = dlq.ListEntries();
-        AssertTrue("dlq error has reason", entries[0].LastError.Contains("no records"));
+        // Bad JSON -> no failure connection -> log+drop
+        var ff = FlowFile.Create("broken"u8, new());
+        var ok = fab.Execute(ff, "parser");
+        AssertTrue("execute ok", ok);
+
+        var stats = fab.GetProcessorStats();
+        AssertTrue("parser processed", stats["parser"]["processed"] == 1);
+        AssertTrue("parser has error", stats["parser"]["errors"] == 1);
+        AssertTrue("next not invoked", stats["next"]["processed"] == 0);
     }
 
     static void TestPipelineLargeContentOffload()
     {
-        Console.WriteLine("--- Pipeline: Large content → offload to content store ---");
+        Console.WriteLine("--- Pipeline: Large content -> offload to content store ---");
         var store = new FileContentStore("/tmp/zinc-flow-csharp-test-large");
         var cleanup = new ContentStoreCleanup(store, "/tmp/zinc-flow-csharp-test-large");
         ContentStoreCleanup.Instance = cleanup;
@@ -2295,7 +2171,7 @@ public static class TestSuite
         AssertTrue("small content is Raw", ff.Content is Raw);
         AssertTrue("small content size", ff.Content.Size < 1000);
 
-        // Process through JSON → Record → JSON roundtrip
+        // Process through JSON -> Record -> JSON roundtrip
         var toRec = new ConvertJSONToRecord("test", store);
         var r1 = (SingleResult)toRec.Process(ff);
         var toJson = new ConvertRecordToJSON();
@@ -2345,7 +2221,7 @@ public static class TestSuite
     static void TestPipelineHotReloadLiveTraffic()
     {
         Console.WriteLine("--- Pipeline: Hot reload during live processing ---");
-        // Config: tagger → logger (2 processors)
+        // Config: tagger -> logger (2 processors)
         var config1 = MakeFlowConfig(new Dictionary<string, object?>
         {
             ["tagger"] = MakeProc("UpdateAttribute", new() { ["key"] = "env", ["value"] = "dev" },
@@ -2353,15 +2229,12 @@ public static class TestSuite
             ["logger"] = MakeProc("LogAttribute", new() { ["prefix"] = "test" })
         });
         var (fab, _, _) = CreateFabricWithConfig(config1);
-        fab.StartAsync();
-        Thread.Sleep(100);
 
-        // Ingest before reload
+        // Execute before reload
         var ff1 = FlowFile.Create("before"u8, new() { ["type"] = "order" });
-        fab.Ingest(ff1);
-        Thread.Sleep(300);
+        fab.Execute(ff1, "tagger");
         var statsBefore = fab.GetStats();
-        AssertTrue("processed before reload", statsBefore["processed"] > 0);
+        AssertTrue("processed before reload", (long)statsBefore["processed"] > 0);
 
         // Hot reload: add a third processor, change connections
         var config2 = MakeFlowConfig(new Dictionary<string, object?>
@@ -2376,14 +2249,11 @@ public static class TestSuite
         AssertTrue("reload added or updated", added + updated + connChanged > 0);
         AssertIntEqual("3 processors after reload", fab.GetProcessorNames().Count, 3);
 
-        // Ingest after reload — should flow through 3 processors
+        // Execute after reload — should flow through 3 processors
         var ff2 = FlowFile.Create("after"u8, new() { ["type"] = "order" });
-        fab.Ingest(ff2);
-        Thread.Sleep(300);
+        fab.Execute(ff2, "tagger");
         var statsAfter = fab.GetStats();
-        AssertTrue("processed after reload", statsAfter["processed"] > statsBefore["processed"]);
-
-        fab.StopAsync();
+        AssertTrue("processed after reload", (long)statsAfter["processed"] > (long)statsBefore["processed"]);
     }
 
     static void TestPipelineEmptyContent()
@@ -2399,7 +2269,7 @@ public static class TestSuite
         var r1 = replace.Process(ff);
         AssertTrue("replace empty ok", r1 is SingleResult);
 
-        // ConvertJSONToRecord with empty content → failure
+        // ConvertJSONToRecord with empty content -> failure
         var toRec = new ConvertJSONToRecord("test", store);
         var r2 = toRec.Process(ff);
         AssertTrue("json parse empty fails", r2 is FailureResult);
@@ -2412,7 +2282,7 @@ public static class TestSuite
 
     static void TestPipelineBadJsonFailure()
     {
-        Console.WriteLine("--- Pipeline: Bad JSON → failure path ---");
+        Console.WriteLine("--- Pipeline: Bad JSON -> failure path ---");
         var store = new MemoryContentStore();
 
         // Various bad JSON inputs
@@ -2447,31 +2317,31 @@ public static class TestSuite
 
     static void TestPipelineMultiFormatConversion()
     {
-        Console.WriteLine("--- Pipeline: JSON → Avro → JSON → CSV → JSON roundtrip ---");
+        Console.WriteLine("--- Pipeline: JSON -> Avro -> JSON -> CSV -> JSON roundtrip ---");
         var store = new MemoryContentStore();
 
         // Start with JSON
         var json = "[{\"product\":\"Widget\",\"price\":9.99},{\"product\":\"Gadget\",\"price\":19.99}]";
         var ff = FlowFile.Create(Encoding.UTF8.GetBytes(json), new());
 
-        // JSON → Record
+        // JSON -> Record
         var r1 = (SingleResult)new ConvertJSONToRecord("products", store).Process(ff);
 
-        // Record → Avro
+        // Record -> Avro
         var r2 = (SingleResult)new ConvertRecordToAvro().Process(r1.FlowFile);
         r2.FlowFile.Attributes.TryGetValue("avro.schema", out var avroSchema);
 
-        // Avro → Record
+        // Avro -> Record
         var r3 = (SingleResult)new ConvertAvroToRecord("products", avroSchema ?? "", store).Process(r2.FlowFile);
 
-        // Record → JSON (verify data survived)
+        // Record -> JSON (verify data survived)
         var r4 = (SingleResult)new ConvertRecordToJSON().Process(r3.FlowFile);
         var (jsonBytes, _) = ContentHelpers.Resolve(store, r4.FlowFile.Content);
         var jsonStr = Encoding.UTF8.GetString(jsonBytes);
         AssertTrue("json has Widget", jsonStr.Contains("Widget"));
         AssertTrue("json has Gadget", jsonStr.Contains("Gadget"));
 
-        // JSON → Record → CSV
+        // JSON -> Record -> CSV
         var r5 = (SingleResult)new ConvertJSONToRecord("products", store).Process(r4.FlowFile);
         var r6 = (SingleResult)new ConvertRecordToCSV(',', true).Process(r5.FlowFile);
         var (csvBytes, _) = ContentHelpers.Resolve(store, r6.FlowFile.Content);
@@ -2479,7 +2349,7 @@ public static class TestSuite
         AssertTrue("csv has product header", csvStr.Contains("product"));
         AssertTrue("csv has Widget", csvStr.Contains("Widget"));
 
-        // CSV → Record → JSON (full circle)
+        // CSV -> Record -> JSON (full circle)
         var r7 = (SingleResult)new ConvertCSVToRecord("products", ',', true, store).Process(r6.FlowFile);
         var r8 = (SingleResult)new ConvertRecordToJSON().Process(r7.FlowFile);
         var (finalBytes, _) = ContentHelpers.Resolve(store, r8.FlowFile.Content);
@@ -2540,7 +2410,6 @@ public static class TestSuite
             ["tag-env"] = MakeProc("UpdateAttribute", new() { ["key"] = "env", ["value"] = "dev" })
         });
         var (fab, ctx, reg) = CreateFabricWithConfig(config1);
-        fab.StartAsync();
 
         AssertIntEqual("initial proc count", fab.GetProcessorNames().Count, 1);
 
@@ -2556,8 +2425,6 @@ public static class TestSuite
         AssertIntEqual("updated", updated, 0);
         AssertIntEqual("proc count after add", fab.GetProcessorNames().Count, 2);
         AssertTrue("new proc exists", fab.GetProcessorNames().Contains("tag-src"));
-
-        fab.StopAsync();
     }
 
     static void TestHotReloadRemoveProcessor()
@@ -2569,7 +2436,6 @@ public static class TestSuite
             ["tag-src"] = MakeProc("UpdateAttribute", new() { ["key"] = "source", ["value"] = "api" })
         });
         var (fab, ctx, reg) = CreateFabricWithConfig(config1);
-        fab.StartAsync();
 
         AssertIntEqual("initial proc count", fab.GetProcessorNames().Count, 2);
 
@@ -2584,8 +2450,6 @@ public static class TestSuite
         AssertIntEqual("updated", updated, 0);
         AssertIntEqual("proc count after remove", fab.GetProcessorNames().Count, 1);
         AssertFalse("removed proc gone", fab.GetProcessorNames().Contains("tag-src"));
-
-        fab.StopAsync();
     }
 
     static void TestHotReloadUpdateProcessor()
@@ -2596,7 +2460,6 @@ public static class TestSuite
             ["tag-env"] = MakeProc("UpdateAttribute", new() { ["key"] = "env", ["value"] = "dev" })
         });
         var (fab, ctx, reg) = CreateFabricWithConfig(config1);
-        fab.StartAsync();
 
         // Change the value config
         var config2 = MakeFlowConfig(new Dictionary<string, object?>
@@ -2611,10 +2474,9 @@ public static class TestSuite
 
         // Verify the processor uses new config by processing a FlowFile
         var ff = FlowFile.Create("test"u8, new() { ["type"] = "order" });
-        fab.Ingest(ff);
-        Thread.Sleep(200);
-
-        fab.StopAsync();
+        fab.Execute(ff, "tag-env");
+        var stats = fab.GetProcessorStats();
+        AssertTrue("tag-env processed", stats["tag-env"]["processed"] == 1);
     }
 
     static void TestHotReloadConnections()
@@ -2626,12 +2488,11 @@ public static class TestSuite
             ["logger"] = MakeProc("LogAttribute", new() { ["prefix"] = "test" })
         });
         var (fab, ctx, reg) = CreateFabricWithConfig(config1);
-        fab.StartAsync();
 
         var connBefore = fab.GetConnections();
         AssertIntEqual("tag-env no connections initially", connBefore.GetValueOrDefault("tag-env")?.Count ?? 0, 0);
 
-        // Reload with connections: tag-env → logger
+        // Reload with connections: tag-env -> logger
         var config2 = MakeFlowConfig(new Dictionary<string, object?>
         {
             ["tag-env"] = MakeProc("UpdateAttribute", new() { ["key"] = "env", ["value"] = "dev" },
@@ -2643,8 +2504,6 @@ public static class TestSuite
         var connAfter = fab.GetConnections();
         AssertTrue("tag-env has success connection", connAfter.ContainsKey("tag-env") && connAfter["tag-env"].ContainsKey("success"));
         AssertIntEqual("tag-env success targets", connAfter["tag-env"]["success"].Count, 1);
-
-        fab.StopAsync();
     }
 
     static void TestHotReloadNoChange()
@@ -2657,15 +2516,12 @@ public static class TestSuite
             ["logger"] = MakeProc("LogAttribute", new() { ["prefix"] = "test" })
         });
         var (fab, ctx, reg) = CreateFabricWithConfig(config);
-        fab.StartAsync();
 
         var (added, removed, updated, connectionsChanged) = fab.ReloadFlow(config);
         AssertIntEqual("no adds", added, 0);
         AssertIntEqual("no removes", removed, 0);
         AssertIntEqual("no updates", updated, 0);
         AssertIntEqual("no connection changes", connectionsChanged, 0);
-
-        fab.StopAsync();
     }
 
     static void TestHotReloadEndToEnd()
@@ -2678,18 +2534,15 @@ public static class TestSuite
             ["tagger"] = MakeProc("UpdateAttribute", new() { ["key"] = "env", ["value"] = "dev" })
         });
         var (fab, ctx, reg) = CreateFabricWithConfig(config1);
-        fab.StartAsync();
-        Thread.Sleep(100);
 
-        // Ingest a FlowFile and let it process
+        // Execute a FlowFile through the initial config
         var ff1 = FlowFile.Create("hello"u8, new() { ["type"] = "order" });
-        fab.Ingest(ff1);
-        Thread.Sleep(300);
+        fab.Execute(ff1, "tagger");
 
         var stats1 = fab.GetStats();
-        AssertTrue("processed before reload", stats1["processed"] > 0);
+        AssertTrue("processed before reload", (long)stats1["processed"] > 0);
 
-        // Hot reload: change tagger value from dev → prod, add a second processor with connection
+        // Hot reload: change tagger value from dev -> prod, add a second processor with connection
         var config2 = MakeFlowConfig(new Dictionary<string, object?>
         {
             ["tagger"] = MakeProc("UpdateAttribute", new() { ["key"] = "env", ["value"] = "prod" },
@@ -2700,18 +2553,376 @@ public static class TestSuite
         var (added, removed, updated, connectionsChanged) = fab.ReloadFlow(config2);
         AssertIntEqual("e2e added", added, 1);
         AssertIntEqual("e2e updated", updated, 1);
-        // tagger config changed → counted as update (connections bundled with processor update)
+        // tagger config changed -> counted as update (connections bundled with processor update)
         AssertTrue("e2e changes applied", added + updated + connectionsChanged >= 2);
         AssertIntEqual("e2e proc count", fab.GetProcessorNames().Count, 2);
 
-        // Ingest another FlowFile — should flow through updated pipeline
+        // Execute another FlowFile — should flow through updated pipeline
         var ff2 = FlowFile.Create("world"u8, new() { ["type"] = "order" });
-        fab.Ingest(ff2);
-        Thread.Sleep(300);
+        fab.Execute(ff2, "tagger");
 
         var stats2 = fab.GetStats();
-        AssertTrue("processed after reload", stats2["processed"] > stats1["processed"]);
+        AssertTrue("processed after reload", (long)stats2["processed"] > (long)stats1["processed"]);
+    }
 
-        fab.StopAsync();
+    // ===== NEW EXECUTE-BASED TESTS =====
+
+    static void TestExecuteSingleProcessor()
+    {
+        Console.WriteLine("--- Execute: Single Processor (sink) ---");
+        var config = new Dictionary<string, object?>
+        {
+            ["flow"] = new Dictionary<string, object?>
+            {
+                ["processors"] = new Dictionary<string, object?>
+                {
+                    ["tag"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "env", ["value"] = "prod" }
+                    }
+                }
+            }
+        };
+        var fab = BuildFabric(config);
+        var ff = FlowFile.Create("test"u8, new() { ["type"] = "order" });
+        var ok = fab.Execute(ff, "tag");
+        AssertTrue("execute returns true", ok);
+        var stats = fab.GetProcessorStats();
+        AssertTrue("tag processed", stats["tag"]["processed"] == 1);
+        AssertTrue("tag no errors", stats["tag"]["errors"] == 0);
+    }
+
+    static void TestExecuteLinearPipeline()
+    {
+        Console.WriteLine("--- Execute: Linear Pipeline (A -> B -> C) ---");
+        var config = new Dictionary<string, object?>
+        {
+            ["flow"] = new Dictionary<string, object?>
+            {
+                ["processors"] = new Dictionary<string, object?>
+                {
+                    ["tag"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "env", ["value"] = "prod" },
+                        ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "enrich" } }
+                    },
+                    ["enrich"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "version", ["value"] = "1.0" },
+                        ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "sink" } }
+                    },
+                    ["sink"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "done", ["value"] = "true" }
+                    }
+                }
+            }
+        };
+        var fab = BuildFabric(config);
+        var ff = FlowFile.Create("test"u8, new() { ["type"] = "order" });
+        var ok = fab.Execute(ff, "tag");
+        AssertTrue("execute returns true", ok);
+        var stats = fab.GetProcessorStats();
+        AssertTrue("tag processed", stats["tag"]["processed"] == 1);
+        AssertTrue("enrich processed", stats["enrich"]["processed"] == 1);
+        AssertTrue("sink processed", stats["sink"]["processed"] == 1);
+    }
+
+    static void TestExecuteFanOut()
+    {
+        Console.WriteLine("--- Execute: Fan-Out (A -> [B, C]) ---");
+        var config = new Dictionary<string, object?>
+        {
+            ["flow"] = new Dictionary<string, object?>
+            {
+                ["processors"] = new Dictionary<string, object?>
+                {
+                    ["source"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "tagged", ["value"] = "true" },
+                        ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "branch-a", "branch-b" } }
+                    },
+                    ["branch-a"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "branch", ["value"] = "a" }
+                    },
+                    ["branch-b"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "branch", ["value"] = "b" }
+                    }
+                }
+            }
+        };
+        var fab = BuildFabric(config);
+        var ff = FlowFile.Create("fanout"u8, new() { ["type"] = "order" });
+        var ok = fab.Execute(ff, "source");
+        AssertTrue("execute returns true", ok);
+        var stats = fab.GetProcessorStats();
+        AssertTrue("source processed 1", stats["source"]["processed"] == 1);
+        AssertTrue("branch-a processed 1", stats["branch-a"]["processed"] == 1);
+        AssertTrue("branch-b processed 1", stats["branch-b"]["processed"] == 1);
+    }
+
+    static void TestExecuteFailureRouting()
+    {
+        Console.WriteLine("--- Execute: Failure -> failure connection -> handler ---");
+        var ctx = TestContext();
+        var config = new Dictionary<string, object?>
+        {
+            ["flow"] = new Dictionary<string, object?>
+            {
+                ["processors"] = new Dictionary<string, object?>
+                {
+                    ["parser"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "ConvertJSONToRecord",
+                        ["config"] = new Dictionary<string, object?> { ["schema_name"] = "data" },
+                        ["connections"] = new Dictionary<string, object?>
+                        {
+                            ["success"] = new List<object?> { "sink" },
+                            ["failure"] = new List<object?> { "error-sink" }
+                        }
+                    },
+                    ["sink"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "ok", ["value"] = "true" }
+                    },
+                    ["error-sink"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "failed", ["value"] = "true" }
+                    }
+                }
+            }
+        };
+        var fab = BuildFabric(config, ctx);
+
+        // Send bad JSON — should route to error-sink via failure connection
+        var ff = FlowFile.Create("invalid json"u8, new());
+        var ok = fab.Execute(ff, "parser");
+        AssertTrue("execute ok", ok);
+        var stats = fab.GetProcessorStats();
+        AssertTrue("parser processed", stats["parser"]["processed"] == 1);
+        AssertTrue("error-sink received failure", stats["error-sink"]["processed"] == 1);
+        AssertTrue("sink not invoked", stats["sink"]["processed"] == 0);
+    }
+
+    static void TestExecuteFailureNoHandler()
+    {
+        Console.WriteLine("--- Execute: Failure with no handler -> log+drop ---");
+        var ctx = TestContext();
+        var logProv = new LoggingProvider(); logProv.Enable();
+        ctx.AddProvider(logProv);
+
+        var config = new Dictionary<string, object?>
+        {
+            ["flow"] = new Dictionary<string, object?>
+            {
+                ["processors"] = new Dictionary<string, object?>
+                {
+                    ["parser"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "ConvertJSONToRecord",
+                        ["config"] = new Dictionary<string, object?> { ["schema_name"] = "data" },
+                        ["connections"] = new Dictionary<string, object?>
+                        {
+                            ["success"] = new List<object?> { "sink" }
+                        }
+                    },
+                    ["sink"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "ok", ["value"] = "true" }
+                    }
+                }
+            }
+        };
+        var fab = BuildFabric(config, ctx);
+
+        // Send bad JSON — no failure connection defined, so log+drop
+        var ff = FlowFile.Create("bad"u8, new());
+        var ok = fab.Execute(ff, "parser");
+        AssertTrue("execute ok", ok);
+        var stats = fab.GetProcessorStats();
+        AssertTrue("parser processed", stats["parser"]["processed"] == 1);
+        AssertTrue("parser error counted", stats["parser"]["errors"] == 1);
+        AssertTrue("sink not invoked", stats["sink"]["processed"] == 0);
+    }
+
+    static void TestExecuteDropped()
+    {
+        Console.WriteLine("--- Execute: DroppedResult stops traversal ---");
+        // We need a processor that returns DroppedResult.
+        // ConvertJSONToRecord with "[]" returns FailureResult (no records).
+        // Instead we use a config pipeline where a disabled processor is skipped.
+        var config = new Dictionary<string, object?>
+        {
+            ["flow"] = new Dictionary<string, object?>
+            {
+                ["processors"] = new Dictionary<string, object?>
+                {
+                    ["source"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "tagged", ["value"] = "true" },
+                        ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "disabled-proc" } }
+                    },
+                    ["disabled-proc"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "should-not-reach", ["value"] = "true" },
+                        ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "sink" } }
+                    },
+                    ["sink"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "done", ["value"] = "true" }
+                    }
+                }
+            }
+        };
+        var fab = BuildFabric(config);
+        // Disable the middle processor — disabled processors skip and return FlowFile
+        fab.DisableProcessor("disabled-proc");
+
+        var ff = FlowFile.Create("test"u8, new());
+        var ok = fab.Execute(ff, "source");
+        AssertTrue("execute ok", ok);
+
+        var stats = fab.GetProcessorStats();
+        AssertTrue("source processed", stats["source"]["processed"] == 1);
+        // disabled-proc is skipped, FlowFile is returned to pool
+        AssertTrue("disabled-proc not processed", stats["disabled-proc"]["processed"] == 0);
+        AssertTrue("sink not reached", stats["sink"]["processed"] == 0);
+    }
+
+    static void TestExecuteMultipleResult()
+    {
+        Console.WriteLine("--- Execute: MultipleResult (SplitText) ---");
+        var ctx = TestContext();
+        var config = new Dictionary<string, object?>
+        {
+            ["flow"] = new Dictionary<string, object?>
+            {
+                ["processors"] = new Dictionary<string, object?>
+                {
+                    ["splitter"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "SplitText",
+                        ["config"] = new Dictionary<string, object?> { ["delimiter"] = @"\n" },
+                        ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "sink" } }
+                    },
+                    ["sink"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "split", ["value"] = "true" }
+                    }
+                }
+            }
+        };
+        var fab = BuildFabric(config, ctx);
+
+        var ff = FlowFile.Create("line1\nline2\nline3"u8, new());
+        var ok = fab.Execute(ff, "splitter");
+        AssertTrue("execute ok", ok);
+
+        var stats = fab.GetProcessorStats();
+        AssertTrue("splitter processed 1", stats["splitter"]["processed"] == 1);
+        AssertTrue("sink processed 3 (one per split)", stats["sink"]["processed"] == 3);
+    }
+
+    static void TestExecuteMaxHops()
+    {
+        Console.WriteLine("--- Execute: Max Hops enforcement ---");
+        var ctx = TestContext();
+        var logProv = new LoggingProvider(); logProv.Enable();
+        ctx.AddProvider(logProv);
+
+        // Cycle with low max_hops
+        var config = new Dictionary<string, object?>
+        {
+            ["defaults"] = new Dictionary<string, object?>
+            {
+                ["backpressure"] = new Dictionary<string, object?>
+                {
+                    ["max_hops"] = 3
+                }
+            },
+            ["flow"] = new Dictionary<string, object?>
+            {
+                ["processors"] = new Dictionary<string, object?>
+                {
+                    ["a"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "hop", ["value"] = "a" },
+                        ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "b" } }
+                    },
+                    ["b"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "hop", ["value"] = "b" },
+                        ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "a" } }
+                    }
+                }
+            }
+        };
+        var fab = BuildFabric(config, ctx);
+
+        var ff = FlowFile.Create("cycle"u8, new());
+        var ok = fab.Execute(ff, "a");
+        AssertTrue("execute completes (no infinite loop)", ok);
+
+        var stats = fab.GetProcessorStats();
+        var totalProcessed = stats["a"]["processed"] + stats["b"]["processed"];
+        AssertTrue("processed limited by max hops", totalProcessed <= 3);
+        var totalErrors = stats["a"]["errors"] + stats["b"]["errors"];
+        AssertTrue("hop limit errors recorded", totalErrors >= 1);
+    }
+
+    static void TestExecuteBackpressure()
+    {
+        Console.WriteLine("--- Execute: Backpressure (semaphore gating) ---");
+        var ctx = TestContext();
+        var config = new Dictionary<string, object?>
+        {
+            ["defaults"] = new Dictionary<string, object?>
+            {
+                ["max_concurrent_executions"] = 1
+            },
+            ["flow"] = new Dictionary<string, object?>
+            {
+                ["processors"] = new Dictionary<string, object?>
+                {
+                    ["tag"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "env", ["value"] = "prod" }
+                    }
+                }
+            }
+        };
+        var fab = BuildFabric(config, ctx);
+
+        // With max_concurrent_executions=1, a single synchronous Execute should succeed
+        var ff1 = FlowFile.Create("test1"u8, new());
+        var ok1 = fab.Execute(ff1, "tag");
+        AssertTrue("first execute ok", ok1);
+
+        // Second synchronous execute should also work (first completed)
+        var ff2 = FlowFile.Create("test2"u8, new());
+        var ok2 = fab.Execute(ff2, "tag");
+        AssertTrue("second execute ok (first finished)", ok2);
+
+        var stats = fab.GetProcessorStats();
+        AssertTrue("tag processed 2", stats["tag"]["processed"] == 2);
     }
 }

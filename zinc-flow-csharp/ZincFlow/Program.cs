@@ -222,28 +222,21 @@ static void RunBenchmarks()
     Console.WriteLine();
 
     Console.WriteLine("Warmup (pools + JIT)...");
-    BenchQueueThroughput(10_000, quiet: true);
-    BenchSessionThroughput(10_000, quiet: true);
+    BenchPipelineThroughput(10_000, quiet: true);
 
     GC.Collect(2, GCCollectionMode.Aggressive, true, true);
     GC.WaitForPendingFinalizers();
     GC.Collect(2, GCCollectionMode.Aggressive, true, true);
 
-    // Snapshot GC baseline after warmup
     int g0Base = GC.CollectionCount(0), g1Base = GC.CollectionCount(1), g2Base = GC.CollectionCount(2);
     long allocBase = GC.GetTotalAllocatedBytes(true);
     Console.WriteLine();
 
-    Console.WriteLine("Queue throughput:");
-    BenchQueueThroughput(100_000);
-    BenchQueueThroughput(500_000);
-    Console.WriteLine();
-
-    Console.WriteLine("Session throughput (2-hop pipeline):");
-    BenchSessionThroughput(10_000);
-    BenchSessionThroughput(50_000);
-    BenchSessionThroughput(100_000);
-    BenchSessionThroughput(500_000);
+    Console.WriteLine("Pipeline throughput (2-hop direct execution):");
+    BenchPipelineThroughput(10_000);
+    BenchPipelineThroughput(50_000);
+    BenchPipelineThroughput(100_000);
+    BenchPipelineThroughput(500_000);
     Console.WriteLine();
 
     long allocTotal = GC.GetTotalAllocatedBytes(true) - allocBase;
@@ -254,56 +247,41 @@ static void RunBenchmarks()
     Console.WriteLine($"  Heap now:  {GC.GetTotalMemory(false) / 1024.0 / 1024.0:F2} MB");
 }
 
-static void BenchQueueThroughput(int n, bool quiet = false)
+static void BenchPipelineThroughput(int n, bool quiet = false)
 {
-    var q = new FlowQueue("bench", n + 100, 0, 30_000);
-    var payload = "x"u8.ToArray();
+    // Build a 2-hop pipeline: tag → sink (direct execution, no queues)
+    var globalCtx = new ProcessorContext();
+    var reg = new Registry();
+    BuiltinProcessors.RegisterAll(reg);
+
+    var fab = new ZincFlow.Fabric.Fabric(reg, globalCtx);
+    var config = new Dictionary<string, object?>
+    {
+        ["flow"] = new Dictionary<string, object?>
+        {
+            ["processors"] = new Dictionary<string, object?>
+            {
+                ["tag"] = new Dictionary<string, object?>
+                {
+                    ["type"] = "UpdateAttribute",
+                    ["config"] = new Dictionary<string, object?> { ["env"] = "prod" },
+                    ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "sink" } }
+                },
+                ["sink"] = new Dictionary<string, object?>
+                {
+                    ["type"] = "UpdateAttribute",
+                    ["config"] = new Dictionary<string, object?> { ["done"] = "true" }
+                }
+            }
+        }
+    };
+    fab.LoadFlow(config);
+
+    var payload = "bench payload data here"u8.ToArray();
+    int g0Before = GC.CollectionCount(0);
 
     var sw = Stopwatch.StartNew();
-    for (int i = 0; i < n; i++)
-    {
-        var ff = FlowFile.CreateEmpty(payload);
-        q.Offer(ff);
-    }
-    sw.Stop();
-    long offerMs = sw.ElapsedMilliseconds;
 
-    sw.Restart();
-    for (int i = 0; i < n; i++)
-    {
-        var entry = q.Claim()!;
-        q.Ack(entry.Id);
-    }
-    sw.Stop();
-    long claimMs = sw.ElapsedMilliseconds;
-
-    if (!quiet)
-    {
-        long offerRate = offerMs > 0 ? n * 1000L / offerMs : 0;
-        long claimRate = claimMs > 0 ? n * 1000L / claimMs : 0;
-        Console.WriteLine($"  {n:N0} offer: {offerMs}ms ({offerRate:N0} ops/s)");
-        Console.WriteLine($"  {n:N0} claim+ack: {claimMs}ms ({claimRate:N0} ops/s)");
-    }
-}
-
-static void BenchSessionThroughput(int n, bool quiet = false)
-{
-    var tag = new UpdateAttribute("env", "prod");
-    var sink = new UpdateAttribute("done", "true");
-
-    var tagQ = new FlowQueue("tag", n + 100, 0, 30_000);
-    var sinkQ = new FlowQueue("sink", n + 100, 0, 30_000);
-    var queues = new Dictionary<string, FlowQueue> { ["tag"] = tagQ, ["sink"] = sinkQ };
-
-    var tagConnections = new Dictionary<string, List<string>> { ["success"] = ["sink"] };
-    var sinkConnections = new Dictionary<string, List<string>>(); // terminal
-
-    var dlq = new DLQ();
-    var tagSession = new ProcessSession(tagQ, tag, "tag", tagConnections, queues, dlq, 5);
-    var sinkSession = new ProcessSession(sinkQ, sink, "sink", sinkConnections, queues, dlq, 5);
-
-    // Setup phase — allocate FlowFiles outside timed section
-    var payload = "bench payload data here"u8.ToArray();
     for (int i = 0; i < n; i++)
     {
         var ff = FlowFile.Create(payload, new Dictionary<string, string>
@@ -311,17 +289,8 @@ static void BenchSessionThroughput(int n, bool quiet = false)
             ["type"] = "order",
             ["id"] = i.ToString()
         });
-        tagQ.Offer(ff);
+        fab.Execute(ff, "tag");
     }
-
-    int g0Before = GC.CollectionCount(0);
-
-    var sw = Stopwatch.StartNew();
-
-    for (int i = 0; i < n; i++)
-        tagSession.Execute();
-    for (int i = 0; i < n; i++)
-        sinkSession.Execute();
 
     sw.Stop();
     long ms = sw.ElapsedMilliseconds;

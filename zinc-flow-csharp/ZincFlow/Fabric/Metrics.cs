@@ -22,24 +22,24 @@ public sealed class MetricsHandler
         var stats = _fab.GetStats();
         sb.AppendLine("# HELP zinc_flow_processed_total Total FlowFiles processed");
         sb.AppendLine("# TYPE zinc_flow_processed_total counter");
-        sb.Append("zinc_flow_processed_total ").AppendLine(stats.GetValueOrDefault("processed", 0).ToString());
+        sb.Append("zinc_flow_processed_total ").AppendLine(stats.GetValueOrDefault("processed", (object)0)?.ToString() ?? "0");
 
-        // DLQ
-        sb.AppendLine("# HELP zinc_flow_dlq_entries Current DLQ entry count");
-        sb.AppendLine("# TYPE zinc_flow_dlq_entries gauge");
-        sb.Append("zinc_flow_dlq_entries ").AppendLine(stats.GetValueOrDefault("dlq", 0).ToString());
+        // Active executions
+        sb.AppendLine("# HELP zinc_flow_active_executions Currently in-flight pipeline executions");
+        sb.AppendLine("# TYPE zinc_flow_active_executions gauge");
+        sb.Append("zinc_flow_active_executions ").AppendLine(stats.GetValueOrDefault("active_executions", (object)0)?.ToString() ?? "0");
 
-        // Queue depths per processor
-        var queueStats = _fab.GetQueueStats();
-        sb.AppendLine("# HELP zinc_flow_queue_visible Visible items in processor queue");
-        sb.AppendLine("# TYPE zinc_flow_queue_visible gauge");
-        foreach (var (name, qs) in queueStats)
-            sb.Append("zinc_flow_queue_visible{processor=\"").Append(name).Append("\"} ").AppendLine(qs.GetValueOrDefault("visible", 0).ToString());
+        // Per-processor stats
+        var procStats = _fab.GetProcessorStats();
+        sb.AppendLine("# HELP zinc_flow_processor_processed_total FlowFiles processed per processor");
+        sb.AppendLine("# TYPE zinc_flow_processor_processed_total counter");
+        foreach (var (name, ps) in procStats)
+            sb.Append("zinc_flow_processor_processed_total{processor=\"").Append(name).Append("\"} ").AppendLine(ps.GetValueOrDefault("processed", 0).ToString());
 
-        sb.AppendLine("# HELP zinc_flow_queue_invisible Claimed/invisible items in processor queue");
-        sb.AppendLine("# TYPE zinc_flow_queue_invisible gauge");
-        foreach (var (name, qs) in queueStats)
-            sb.Append("zinc_flow_queue_invisible{processor=\"").Append(name).Append("\"} ").AppendLine(qs.GetValueOrDefault("invisible", 0).ToString());
+        sb.AppendLine("# HELP zinc_flow_processor_errors_total Errors per processor");
+        sb.AppendLine("# TYPE zinc_flow_processor_errors_total counter");
+        foreach (var (name, ps) in procStats)
+            sb.Append("zinc_flow_processor_errors_total{processor=\"").Append(name).Append("\"} ").AppendLine(ps.GetValueOrDefault("errors", 0).ToString());
 
         // Source connectors
         var sources = _fab.GetSources();
