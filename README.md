@@ -121,7 +121,13 @@ Sink processors (no outgoing connections) — terminal
 
 ## Status
 
-**Phase 2 — Useful Standalone** — complete for C# runtime. Direct pipeline executor, 17 processors, hot reload, Prometheus metrics, 395 tests. See [TODO.md](TODO.md) for the roadmap.
+**Phase 2 — Useful Standalone** — complete for C# runtime. Direct pipeline executor, 17 processors, hot reload, Prometheus metrics, 438 tests. See [TODO.md](TODO.md) for the roadmap.
+
+## Design
+
+- [docs/architecture.md](docs/architecture.md) — canonical architecture document (execution model, types, pipeline graph, providers, deployment)
+- [docs/data-engine-comparison.md](docs/data-engine-comparison.md) — comparison with NiFi, DeltaFi, Flink, Spark, Beam
+- [docs/nifi-component-analysis.md](docs/nifi-component-analysis.md) — NiFi processor catalog (reference for future StdLib expansion)
 
 ## Related
 
