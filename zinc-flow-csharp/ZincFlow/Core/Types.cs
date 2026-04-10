@@ -149,6 +149,33 @@ public sealed class AttributeMap
     }
 
     public int Count => _count;
+
+    /// <summary>Flatten the overlay chain to a plain dictionary.</summary>
+    public Dictionary<string, string> ToDictionary()
+    {
+        var result = new Dictionary<string, string>();
+        var overlays = new List<(string Key, string Value)>();
+        var current = this;
+        while (current is not null)
+        {
+            if (current._key is not null)
+            {
+                overlays.Add((current._key, current._value!));
+                current = current._parent;
+            }
+            else
+            {
+                if (current._base is not null)
+                    foreach (var (k, v) in current._base)
+                        result[k] = v;
+                break;
+            }
+        }
+        // Apply overlays in reverse (most recent overlay wins)
+        for (int i = overlays.Count - 1; i >= 0; i--)
+            result[overlays[i].Key] = overlays[i].Value;
+        return result;
+    }
 }
 
 // --- Content types (ref-counted for safe ArrayPool return) ---

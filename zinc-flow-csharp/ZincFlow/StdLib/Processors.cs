@@ -5,6 +5,85 @@ using ZincFlow.Fabric;
 
 namespace ZincFlow.StdLib;
 
+// --- RouteOnAttribute: route FlowFiles based on attribute predicates ---
+
+public sealed class RouteOnAttribute : IProcessor
+{
+    private readonly List<(string Route, RuleCondition Condition)> _routes;
+
+    public RouteOnAttribute(string routes)
+    {
+        _routes = new List<(string, RuleCondition)>();
+        if (string.IsNullOrWhiteSpace(routes)) return;
+        foreach (var entry in routes.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+        {
+            var colonIdx = entry.IndexOf(':');
+            if (colonIdx <= 0) continue;
+            var routeName = entry[..colonIdx].Trim();
+            var conditionStr = entry[(colonIdx + 1)..].Trim();
+            var parts = conditionStr.Split(' ', 3, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length < 2) continue;
+            var attribute = parts[0];
+            var op = ParseOperator(parts[1]);
+            var value = parts.Length >= 3 ? parts[2] : "";
+            _routes.Add((routeName, new BaseRule(attribute, op, value)));
+        }
+    }
+
+    public ProcessorResult Process(FlowFile ff)
+    {
+        foreach (var (route, condition) in _routes)
+            if (condition.Evaluate(ff.Attributes))
+                return RoutedResult.Rent(route, ff);
+        return RoutedResult.Rent("unmatched", ff);
+    }
+
+    private static Operator ParseOperator(string op) => op.ToUpperInvariant() switch
+    {
+        "EQ" => Operator.Eq,
+        "NEQ" => Operator.Neq,
+        "CONTAINS" => Operator.Contains,
+        "STARTSWITH" => Operator.StartsWith,
+        "ENDSWITH" => Operator.EndsWith,
+        "EXISTS" => Operator.Exists,
+        "GT" => Operator.Gt,
+        "LT" => Operator.Lt,
+        _ => Operator.Eq
+    };
+}
+
+// --- FilterAttribute: remove or keep specific FlowFile attributes ---
+
+public sealed class FilterAttribute : IProcessor
+{
+    private readonly bool _remove;
+    private readonly HashSet<string> _attrSet;
+
+    public FilterAttribute(string mode, string attributes)
+    {
+        _remove = !string.Equals(mode, "keep", StringComparison.OrdinalIgnoreCase);
+        _attrSet = new HashSet<string>(
+            attributes.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries));
+    }
+
+    public ProcessorResult Process(FlowFile ff)
+    {
+        var allAttrs = ff.Attributes.ToDictionary();
+
+        Dictionary<string, string> filtered;
+        if (_remove)
+            filtered = allAttrs.Where(kv => !_attrSet.Contains(kv.Key))
+                .ToDictionary(kv => kv.Key, kv => kv.Value);
+        else
+            filtered = allAttrs.Where(kv => _attrSet.Contains(kv.Key))
+                .ToDictionary(kv => kv.Key, kv => kv.Value);
+
+        ff.Content.AddRef(); // new FlowFile shell shares same content
+        var newFf = FlowFile.Rent(ff.NumericId, AttributeMap.FromDict(filtered), ff.Content, ff.Timestamp, ff.HopCount);
+        return SingleResult.Rent(newFf);
+    }
+}
+
 // --- UpdateAttribute: zero-alloc via overlay chain + pooled result ---
 
 public sealed class UpdateAttribute : IProcessor

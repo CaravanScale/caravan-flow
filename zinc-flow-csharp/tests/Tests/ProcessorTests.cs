@@ -24,6 +24,16 @@ public static class ProcessorTests
         TestRoutingExists();
         TestRoutingComposite();
         TestRoutingNoMatch();
+        TestRouteOnAttributeMatch();
+        TestRouteOnAttributeNoMatch();
+        TestRouteOnAttributeMultipleRoutes();
+        TestExtractRecordField();
+        TestExtractRecordFieldMissing();
+        TestQueryRecordFilter();
+        TestQueryRecordNoMatch();
+        TestQueryRecordContains();
+        TestFilterAttributeRemove();
+        TestFilterAttributeKeep();
     }
 
     static void TestUpdateAttribute()
@@ -234,5 +244,178 @@ public static class ProcessorTests
         engine.GetDestinations(AttributeMap.FromDict(new() { ["type"] = "order" }), dests);
         AssertIntEqual("disabled rule skipped", dests.Count, 1);
         AssertEqual("only enabled matched", dests[0], "proc-1");
+    }
+
+    // --- RouteOnAttribute tests ---
+
+    static void TestRouteOnAttributeMatch()
+    {
+        Console.WriteLine("--- RouteOnAttribute: Match ---");
+        var proc = new RouteOnAttribute("premium:tier EQ premium;bulk:tier EQ bulk");
+        var ff = FlowFile.Create("data"u8, new() { ["tier"] = "premium" });
+        var result = proc.Process(ff);
+        AssertTrue("returns routed", result is RoutedResult);
+        var routed = (RoutedResult)result;
+        AssertEqual("route is premium", routed.Route, "premium");
+    }
+
+    static void TestRouteOnAttributeNoMatch()
+    {
+        Console.WriteLine("--- RouteOnAttribute: No Match ---");
+        var proc = new RouteOnAttribute("premium:tier EQ premium;bulk:tier EQ bulk");
+        var ff = FlowFile.Create("data"u8, new() { ["tier"] = "free" });
+        var result = proc.Process(ff);
+        AssertTrue("returns routed", result is RoutedResult);
+        var routed = (RoutedResult)result;
+        AssertEqual("route is unmatched", routed.Route, "unmatched");
+    }
+
+    static void TestRouteOnAttributeMultipleRoutes()
+    {
+        Console.WriteLine("--- RouteOnAttribute: Multiple Routes ---");
+        var proc = new RouteOnAttribute("premium:tier EQ premium;error:status CONTAINS fail;bulk:tier EQ bulk");
+
+        // First match wins — tier=premium matches first
+        var ff1 = FlowFile.Create("data"u8, new() { ["tier"] = "premium", ["status"] = "fail-timeout" });
+        var result1 = proc.Process(ff1);
+        AssertTrue("returns routed", result1 is RoutedResult);
+        AssertEqual("first match wins", ((RoutedResult)result1).Route, "premium");
+
+        // Only error matches
+        var ff2 = FlowFile.Create("data"u8, new() { ["tier"] = "free", ["status"] = "fail-timeout" });
+        var result2 = proc.Process(ff2);
+        AssertTrue("returns routed", result2 is RoutedResult);
+        AssertEqual("error route", ((RoutedResult)result2).Route, "error");
+
+        // Bulk match
+        var ff3 = FlowFile.Create("data"u8, new() { ["tier"] = "bulk" });
+        var result3 = proc.Process(ff3);
+        AssertTrue("returns routed", result3 is RoutedResult);
+        AssertEqual("bulk route", ((RoutedResult)result3).Route, "bulk");
+    }
+
+    // --- ExtractRecordField tests ---
+
+    static void TestExtractRecordField()
+    {
+        Console.WriteLine("--- ExtractRecordField ---");
+        var schema = new Schema("order", [new Field("name", FieldType.String), new Field("amount", FieldType.Double)]);
+        var rec = new GenericRecord(schema);
+        rec.SetField("name", "Alice");
+        rec.SetField("amount", 42.5);
+        var rc = new RecordContent(schema, [rec]);
+        var ff = FlowFile.CreateWithContent(rc, new() { ["type"] = "order" });
+
+        var proc = new ExtractRecordField("name:customer_name;amount:order_amount");
+        var result = proc.Process(ff);
+        AssertTrue("returns single", result is SingleResult);
+        var outFf = ((SingleResult)result).FlowFile;
+        AssertTrue("customer_name set", outFf.Attributes.TryGetValue("customer_name", out var n) && n == "Alice");
+        AssertTrue("order_amount set", outFf.Attributes.TryGetValue("order_amount", out var a) && a == "42.5");
+        AssertTrue("original attr preserved", outFf.Attributes.TryGetValue("type", out var t) && t == "order");
+    }
+
+    static void TestExtractRecordFieldMissing()
+    {
+        Console.WriteLine("--- ExtractRecordField: Missing field ---");
+        var schema = new Schema("order", [new Field("name", FieldType.String)]);
+        var rec = new GenericRecord(schema);
+        rec.SetField("name", "Bob");
+        var rc = new RecordContent(schema, [rec]);
+        var ff = FlowFile.CreateWithContent(rc, new());
+
+        // Ask for a field that doesn't exist
+        var proc = new ExtractRecordField("name:customer_name;missing_field:missing_attr");
+        var result = proc.Process(ff);
+        AssertTrue("returns single", result is SingleResult);
+        var outFf = ((SingleResult)result).FlowFile;
+        AssertTrue("customer_name set", outFf.Attributes.TryGetValue("customer_name", out var n) && n == "Bob");
+        AssertFalse("missing_attr not set", outFf.Attributes.ContainsKey("missing_attr"));
+    }
+
+    // --- QueryRecord tests ---
+
+    static void TestQueryRecordFilter()
+    {
+        Console.WriteLine("--- QueryRecord: Filter ---");
+        var schema = new Schema("data", [new Field("name", FieldType.String), new Field("score", FieldType.Double)]);
+        var rec1 = new GenericRecord(schema); rec1.SetField("name", "Alice"); rec1.SetField("score", 85.0);
+        var rec2 = new GenericRecord(schema); rec2.SetField("name", "Bob"); rec2.SetField("score", 45.0);
+        var rec3 = new GenericRecord(schema); rec3.SetField("name", "Charlie"); rec3.SetField("score", 92.0);
+        var rc = new RecordContent(schema, [rec1, rec2, rec3]);
+        var ff = FlowFile.CreateWithContent(rc, new());
+
+        var proc = new QueryRecord("score > 50");
+        var result = proc.Process(ff);
+        AssertTrue("returns single", result is SingleResult);
+        var outFf = ((SingleResult)result).FlowFile;
+        AssertTrue("output is records", outFf.Content is RecordContent);
+        var outRc = (RecordContent)outFf.Content;
+        AssertIntEqual("filtered to 2 records", outRc.Records.Count, 2);
+        AssertEqual("first is Alice", outRc.Records[0].GetField("name")!.ToString()!, "Alice");
+        AssertEqual("second is Charlie", outRc.Records[1].GetField("name")!.ToString()!, "Charlie");
+    }
+
+    static void TestQueryRecordNoMatch()
+    {
+        Console.WriteLine("--- QueryRecord: No Match ---");
+        var schema = new Schema("data", [new Field("name", FieldType.String), new Field("score", FieldType.Double)]);
+        var rec1 = new GenericRecord(schema); rec1.SetField("name", "Alice"); rec1.SetField("score", 30.0);
+        var rec2 = new GenericRecord(schema); rec2.SetField("name", "Bob"); rec2.SetField("score", 25.0);
+        var rc = new RecordContent(schema, [rec1, rec2]);
+        var ff = FlowFile.CreateWithContent(rc, new());
+
+        var proc = new QueryRecord("score > 90");
+        var result = proc.Process(ff);
+        AssertTrue("no match returns dropped", result is DroppedResult);
+    }
+
+    static void TestQueryRecordContains()
+    {
+        Console.WriteLine("--- QueryRecord: Contains ---");
+        var schema = new Schema("data", [new Field("name", FieldType.String), new Field("email", FieldType.String)]);
+        var rec1 = new GenericRecord(schema); rec1.SetField("name", "Alice"); rec1.SetField("email", "alice@test.com");
+        var rec2 = new GenericRecord(schema); rec2.SetField("name", "Bob"); rec2.SetField("email", "bob@other.org");
+        var rec3 = new GenericRecord(schema); rec3.SetField("name", "Charlie"); rec3.SetField("email", "charlie@test.com");
+        var rc = new RecordContent(schema, [rec1, rec2, rec3]);
+        var ff = FlowFile.CreateWithContent(rc, new());
+
+        var proc = new QueryRecord("email contains test.com");
+        var result = proc.Process(ff);
+        AssertTrue("returns single", result is SingleResult);
+        var outRc = (RecordContent)((SingleResult)result).FlowFile.Content;
+        AssertIntEqual("filtered to 2 records", outRc.Records.Count, 2);
+        AssertEqual("first is Alice", outRc.Records[0].GetField("name")!.ToString()!, "Alice");
+        AssertEqual("second is Charlie", outRc.Records[1].GetField("name")!.ToString()!, "Charlie");
+    }
+
+    // --- FilterAttribute tests ---
+
+    static void TestFilterAttributeRemove()
+    {
+        Console.WriteLine("--- FilterAttribute: Remove ---");
+        var ff = FlowFile.Create("data"u8, new() { ["type"] = "order", ["env"] = "prod", ["secret"] = "password123" });
+
+        var proc = new FilterAttribute("remove", "secret");
+        var result = proc.Process(ff);
+        AssertTrue("returns single", result is SingleResult);
+        var outFf = ((SingleResult)result).FlowFile;
+        AssertTrue("type preserved", outFf.Attributes.TryGetValue("type", out var t) && t == "order");
+        AssertTrue("env preserved", outFf.Attributes.TryGetValue("env", out var e) && e == "prod");
+        AssertFalse("secret removed", outFf.Attributes.ContainsKey("secret"));
+    }
+
+    static void TestFilterAttributeKeep()
+    {
+        Console.WriteLine("--- FilterAttribute: Keep ---");
+        var ff = FlowFile.Create("data"u8, new() { ["type"] = "order", ["env"] = "prod", ["secret"] = "password123" });
+
+        var proc = new FilterAttribute("keep", "type;env");
+        var result = proc.Process(ff);
+        AssertTrue("returns single", result is SingleResult);
+        var outFf = ((SingleResult)result).FlowFile;
+        AssertTrue("type kept", outFf.Attributes.TryGetValue("type", out var t) && t == "order");
+        AssertTrue("env kept", outFf.Attributes.TryGetValue("env", out var e) && e == "prod");
+        AssertFalse("secret dropped", outFf.Attributes.ContainsKey("secret"));
     }
 }

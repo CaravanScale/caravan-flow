@@ -1,4 +1,5 @@
 using ZincFlow.Core;
+using ZincFlow.Fabric;
 
 namespace ZincFlow.StdLib;
 
@@ -158,5 +159,153 @@ public sealed class ConvertRecordToCSV : IProcessor
         var bytes = _writer.Write(rc.Records, rc.Schema);
         var updated = FlowFile.WithContent(ff, Raw.Rent(bytes));
         return SingleResult.Rent(updated);
+    }
+}
+
+/// <summary>
+/// ExtractRecordField: extract field values from GenericRecord into FlowFile attributes.
+/// Config: fields (format "fieldName:attrName;fieldName2:attrName2"), record_index (default 0).
+/// </summary>
+public sealed class ExtractRecordField : IProcessor
+{
+    private readonly List<(string Field, string Attr)> _fields;
+    private readonly int _recordIndex;
+
+    public ExtractRecordField(string fields, int recordIndex = 0)
+    {
+        _recordIndex = recordIndex;
+        _fields = new List<(string, string)>();
+        if (string.IsNullOrWhiteSpace(fields)) return;
+        foreach (var entry in fields.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+        {
+            var parts = entry.Split(':', 2, StringSplitOptions.TrimEntries);
+            if (parts.Length != 2) continue;
+            _fields.Add((parts[0], parts[1]));
+        }
+    }
+
+    public ProcessorResult Process(FlowFile ff)
+    {
+        if (ff.Content is not RecordContent rc || rc.Records.Count == 0)
+            return SingleResult.Rent(ff);
+        if (_recordIndex >= rc.Records.Count)
+            return SingleResult.Rent(ff);
+        var record = rc.Records[_recordIndex];
+        var result = ff;
+        foreach (var (field, attr) in _fields)
+        {
+            var val = record.GetField(field);
+            if (val is not null)
+                result = FlowFile.WithAttribute(result, attr, val.ToString()!);
+        }
+        return SingleResult.Rent(result);
+    }
+}
+
+/// <summary>
+/// QueryRecord: filter records using a simple predicate expression.
+/// Config: where (format "field operator value").
+/// Operators: =, !=, &gt;, &lt;, &gt;=, &lt;=, contains, startsWith, endsWith.
+/// </summary>
+public sealed class QueryRecord : IProcessor
+{
+    private readonly string _field;
+    private readonly string _operator;
+    private readonly string _value;
+
+    public QueryRecord(string where)
+    {
+        _field = "";
+        _operator = "=";
+        _value = "";
+        if (string.IsNullOrWhiteSpace(where)) return;
+
+        // Parse "field operator value" — operator may be multi-char (>=, <=, !=, contains, startsWith, endsWith)
+        var trimmed = where.Trim();
+        // Find field name (first token)
+        var spaceIdx = trimmed.IndexOf(' ');
+        if (spaceIdx <= 0) { _field = trimmed; return; }
+        _field = trimmed[..spaceIdx];
+        var rest = trimmed[(spaceIdx + 1)..].TrimStart();
+
+        // Try multi-char operators first
+        string[] multiOps = [">=", "<=", "!=", "contains", "startsWith", "endsWith"];
+        foreach (var op in multiOps)
+        {
+            if (rest.StartsWith(op, StringComparison.OrdinalIgnoreCase) &&
+                (rest.Length == op.Length || rest[op.Length] == ' '))
+            {
+                _operator = op;
+                _value = rest.Length > op.Length ? rest[(op.Length + 1)..].Trim() : "";
+                return;
+            }
+        }
+        // Single-char operators: =, >, <
+        if (rest.Length > 0 && (rest[0] == '=' || rest[0] == '>' || rest[0] == '<'))
+        {
+            _operator = rest[0].ToString();
+            _value = rest.Length > 1 ? rest[1..].Trim() : "";
+        }
+        else
+        {
+            // Unknown — treat rest as operator + value
+            var opEnd = rest.IndexOf(' ');
+            if (opEnd > 0)
+            {
+                _operator = rest[..opEnd];
+                _value = rest[(opEnd + 1)..].Trim();
+            }
+            else
+            {
+                _operator = rest;
+            }
+        }
+    }
+
+    public ProcessorResult Process(FlowFile ff)
+    {
+        if (ff.Content is not RecordContent rc || rc.Records.Count == 0)
+            return SingleResult.Rent(ff);
+
+        var filtered = new List<GenericRecord>();
+        foreach (var record in rc.Records)
+        {
+            if (EvaluatePredicate(record))
+                filtered.Add(record);
+        }
+
+        if (filtered.Count == 0)
+            return DroppedResult.Instance;
+
+        var updated = FlowFile.WithContent(ff, new RecordContent(rc.Schema, filtered));
+        return SingleResult.Rent(updated);
+    }
+
+    private bool EvaluatePredicate(GenericRecord record)
+    {
+        var fieldVal = record.GetField(_field);
+        if (fieldVal is null) return false;
+        var fieldStr = fieldVal.ToString()!;
+
+        return _operator.ToLowerInvariant() switch
+        {
+            "=" => CompareValues(fieldStr, _value) == 0,
+            "!=" => CompareValues(fieldStr, _value) != 0,
+            ">" => CompareValues(fieldStr, _value) > 0,
+            "<" => CompareValues(fieldStr, _value) < 0,
+            ">=" => CompareValues(fieldStr, _value) >= 0,
+            "<=" => CompareValues(fieldStr, _value) <= 0,
+            "contains" => fieldStr.Contains(_value, StringComparison.Ordinal),
+            "startswith" => fieldStr.StartsWith(_value, StringComparison.Ordinal),
+            "endswith" => fieldStr.EndsWith(_value, StringComparison.Ordinal),
+            _ => false
+        };
+    }
+
+    private static int CompareValues(string a, string b)
+    {
+        if (double.TryParse(a, out var da) && double.TryParse(b, out var db))
+            return da.CompareTo(db);
+        return string.Compare(a, b, StringComparison.Ordinal);
     }
 }

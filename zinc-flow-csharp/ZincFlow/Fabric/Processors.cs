@@ -134,5 +134,31 @@ public static class BuiltinProcessors
         reg.Register(
             new ProcessorInfo("TransformRecord", "Field-level operations on records", ["operations"]),
             (ctx, config) => new TransformRecord(config.GetValueOrDefault("operations", "")));
+
+        // --- Routing ---
+
+        reg.Register(
+            new ProcessorInfo("RouteOnAttribute", "Route FlowFiles based on attribute predicates", ["routes"]),
+            (ctx, config) => new RouteOnAttribute(config.GetValueOrDefault("routes", "")));
+
+        // --- Record field extraction / query ---
+
+        reg.Register(
+            new ProcessorInfo("ExtractRecordField", "Extract record fields into FlowFile attributes", ["fields", "record_index"]),
+            (ctx, config) => new ExtractRecordField(
+                config.GetValueOrDefault("fields", ""),
+                int.TryParse(config.GetValueOrDefault("record_index", "0"), out var ri) ? ri : 0));
+
+        reg.Register(
+            new ProcessorInfo("QueryRecord", "Filter records by predicate", ["where"]),
+            (ctx, config) => new QueryRecord(config.GetValueOrDefault("where", "")));
+
+        // --- Attribute filtering ---
+
+        reg.Register(
+            new ProcessorInfo("FilterAttribute", "Remove or keep specific attributes", ["mode", "attributes"]),
+            (ctx, config) => new FilterAttribute(
+                config.GetValueOrDefault("mode", "remove"),
+                config.GetValueOrDefault("attributes", "")));
     }
 }

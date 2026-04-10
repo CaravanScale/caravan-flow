@@ -60,6 +60,9 @@ public static class FabricTests
         TestRoutedResultNoConnection();
         TestDualSinkPipeline();
         TestMultipleResultEdgeCases();
+
+        // RouteOnAttribute integration
+        TestRouteOnAttributeInPipeline();
     }
 
     static void TestFabricMultiHop()
@@ -1316,5 +1319,76 @@ public static class FabricTests
         var stats2 = fab2.GetProcessorStats();
         AssertTrue("split empty: splitter processed=1", stats2["splitter"]["processed"] == 1);
         AssertTrue("split empty: sink processed=1 (pass-through)", stats2["sink"]["processed"] == 1);
+    }
+
+    static void TestRouteOnAttributeInPipeline()
+    {
+        Console.WriteLine("--- Fabric: RouteOnAttribute in Pipeline ---");
+        var ctx = TestContext();
+        var premiumSink = new CaptureSink("tier", "routed");
+        var bulkSink = new CaptureSink("tier", "routed");
+        var defaultSink = new CaptureSink("tier", "routed");
+
+        var reg = new Registry();
+        BuiltinProcessors.RegisterAll(reg);
+        reg.Register(new ProcessorInfo("PremiumSink", "premium sink", []), (_, _) => premiumSink);
+        reg.Register(new ProcessorInfo("BulkSink", "bulk sink", []), (_, _) => bulkSink);
+        reg.Register(new ProcessorInfo("DefaultSink", "default sink", []), (_, _) => defaultSink);
+
+        var config = new Dictionary<string, object?>
+        {
+            ["flow"] = new Dictionary<string, object?>
+            {
+                ["processors"] = new Dictionary<string, object?>
+                {
+                    ["tagger"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "routed", ["value"] = "true" },
+                        ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "router" } }
+                    },
+                    ["router"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "RouteOnAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["routes"] = "premium:tier EQ premium;bulk:tier EQ bulk" },
+                        ["connections"] = new Dictionary<string, object?>
+                        {
+                            ["premium"] = new List<object?> { "premium-sink" },
+                            ["bulk"] = new List<object?> { "bulk-sink" },
+                            ["unmatched"] = new List<object?> { "default-sink" }
+                        }
+                    },
+                    ["premium-sink"] = new Dictionary<string, object?> { ["type"] = "PremiumSink" },
+                    ["bulk-sink"] = new Dictionary<string, object?> { ["type"] = "BulkSink" },
+                    ["default-sink"] = new Dictionary<string, object?> { ["type"] = "DefaultSink" }
+                }
+            }
+        };
+
+        var fab = new ZincFlow.Fabric.Fabric(reg, ctx);
+        fab.LoadFlow(config);
+
+        // Premium tier
+        var ff1 = FlowFile.Create("order1"u8, new() { ["tier"] = "premium" });
+        fab.Execute(ff1, "tagger");
+
+        // Bulk tier
+        var ff2 = FlowFile.Create("order2"u8, new() { ["tier"] = "bulk" });
+        fab.Execute(ff2, "tagger");
+
+        // Unknown tier → default
+        var ff3 = FlowFile.Create("order3"u8, new() { ["tier"] = "free" });
+        fab.Execute(ff3, "tagger");
+
+        // Verify routing
+        AssertIntEqual("premium sink got 1", premiumSink.Captured.Count, 1);
+        AssertEqual("premium has tier", premiumSink.Captured[0].Attrs.GetValueOrDefault("tier", ""), "premium");
+        AssertEqual("premium has routed", premiumSink.Captured[0].Attrs.GetValueOrDefault("routed", ""), "true");
+
+        AssertIntEqual("bulk sink got 1", bulkSink.Captured.Count, 1);
+        AssertEqual("bulk has tier", bulkSink.Captured[0].Attrs.GetValueOrDefault("tier", ""), "bulk");
+
+        AssertIntEqual("default sink got 1", defaultSink.Captured.Count, 1);
+        AssertEqual("default has tier", defaultSink.Captured[0].Attrs.GetValueOrDefault("tier", ""), "free");
     }
 }

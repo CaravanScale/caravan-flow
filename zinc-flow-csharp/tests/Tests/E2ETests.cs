@@ -21,6 +21,7 @@ public static class E2ETests
         TestE2ECascadingFailure();
         TestE2EHotReloadDataIntegrity();
         TestE2EAttributeAccumulation();
+        TestE2EExtractAndRoute();
     }
 
     static void TestE2EFullPipeline()
@@ -646,5 +647,88 @@ public static class E2ETests
         AssertEqual("accum: stage1 set", captured.Attrs.GetValueOrDefault("stage1", ""), "done");
         AssertEqual("accum: stage2 set", captured.Attrs.GetValueOrDefault("stage2", ""), "done");
         AssertEqual("accum: stage3 set", captured.Attrs.GetValueOrDefault("stage3", ""), "done");
+    }
+
+    static void TestE2EExtractAndRoute()
+    {
+        Console.WriteLine("--- E2E: Extract and Route (JSON -> ConvertJSONToRecord -> ExtractRecordField -> RouteOnAttribute -> sinks) ---");
+        var ctx = TestContext();
+        var premiumSink = new CaptureSink("tier", "customer_name");
+        var standardSink = new CaptureSink("tier", "customer_name");
+        var defaultSink = new CaptureSink("tier", "customer_name");
+
+        var reg = new Registry();
+        BuiltinProcessors.RegisterAll(reg);
+        reg.Register(new ProcessorInfo("PremiumSink", "premium capture", []), (_, _) => premiumSink);
+        reg.Register(new ProcessorInfo("StandardSink", "standard capture", []), (_, _) => standardSink);
+        reg.Register(new ProcessorInfo("DefaultSink", "default capture", []), (_, _) => defaultSink);
+
+        var config = new Dictionary<string, object?>
+        {
+            ["flow"] = new Dictionary<string, object?>
+            {
+                ["processors"] = new Dictionary<string, object?>
+                {
+                    ["json-parse"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "ConvertJSONToRecord",
+                        ["config"] = new Dictionary<string, object?> { ["schema_name"] = "order" },
+                        ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "extract" } }
+                    },
+                    ["extract"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "ExtractRecordField",
+                        ["config"] = new Dictionary<string, object?> { ["fields"] = "name:customer_name;tier:tier" },
+                        ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "router" } }
+                    },
+                    ["router"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "RouteOnAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["routes"] = "premium:tier EQ premium;standard:tier EQ standard" },
+                        ["connections"] = new Dictionary<string, object?>
+                        {
+                            ["premium"] = new List<object?> { "premium-sink" },
+                            ["standard"] = new List<object?> { "standard-sink" },
+                            ["unmatched"] = new List<object?> { "default-sink" }
+                        }
+                    },
+                    ["premium-sink"] = new Dictionary<string, object?> { ["type"] = "PremiumSink" },
+                    ["standard-sink"] = new Dictionary<string, object?> { ["type"] = "StandardSink" },
+                    ["default-sink"] = new Dictionary<string, object?> { ["type"] = "DefaultSink" }
+                }
+            }
+        };
+
+        var fab = new ZincFlow.Fabric.Fabric(reg, ctx);
+        fab.LoadFlow(config);
+
+        // Premium customer
+        var ff1 = FlowFile.Create("""[{"name":"Alice","tier":"premium","amount":500}]"""u8, new());
+        fab.Execute(ff1, "json-parse");
+
+        // Standard customer
+        var ff2 = FlowFile.Create("""[{"name":"Bob","tier":"standard","amount":50}]"""u8, new());
+        fab.Execute(ff2, "json-parse");
+
+        // Unknown tier
+        var ff3 = FlowFile.Create("""[{"name":"Charlie","tier":"trial","amount":0}]"""u8, new());
+        fab.Execute(ff3, "json-parse");
+
+        // Verify routing
+        AssertIntEqual("e2e-route: premium sink got 1", premiumSink.Captured.Count, 1);
+        AssertEqual("e2e-route: premium customer_name", premiumSink.Captured[0].Attrs.GetValueOrDefault("customer_name", ""), "Alice");
+        AssertEqual("e2e-route: premium tier", premiumSink.Captured[0].Attrs.GetValueOrDefault("tier", ""), "premium");
+
+        AssertIntEqual("e2e-route: standard sink got 1", standardSink.Captured.Count, 1);
+        AssertEqual("e2e-route: standard customer_name", standardSink.Captured[0].Attrs.GetValueOrDefault("customer_name", ""), "Bob");
+
+        AssertIntEqual("e2e-route: default sink got 1", defaultSink.Captured.Count, 1);
+        AssertEqual("e2e-route: default customer_name", defaultSink.Captured[0].Attrs.GetValueOrDefault("customer_name", ""), "Charlie");
+
+        // Verify all processors ran
+        var stats = fab.GetProcessorStats();
+        AssertTrue("e2e-route: json-parse processed 3", stats["json-parse"]["processed"] == 3);
+        AssertTrue("e2e-route: extract processed 3", stats["extract"]["processed"] == 3);
+        AssertTrue("e2e-route: router processed 3", stats["router"]["processed"] == 3);
     }
 }
