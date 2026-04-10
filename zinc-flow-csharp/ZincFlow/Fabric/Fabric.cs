@@ -394,6 +394,7 @@ public sealed class Fabric
     public Registry GetRegistry() => _reg;
     public Dictionary<string, Dictionary<string, List<string>>> GetConnections() => new(_graph.Connections);
     public List<string> GetEntryPoints() => new(_graph.EntryPoints);
+    public string GetProcessorType(string name) => _graph.ProcessorDefs.TryGetValue(name, out var def) ? def.Type : "unknown";
 
     public Dictionary<string, object> GetStats() => new()
     {

@@ -77,6 +77,7 @@ public sealed class ApiHandler
             processors = _fab.GetProcessorNames().Select(name => new
             {
                 name,
+                type = _fab.GetProcessorType(name),
                 state = _fab.GetProcessorState(name).ToString().ToUpperInvariant(),
                 stats = procStats.GetValueOrDefault(name),
                 connections = _fab.GetConnections().GetValueOrDefault(name)

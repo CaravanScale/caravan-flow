@@ -133,7 +133,17 @@ builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
 
 var app = builder.Build();
 
-// Management API only — ingestion goes through source connectors
+// Dashboard — serve at /
+var dashboardPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "dashboard.html");
+if (!File.Exists(dashboardPath))
+    dashboardPath = Path.Combine(Directory.GetCurrentDirectory(), "dashboard.html");
+if (File.Exists(dashboardPath))
+{
+    var dashHtml = File.ReadAllText(dashboardPath);
+    app.MapGet("/", () => Results.Content(dashHtml, "text/html"));
+}
+
+// Management API — ingestion goes through source connectors
 var api = new ApiHandler(fab);
 api.SetConfigPath(configPath);
 api.MapRoutes(app);
