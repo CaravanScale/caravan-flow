@@ -73,8 +73,8 @@ FlowFile
 ### Content (sealed hierarchy)
 ```
 Content
-├── Raw          — ArrayPool-backed byte array (inline, small data)
-├── RecordContent — List<Dictionary<string, object?>> (structured records)
+├── Raw           — ArrayPool-backed byte array (inline, small data)
+├── RecordContent — Schema + List<GenericRecord> (Avro-style typed records)
 └── ClaimContent  — off-heap reference (content store claim ID, for >256KB)
 ```
 
@@ -298,13 +298,17 @@ ASP.NET Minimal API on port 9091 (configurable):
 
 | Category | Processors |
 |----------|------------|
-| **Core** | UpdateAttribute, LogAttribute |
+| **Core** | UpdateAttribute, LogAttribute, FilterAttribute |
+| **Routing** | RouteOnAttribute (predicate-based, uses Router.cs engine) |
+| **Records** | ExtractRecordField, QueryRecord, TransformRecord (7 operations) |
 | **JSON** | ConvertJSONToRecord, ConvertRecordToJSON |
 | **Avro** | ConvertAvroToRecord, ConvertRecordToAvro |
 | **CSV** | ConvertCSVToRecord, ConvertRecordToCSV |
 | **Text** | ReplaceText, ExtractText, SplitText |
 | **Sinks** | PutHTTP, PutFile, PutStdout |
-| **Expressions** | EvaluateExpression (12 functions), TransformRecord (7 operations) |
+| **Expressions** | EvaluateExpression (12 functions) |
+
+**Source connectors:** ListenHTTP, GetFile, GenerateFlowFile
 
 ---
 

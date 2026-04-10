@@ -217,3 +217,59 @@ public sealed class ListenHTTP : IConnectorSource
         await SourceHelpers.WriteJson(ctx.Response, new { status = "healthy", source = Name, running = IsRunning });
     }
 }
+
+/// <summary>
+/// GenerateFlowFile: produces FlowFiles on a schedule for testing, load testing, and heartbeats.
+/// Extends PollingSource — framework handles scheduling and lifecycle.
+///
+/// Config:
+///   content         — FlowFile content string (default: empty)
+///   content_type    — set as http.content.type attribute
+///   attributes      — semicolon-separated key:value pairs
+///   batch_size      — FlowFiles per poll cycle (default: 1)
+///   poll_interval_ms — polling interval (default: 1000)
+/// </summary>
+public sealed class GenerateFlowFile : PollingSource
+{
+    public override string SourceType => "GenerateFlowFile";
+
+    private readonly byte[] _content;
+    private readonly Dictionary<string, string> _baseAttrs;
+    private readonly int _batchSize;
+    private static long _counter;
+
+    public GenerateFlowFile(string name, int pollIntervalMs, string content, string contentType, string attributes, int batchSize)
+        : base(name, pollIntervalMs)
+    {
+        _content = System.Text.Encoding.UTF8.GetBytes(content ?? "");
+        _batchSize = batchSize > 0 ? batchSize : 1;
+
+        _baseAttrs = new Dictionary<string, string> { ["source"] = name };
+        if (!string.IsNullOrEmpty(contentType))
+            _baseAttrs["http.content.type"] = contentType;
+
+        if (!string.IsNullOrEmpty(attributes))
+        {
+            foreach (var pair in attributes.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+            {
+                var kv = pair.Split(':', 2);
+                if (kv.Length == 2)
+                    _baseAttrs[kv[0]] = kv[1];
+            }
+        }
+    }
+
+    protected override List<FlowFile> Poll(CancellationToken ct)
+    {
+        var batch = new List<FlowFile>(_batchSize);
+        for (int i = 0; i < _batchSize; i++)
+        {
+            var attrs = new Dictionary<string, string>(_baseAttrs)
+            {
+                ["generate.index"] = Interlocked.Increment(ref _counter).ToString()
+            };
+            batch.Add(FlowFile.Create(_content, attrs));
+        }
+        return batch;
+    }
+}

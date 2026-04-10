@@ -105,6 +105,17 @@ var ingestPort = GetConfigString(config, "sources.listen_http.port", "9092");
 var ingestPath = GetConfigString(config, "sources.listen_http.path", "/");
 fab.AddSource(new ListenHTTP("http-ingest", int.Parse(ingestPort), ingestPath, store));
 
+// GenerateFlowFile source — optional, for testing/heartbeats
+var genContent = GetConfigString(config, "sources.generate.content", "");
+if (!string.IsNullOrEmpty(genContent))
+{
+    var genType = GetConfigString(config, "sources.generate.content_type", "");
+    var genAttrs = GetConfigString(config, "sources.generate.attributes", "");
+    var genBatch = int.TryParse(GetConfigString(config, "sources.generate.batch_size", "1"), out var gb) ? gb : 1;
+    var genPoll = int.TryParse(GetConfigString(config, "sources.generate.poll_interval_ms", "1000"), out var gp) ? gp : 1000;
+    fab.AddSource(new GenerateFlowFile("generator", genPoll, genContent, genType, genAttrs, genBatch));
+}
+
 // Build ASP.NET Minimal API app
 var builder = WebApplication.CreateBuilder(args);
 builder.Logging.ClearProviders();

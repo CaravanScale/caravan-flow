@@ -22,6 +22,8 @@ public static class SourceTests
         TestContentStoreCleanup();
         TestPollingSourceLifecycle();
         TestPollingSourceBackpressure();
+        TestGenerateFlowFile();
+        TestGenerateFlowFileBatch();
     }
 
     static void TestPutFile()
@@ -415,5 +417,59 @@ public static class SourceTests
         AssertTrue("poll was called", poller.PollCount >= 1);
         AssertTrue("no ingested (all rejected)", poller.IngestedFiles.Count == 0);
         AssertTrue("rejections recorded", poller.RejectedFiles.Count >= 2);
+    }
+
+    static void TestGenerateFlowFile()
+    {
+        Console.WriteLine("--- GenerateFlowFile: basic ---");
+        var gen = new GenerateFlowFile("test-gen", 100,
+            "{\"status\":\"ok\"}", "application/json", "type:heartbeat;env:dev", 1);
+
+        AssertEqual("source type", gen.SourceType, "GenerateFlowFile");
+        AssertTrue("not running initially", !gen.IsRunning);
+
+        var ingested = new List<FlowFile>();
+        using var cts = new CancellationTokenSource();
+        gen.Start(ff => { ingested.Add(ff); return true; }, cts.Token);
+
+        Thread.Sleep(500);
+        gen.Stop();
+        Thread.Sleep(200);
+
+        AssertTrue("generated at least 1", ingested.Count >= 1);
+        var ff = ingested[0];
+        // Check content
+        if (ff.Content is Raw raw)
+            AssertTrue("content has status", System.Text.Encoding.UTF8.GetString(raw.Data).Contains("status"));
+        // Check attributes
+        AssertTrue("has source attr", ff.Attributes.TryGetValue("source", out var src) && src == "test-gen");
+        AssertTrue("has type attr", ff.Attributes.TryGetValue("type", out var t) && t == "heartbeat");
+        AssertTrue("has env attr", ff.Attributes.TryGetValue("env", out var e) && e == "dev");
+        AssertTrue("has content_type", ff.Attributes.TryGetValue("http.content.type", out var ct) && ct == "application/json");
+        AssertTrue("has generate.index", ff.Attributes.TryGetValue("generate.index", out _));
+    }
+
+    static void TestGenerateFlowFileBatch()
+    {
+        Console.WriteLine("--- GenerateFlowFile: batch ---");
+        var gen = new GenerateFlowFile("batch-gen", 100, "data", "", "", 5);
+
+        var ingested = new List<FlowFile>();
+        using var cts = new CancellationTokenSource();
+        gen.Start(ff => { ingested.Add(ff); return true; }, cts.Token);
+
+        Thread.Sleep(400);
+        gen.Stop();
+        Thread.Sleep(200);
+
+        // batch_size=5, should have at least 5 from first poll
+        AssertTrue("batch: generated >= 5", ingested.Count >= 5);
+        // Each should have unique index
+        var indices = ingested.Select(f =>
+        {
+            f.Attributes.TryGetValue("generate.index", out var idx);
+            return idx ?? "";
+        }).Distinct().ToList();
+        AssertTrue("batch: unique indices", indices.Count == ingested.Count);
     }
 }
