@@ -201,7 +201,7 @@ public sealed class LoggingProvider : IProvider
 
 // --- Provenance provider: records FlowFile lifecycle events ---
 
-public enum ProvenanceEventType { Created, Processed, Routed, Dropped, DLQ }
+public enum ProvenanceEventType { Created, Processed, Routed, Dropped, Failed }
 
 public sealed class ProvenanceEvent
 {

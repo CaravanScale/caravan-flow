@@ -6,12 +6,13 @@
 
 **zinc-flow** is a fully functional standalone data flow engine. You can use it today for:
 
-- Config-driven processor pipelines (YAML, map-keyed)
-- HTTP ingest with predicate-based routing (IRS fan-out)
-- Transactional delivery (claim/ack/nack, at-least-once, visibility timeout)
-- Backpressure (bounded queues, 503 on overload)
-- Dead letter queue with inspect/replay via API
+- Config-driven processor pipelines (YAML, map-keyed, NiFi-style connections)
+- HTTP ingest and file-based ingest with direct pipeline execution
+- Failure routing via "failure" connections in the DAG
+- Backpressure (semaphore-gated concurrent executions, 503 on overload)
 - Runtime lifecycle (enable/disable processors/providers, dependency cascade)
+- Hot reload (atomic pipeline graph swap on config.yaml change)
+- Prometheus /metrics, provenance tracking, structured logging
 - Graceful shutdown on SIGTERM/SIGINT
 
 **Three runtimes:**
@@ -29,17 +30,15 @@
 - [x] NiFi FlowFile V3 binary serde
 - [x] 5 built-in processors (AddAttribute, Log, FileSink, JsonToRecords, RecordsToJson)
 - [x] ProcessorRegistry + factory pattern
-- [x] IRS predicate routing (EQ, NEQ, CONTAINS, STARTSWITH, ENDSWITH, EXISTS, AND/OR)
+- [x] Predicate routing engine (EQ, NEQ, CONTAINS, STARTSWITH, ENDSWITH, EXISTS, AND/OR)
 - [x] HTTP source + delivery, management API (read + mutations)
 
-## Phase 1.5 — Flow Engine (Transactional Delivery) ✓
+## Phase 1.5 — Flow Engine ✓
 
-- [x] Provider lifecycle (ENABLED/DRAINING/DISABLED), ScopedContext, dependency cascade
-- [x] FlowQueue — transactional, bounded, visibility timeout, head-index with compaction
-- [x] ProcessSession, IRS all-or-nothing fan-out, backpressure, DLQ with replay
-- [x] Async processing, graceful shutdown, map-keyed YAML config
-- [x] 30 tests, 137+ assertions, 10 e2e scenarios
-- [x] zinc-flow-python port — 129 assertions, DataFrame processors, performance optimized
+- [x] Provider lifecycle (ENABLED/DISABLED), ScopedContext, dependency cascade
+- [x] Map-keyed YAML config, graceful shutdown
+- [x] 30 tests, 137+ assertions, 10 e2e scenarios (Go)
+- [x] zinc-flow-python port — 129 assertions, DataFrame processors
 - [x] zinc-flow-csharp port — 149 assertions, ThreadStatic pools, ArrayPool, ref-counted Content, 2M+ ff/s AOT
 
 ---
@@ -48,33 +47,36 @@
 
 Make zinc-flow useful for real workloads without requiring NATS or K8s. A single binary that can ingest, transform, and deliver data.
 
-### Phase 2a: Connectors — get data in and out ✓ (C#)
+### Phase 2a: Connectors ✓ (C#)
 - [x] ConnectorSource interface (start/stop/isRunning lifecycle)
-- [x] Refactor HttpSource → ListenHTTP (standalone server on dedicated port)
+- [x] ListenHTTP (standalone server on dedicated port)
 - [x] PutHTTP processor — POST flowfiles to downstream HTTP endpoints
-- [x] PutFile processor — write to disk with configurable naming (attribute/counter/prefix/suffix)
+- [x] PutFile processor — write to disk with configurable naming
 - [x] GetFile source — watch a directory, ingest new files, move to .processed
 - [x] PutStdout processor — write to stdout (text/hex/attrs format)
 - [x] Connector lifecycle API (/api/sources, start/stop endpoints)
 
-### Phase 2b: Observability — know what's happening ✓ (C#)
-- [x] Prometheus /metrics endpoint (processed count, queue depths, DLQ size, source status, uptime)
+### Phase 2b: Observability ✓ (C#)
+- [x] Prometheus /metrics endpoint (processed count, per-processor stats, source status, uptime)
 - [x] Structured JSON logging option (LoggingProvider with json/text modes)
-- [x] FlowFile provenance — provenance.last attribute stamped per processor hop
+- [x] FlowFile provenance tracking (per-processor lifecycle events)
 - [x] Health checks with connector status
-- [x] /api/flow endpoint returns full DAG with queue depths (dashboard-ready)
+- [x] /api/flow endpoint returns full DAG (dashboard-ready)
 
-### Phase 2c: Hardening — don't break in production ✓ (C#)
-- [x] Config validation at startup (missing processors, broken routes, unknown types)
-- [x] Content store cleanup — periodic sweep, ref-counted claim lifecycle, configurable threshold + interval
-- [x] Queue persistence — WAL with replay, periodic compaction, max size, configurable
+### Phase 2c: Hardening ✓ (C#)
+- [x] Config validation at startup (missing processors, broken connections, unknown types)
+- [x] Content store cleanup — periodic sweep, configurable threshold + interval
 - [x] Max-hop cycle protection — runtime detection for routing loops (default 50, configurable)
+- [x] DAG validator — cycle detection, unreachable processor detection, entry-point computation
 
-### Phase 2d: Developer experience
-- [ ] `zinc-flow init` scaffolding — generate project with config, sample processors
+### Phase 2d: Developer experience ✓ (C#)
+- [x] Hot reload — watch config.yaml, atomic pipeline graph swap on change
+- [x] NiFi-style connections replaced IRS global routing
+- [x] Direct pipeline executor (no inter-stage queues, Apache Camel-style)
+- [x] 17 processor types in StdLib
+- [x] 395 tests, 0 failures
 - [ ] `zinc-flow validate` — check config without starting
-- [ ] `zinc-flow replay` — CLI tool to replay DLQ entries
-- [ ] Hot reload — watch config.yaml, reload flow graph on change
+- [ ] RouteOnAttribute processor — conditional branching using predicate engine
 - [ ] Custom processor loading — register processors from external packages
 
 ---
@@ -126,7 +128,7 @@ Additional connectors, advanced features, developer tools.
 - [ ] Join processor (merge two streams by key)
 
 ### Tools
-- [ ] TUI dashboard (terminal UI with live queue depths + processor stats)
+- [ ] TUI dashboard (terminal UI with live processor stats)
 - [ ] Web UI — flow graph visualization, drag-and-drop processor wiring
 - [ ] Provenance viewer — trace a FlowFile's path through the graph
 

@@ -150,6 +150,15 @@ public static class TestSuite
         TestExecuteMaxHops();
         TestExecuteBackpressure();
 
+        // Failure scenarios and edge cases
+        TestProcessorException();
+        TestFanOutMixedSuccess();
+        TestPartialPipelineFailure();
+        TestRoutedResultNoConnection();
+        TestDualSinkPipeline();
+        TestE2EFullPipelineFormats();
+        TestMultipleResultEdgeCases();
+
         Console.WriteLine();
         Console.WriteLine($"=== {_pass} passed, {_fail} failed ({_pass + _fail} total) ===");
         return _fail;
@@ -1125,10 +1134,7 @@ public static class TestSuite
         {
             ["defaults"] = new Dictionary<string, object?>
             {
-                ["backpressure"] = new Dictionary<string, object?>
-                {
-                    ["max_hops"] = 5
-                }
+                ["max_hops"] = 5
             },
             ["flow"] = new Dictionary<string, object?>
             {
@@ -2851,10 +2857,7 @@ public static class TestSuite
         {
             ["defaults"] = new Dictionary<string, object?>
             {
-                ["backpressure"] = new Dictionary<string, object?>
-                {
-                    ["max_hops"] = 3
-                }
+                ["max_hops"] = 3
             },
             ["flow"] = new Dictionary<string, object?>
             {
@@ -2924,5 +2927,433 @@ public static class TestSuite
 
         var stats = fab.GetProcessorStats();
         AssertTrue("tag processed 2", stats["tag"]["processed"] == 2);
+    }
+
+    // --- Failure scenarios and edge cases ---
+
+    class ThrowingProcessor : IProcessor
+    {
+        public ProcessorResult Process(FlowFile ff) => throw new ArgumentException("test exception");
+    }
+
+    class CustomRouteProcessor : IProcessor
+    {
+        public ProcessorResult Process(FlowFile ff) => RoutedResult.Rent("custom_route", ff);
+    }
+
+    static ZincFlow.Fabric.Fabric BuildFabricWithCustom(
+        Dictionary<string, object?> config,
+        Action<Registry> registerCustom,
+        ProcessorContext? ctx = null)
+    {
+        ctx ??= TestContext();
+        var reg = new Registry();
+        BuiltinProcessors.RegisterAll(reg);
+        registerCustom(reg);
+        var fab = new ZincFlow.Fabric.Fabric(reg, ctx);
+        fab.LoadFlow(config);
+        return fab;
+    }
+
+    static void TestProcessorException()
+    {
+        Console.WriteLine("--- TestProcessorException ---");
+        // Case 1: Throwing processor WITH failure connection — routes to error handler
+        var config1 = new Dictionary<string, object?>
+        {
+            ["flow"] = new Dictionary<string, object?>
+            {
+                ["processors"] = new Dictionary<string, object?>
+                {
+                    ["thrower"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "Throwing",
+                        ["config"] = new Dictionary<string, object?> {},
+                        ["connections"] = new Dictionary<string, object?>
+                        {
+                            ["success"] = new List<object?> { "sink" },
+                            ["failure"] = new List<object?> { "error-handler" }
+                        }
+                    },
+                    ["sink"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "ok", ["value"] = "true" }
+                    },
+                    ["error-handler"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "error", ["value"] = "true" }
+                    }
+                }
+            }
+        };
+        var fab1 = BuildFabricWithCustom(config1, reg =>
+        {
+            reg.Register(new ProcessorInfo("Throwing", "throws exception", []),
+                (ctx, cfg) => new ThrowingProcessor());
+        });
+        var ff1 = FlowFile.Create("test"u8, new());
+        var ok1 = fab1.Execute(ff1, "thrower");
+        AssertTrue("exception: execute returns true", ok1);
+        var stats1 = fab1.GetProcessorStats();
+        AssertTrue("exception: thrower errors=1", stats1["thrower"]["errors"] == 1);
+        AssertTrue("exception: error-handler received flowfile", stats1["error-handler"]["processed"] == 1);
+        AssertTrue("exception: sink not invoked", stats1["sink"]["processed"] == 0);
+
+        // Case 2: Throwing processor WITHOUT failure connection — dropped gracefully
+        var config2 = new Dictionary<string, object?>
+        {
+            ["flow"] = new Dictionary<string, object?>
+            {
+                ["processors"] = new Dictionary<string, object?>
+                {
+                    ["thrower"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "Throwing",
+                        ["config"] = new Dictionary<string, object?> {},
+                        ["connections"] = new Dictionary<string, object?>
+                        {
+                            ["success"] = new List<object?> { "sink" }
+                        }
+                    },
+                    ["sink"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "ok", ["value"] = "true" }
+                    }
+                }
+            }
+        };
+        var fab2 = BuildFabricWithCustom(config2, reg =>
+        {
+            reg.Register(new ProcessorInfo("Throwing", "throws exception", []),
+                (ctx, cfg) => new ThrowingProcessor());
+        });
+        var ff2 = FlowFile.Create("test"u8, new());
+        var ok2 = fab2.Execute(ff2, "thrower");
+        AssertTrue("exception no handler: execute returns true", ok2);
+        var stats2 = fab2.GetProcessorStats();
+        AssertTrue("exception no handler: thrower errors=1", stats2["thrower"]["errors"] == 1);
+        AssertTrue("exception no handler: sink not invoked", stats2["sink"]["processed"] == 0);
+    }
+
+    static void TestFanOutMixedSuccess()
+    {
+        Console.WriteLine("--- TestFanOutMixedSuccess ---");
+        var ctx = TestContext();
+        // source fans out to good-branch (UpdateAttribute) and bad-branch (ConvertJSONToRecord with non-JSON)
+        // bad-branch has failure connection to error-handler
+        var config = new Dictionary<string, object?>
+        {
+            ["flow"] = new Dictionary<string, object?>
+            {
+                ["processors"] = new Dictionary<string, object?>
+                {
+                    ["source"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "tagged", ["value"] = "true" },
+                        ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "good-branch", "bad-branch" } }
+                    },
+                    ["good-branch"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "good", ["value"] = "yes" }
+                    },
+                    ["bad-branch"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "ConvertJSONToRecord",
+                        ["config"] = new Dictionary<string, object?> { ["schema_name"] = "data" },
+                        ["connections"] = new Dictionary<string, object?>
+                        {
+                            ["success"] = new List<object?> { "never-reached" },
+                            ["failure"] = new List<object?> { "error-handler" }
+                        }
+                    },
+                    ["never-reached"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "nope", ["value"] = "true" }
+                    },
+                    ["error-handler"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "error", ["value"] = "true" }
+                    }
+                }
+            }
+        };
+        var fab = BuildFabric(config, ctx);
+
+        // Send non-JSON data: good-branch processes fine, bad-branch fails and routes to error-handler
+        var ff = FlowFile.Create("not valid json"u8, new());
+        var ok = fab.Execute(ff, "source");
+        AssertTrue("fan-out mixed: execute returns true", ok);
+        var stats = fab.GetProcessorStats();
+        AssertTrue("fan-out mixed: source processed=1", stats["source"]["processed"] == 1);
+        AssertTrue("fan-out mixed: good-branch processed=1", stats["good-branch"]["processed"] == 1);
+        AssertTrue("fan-out mixed: bad-branch processed=1", stats["bad-branch"]["processed"] == 1);
+        AssertTrue("fan-out mixed: error-handler processed=1", stats["error-handler"]["processed"] == 1);
+        AssertTrue("fan-out mixed: never-reached processed=0", stats["never-reached"]["processed"] == 0);
+    }
+
+    static void TestPartialPipelineFailure()
+    {
+        Console.WriteLine("--- TestPartialPipelineFailure ---");
+        var ctx = TestContext();
+        // 5-processor chain: A -> B -> C -> D -> E
+        // C = ConvertJSONToRecord with non-JSON data -> returns FailureResult
+        // C has failure connection to error-handler F
+        var config = new Dictionary<string, object?>
+        {
+            ["flow"] = new Dictionary<string, object?>
+            {
+                ["processors"] = new Dictionary<string, object?>
+                {
+                    ["A"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "step", ["value"] = "A" },
+                        ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "B" } }
+                    },
+                    ["B"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "step", ["value"] = "B" },
+                        ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "C" } }
+                    },
+                    ["C"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "ConvertJSONToRecord",
+                        ["config"] = new Dictionary<string, object?> { ["schema_name"] = "data" },
+                        ["connections"] = new Dictionary<string, object?>
+                        {
+                            ["success"] = new List<object?> { "D" },
+                            ["failure"] = new List<object?> { "F" }
+                        }
+                    },
+                    ["D"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "step", ["value"] = "D" },
+                        ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "E" } }
+                    },
+                    ["E"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "step", ["value"] = "E" }
+                    },
+                    ["F"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "error_handled", ["value"] = "true" }
+                    }
+                }
+            }
+        };
+        var fab = BuildFabric(config, ctx);
+
+        var ff = FlowFile.Create("not json at all"u8, new());
+        var ok = fab.Execute(ff, "A");
+        AssertTrue("partial failure: execute returns true", ok);
+        var stats = fab.GetProcessorStats();
+        AssertTrue("partial failure: A processed=1", stats["A"]["processed"] == 1);
+        AssertTrue("partial failure: B processed=1", stats["B"]["processed"] == 1);
+        AssertTrue("partial failure: C processed=1", stats["C"]["processed"] == 1);
+        AssertTrue("partial failure: D processed=0", stats["D"]["processed"] == 0);
+        AssertTrue("partial failure: E processed=0", stats["E"]["processed"] == 0);
+        AssertTrue("partial failure: F processed=1", stats["F"]["processed"] == 1);
+    }
+
+    static void TestRoutedResultNoConnection()
+    {
+        Console.WriteLine("--- TestRoutedResultNoConnection ---");
+        // Processor returns RoutedResult with "custom_route" but only "success" connection exists
+        var config = new Dictionary<string, object?>
+        {
+            ["flow"] = new Dictionary<string, object?>
+            {
+                ["processors"] = new Dictionary<string, object?>
+                {
+                    ["router"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "CustomRoute",
+                        ["config"] = new Dictionary<string, object?> {},
+                        ["connections"] = new Dictionary<string, object?>
+                        {
+                            ["success"] = new List<object?> { "sink" }
+                        }
+                    },
+                    ["sink"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "done", ["value"] = "true" }
+                    }
+                }
+            }
+        };
+        var fab = BuildFabricWithCustom(config, reg =>
+        {
+            reg.Register(new ProcessorInfo("CustomRoute", "returns custom route", []),
+                (ctx, cfg) => new CustomRouteProcessor());
+        });
+        var ff = FlowFile.Create("routed"u8, new());
+        var ok = fab.Execute(ff, "router");
+        AssertTrue("routed no conn: execute completes", ok);
+        var stats = fab.GetProcessorStats();
+        AssertTrue("routed no conn: router processed=1", stats["router"]["processed"] == 1);
+        AssertTrue("routed no conn: router errors=0", stats["router"]["errors"] == 0);
+        AssertTrue("routed no conn: sink not invoked", stats["sink"]["processed"] == 0);
+    }
+
+    static void TestDualSinkPipeline()
+    {
+        Console.WriteLine("--- TestDualSinkPipeline ---");
+        var ctx = TestContext();
+        var config = new Dictionary<string, object?>
+        {
+            ["flow"] = new Dictionary<string, object?>
+            {
+                ["processors"] = new Dictionary<string, object?>
+                {
+                    ["parser"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "ConvertJSONToRecord",
+                        ["config"] = new Dictionary<string, object?> { ["schema_name"] = "data" },
+                        ["connections"] = new Dictionary<string, object?>
+                        {
+                            ["success"] = new List<object?> { "json-sink" },
+                            ["failure"] = new List<object?> { "error-sink" }
+                        }
+                    },
+                    ["json-sink"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "done", ["value"] = "true" }
+                    },
+                    ["error-sink"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "error", ["value"] = "true" }
+                    }
+                }
+            }
+        };
+        var fab = BuildFabric(config, ctx);
+
+        // Send valid JSON -> json-sink gets it
+        var ff1 = FlowFile.Create("""[{"name":"Alice","amount":42}]"""u8, new());
+        var ok1 = fab.Execute(ff1, "parser");
+        AssertTrue("dual sink: valid JSON executes", ok1);
+        var stats1 = fab.GetProcessorStats();
+        AssertTrue("dual sink: parser processed=1 (valid)", stats1["parser"]["processed"] == 1);
+        AssertTrue("dual sink: json-sink processed=1", stats1["json-sink"]["processed"] == 1);
+        AssertTrue("dual sink: error-sink processed=0", stats1["error-sink"]["processed"] == 0);
+
+        // Send invalid data -> error-sink gets it
+        var ff2 = FlowFile.Create("this is not json"u8, new());
+        var ok2 = fab.Execute(ff2, "parser");
+        AssertTrue("dual sink: invalid data executes", ok2);
+        var stats2 = fab.GetProcessorStats();
+        AssertTrue("dual sink: parser processed=2 (both)", stats2["parser"]["processed"] == 2);
+        AssertTrue("dual sink: json-sink still=1", stats2["json-sink"]["processed"] == 1);
+        AssertTrue("dual sink: error-sink processed=1", stats2["error-sink"]["processed"] == 1);
+    }
+
+    static void TestE2EFullPipelineFormats()
+    {
+        Console.WriteLine("--- TestE2EFullPipelineFormats ---");
+        var ctx = TestContext();
+        // Full format pipeline: ConvertJSONToRecord -> UpdateAttribute -> ConvertRecordToCSV -> sink
+        var config = new Dictionary<string, object?>
+        {
+            ["flow"] = new Dictionary<string, object?>
+            {
+                ["processors"] = new Dictionary<string, object?>
+                {
+                    ["json-parse"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "ConvertJSONToRecord",
+                        ["config"] = new Dictionary<string, object?> { ["schema_name"] = "data" },
+                        ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "enrich" } }
+                    },
+                    ["enrich"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "pipeline", ["value"] = "format-test" },
+                        ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "to-csv" } }
+                    },
+                    ["to-csv"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "ConvertRecordToCSV",
+                        ["config"] = new Dictionary<string, object?> {},
+                        ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "sink" } }
+                    },
+                    ["sink"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "done", ["value"] = "true" }
+                    }
+                }
+            }
+        };
+        var fab = BuildFabric(config, ctx);
+
+        var ff = FlowFile.Create("""[{"name":"Alice","amount":42}]"""u8, new());
+        var ok = fab.Execute(ff, "json-parse");
+        AssertTrue("e2e formats: execute returns true", ok);
+        var stats = fab.GetProcessorStats();
+        AssertTrue("e2e formats: json-parse processed=1", stats["json-parse"]["processed"] == 1);
+        AssertTrue("e2e formats: enrich processed=1", stats["enrich"]["processed"] == 1);
+        AssertTrue("e2e formats: to-csv processed=1", stats["to-csv"]["processed"] == 1);
+        AssertTrue("e2e formats: sink processed=1", stats["sink"]["processed"] == 1);
+    }
+
+    static void TestMultipleResultEdgeCases()
+    {
+        Console.WriteLine("--- TestMultipleResultEdgeCases ---");
+        var ctx = TestContext();
+
+        // Case 1: Single line (no split delimiter found) -> SplitText returns SingleResult (pass-through)
+        var config = new Dictionary<string, object?>
+        {
+            ["flow"] = new Dictionary<string, object?>
+            {
+                ["processors"] = new Dictionary<string, object?>
+                {
+                    ["splitter"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "SplitText",
+                        ["config"] = new Dictionary<string, object?> { ["delimiter"] = @"\n" },
+                        ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "sink" } }
+                    },
+                    ["sink"] = new Dictionary<string, object?>
+                    {
+                        ["type"] = "UpdateAttribute",
+                        ["config"] = new Dictionary<string, object?> { ["key"] = "split", ["value"] = "true" }
+                    }
+                }
+            }
+        };
+        var fab1 = BuildFabric(config, ctx);
+
+        // Single line — no newline, so parts.Length == 1 -> SingleResult pass-through -> downstream gets 1
+        var ff1 = FlowFile.Create("single line no newline"u8, new());
+        var ok1 = fab1.Execute(ff1, "splitter");
+        AssertTrue("split single line: execute ok", ok1);
+        var stats1 = fab1.GetProcessorStats();
+        AssertTrue("split single line: splitter processed=1", stats1["splitter"]["processed"] == 1);
+        AssertTrue("split single line: sink processed=1 (pass-through)", stats1["sink"]["processed"] == 1);
+
+        // Case 2: Empty content -> SplitText splits "" by \n -> [""] -> length 1 -> SingleResult pass-through
+        var ctx2 = TestContext();
+        var fab2 = BuildFabric(config, ctx2);
+        var ff2 = FlowFile.Create(""u8, new());
+        var ok2 = fab2.Execute(ff2, "splitter");
+        AssertTrue("split empty: execute ok", ok2);
+        var stats2 = fab2.GetProcessorStats();
+        AssertTrue("split empty: splitter processed=1", stats2["splitter"]["processed"] == 1);
+        AssertTrue("split empty: sink processed=1 (pass-through)", stats2["sink"]["processed"] == 1);
     }
 }

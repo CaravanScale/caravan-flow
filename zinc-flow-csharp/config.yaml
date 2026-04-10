@@ -11,10 +11,8 @@ content:
   sweep_interval_ms: 300000       # orphan cleanup every 5 min
 
 defaults:
-  backpressure:
-    max_count: 10000
-    max_retries: 5
-    drain_timeout: 60
+  max_hops: 50
+  max_concurrent_executions: 100
 
 sources:
   listen_http:

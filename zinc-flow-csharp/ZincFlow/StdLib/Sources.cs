@@ -92,6 +92,10 @@ public sealed class GetFile : IConnectorSource
                             if (File.Exists(dest)) File.Delete(dest);
                             File.Move(filePath, dest);
                         }
+                        else
+                        {
+                            FlowFile.Return(ff); // return to pool on backpressure, retry next poll
+                        }
                     }
                     catch (IOException) { }
                 }
@@ -188,7 +192,12 @@ public sealed class ListenHTTP : IConnectorSource
             var flowfiles = FlowFileV3.UnpackAll(body);
             int accepted = 0;
             foreach (var ff in flowfiles)
-                if (_ingest(ff)) accepted++;
+            {
+                if (_ingest(ff))
+                    accepted++;
+                else
+                    FlowFile.Return(ff); // return rejected FlowFiles to pool
+            }
             await SourceHelpers.WriteJson(ctx.Response, new { status = "accepted", count = accepted, source = Name });
             return;
         }
@@ -215,6 +224,7 @@ public sealed class ListenHTTP : IConnectorSource
 
         if (!_ingest(flowFile))
         {
+            FlowFile.Return(flowFile); // return to pool on backpressure
             ctx.Response.StatusCode = 503;
             await SourceHelpers.WriteJson(ctx.Response, new { error = "backpressure", source = Name });
             return;

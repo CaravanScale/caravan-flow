@@ -47,12 +47,9 @@ public sealed class Fabric
     public void LoadFlow(Dictionary<string, object?> config)
     {
         // Read defaults
-        if (TryGetConfig<int>(config, "defaults.backpressure.max_hops", out var mh)) _maxHops = mh;
+        if (TryGetConfig<int>(config, "defaults.max_hops", out var mh)) _maxHops = mh;
         if (TryGetConfig<int>(config, "defaults.max_concurrent_executions", out var mce))
-        {
             _maxConcurrentExecutions = mce;
-            // Rebuild semaphore with new limit
-        }
 
         var processors = new Dictionary<string, IProcessor>();
         var connections = new Dictionary<string, Dictionary<string, List<string>>>();
@@ -187,9 +184,31 @@ public sealed class Fabric
                 continue;
             }
 
-            // Process
+            // Process — catch exceptions to prevent FlowFile leaks
             _provenance?.Record(currentFf.NumericId, ProvenanceEventType.Processed, procName);
-            var result = processor.Process(currentFf);
+            ProcessorResult result;
+            try
+            {
+                result = processor.Process(currentFf);
+            }
+            catch (Exception ex)
+            {
+                _log?.Log("ERROR", procName, $"processor threw exception: {ex.Message}, ff-{currentFf.NumericId}");
+                _processorErrors.AddOrUpdate(procName, 1, (_, v) => v + 1);
+                Interlocked.Increment(ref _totalProcessed);
+
+                // Route to failure connection if available, otherwise drop
+                var exConns = graph.Connections.GetValueOrDefault(procName);
+                if (exConns is not null && exConns.ContainsKey("failure"))
+                {
+                    PushDownstream(work, graph, currentFf, procName, "failure", hops + 1);
+                }
+                else
+                {
+                    FlowFile.Return(currentFf);
+                }
+                continue;
+            }
             _processorCounts.AddOrUpdate(procName, 1, (_, v) => v + 1);
             Interlocked.Increment(ref _totalProcessed);
 
@@ -509,7 +528,7 @@ public sealed class Fabric
         int added = 0, removed = 0, updated = 0, connectionsChanged = 0;
 
         // Read new defaults
-        if (TryGetConfig<int>(config, "defaults.backpressure.max_hops", out var mh)) _maxHops = mh;
+        if (TryGetConfig<int>(config, "defaults.max_hops", out var mh)) _maxHops = mh;
 
         // Parse new processor defs from config
         var newDefs = new Dictionary<string, (string Type, Dictionary<string, string> Config, List<string> Requires, Dictionary<string, List<string>> Connections)>();
