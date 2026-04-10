@@ -63,6 +63,9 @@ public static class FabricTests
 
         // RouteOnAttribute integration
         TestRouteOnAttributeInPipeline();
+
+        // AddProcessor incremental (API-style)
+        TestAddProcessorIncremental();
     }
 
     static void TestFabricMultiHop()
@@ -1390,5 +1393,56 @@ public static class FabricTests
 
         AssertIntEqual("default sink got 1", defaultSink.Captured.Count, 1);
         AssertEqual("default has tier", defaultSink.Captured[0].Attrs.GetValueOrDefault("tier", ""), "free");
+    }
+
+    /// <summary>
+    /// Test AddProcessor incrementally (API-style): add processors one at a time,
+    /// connections reference processors that don't exist yet. Verify pipeline works
+    /// after all processors are added.
+    /// </summary>
+    static void TestAddProcessorIncremental()
+    {
+        Console.WriteLine("--- AddProcessor: incremental (API-style) ---");
+        var ctx = TestContext();
+        var logProv = new LoggingProvider(); logProv.Enable();
+        ctx.AddProvider(logProv);
+
+        var reg = new Registry();
+        BuiltinProcessors.RegisterAll(reg);
+        var fab = new ZincFlow.Fabric.Fabric(reg, ctx);
+
+        // Add processors one at a time (connections reference future processors)
+        var ok1 = fab.AddProcessor("parser", "ConvertJSONToRecord", new(),
+            null, new() { ["success"] = new List<string> { "sink" }, ["failure"] = new List<string> { "err" } });
+        AssertTrue("add parser", ok1);
+
+        var ok2 = fab.AddProcessor("sink", "LogAttribute", new() { ["prefix"] = "OK" });
+        AssertTrue("add sink", ok2);
+
+        var ok3 = fab.AddProcessor("err", "LogAttribute", new() { ["prefix"] = "ERR" });
+        AssertTrue("add err", ok3);
+
+        // Verify graph state
+        AssertIntEqual("3 processors", fab.GetProcessorNames().Count, 3);
+        AssertTrue("parser is entry point", fab.GetEntryPoints().Contains("parser"));
+
+        // Execute with valid JSON — should flow: parser → sink
+        var ff1 = FlowFile.Create(Encoding.UTF8.GetBytes("[{\"name\":\"Alice\"}]"), new() { ["type"] = "test" });
+        var exec1 = fab.Execute(ff1, "parser");
+        AssertTrue("valid json: execute ok", exec1);
+
+        var stats1 = fab.GetProcessorStats();
+        AssertTrue("valid json: parser processed", stats1["parser"]["processed"] >= 1);
+        AssertTrue("valid json: parser no errors", stats1["parser"]["errors"] == 0);
+        AssertTrue("valid json: sink processed", stats1["sink"]["processed"] >= 1);
+        AssertTrue("valid json: err not invoked", stats1["err"]["processed"] == 0);
+
+        // Execute with invalid JSON — should flow: parser → err
+        var ff2 = FlowFile.Create("not json"u8, new() { ["type"] = "bad" });
+        var exec2 = fab.Execute(ff2, "parser");
+        AssertTrue("bad json: execute ok", exec2);
+
+        var stats2 = fab.GetProcessorStats();
+        AssertTrue("bad json: err processed", stats2["err"]["processed"] >= 1);
     }
 }
