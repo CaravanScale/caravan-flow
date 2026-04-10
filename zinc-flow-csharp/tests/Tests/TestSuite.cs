@@ -159,6 +159,10 @@ public static class TestSuite
         TestE2EFullPipelineFormats();
         TestMultipleResultEdgeCases();
 
+        // PollingSource
+        TestPollingSourceLifecycle();
+        TestPollingSourceBackpressure();
+
         Console.WriteLine();
         Console.WriteLine($"=== {_pass} passed, {_fail} failed ({_pass + _fail} total) ===");
         return _fail;
@@ -3355,5 +3359,79 @@ public static class TestSuite
         var stats2 = fab2.GetProcessorStats();
         AssertTrue("split empty: splitter processed=1", stats2["splitter"]["processed"] == 1);
         AssertTrue("split empty: sink processed=1 (pass-through)", stats2["sink"]["processed"] == 1);
+    }
+
+    // --- PollingSource tests ---
+
+    class TestPoller : PollingSource
+    {
+        public override string SourceType => "TestPoller";
+        public int PollCount;
+        public List<FlowFile> NextBatch = new();
+        public List<FlowFile> IngestedFiles = new();
+        public List<FlowFile> RejectedFiles = new();
+
+        public TestPoller(string name, int intervalMs) : base(name, intervalMs) { }
+
+        protected override List<FlowFile> Poll(CancellationToken ct)
+        {
+            Interlocked.Increment(ref PollCount);
+            var batch = new List<FlowFile>(NextBatch);
+            NextBatch.Clear();
+            return batch;
+        }
+
+        protected override void OnIngested(FlowFile ff) => IngestedFiles.Add(ff);
+        protected override void OnRejected(FlowFile ff) => RejectedFiles.Add(ff);
+    }
+
+    static void TestPollingSourceLifecycle()
+    {
+        Console.WriteLine("--- PollingSource: lifecycle ---");
+        var poller = new TestPoller("test-poller", 100);
+
+        AssertTrue("not running initially", !poller.IsRunning);
+        AssertEqual("name", poller.Name, "test-poller");
+        AssertEqual("source type", poller.SourceType, "TestPoller");
+
+        // Start with a batch ready
+        poller.NextBatch.Add(FlowFile.Create("hello"u8, new() { ["key"] = "value" }));
+
+        using var cts = new CancellationTokenSource();
+        poller.Start(ff => true, cts.Token);
+        AssertTrue("running after start", poller.IsRunning);
+
+        // Wait for at least 2 poll cycles
+        Thread.Sleep(500);
+
+        AssertTrue("poll called multiple times", poller.PollCount >= 2);
+        AssertTrue("first batch ingested", poller.IngestedFiles.Count >= 1);
+        AssertTrue("no rejections", poller.RejectedFiles.Count == 0);
+
+        poller.Stop();
+        Thread.Sleep(200);
+        AssertTrue("stopped", !poller.IsRunning);
+    }
+
+    static void TestPollingSourceBackpressure()
+    {
+        Console.WriteLine("--- PollingSource: backpressure ---");
+        var poller = new TestPoller("bp-poller", 100);
+
+        // Prepare a batch
+        poller.NextBatch.Add(FlowFile.Create("a"u8, new()));
+        poller.NextBatch.Add(FlowFile.Create("b"u8, new()));
+
+        using var cts = new CancellationTokenSource();
+        // Ingest rejects everything (simulates backpressure)
+        poller.Start(ff => false, cts.Token);
+
+        Thread.Sleep(400);
+        poller.Stop();
+        Thread.Sleep(200);
+
+        AssertTrue("poll was called", poller.PollCount >= 1);
+        AssertTrue("no ingested (all rejected)", poller.IngestedFiles.Count == 0);
+        AssertTrue("rejections recorded", poller.RejectedFiles.Count >= 2);
     }
 }

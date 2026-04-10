@@ -171,7 +171,18 @@ Processors declare `requires: [content, logging]` in config. They receive a `Sco
 
 ## Source Connectors
 
-Sources implement `IConnectorSource`:
+All sources implement `IConnectorSource`. There are two patterns:
+
+```
+IConnectorSource (lifecycle interface)
+├── Event-driven — implement directly, use library's native threading
+│   ListenHTTP (Kestrel), GetNats (NATS client), GetKafka (consumer)
+│
+└── PollingSource (abstract base class) — implement Poll(), framework schedules
+    GetFile, GetFTP, GetJDBC
+```
+
+### IConnectorSource (interface)
 ```csharp
 public interface IConnectorSource
 {
@@ -185,18 +196,39 @@ public interface IConnectorSource
 
 The `ingest` callback is `Fabric.IngestAndExecute` — it fans out to all entry-point processors and runs the pipeline synchronously. Returns `false` on backpressure.
 
-### ListenHTTP
+### PollingSource (abstract base class)
+
+For sources that poll an external system on a schedule. Subclasses implement `Poll()`, the base class handles scheduling (`PeriodicTimer`), lifecycle, backpressure, and error isolation.
+
+```csharp
+public abstract class PollingSource : IConnectorSource
+{
+    protected abstract List<FlowFile> Poll(CancellationToken ct);
+    protected virtual void OnIngested(FlowFile ff) { }        // post-ingest hook
+    protected virtual void OnRejected(FlowFile ff) { ... }     // backpressure hook
+    // Start/Stop/IsRunning managed by base class
+}
+```
+
+- Uses `PeriodicTimer` (no drift, cancellation-aware)
+- One bad poll doesn't kill the source (exception caught + logged)
+- `OnIngested()` — GetFile uses this to move files to `.processed/`
+- `OnRejected()` — default returns FlowFile to pool
+- No concurrency within Poll — sequential by design. Concurrency from Fabric semaphore.
+
+### ListenHTTP (event-driven)
+- Implements `IConnectorSource` directly
 - Embedded Kestrel server on dedicated port (default 9092)
 - Accepts POST with raw body or NiFi V3 binary (`application/octet-stream`)
 - Extracts `X-Flow-*` headers as FlowFile attributes
 - ASP.NET handles request threading — each request = one pipeline execution
 - Returns 503 on backpressure
 
-### GetFile
-- Polls a directory for new files matching a pattern
-- Creates FlowFile with filename/path/size attributes
-- Moves processed files to `.processed/` subdirectory
-- Skips files on backpressure (retry next poll)
+### GetFile (polling)
+- Extends `PollingSource`
+- `Poll()` scans directory for files matching pattern, returns FlowFiles
+- `OnIngested()` moves file to `.processed/` subdirectory
+- Backpressure: rejected files stay in place, retry next poll
 
 ---
 

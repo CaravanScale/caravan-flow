@@ -24,88 +24,67 @@ internal static class SourceHelpers
 /// <summary>
 /// GetFile: polls a directory and ingests new files as FlowFiles.
 /// Files are moved to a .processed subdirectory after ingestion.
+/// Extends PollingSource — framework handles scheduling and lifecycle.
 /// </summary>
-public sealed class GetFile : IConnectorSource
+public sealed class GetFile : PollingSource
 {
-    public string Name { get; }
-    public string SourceType => "GetFile";
-    public bool IsRunning { get; private set; }
+    public override string SourceType => "GetFile";
 
     private readonly string _inputDir;
     private readonly string _processedDir;
     private readonly string _pattern;
-    private readonly int _pollIntervalMs;
     private readonly IContentStore _store;
-    private Func<FlowFile, bool> _ingest = null!;
-    private CancellationTokenSource? _cts;
 
     public GetFile(string name, string inputDir, string pattern, int pollIntervalMs, IContentStore store)
+        : base(name, pollIntervalMs)
     {
-        Name = name;
         _inputDir = inputDir;
         _processedDir = Path.Combine(inputDir, ".processed");
         _pattern = string.IsNullOrEmpty(pattern) ? "*" : pattern;
-        _pollIntervalMs = pollIntervalMs > 0 ? pollIntervalMs : 1000;
         _store = store;
-    }
-
-    public void Start(Func<FlowFile, bool> ingest, CancellationToken ct)
-    {
-        _ingest = ingest;
-        _cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        IsRunning = true;
         Directory.CreateDirectory(_inputDir);
         Directory.CreateDirectory(_processedDir);
-        _ = Task.Run(() => PollLoop(_cts.Token), _cts.Token);
     }
 
-    public void Stop()
+    protected override List<FlowFile> Poll(CancellationToken ct)
     {
-        IsRunning = false;
-        _cts?.Cancel();
-    }
-
-    private async Task PollLoop(CancellationToken ct)
-    {
-        while (!ct.IsCancellationRequested && IsRunning)
+        var results = new List<FlowFile>();
+        try
         {
-            try
+            foreach (var filePath in Directory.GetFiles(_inputDir, _pattern))
             {
-                foreach (var filePath in Directory.GetFiles(_inputDir, _pattern))
+                if (ct.IsCancellationRequested) break;
+                try
                 {
-                    if (ct.IsCancellationRequested) break;
                     var fileName = Path.GetFileName(filePath);
-                    try
+                    var data = File.ReadAllBytes(filePath);
+                    var content = ContentHelpers.MaybeOffload(_store, data);
+                    results.Add(FlowFile.CreateWithContent(content, new Dictionary<string, string>
                     {
-                        var data = await File.ReadAllBytesAsync(filePath, ct);
-                        var content = ContentHelpers.MaybeOffload(_store, data);
-                        var ff = FlowFile.CreateWithContent(content, new Dictionary<string, string>
-                        {
-                            ["filename"] = fileName,
-                            ["path"] = filePath,
-                            ["size"] = data.Length.ToString(),
-                            ["source"] = Name
-                        });
-                        if (_ingest(ff))
-                        {
-                            var dest = Path.Combine(_processedDir, fileName);
-                            if (File.Exists(dest)) File.Delete(dest);
-                            File.Move(filePath, dest);
-                        }
-                        else
-                        {
-                            FlowFile.Return(ff); // return to pool on backpressure, retry next poll
-                        }
-                    }
-                    catch (IOException) { }
+                        ["filename"] = fileName,
+                        ["path"] = filePath,
+                        ["size"] = data.Length.ToString(),
+                        ["source"] = Name
+                    }));
                 }
+                catch (IOException) { }
             }
-            catch (DirectoryNotFoundException) { Directory.CreateDirectory(_inputDir); }
-
-            try { await Task.Delay(_pollIntervalMs, ct); }
-            catch (OperationCanceledException) { break; }
         }
-        IsRunning = false;
+        catch (DirectoryNotFoundException) { Directory.CreateDirectory(_inputDir); }
+        return results;
+    }
+
+    protected override void OnIngested(FlowFile ff)
+    {
+        if (!ff.Attributes.TryGetValue("path", out var filePath)) return;
+        var fileName = Path.GetFileName(filePath);
+        var dest = Path.Combine(_processedDir, fileName);
+        try
+        {
+            if (File.Exists(dest)) File.Delete(dest);
+            File.Move(filePath, dest);
+        }
+        catch (IOException) { }
     }
 }
 
