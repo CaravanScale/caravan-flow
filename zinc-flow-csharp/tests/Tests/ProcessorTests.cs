@@ -63,9 +63,10 @@ public static class ProcessorTests
     static void TestConvertRecordToJSON()
     {
         Console.WriteLine("--- ConvertRecordToJSON ---");
-        var rc = new RecordContent(
-            new() { ["name"] = "test" },
-            [new() { ["name"] = (object?)"Bob" }]);
+        var jsonSchema = new Schema("test", [new Field("name", FieldType.String)]);
+        var jsonRec = new GenericRecord(jsonSchema);
+        jsonRec.SetField("name", "Bob");
+        var rc = new RecordContent(jsonSchema, [jsonRec]);
         var ff = FlowFile.CreateWithContent(rc, new());
         var proc = new ConvertRecordToJSON();
         var result = proc.Process(ff);
@@ -79,9 +80,10 @@ public static class ProcessorTests
     static void TestJSONRoundtrip()
     {
         Console.WriteLine("--- Processor: JSON Roundtrip ---");
-        var rc = new RecordContent(
-            new() { ["name"] = "geo" },
-            [new() { ["city"] = (object?)"Portland" }]);
+        var geoSchema = new Schema("geo", [new Field("city", FieldType.String)]);
+        var geoRec = new GenericRecord(geoSchema);
+        geoRec.SetField("city", "Portland");
+        var rc = new RecordContent(geoSchema, [geoRec]);
         var ff = FlowFile.CreateWithContent(rc, new());
 
         // Records -> JSON

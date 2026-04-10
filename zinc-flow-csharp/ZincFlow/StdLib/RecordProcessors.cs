@@ -46,15 +46,7 @@ public sealed class ConvertAvroToRecord : IProcessor
         if (records.Count == 0)
             return FailureResult.Rent("no records decoded from Avro binary", ff);
 
-        var updated = FlowFile.WithContent(ff, new RecordContent(
-            new Dictionary<string, string> { ["name"] = schema.Name },
-            records.Select(r =>
-            {
-                var dict = new Dictionary<string, object?>();
-                foreach (var f in r.RecordSchema.Fields)
-                    dict[f.Name] = r.GetField(f.Name);
-                return dict;
-            }).ToList()));
+        var updated = FlowFile.WithContent(ff, new RecordContent(schema, records));
         return SingleResult.Rent(updated);
     }
 
@@ -95,42 +87,12 @@ public sealed class ConvertRecordToAvro : IProcessor
         if (ff.Content is not RecordContent rc || rc.Records.Count == 0)
             return SingleResult.Rent(ff);
 
-        // Build schema from first record's keys and value types
-        var schemaName = rc.Schema.GetValueOrDefault("name") ?? "record";
-        var fields = new List<Field>();
-        var first = rc.Records[0];
-        foreach (var (key, val) in first)
-            fields.Add(new Field(key, InferFieldType(val)));
-        var schema = new Schema(schemaName, fields);
-
-        // Convert record dicts → GenericRecords
-        var records = new List<GenericRecord>(rc.Records.Count);
-        foreach (var dict in rc.Records)
-        {
-            var record = new GenericRecord(schema);
-            foreach (var f in schema.Fields)
-                record.SetField(f.Name, dict.GetValueOrDefault(f.Name));
-            records.Add(record);
-        }
-
-        var bytes = _writer.Write(records, schema);
+        var bytes = _writer.Write(rc.Records, rc.Schema);
         var updated = FlowFile.WithContent(ff, Raw.Rent(bytes));
         updated = FlowFile.WithAttribute(updated, "avro.schema",
-            string.Join(",", schema.Fields.Select(f => $"{f.Name}:{f.FieldType.ToString().ToLowerInvariant()}")));
+            string.Join(",", rc.Schema.Fields.Select(f => $"{f.Name}:{f.FieldType.ToString().ToLowerInvariant()}")));
         return SingleResult.Rent(updated);
     }
-
-    private static FieldType InferFieldType(object? val) => val switch
-    {
-        null => FieldType.String,
-        bool => FieldType.Boolean,
-        int => FieldType.Int,
-        long => FieldType.Long,
-        float => FieldType.Float,
-        double => FieldType.Double,
-        byte[] => FieldType.Bytes,
-        _ => FieldType.String
-    };
 }
 
 /// <summary>
@@ -169,15 +131,8 @@ public sealed class ConvertCSVToRecord : IProcessor
         if (records.Count == 0)
             return FailureResult.Rent("no records parsed from CSV", ff);
 
-        var updated = FlowFile.WithContent(ff, new RecordContent(
-            new Dictionary<string, string> { ["name"] = records[0].RecordSchema.Name },
-            records.Select(r =>
-            {
-                var dict = new Dictionary<string, object?>();
-                foreach (var f in r.RecordSchema.Fields)
-                    dict[f.Name] = r.GetField(f.Name);
-                return dict;
-            }).ToList()));
+        var effectiveSchema = records[0].RecordSchema;
+        var updated = FlowFile.WithContent(ff, new RecordContent(effectiveSchema, records));
         return SingleResult.Rent(updated);
     }
 }
@@ -200,20 +155,7 @@ public sealed class ConvertRecordToCSV : IProcessor
         if (ff.Content is not RecordContent rc || rc.Records.Count == 0)
             return SingleResult.Rent(ff);
 
-        var schemaName = rc.Schema.GetValueOrDefault("name") ?? "record";
-        var fields = rc.Records[0].Keys.Select(k => new Field(k, FieldType.String)).ToList();
-        var schema = new Schema(schemaName, fields);
-
-        var records = new List<GenericRecord>(rc.Records.Count);
-        foreach (var dict in rc.Records)
-        {
-            var record = new GenericRecord(schema);
-            foreach (var f in schema.Fields)
-                record.SetField(f.Name, dict.GetValueOrDefault(f.Name));
-            records.Add(record);
-        }
-
-        var bytes = _writer.Write(records, schema);
+        var bytes = _writer.Write(rc.Records, rc.Schema);
         var updated = FlowFile.WithContent(ff, Raw.Rent(bytes));
         return SingleResult.Rent(updated);
     }

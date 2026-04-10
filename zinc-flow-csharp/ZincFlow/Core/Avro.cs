@@ -43,7 +43,7 @@ public sealed class Schema
 public sealed class GenericRecord
 {
     public Schema RecordSchema { get; }
-    private readonly Dictionary<string, object?> _values = new();
+    internal readonly Dictionary<string, object?> _values = new();
 
     public GenericRecord(Schema schema) => RecordSchema = schema;
 
@@ -52,6 +52,22 @@ public sealed class GenericRecord
     public object? GetField(string key) => _values.GetValueOrDefault(key);
 
     public Schema GetSchema() => RecordSchema;
+
+    public Dictionary<string, object?> ToDictionary()
+    {
+        var dict = new Dictionary<string, object?>(_values.Count);
+        foreach (var (k, v) in _values)
+            dict[k] = v;
+        return dict;
+    }
+
+    public GenericRecord Clone()
+    {
+        var copy = new GenericRecord(RecordSchema);
+        foreach (var (k, v) in _values)
+            copy._values[k] = v;
+        return copy;
+    }
 }
 
 // --- Record interfaces ---

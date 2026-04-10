@@ -96,15 +96,8 @@ public sealed class ConvertJSONToRecord : IProcessor
         if (records.Count == 0)
             return FailureResult.Rent("no records parsed from JSON", ff);
 
-        var updated = FlowFile.WithContent(ff, new RecordContent(
-            new Dictionary<string, string> { ["name"] = records[0].RecordSchema.Name },
-            records.Select(r =>
-            {
-                var dict = new Dictionary<string, object?>();
-                foreach (var f in r.RecordSchema.Fields)
-                    dict[f.Name] = r.GetField(f.Name);
-                return dict;
-            }).ToList()));
+        var effectiveSchema = records[0].RecordSchema;
+        var updated = FlowFile.WithContent(ff, new RecordContent(effectiveSchema, records));
         return SingleResult.Rent(updated);
     }
 }
@@ -120,7 +113,8 @@ public sealed class ConvertRecordToJSON : IProcessor
             byte[] bytes;
             try
             {
-                bytes = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(rc.Records);
+                var writer = new JsonRecordWriter();
+                bytes = writer.Write(rc.Records, rc.Schema);
             }
             catch (Exception ex)
             {

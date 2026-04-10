@@ -81,9 +81,9 @@ public static class PipelineTests
         var transform = new TransformRecord("toUpper:name;add:source:import;default:role:user");
         var r2 = (SingleResult)transform.Process(r1.FlowFile);
         var rc2 = (RecordContent)r2.FlowFile.Content;
-        AssertEqual("uppercased name", rc2.Records[0]["name"]?.ToString() ?? "", "ALICE");
-        AssertEqual("added source", rc2.Records[0]["source"]?.ToString() ?? "", "import");
-        AssertEqual("default role", rc2.Records[1]["role"]?.ToString() ?? "", "user");
+        AssertEqual("uppercased name", rc2.Records[0].GetField("name")?.ToString() ?? "", "ALICE");
+        AssertEqual("added source", rc2.Records[0].GetField("source")?.ToString() ?? "", "import");
+        AssertEqual("default role", rc2.Records[1].GetField("role")?.ToString() ?? "", "user");
 
         // Enrich with expression on FlowFile attributes
         var enrich = new EvaluateExpression(new() { ["processed_by"] = "zinc-flow", ["record_count"] = "2" });
@@ -441,7 +441,7 @@ public static class PipelineTests
         var rc = (RecordContent)((SingleResult)result).FlowFile.Content;
         AssertIntEqual("3 rows parsed", rc.Records.Count, 3);
         // Short row: missing columns should not crash
-        AssertTrue("short row has a", rc.Records[0].ContainsKey("a"));
+        AssertTrue("short row has a", rc.Records[0].GetField("a") is not null);
     }
 
     static void TestPipelineMultiFormatConversion()

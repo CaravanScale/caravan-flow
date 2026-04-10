@@ -181,10 +181,40 @@ public sealed class TransformRecord : IProcessor
         if (ff.Content is not RecordContent rc || rc.Records.Count == 0)
             return SingleResult.Rent(ff);
 
-        var transformed = new List<Dictionary<string, object?>>(rc.Records.Count);
+        // Collect all field names that will exist after transformations
+        // Start with existing schema fields, then apply add/rename/remove to determine final fields
+        var baseFieldNames = rc.Schema.Fields.Select(f => f.Name).ToList();
+        var finalFieldNames = new List<string>(baseFieldNames);
+        foreach (var (op, arg1, arg2) in _operations)
+        {
+            switch (op)
+            {
+                case "rename":
+                    finalFieldNames.Remove(arg1);
+                    if (!finalFieldNames.Contains(arg2)) finalFieldNames.Add(arg2);
+                    break;
+                case "remove":
+                    finalFieldNames.Remove(arg1);
+                    break;
+                case "add":
+                    if (!finalFieldNames.Contains(arg1)) finalFieldNames.Add(arg1);
+                    break;
+                case "copy":
+                    if (!finalFieldNames.Contains(arg2)) finalFieldNames.Add(arg2);
+                    break;
+                case "default":
+                    if (!finalFieldNames.Contains(arg1)) finalFieldNames.Add(arg1);
+                    break;
+            }
+        }
+
+        var newSchema = new Schema(rc.Schema.Name, finalFieldNames.Select(n => new Field(n, FieldType.String)).ToList());
+
+        var transformed = new List<GenericRecord>(rc.Records.Count);
         foreach (var record in rc.Records)
         {
-            var dict = new Dictionary<string, object?>(record);
+            // Work on a mutable dictionary copy, then build GenericRecord at the end
+            var dict = record.ToDictionary();
             foreach (var (op, arg1, arg2) in _operations)
             {
                 switch (op)
@@ -217,10 +247,13 @@ public sealed class TransformRecord : IProcessor
                         break;
                 }
             }
-            transformed.Add(dict);
+            var newRecord = new GenericRecord(newSchema);
+            foreach (var (k, v) in dict)
+                newRecord.SetField(k, v);
+            transformed.Add(newRecord);
         }
 
-        var updated = FlowFile.WithContent(ff, new RecordContent(rc.Schema, transformed));
+        var updated = FlowFile.WithContent(ff, new RecordContent(newSchema, transformed));
         return SingleResult.Rent(updated);
     }
 

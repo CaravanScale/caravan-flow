@@ -235,16 +235,21 @@ public static class CodecTests
         AssertTrue("content is RecordContent", outFf.Content is RecordContent);
         var rc = (RecordContent)outFf.Content;
         AssertIntEqual("1 record", rc.Records.Count, 1);
-        AssertEqual("name field", rc.Records[0]["name"]?.ToString() ?? "", "Widget");
-        AssertIntEqual("qty field", Convert.ToInt32(rc.Records[0]["qty"]), 10);
+        AssertEqual("name field", rc.Records[0].GetField("name")?.ToString() ?? "", "Widget");
+        AssertIntEqual("qty field", Convert.ToInt32(rc.Records[0].GetField("qty")), 10);
     }
 
     static void TestConvertRecordToAvro()
     {
         Console.WriteLine("--- ConvertRecordToAvro ---");
-        var rc = new RecordContent(
-            new() { ["name"] = "order" },
-            [new() { ["item"] = (object?)"Gadget", ["count"] = (object?)5 }]);
+        var avroSchema = new Schema("order", [
+            new Field("item", FieldType.String),
+            new Field("count", FieldType.Int)
+        ]);
+        var rec1 = new GenericRecord(avroSchema);
+        rec1.SetField("item", "Gadget");
+        rec1.SetField("count", 5);
+        var rc = new RecordContent(avroSchema, [rec1]);
         var ff = FlowFile.CreateWithContent(rc, new());
         var proc = new ConvertRecordToAvro();
         var result = proc.Process(ff);
@@ -267,18 +272,23 @@ public static class CodecTests
         AssertTrue("content is RecordContent", outFf.Content is RecordContent);
         var rc = (RecordContent)outFf.Content;
         AssertIntEqual("2 records", rc.Records.Count, 2);
-        AssertEqual("first name", rc.Records[0]["name"]?.ToString() ?? "", "Alice");
+        AssertEqual("first name", rc.Records[0].GetField("name")?.ToString() ?? "", "Alice");
     }
 
     static void TestConvertRecordToCSV()
     {
         Console.WriteLine("--- ConvertRecordToCSV ---");
-        var rc = new RecordContent(
-            new() { ["name"] = "data" },
-            [
-                new() { ["x"] = (object?)"hello", ["y"] = (object?)"world" },
-                new() { ["x"] = (object?)"foo", ["y"] = (object?)"bar" }
-            ]);
+        var csvSchema = new Schema("data", [
+            new Field("x", FieldType.String),
+            new Field("y", FieldType.String)
+        ]);
+        var csvRec1 = new GenericRecord(csvSchema);
+        csvRec1.SetField("x", "hello");
+        csvRec1.SetField("y", "world");
+        var csvRec2 = new GenericRecord(csvSchema);
+        csvRec2.SetField("x", "foo");
+        csvRec2.SetField("y", "bar");
+        var rc = new RecordContent(csvSchema, [csvRec1, csvRec2]);
         var ff = FlowFile.CreateWithContent(rc, new());
         var proc = new ConvertRecordToCSV(',', true);
         var result = proc.Process(ff);
@@ -363,9 +373,16 @@ public static class CodecTests
     static void TestTransformRecord()
     {
         Console.WriteLine("--- TransformRecord ---");
-        var rc = new RecordContent(
-            new() { ["name"] = "test" },
-            [new() { ["first_name"] = (object?)"alice", ["age"] = (object?)"30", ["temp"] = (object?)"x" }]);
+        var trSchema = new Schema("test", [
+            new Field("first_name", FieldType.String),
+            new Field("age", FieldType.String),
+            new Field("temp", FieldType.String)
+        ]);
+        var trRec = new GenericRecord(trSchema);
+        trRec.SetField("first_name", "alice");
+        trRec.SetField("age", "30");
+        trRec.SetField("temp", "x");
+        var rc = new RecordContent(trSchema, [trRec]);
         var ff = FlowFile.CreateWithContent(rc, new());
 
         var proc = new TransformRecord("rename:first_name:name;remove:temp;add:source:api;toUpper:name;default:missing:none");
@@ -373,10 +390,10 @@ public static class CodecTests
         var outFf = ((SingleResult)result).FlowFile;
         var outRc = (RecordContent)outFf.Content;
         var rec = outRc.Records[0];
-        AssertEqual("renamed + upper", rec["name"]?.ToString() ?? "", "ALICE");
-        AssertFalse("temp removed", rec.ContainsKey("temp"));
-        AssertEqual("added source", rec["source"]?.ToString() ?? "", "api");
-        AssertEqual("default missing", rec["missing"]?.ToString() ?? "", "none");
-        AssertEqual("age preserved", rec["age"]?.ToString() ?? "", "30");
+        AssertEqual("renamed + upper", rec.GetField("name")?.ToString() ?? "", "ALICE");
+        AssertTrue("temp removed", rec.GetField("temp") is null);
+        AssertEqual("added source", rec.GetField("source")?.ToString() ?? "", "api");
+        AssertEqual("default missing", rec.GetField("missing")?.ToString() ?? "", "none");
+        AssertEqual("age preserved", rec.GetField("age")?.ToString() ?? "", "30");
     }
 }

@@ -267,11 +267,11 @@ public sealed class Raw : Content
 
 public sealed class RecordContent : Content
 {
-    public Dictionary<string, string> Schema { get; }
-    public List<Dictionary<string, object?>> Records { get; }
+    public Schema Schema { get; }
+    public List<GenericRecord> Records { get; }
     public override int Size => Records.Count;
 
-    public RecordContent(Dictionary<string, string> schema, List<Dictionary<string, object?>> records)
+    public RecordContent(Schema schema, List<GenericRecord> records)
     {
         Schema = schema;
         Records = records;
