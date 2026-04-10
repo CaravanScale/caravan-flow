@@ -129,10 +129,18 @@ builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
 var app = builder.Build();
 
 // Dashboard — serve at /
-var dashboardPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "dashboard.html");
-if (!File.Exists(dashboardPath))
-    dashboardPath = Path.Combine(Directory.GetCurrentDirectory(), "dashboard.html");
-if (File.Exists(dashboardPath))
+string? dashboardPath = null;
+foreach (var candidate in new[]
+{
+    Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "dashboard.html"),      // JIT: bin/Debug/net10.0/../../..
+    Path.Combine(AppContext.BaseDirectory, "..", "ZincFlow", "dashboard.html"),      // AOT: build/../ZincFlow/
+    Path.Combine(Directory.GetCurrentDirectory(), "ZincFlow", "dashboard.html"),     // CWD/ZincFlow/
+    Path.Combine(Directory.GetCurrentDirectory(), "dashboard.html"),                 // CWD/
+})
+{
+    if (File.Exists(candidate)) { dashboardPath = candidate; break; }
+}
+if (dashboardPath is not null)
 {
     var dashHtml = File.ReadAllText(dashboardPath);
     app.MapGet("/", () => Results.Content(dashHtml, "text/html"));
