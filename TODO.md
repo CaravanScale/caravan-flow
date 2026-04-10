@@ -69,12 +69,12 @@ Make zinc-flow useful for real workloads without requiring NATS or K8s. A single
 - [x] Max-hop cycle protection — runtime detection for routing loops (default 50, configurable)
 - [x] DAG validator — cycle detection, unreachable processor detection, entry-point computation
 
-### Phase 2d: Developer experience ✓ (C#)
+### Phase 2d: Developer experience (C#)
 - [x] Hot reload — watch config.yaml, atomic pipeline graph swap on change
 - [x] NiFi-style connections replaced IRS global routing
 - [x] Direct pipeline executor (no inter-stage queues, Apache Camel-style)
 - [x] 17 processor types in StdLib
-- [x] 395 tests, 0 failures
+- [x] 438 tests, 0 failures (core types, processors, codecs, DAG, failure scenarios, e2e pipelines)
 - [ ] `zinc-flow validate` — check config without starting
 - [ ] RouteOnAttribute processor — conditional branching using predicate engine
 - [ ] Custom processor loading — register processors from external packages
