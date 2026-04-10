@@ -1,6 +1,16 @@
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 
 namespace ZincFlow.Core;
+
+// Shared options with reflection-based resolver (needed for AOT/trimmed builds)
+internal static class JsonOpts
+{
+    internal static readonly JsonSerializerOptions Default = new()
+    {
+        TypeInfoResolver = new DefaultJsonTypeInfoResolver()
+    };
+}
 
 // --- JSON RecordReader: JSON array → GenericRecords ---
 
@@ -108,14 +118,14 @@ public sealed class JsonRecordReader : IRecordReader
 
     private static bool TryDeserializeArray(byte[] data, out List<Dictionary<string, object?>>? result)
     {
-        try { result = JsonSerializer.Deserialize<List<Dictionary<string, object?>>>(data); return true; }
-        catch (JsonException) { result = null; return false; }
+        try { result = JsonSerializer.Deserialize<List<Dictionary<string, object?>>>(data, JsonOpts.Default); return true; }
+        catch { result = null; return false; }
     }
 
     private static bool TryDeserializeObject(byte[] data, out Dictionary<string, object?>? result)
     {
-        try { result = JsonSerializer.Deserialize<Dictionary<string, object?>>(data); return true; }
-        catch (JsonException) { result = null; return false; }
+        try { result = JsonSerializer.Deserialize<Dictionary<string, object?>>(data, JsonOpts.Default); return true; }
+        catch { result = null; return false; }
     }
 }
 
@@ -140,7 +150,7 @@ public sealed class JsonRecordWriter : IRecordWriter
 
         try
         {
-            return JsonSerializer.SerializeToUtf8Bytes(rawList);
+            return JsonSerializer.SerializeToUtf8Bytes(rawList, JsonOpts.Default);
         }
         catch
         {
