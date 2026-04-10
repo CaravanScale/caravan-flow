@@ -12,6 +12,14 @@ nullable = true
 implicit_usings = true
 unsafe = true
 
+[csharp.aot]
+enabled = true
+strip_symbols = true
+invariant_globalization = true
+optimization = "Size"
+stack_traces = false
+trim_metadata = false
+
 [csharp.nuget]
 packages = ["YamlDotNet:16.3.0"]
 
