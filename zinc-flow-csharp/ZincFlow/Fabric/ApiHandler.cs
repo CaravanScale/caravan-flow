@@ -110,7 +110,34 @@ public sealed class ApiHandler
                 config[prop.Name] = prop.Value.ToString();
         }
 
-        return _fab.AddProcessor(name, type, config)
+        // Parse connections: { "success": ["next"], "failure": ["error"] }
+        Dictionary<string, List<string>>? connections = null;
+        if (req.TryGetValue("connections", out var connObj) && connObj is System.Text.Json.JsonElement connEl
+            && connEl.ValueKind == System.Text.Json.JsonValueKind.Object)
+        {
+            connections = new();
+            foreach (var prop in connEl.EnumerateObject())
+            {
+                var targets = new List<string>();
+                if (prop.Value.ValueKind == System.Text.Json.JsonValueKind.Array)
+                    foreach (var item in prop.Value.EnumerateArray())
+                        targets.Add(item.GetString() ?? "");
+                if (targets.Count > 0)
+                    connections[prop.Name] = targets;
+            }
+        }
+
+        // Parse requires: ["content", "logging"]
+        List<string>? requires = null;
+        if (req.TryGetValue("requires", out var reqObj) && reqObj is System.Text.Json.JsonElement reqEl
+            && reqEl.ValueKind == System.Text.Json.JsonValueKind.Array)
+        {
+            requires = new();
+            foreach (var item in reqEl.EnumerateArray())
+                requires.Add(item.GetString() ?? "");
+        }
+
+        return _fab.AddProcessor(name, type, config, requires, connections)
             ? Results.Created($"/api/processors/{name}", new { status = "created", name })
             : Results.Conflict(new { error = "processor already exists or unknown type" });
     }
