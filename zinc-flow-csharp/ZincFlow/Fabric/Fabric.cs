@@ -14,7 +14,11 @@ public sealed class Fabric
     private readonly ProcessorContext _globalCtx;
     private readonly Dictionary<string, IConnectorSource> _sources = new();
     private readonly CancellationTokenSource _cts = new();
-    private readonly SemaphoreSlim _executionGate;
+    // Replaceable in LoadFlow when defaults.max_concurrent_executions is set.
+    // Safe on initial load (no in-flight Execute yet). On hot reload, the swap
+    // is best-effort — in-flight Wait()/Release() calls against the old
+    // semaphore drain naturally; new requests use the new one.
+    private SemaphoreSlim _executionGate;
 
     // Pipeline graph — swapped atomically on hot reload
     private volatile PipelineGraph _graph = PipelineGraph.Empty;
@@ -48,8 +52,16 @@ public sealed class Fabric
     {
         // Read defaults
         if (TryGetConfig<int>(config, "defaults.max_hops", out var mh)) _maxHops = mh;
-        if (TryGetConfig<int>(config, "defaults.max_concurrent_executions", out var mce))
+        if (TryGetConfig<int>(config, "defaults.max_concurrent_executions", out var mce)
+            && mce != _maxConcurrentExecutions)
+        {
+            // Replace the gate with one sized to the configured limit. Without
+            // this swap, the constructor-default-sized semaphore would silently
+            // ignore the config value (caught by SustainedLoadTests backpressure case).
             _maxConcurrentExecutions = mce;
+            var oldGate = Interlocked.Exchange(ref _executionGate, new SemaphoreSlim(mce, mce));
+            oldGate.Dispose();
+        }
 
         var processors = new Dictionary<string, IProcessor>();
         var connections = new Dictionary<string, Dictionary<string, List<string>>>();

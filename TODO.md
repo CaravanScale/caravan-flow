@@ -17,7 +17,7 @@
 
 **Three runtimes:**
 - **Go** — 11MB static binary, 599K ff/s, zero deps. Edge, embedded, performance-critical.
-- **C# .NET 10** — 27MB AOT binary, 2M+ ff/s, zero GC during execution. Maximum throughput, .NET ecosystems. 857 tests pass under both JIT and AOT, zero analyzer warnings.
+- **C# .NET 10** — 27MB AOT binary, 2M+ ff/s, zero GC during execution. Maximum throughput, .NET ecosystems. 925 tests pass under both JIT and AOT, zero analyzer warnings.
 - **Python 3.14t** — 14MB native binary, 95K ff/s, pandas/numpy/sklearn integration. Python orgs.
 
 ---
@@ -77,7 +77,8 @@ Make zinc-flow useful for real workloads without requiring NATS or K8s. A single
 - [x] Read-only management dashboard — single-file dashboard.html served at `/`, dagre DAG layout, live processor stats
 - [x] AOT hardening — source-generated JsonContext + Utf8JsonWriter for open shapes, [FromBody] parameter binding for mutation handlers, zero analyzer warnings
 - [x] `test --aot` mode in zinc-csharp build tool — publishes test project as Native AOT binary for nightly CI
-- [ ] `zinc-flow validate` — check config without starting
+- [x] `zinc-flow validate` — pre-flight config check (parses YAML, builds registry, constructs every processor against a synthetic context, runs DAG validation). Exit 0 valid, 1 errors, 2 usage. (See Phase 2e for full description.)
+- [x] FlowFile V3 boundary completion — GetFile sniffs V3 magic, PutFile/PutStdout `format: v3`, ListenHTTP accepts `application/flowfile-v3`, new `PackageFlowFileV3` / `UnpackageFlowFileV3` processors.
 - [ ] Custom processor loading — register processors from external packages
 
 ### Phase 2e: Avro fidelity & expression engine (C#)

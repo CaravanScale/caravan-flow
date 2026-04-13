@@ -42,7 +42,7 @@ public static class FlowValidator
 
         // Step 1: structural validation (sections present, types registered, connections resolve, DAG acyclic).
         foreach (var err in ConfigValidator.Validate(config, registry))
-            result.Issues.Add(new("error", err.Path, err.Message));
+            result.Issues.Add(new(err.IsWarning ? "warning" : "error", err.Path, err.Message));
 
         // Step 2: factory construction. Tries to instantiate each processor against a
         // synthetic context that has all standard providers enabled. Catches anything

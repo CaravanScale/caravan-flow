@@ -45,5 +45,8 @@ public sealed class Registry
 
     public bool Has(string name) => _factories.ContainsKey(name);
 
+    public ProcessorInfo? GetInfo(string name)
+        => _info.TryGetValue(name, out var info) ? info : null;
+
     public List<ProcessorInfo> List() => new(_info.Values);
 }

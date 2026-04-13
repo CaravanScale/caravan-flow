@@ -11,6 +11,8 @@ ExpressionTests.RunAll();
 ValidatorTests.RunAll();
 EmbeddedSchemaRegistryTests.RunAll();
 FlowFileV3BoundaryTests.RunAll();
+PutHTTPTests.RunAll();
+SustainedLoadTests.RunAll();
 FabricTests.RunAll();
 SourceTests.RunAll();
 PipelineTests.RunAll();

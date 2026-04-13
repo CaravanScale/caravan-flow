@@ -95,7 +95,7 @@ public static class SourceTests
             AssertTrue("running after start", source.IsRunning);
 
             source.Stop();
-            Thread.Sleep(200);
+            WaitFor(() => !source.IsRunning, timeoutMs: 2000);
             AssertTrue("stopped after stop", !source.IsRunning);
         }
         finally
@@ -124,8 +124,8 @@ public static class SourceTests
             source.Start(ff => { ingested.Add(ff); return true; }, cts.Token);
             AssertTrue("running after start", source.IsRunning);
 
-            // Wait for poll cycle
-            Thread.Sleep(1000);
+            // Wait for poll cycle (poll interval is 200 ms, so this lands fast)
+            WaitFor(() => ingested.Count >= 1, timeoutMs: 5000);
 
             AssertTrue("ingested 1 file", ingested.Count >= 1);
             if (ingested.Count > 0)
@@ -151,7 +151,8 @@ public static class SourceTests
     {
         Console.WriteLine("--- ListenHTTP Source ---");
         var store = new MemoryContentStore();
-        var source = new ListenHTTP("test-listen", 19876, "/ingest", store);
+        var port = FreePort();
+        var source = new ListenHTTP("test-listen", port, "/ingest", store);
 
         AssertTrue("not running initially", !source.IsRunning);
         AssertTrue("type is ListenHTTP", source.SourceType == "ListenHTTP");
@@ -160,37 +161,32 @@ public static class SourceTests
         using var cts = new CancellationTokenSource();
         source.Start(ff => { lock (ingested) { ingested.Add(ff); } return true; }, cts.Token);
 
-        // Wait for server to start
-        Thread.Sleep(1000);
+        // Wait for the server to bind the port
+        var ready = WaitForHttpReady($"http://localhost:{port}/health", timeoutMs: 5000);
+        AssertTrue("server bound", ready);
         AssertTrue("running after start", source.IsRunning);
 
-        // POST data to the listener
         try
         {
             using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-            var response = client.PostAsync("http://localhost:19876/ingest",
+            var response = client.PostAsync($"http://localhost:{port}/ingest",
                 new StringContent("{\"key\":\"value\"}", System.Text.Encoding.UTF8, "application/json")).GetAwaiter().GetResult();
             AssertTrue("accepted 200", response.IsSuccessStatusCode);
 
-            Thread.Sleep(200);
+            WaitFor(() => { lock (ingested) return ingested.Count >= 1; }, timeoutMs: 2000);
             AssertTrue("ingested 1 flowfile", ingested.Count >= 1);
             if (ingested.Count > 0)
             {
                 AssertTrue("source attr set", ingested[0].Attributes.TryGetValue("source", out var src) && src == "test-listen");
             }
 
-            // Health check
-            var health = client.GetAsync("http://localhost:19876/health").GetAwaiter().GetResult();
+            var health = client.GetAsync($"http://localhost:{port}/health").GetAwaiter().GetResult();
             AssertTrue("health ok", health.IsSuccessStatusCode);
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"  WARN: ListenHTTP test skipped ({ex.GetType().Name}: {ex.Message})");
         }
         finally
         {
             source.Stop();
-            Thread.Sleep(500);
+            WaitFor(() => !source.IsRunning, timeoutMs: 5000);
             AssertTrue("stopped after stop", !source.IsRunning);
         }
     }
@@ -386,14 +382,14 @@ public static class SourceTests
         AssertTrue("running after start", poller.IsRunning);
 
         // Wait for at least 2 poll cycles
-        Thread.Sleep(500);
+        WaitFor(() => poller.PollCount >= 2 && poller.IngestedFiles.Count >= 1, timeoutMs: 3000);
 
         AssertTrue("poll called multiple times", poller.PollCount >= 2);
         AssertTrue("first batch ingested", poller.IngestedFiles.Count >= 1);
         AssertTrue("no rejections", poller.RejectedFiles.Count == 0);
 
         poller.Stop();
-        Thread.Sleep(200);
+        WaitFor(() => !poller.IsRunning, timeoutMs: 2000);
         AssertTrue("stopped", !poller.IsRunning);
     }
 
@@ -410,9 +406,9 @@ public static class SourceTests
         // Ingest rejects everything (simulates backpressure)
         poller.Start(ff => false, cts.Token);
 
-        Thread.Sleep(400);
+        WaitFor(() => poller.PollCount >= 1 && poller.RejectedFiles.Count >= 2, timeoutMs: 3000);
         poller.Stop();
-        Thread.Sleep(200);
+        WaitFor(() => !poller.IsRunning, timeoutMs: 2000);
 
         AssertTrue("poll was called", poller.PollCount >= 1);
         AssertTrue("no ingested (all rejected)", poller.IngestedFiles.Count == 0);
@@ -432,9 +428,9 @@ public static class SourceTests
         using var cts = new CancellationTokenSource();
         gen.Start(ff => { ingested.Add(ff); return true; }, cts.Token);
 
-        Thread.Sleep(500);
+        WaitFor(() => ingested.Count >= 1, timeoutMs: 3000);
         gen.Stop();
-        Thread.Sleep(200);
+        WaitFor(() => !gen.IsRunning, timeoutMs: 2000);
 
         AssertTrue("generated at least 1", ingested.Count >= 1);
         var ff = ingested[0];
@@ -458,9 +454,9 @@ public static class SourceTests
         using var cts = new CancellationTokenSource();
         gen.Start(ff => { ingested.Add(ff); return true; }, cts.Token);
 
-        Thread.Sleep(400);
+        WaitFor(() => ingested.Count >= 5, timeoutMs: 3000);
         gen.Stop();
-        Thread.Sleep(200);
+        WaitFor(() => !gen.IsRunning, timeoutMs: 2000);
 
         // batch_size=5, should have at least 5 from first poll
         AssertTrue("batch: generated >= 5", ingested.Count >= 5);

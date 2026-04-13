@@ -95,6 +95,53 @@ public static class Helpers
         return def;
     }
 
+    // --- Test infrastructure helpers ---
+
+    /// <summary>
+    /// OS-assigned free TCP port. Avoids hardcoded ports that collide on
+    /// parallel CI runs. Race-free in practice because the listener releases
+    /// immediately and the test grabs the port within milliseconds.
+    /// </summary>
+    public static int FreePort()
+    {
+        var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+        listener.Stop();
+        return port;
+    }
+
+    /// <summary>
+    /// Polls <paramref name="predicate"/> every ~10ms until it returns true or
+    /// <paramref name="timeoutMs"/> elapses. Returns true on success, false on
+    /// timeout. Replaces fragile Thread.Sleep(N) with event-driven waits so
+    /// tests don't break under CI load.
+    /// </summary>
+    public static bool WaitFor(Func<bool> predicate, int timeoutMs = 5000, int pollMs = 10)
+    {
+        var deadline = Environment.TickCount64 + timeoutMs;
+        while (Environment.TickCount64 < deadline)
+        {
+            if (predicate()) return true;
+            Thread.Sleep(pollMs);
+        }
+        return predicate();
+    }
+
+    /// <summary>
+    /// Convenience: wait for an HTTP endpoint to start accepting connections.
+    /// Used to wait for ListenHTTP/SchemaRegistryHandler servers to bind.
+    /// </summary>
+    public static bool WaitForHttpReady(string url, int timeoutMs = 5000)
+    {
+        using var client = new HttpClient { Timeout = TimeSpan.FromMilliseconds(200) };
+        return WaitFor(() =>
+        {
+            try { client.GetAsync(url).GetAwaiter().GetResult(); return true; }
+            catch { return false; }
+        }, timeoutMs);
+    }
+
     // --- Custom processor types used by tests ---
 
     public class ThrowingProcessor : IProcessor
@@ -108,12 +155,18 @@ public static class Helpers
     }
 
     /// <summary>
-    /// Test sink that captures FlowFiles for content verification.
+    /// Test sink that captures FlowFiles for content verification. Thread-safe —
+    /// concurrent-source tests rely on this not losing items under contention.
     /// Snapshots attributes (via TryGetValue) and content bytes before returning.
     /// </summary>
     public class CaptureSink : IProcessor
     {
-        public readonly List<CapturedFlowFile> Captured = new();
+        private readonly List<CapturedFlowFile> _captured = new();
+        private readonly object _lock = new();
+        public IReadOnlyList<CapturedFlowFile> Captured
+        {
+            get { lock (_lock) return _captured.ToArray(); }
+        }
         private readonly string[] _attrKeys;
 
         /// <param name="attrKeys">Attribute keys to snapshot (since AttributeMap can't enumerate)</param>
@@ -133,7 +186,7 @@ public static class Helpers
             List<GenericRecord>? records = null;
             if (ff.Content is RecordContent rc)
                 records = rc.Records;
-            Captured.Add(new CapturedFlowFile(attrs, data, records));
+            lock (_lock) _captured.Add(new CapturedFlowFile(attrs, data, records));
             return SingleResult.Rent(ff);
         }
     }

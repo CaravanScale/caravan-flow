@@ -86,7 +86,12 @@ flow:
 
 ## Walkthrough — JSON pipeline
 
-`examples/02-json-pipeline.yaml`:
+`examples/02-json-pipeline.yaml`. Note: `schema_name` is just a *label* used in
+provenance/log output. JSON is schema-on-read — `ConvertJSONToRecord` infers
+the field types from the first object in the array (Long, Double, String, etc.).
+You only need a `schemas:` section if a downstream processor wants to
+*project* records onto a registered reader schema (see example 05 for that
+pattern).
 
 ```yaml
 flow:
@@ -94,7 +99,7 @@ flow:
     parse:
       type: ConvertJSONToRecord
       requires: [content]
-      config: { schema_name: orders }
+      config: { schema_name: orders }     # label only; types inferred from JSON
       connections: { success: [filter], failure: [errors] }
 
     filter:
@@ -155,7 +160,7 @@ computed and land in `/tmp/zinc-out/`.
 | `QueryRecord` | Filter records by predicate (supports nested paths) | `where` |
 | **Records — codecs** | | |
 | `ConvertJSONToRecord` / `ConvertRecordToJSON` | JSON ↔ records | `schema_name` (read) |
-| `ConvertCSVToRecord` / `ConvertRecordToCSV` | CSV ↔ records | optional `delimiter`, `has_header` |
+| `ConvertCSVToRecord` / `ConvertRecordToCSV` | CSV ↔ records | optional `delimiter`, `has_header`, `fields` (typed columns) |
 | `ConvertAvroToRecord` / `ConvertRecordToAvro` | Raw Avro binary ↔ records | `fields` (read) |
 | `ConvertOCFToRecord` / `ConvertRecordToOCF` | Avro `.avro` files ↔ records | optional `reader_schema` / `reader_schema_subject`; codec ∈ `null`, `deflate`, `zstandard` |
 | **Records — query/transform** | | |
@@ -165,10 +170,13 @@ computed and land in `/tmp/zinc-out/`.
 | `ReplaceText` | Regex find/replace on content | `pattern`, optional `replacement` |
 | `ExtractText` | Regex capture → attributes | `pattern`, optional `group_names` |
 | `SplitText` | Split content into multiple FlowFiles | `delimiter` |
+| **NiFi V3 framing** (let V3 wrapping be a pipeline step) | | |
+| `PackageFlowFileV3` | Wrap (attributes + content) into V3 binary content; output content is the V3 frame | none |
+| `UnpackageFlowFileV3` | Decode V3 binary content into one or more original FlowFiles (MultipleResult on multi-frame) | none |
 | **Sinks** | | |
-| `PutFile` | Write content to disk | `output_dir` |
-| `PutHTTP` | POST content to URL | `endpoint` |
-| `PutStdout` | Write content to stdout | optional `format` |
+| `PutFile` | Write content to disk. `format: v3` writes V3-framed bytes (lossless attributes); default is raw. | `output_dir`, optional `format` |
+| `PutHTTP` | POST content to URL. `format: v3` sends V3-framed body; default sends raw with `X-Flow-*` headers carrying attributes. | `endpoint`, optional `format` |
+| `PutStdout` | Write content to stdout. `format` ∈ `text` (default), `hex`, `attrs`, `v3` | optional `format` |
 
 ## Expression language (used by `TransformRecord compute:` and tests)
 

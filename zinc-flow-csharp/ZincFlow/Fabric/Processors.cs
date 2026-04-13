@@ -33,14 +33,16 @@ public static class BuiltinProcessors
             (ctx, config) => new ConvertRecordToJSON());
 
         reg.Register(
-            new ProcessorInfo("PutHTTP", "POST FlowFile to downstream HTTP endpoint", ["endpoint"]),
+            new ProcessorInfo("PutHTTP", "POST FlowFile to downstream HTTP endpoint",
+                ["endpoint", "format"]),
             (ctx, config) => new PutHTTP(
                 config["endpoint"],
                 config.GetValueOrDefault("format", "raw"),
                 ctx.GetContentStoreOrDefault()));
 
         reg.Register(
-            new ProcessorInfo("PutFile", "Write FlowFile content to directory", ["output_dir", "format"]),
+            new ProcessorInfo("PutFile", "Write FlowFile content to directory",
+                ["output_dir", "naming_attribute", "prefix", "suffix", "format"]),
             (ctx, config) => new PutFile(
                 config["output_dir"],
                 config.GetValueOrDefault("naming_attribute", "filename"),
@@ -50,7 +52,7 @@ public static class BuiltinProcessors
                 config.GetValueOrDefault("format", "raw")));
 
         reg.Register(
-            new ProcessorInfo("PutStdout", "Write FlowFile content to stdout", []),
+            new ProcessorInfo("PutStdout", "Write FlowFile content to stdout", ["format"]),
             (ctx, config) => new PutStdout(
                 config.GetValueOrDefault("format", "text"),
                 ctx.GetContentStoreOrDefault()));
@@ -66,7 +68,8 @@ public static class BuiltinProcessors
         // --- Text processors ---
 
         reg.Register(
-            new ProcessorInfo("ReplaceText", "Regex find/replace on content", ["pattern", "replacement"]),
+            new ProcessorInfo("ReplaceText", "Regex find/replace on content",
+                ["pattern", "replacement", "mode"]),
             (ctx, config) => new ReplaceText(
                 config["pattern"],
                 config.GetValueOrDefault("replacement", ""),
@@ -74,14 +77,16 @@ public static class BuiltinProcessors
                 ctx.GetContentStoreOrDefault()));
 
         reg.Register(
-            new ProcessorInfo("ExtractText", "Regex capture groups → attributes", ["pattern"]),
+            new ProcessorInfo("ExtractText", "Regex capture groups → attributes",
+                ["pattern", "group_names"]),
             (ctx, config) => new ExtractText(
                 config["pattern"],
                 config.GetValueOrDefault("group_names", ""),
                 ctx.GetContentStoreOrDefault()));
 
         reg.Register(
-            new ProcessorInfo("SplitText", "Split content by delimiter into multiple FlowFiles", ["delimiter"]),
+            new ProcessorInfo("SplitText", "Split content by delimiter into multiple FlowFiles",
+                ["delimiter", "header_lines"]),
             (ctx, config) =>
             {
                 int headerLines = int.TryParse(config.GetValueOrDefault("header_lines", "0"), out var h) ? h : 0;
@@ -91,7 +96,8 @@ public static class BuiltinProcessors
         // --- Record conversion ---
 
         reg.Register(
-            new ProcessorInfo("ConvertAvroToRecord", "Decode Avro binary into records", ["fields"]),
+            new ProcessorInfo("ConvertAvroToRecord", "Decode Avro binary into records",
+                ["fields", "schema_name"]),
             (ctx, config) => new ConvertAvroToRecord(
                 config.GetValueOrDefault("schema_name", "default"),
                 config.GetValueOrDefault("fields", ""),
@@ -145,7 +151,7 @@ public static class BuiltinProcessors
 
         reg.Register(
             new ProcessorInfo("ConvertCSVToRecord", "Parse CSV content into records",
-                ["delimiter", "has_header", "fields"]),
+                ["delimiter", "has_header", "fields", "schema_name"]),
             (ctx, config) =>
             {
                 var delim = config.GetValueOrDefault("delimiter", ",");
@@ -159,7 +165,8 @@ public static class BuiltinProcessors
             });
 
         reg.Register(
-            new ProcessorInfo("ConvertRecordToCSV", "Serialize records to CSV", []),
+            new ProcessorInfo("ConvertRecordToCSV", "Serialize records to CSV",
+                ["delimiter", "include_header"]),
             (ctx, config) =>
             {
                 var delim = config.GetValueOrDefault("delimiter", ",");

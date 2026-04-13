@@ -246,21 +246,29 @@ public sealed class PutHTTP : IProcessor
                 httpContent.Headers.ContentType = MediaTypeHeaderValue.Parse(ct);
             }
 
-            // Forward flow attributes as X-Flow headers
-            var current = ff.Attributes;
-            while (current is not null)
+            // Forward flow attributes as X-Flow-* headers. Walk the overlay
+            // chain bottom-up (base dict first, then each overlay) so newer
+            // values override older ones — matches AttributeMap read semantics.
+            var attrs = new Dictionary<string, string>();
+            var stack = new Stack<AttributeMap>();
+            for (var node = ff.Attributes; node is not null; node = node._key is not null ? node._parent : null)
+                stack.Push(node);
+            while (stack.Count > 0)
             {
-                if (current._key is not null && !current._key.StartsWith("http."))
-                    httpContent.Headers.TryAddWithoutValidation($"X-Flow-{current._key}", current._value);
-                current = current._key is not null ? current._parent : null;
-            }
-            if (current?._base is not null)
-            {
-                foreach (var (k, v) in current._base)
+                var node = stack.Pop();
+                if (node._base is not null)
                 {
-                    if (!k.StartsWith("http."))
-                        httpContent.Headers.TryAddWithoutValidation($"X-Flow-{k}", v);
+                    foreach (var (k, v) in node._base) attrs[k] = v;
                 }
+                else if (node._key is not null)
+                {
+                    attrs[node._key] = node._value!;
+                }
+            }
+            foreach (var (k, v) in attrs)
+            {
+                if (k.StartsWith("http.")) continue;
+                httpContent.Headers.TryAddWithoutValidation($"X-Flow-{k}", v);
             }
 
             var response = _client.PostAsync(_endpoint, httpContent).GetAwaiter().GetResult();

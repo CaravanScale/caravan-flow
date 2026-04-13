@@ -224,21 +224,22 @@ public static class E2ETests
 
             fab.LoadFlow(config);
 
-            // Add ListenHTTP source on a test port
-            var listenSource = new ListenHTTP("e2e-listen", 19877, "/", store);
+            // Add ListenHTTP source on an OS-assigned port (no collisions on parallel CI).
+            var port = Helpers.FreePort();
+            var listenSource = new ListenHTTP("e2e-listen", port, "/", store);
             fab.AddSource(listenSource);
 
             fab.StartAsync();
-            Thread.Sleep(1500); // wait for ListenHTTP to start
+            Helpers.WaitForHttpReady($"http://localhost:{port}/health", timeoutMs: 5000);
 
             // POST data to ListenHTTP
             using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-            var response = client.PostAsync("http://localhost:19877/",
+            var response = client.PostAsync($"http://localhost:{port}/",
                 new StringContent("{\"e2e\":true}", Encoding.UTF8, "application/json")).GetAwaiter().GetResult();
             AssertTrue("ingest accepted", response.IsSuccessStatusCode);
 
-            // Wait for pipeline to process
-            Thread.Sleep(2000);
+            // Wait for the pipeline to land at least one output file.
+            Helpers.WaitFor(() => Directory.GetFiles(outputDir).Length >= 1, timeoutMs: 5000);
 
             // Verify output file was written
             var files = Directory.GetFiles(outputDir);
@@ -254,11 +255,7 @@ public static class E2ETests
             AssertTrue("source registered", sources.Any(s => s.Name == "e2e-listen" && s.Running));
 
             fab.StopAsync();
-            Thread.Sleep(500);
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"  WARN: ListenHTTP pipeline test issue ({ex.GetType().Name}: {ex.Message})");
+            Helpers.WaitFor(() => !listenSource.IsRunning, timeoutMs: 3000);
         }
         finally
         {

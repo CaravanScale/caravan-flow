@@ -20,6 +20,26 @@ public static class ValidatorTests
         TestMalformedExpressionTolerated();
         TestValidConfigPasses();
         TestComplexValidConfig();
+        TestUnknownConfigKeyEmitsWarning();
+    }
+
+    static void TestUnknownConfigKeyEmitsWarning()
+    {
+        Console.WriteLine("--- Validator: unknown config key → warning (not error) ---");
+        var cfg = Config(new()
+        {
+            // UpdateAttribute knows `key` and `value`. `valeu` is a typo.
+            ["x"] = Proc("UpdateAttribute", cfg: new() { ["key"] = "env", ["valeu"] = "dev" })
+        });
+        var result = FlowValidator.Validate(cfg, MakeReg());
+        // The unknown key surfaces as a warning whose Path ends with the key name.
+        // The Message lists the known keys so the user can compare and spot typos.
+        AssertTrue("warning emitted for unknown key",
+            result.Issues.Any(i => i.Severity == "warning" && i.Path.EndsWith(".valeu")));
+        AssertTrue("warning lists known keys in the message",
+            result.Issues.Any(i => i.Severity == "warning" && i.Message.Contains("key, value")));
+        AssertTrue("construction error still fires",
+            result.Issues.Any(i => i.Severity == "error" && i.Path.Contains("processors.x")));
     }
 
     private static Registry MakeReg()

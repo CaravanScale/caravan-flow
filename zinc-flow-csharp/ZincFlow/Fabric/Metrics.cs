@@ -68,8 +68,11 @@ public static class ConfigValidator
     {
         public string Path { get; }
         public string Message { get; }
-        public ValidationError(string path, string message) { Path = path; Message = message; }
-        public override string ToString() => $"  {Path}: {Message}";
+        public bool IsWarning { get; }
+        public ValidationError(string path, string message, bool isWarning = false)
+        { Path = path; Message = message; IsWarning = isWarning; }
+        public override string ToString()
+            => $"  {(IsWarning ? "[warn] " : "")}{Path}: {Message}";
     }
 
     public static List<ValidationError> Validate(Dictionary<string, object?> config, Registry registry)
@@ -107,6 +110,25 @@ public static class ConfigValidator
                 errors.Add(new($"flow.processors.{name}.type", "missing processor type"));
             else if (!registry.Has(typeName))
                 errors.Add(new($"flow.processors.{name}.type", $"unknown processor type: {typeName}"));
+            else
+            {
+                // Warn on user config keys that don't match any documented key for
+                // this processor type. Catches typos like `ouput_dir` at validate
+                // time instead of letting the value silently default later.
+                var info = registry.GetInfo(typeName);
+                var cfgDict = Fabric.AsStringDict(def.GetValueOrDefault("config"));
+                if (info is not null && cfgDict is not null && info.ConfigKeys.Count > 0)
+                {
+                    var known = new HashSet<string>(info.ConfigKeys, StringComparer.Ordinal);
+                    foreach (var key in cfgDict.Keys)
+                    {
+                        if (!known.Contains(key))
+                            errors.Add(new($"flow.processors.{name}.config.{key}",
+                                $"unrecognized config key for {typeName}; known keys: [{string.Join(", ", info.ConfigKeys)}]",
+                                isWarning: true));
+                    }
+                }
+            }
         }
 
         // Check connections reference valid destinations
