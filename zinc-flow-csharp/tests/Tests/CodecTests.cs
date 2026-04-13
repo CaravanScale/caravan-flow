@@ -40,6 +40,11 @@ public static class CodecTests
         TestTransformRecordCompute();
         TestTransformRecordPreservesTypes();
         TestTransformRecordChainedCompute();
+        TestNestedFieldPathsRead();
+        TestNestedPathsInQueryRecord();
+        TestNestedPathsInExtractRecordField();
+        TestNestedPathsInComputeExpression();
+        TestSetByPathCreatesIntermediates();
     }
 
     static void TestAvroZigzagVarint()
@@ -715,6 +720,117 @@ public static class CodecTests
         AssertTrue("doubled = 20", outRec.GetField("doubled") is long d && d == 20);
         AssertTrue("plus_five = 25", outRec.GetField("plus_five") is long p && p == 25);
         AssertTrue("final = 625", outRec.GetField("final") is long f && f == 625);
+    }
+
+    static GenericRecord BuildNestedRecord()
+    {
+        // Outer: { user: { profile: { name: "Alice", age: 30 }, country: "US" }, score: 99.5 }
+        var profileSchema = new Schema("profile", [
+            new Field("name", FieldType.String),
+            new Field("age", FieldType.Int)
+        ]);
+        var userSchema = new Schema("user", [
+            new Field("profile", FieldType.Record),
+            new Field("country", FieldType.String)
+        ]);
+        var rootSchema = new Schema("event", [
+            new Field("user", FieldType.Record),
+            new Field("score", FieldType.Double)
+        ]);
+        var profile = new GenericRecord(profileSchema);
+        profile.SetField("name", "Alice");
+        profile.SetField("age", 30);
+        var user = new GenericRecord(userSchema);
+        user.SetField("profile", profile);
+        user.SetField("country", "US");
+        var root = new GenericRecord(rootSchema);
+        root.SetField("user", user);
+        root.SetField("score", 99.5);
+        return root;
+    }
+
+    static void TestNestedFieldPathsRead()
+    {
+        Console.WriteLine("--- Nested paths: GetByPath ---");
+        var rec = BuildNestedRecord();
+        AssertEqual("name via path", RecordHelpers.GetByPath(rec, "user.profile.name")?.ToString() ?? "", "Alice");
+        AssertTrue("age via path", RecordHelpers.GetByPath(rec, "user.profile.age") is int a && a == 30);
+        AssertEqual("country via path", RecordHelpers.GetByPath(rec, "user.country")?.ToString() ?? "", "US");
+        AssertTrue("top-level score", RecordHelpers.GetByPath(rec, "score") is double s && Math.Abs(s - 99.5) < 0.001);
+        AssertTrue("missing path returns null", RecordHelpers.GetByPath(rec, "user.profile.missing") is null);
+        AssertTrue("missing intermediate returns null", RecordHelpers.GetByPath(rec, "nope.foo.bar") is null);
+        AssertTrue("dotted leaf into primitive returns null", RecordHelpers.GetByPath(rec, "score.foo") is null);
+    }
+
+    static void TestNestedPathsInQueryRecord()
+    {
+        Console.WriteLine("--- QueryRecord: nested-path predicate ---");
+        var schema = new Schema("event", [new Field("user", FieldType.Record), new Field("score", FieldType.Double)]);
+        var records = new List<GenericRecord>();
+        for (int i = 0; i < 3; i++)
+        {
+            var rec = BuildNestedRecord();
+            // Override country and score for each
+            ((GenericRecord)rec.GetField("user")!).SetField("country", i == 1 ? "CA" : "US");
+            rec.SetField("score", 50.0 + i * 25);
+            records.Add(rec);
+        }
+        var ff = FlowFile.CreateWithContent(new RecordContent(schema, records), new());
+
+        var q = new QueryRecord("user.country = US");
+        var result = q.Process(ff);
+        AssertTrue("query returned single result", result is SingleResult);
+        var filtered = ((RecordContent)((SingleResult)result).FlowFile.Content).Records;
+        AssertIntEqual("filtered count = 2 (US records)", filtered.Count, 2);
+    }
+
+    static void TestNestedPathsInExtractRecordField()
+    {
+        Console.WriteLine("--- ExtractRecordField: nested paths to attributes ---");
+        var schema = new Schema("event", [new Field("user", FieldType.Record), new Field("score", FieldType.Double)]);
+        var ff = FlowFile.CreateWithContent(new RecordContent(schema, [BuildNestedRecord()]), new());
+
+        var ex = new ExtractRecordField("user.profile.name:customer_name;user.country:country_code;score:score");
+        var outFf = ((SingleResult)ex.Process(ff)).FlowFile;
+        outFf.Attributes.TryGetValue("customer_name", out var name);
+        outFf.Attributes.TryGetValue("country_code", out var cc);
+        outFf.Attributes.TryGetValue("score", out var sc);
+        AssertEqual("nested name extracted", name ?? "", "Alice");
+        AssertEqual("nested country extracted", cc ?? "", "US");
+        AssertEqual("top-level score extracted", sc ?? "", "99.5");
+    }
+
+    static void TestNestedPathsInComputeExpression()
+    {
+        Console.WriteLine("--- TransformRecord compute: nested-path reads ---");
+        var schema = new Schema("event", [new Field("user", FieldType.Record), new Field("score", FieldType.Double)]);
+        var ff = FlowFile.CreateWithContent(new RecordContent(schema, [BuildNestedRecord()]), new());
+
+        var proc = new TransformRecord(
+            "compute:greeting:concat(\"Hi \", user.profile.name);" +
+            "compute:adjusted_score:score * if(user.country == \"US\", 1.0, 0.9);" +
+            "compute:summary:user.profile.name + \"-\" + user.country");
+        var outRec = ((RecordContent)((SingleResult)proc.Process(ff)).FlowFile.Content).Records[0];
+
+        AssertEqual("greeting from nested", outRec.GetField("greeting")?.ToString() ?? "", "Hi Alice");
+        AssertTrue("adjusted_score US bonus", outRec.GetField("adjusted_score") is double s && Math.Abs(s - 99.5) < 0.001);
+        AssertEqual("summary string", outRec.GetField("summary")?.ToString() ?? "", "Alice-US");
+    }
+
+    static void TestSetByPathCreatesIntermediates()
+    {
+        Console.WriteLine("--- RecordHelpers: SetByPath creates missing intermediates ---");
+        var schema = new Schema("event", [new Field("score", FieldType.Double)]);
+        var rec = new GenericRecord(schema);
+        rec.SetField("score", 10.0);
+
+        var ok = RecordHelpers.SetByPath(rec, "user.profile.name", "Bob");
+        AssertTrue("set ok", ok);
+        AssertEqual("readback nested set", RecordHelpers.GetByPath(rec, "user.profile.name")?.ToString() ?? "", "Bob");
+
+        // Top-level set still works
+        RecordHelpers.SetByPath(rec, "score", 42.0);
+        AssertTrue("top-level set", rec.GetField("score") is double d && Math.Abs(d - 42.0) < 0.001);
     }
 
     static void TestOCFProcessorRoundtrip()

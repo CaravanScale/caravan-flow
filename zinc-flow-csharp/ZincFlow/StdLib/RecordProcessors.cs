@@ -269,7 +269,8 @@ public sealed class ExtractRecordField : IProcessor
         var result = ff;
         foreach (var (field, attr) in _fields)
         {
-            var val = record.GetField(field);
+            // Supports dotted paths (e.g., "address.city") via RecordHelpers.GetByPath.
+            var val = RecordHelpers.GetByPath(record, field);
             if (val is not null)
                 result = FlowFile.WithAttribute(result, attr, val.ToString()!);
         }
@@ -358,7 +359,8 @@ public sealed class QueryRecord : IProcessor
 
     private bool EvaluatePredicate(GenericRecord record)
     {
-        var fieldVal = record.GetField(_field);
+        // Supports dotted paths (e.g., "address.country") via RecordHelpers.GetByPath.
+        var fieldVal = RecordHelpers.GetByPath(record, _field);
         if (fieldVal is null) return false;
         var fieldStr = fieldVal.ToString()!;
 

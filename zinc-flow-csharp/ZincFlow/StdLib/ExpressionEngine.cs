@@ -739,12 +739,12 @@ public static class ExpressionEngine
 
 // --- Built-in resolvers ---
 
-/// <summary>Resolves identifiers against a record's fields.</summary>
+/// <summary>Resolves identifiers against a record's fields. Supports dotted paths.</summary>
 public sealed class RecordValueResolver : IValueResolver
 {
     private readonly ZincFlow.Core.GenericRecord _record;
     public RecordValueResolver(ZincFlow.Core.GenericRecord record) => _record = record;
-    public EvalValue Resolve(string name) => EvalValue.FromObject(_record.GetField(name));
+    public EvalValue Resolve(string name) => EvalValue.FromObject(ZincFlow.Core.RecordHelpers.GetByPath(_record, name));
 }
 
 /// <summary>Resolves identifiers against a FlowFile attribute map.</summary>
@@ -759,12 +759,33 @@ public sealed class AttributeValueResolver : IValueResolver
 /// <summary>
 /// Resolves identifiers against a mutable dictionary. Used inside processors that
 /// apply a sequence of operations to a record's field map and need each step to
-/// observe the prior step's writes.
+/// observe the prior step's writes. Supports dotted paths walking nested
+/// GenericRecord and Dictionary&lt;string, object?&gt; values.
 /// </summary>
 public sealed class DictValueResolver : IValueResolver
 {
     private readonly IReadOnlyDictionary<string, object?> _dict;
     public DictValueResolver(IReadOnlyDictionary<string, object?> dict) => _dict = dict;
+
     public EvalValue Resolve(string name)
-        => _dict.TryGetValue(name, out var v) ? EvalValue.FromObject(v) : EvalValue.Null;
+    {
+        if (!name.Contains('.'))
+            return _dict.TryGetValue(name, out var v) ? EvalValue.FromObject(v) : EvalValue.Null;
+
+        var parts = name.Split('.');
+        if (!_dict.TryGetValue(parts[0], out var cur)) return EvalValue.Null;
+        for (int i = 1; i < parts.Length; i++)
+        {
+            switch (cur)
+            {
+                case null: return EvalValue.Null;
+                case ZincFlow.Core.GenericRecord gr: cur = gr.GetField(parts[i]); break;
+                case IDictionary<string, object?> d:
+                    cur = d.TryGetValue(parts[i], out var v) ? v : null;
+                    break;
+                default: return EvalValue.Null;
+            }
+        }
+        return EvalValue.FromObject(cur);
+    }
 }

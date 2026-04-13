@@ -139,4 +139,58 @@ public static class RecordHelpers
         copy.SetField(fieldName, value);
         return copy;
     }
+
+    /// <summary>
+    /// Reads a field value via dotted path (e.g., "address.city"). Walks GenericRecord
+    /// values and Dictionary&lt;string, object?&gt; values transparently. Returns null
+    /// if any intermediate segment is missing or not a navigable container.
+    /// </summary>
+    public static object? GetByPath(GenericRecord record, string path)
+    {
+        if (string.IsNullOrEmpty(path)) return null;
+        if (!path.Contains('.')) return record.GetField(path);
+
+        var parts = path.Split('.');
+        object? cur = record.GetField(parts[0]);
+        for (int i = 1; i < parts.Length; i++)
+        {
+            switch (cur)
+            {
+                case null: return null;
+                case GenericRecord gr: cur = gr.GetField(parts[i]); break;
+                case IDictionary<string, object?> dict:
+                    cur = dict.TryGetValue(parts[i], out var v) ? v : null;
+                    break;
+                default: return null;
+            }
+        }
+        return cur;
+    }
+
+    /// <summary>
+    /// Writes a field value via dotted path. Walks existing GenericRecord intermediates;
+    /// missing intermediates are created as empty-schema GenericRecords. Returns true
+    /// if the write reached its target. Callers should not rely on the schema being
+    /// updated for newly-created intermediate records — use this for ad-hoc nested set,
+    /// not for cases where strict schema fidelity matters.
+    /// </summary>
+    public static bool SetByPath(GenericRecord record, string path, object? value)
+    {
+        if (string.IsNullOrEmpty(path)) return false;
+        if (!path.Contains('.')) { record.SetField(path, value); return true; }
+
+        var parts = path.Split('.');
+        var cur = record;
+        for (int i = 0; i < parts.Length - 1; i++)
+        {
+            var next = cur.GetField(parts[i]);
+            if (next is GenericRecord gr) { cur = gr; continue; }
+            // Create a new empty sub-record and attach it.
+            var sub = new GenericRecord(new Schema(parts[i], []));
+            cur.SetField(parts[i], sub);
+            cur = sub;
+        }
+        cur.SetField(parts[^1], value);
+        return true;
+    }
 }
