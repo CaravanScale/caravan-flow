@@ -40,19 +40,28 @@ public static class BuiltinProcessors
                 ctx.GetContentStoreOrDefault()));
 
         reg.Register(
-            new ProcessorInfo("PutFile", "Write FlowFile content to directory", ["output_dir"]),
+            new ProcessorInfo("PutFile", "Write FlowFile content to directory", ["output_dir", "format"]),
             (ctx, config) => new PutFile(
                 config["output_dir"],
                 config.GetValueOrDefault("naming_attribute", "filename"),
                 config.GetValueOrDefault("prefix", ""),
                 config.GetValueOrDefault("suffix", ""),
-                ctx.GetContentStoreOrDefault()));
+                ctx.GetContentStoreOrDefault(),
+                config.GetValueOrDefault("format", "raw")));
 
         reg.Register(
             new ProcessorInfo("PutStdout", "Write FlowFile content to stdout", []),
             (ctx, config) => new PutStdout(
                 config.GetValueOrDefault("format", "text"),
                 ctx.GetContentStoreOrDefault()));
+
+        reg.Register(
+            new ProcessorInfo("PackageFlowFileV3", "Wrap (attributes + content) into NiFi V3 binary content", []),
+            (ctx, config) => new PackageFlowFileV3(ctx.GetContentStoreOrDefault()));
+
+        reg.Register(
+            new ProcessorInfo("UnpackageFlowFileV3", "Decode V3 binary content into one or more FlowFiles", []),
+            (ctx, config) => new UnpackageFlowFileV3(ctx.GetContentStoreOrDefault()));
 
         // --- Text processors ---
 
@@ -135,7 +144,8 @@ public static class BuiltinProcessors
             (ctx, config) => new ConvertRecordToOCF(config.GetValueOrDefault("codec", AvroOCF.CodecNull)));
 
         reg.Register(
-            new ProcessorInfo("ConvertCSVToRecord", "Parse CSV content into records", []),
+            new ProcessorInfo("ConvertCSVToRecord", "Parse CSV content into records",
+                ["delimiter", "has_header", "fields"]),
             (ctx, config) =>
             {
                 var delim = config.GetValueOrDefault("delimiter", ",");
@@ -144,7 +154,8 @@ public static class BuiltinProcessors
                     config.GetValueOrDefault("schema_name", "default"),
                     delim.Length > 0 ? delim[0] : ',',
                     hasHeader,
-                    ctx.GetContentStoreOrDefault());
+                    ctx.GetContentStoreOrDefault(),
+                    config.GetValueOrDefault("fields", ""));
             });
 
         reg.Register(

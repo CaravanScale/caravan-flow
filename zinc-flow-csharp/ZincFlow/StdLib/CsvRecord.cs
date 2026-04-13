@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using ZincFlow.Core;
 
@@ -52,6 +53,16 @@ public sealed class CsvRecordReader : IRecordReader
             ? schema
             : new Schema(schema.Name, headers.Select(h => new Field(h, FieldType.String)).ToList());
 
+        // Map header position → declared FieldType from the schema (when supplied).
+        // Used to coerce raw CSV strings into the right CLR type (Long/Double/etc.)
+        // so downstream processors and writers (Avro, OCF, JSON) preserve type.
+        var fieldTypes = new FieldType[headers.Count];
+        for (int i = 0; i < headers.Count; i++)
+        {
+            var match = effectiveSchema.Fields.FirstOrDefault(f => f.Name == headers[i]);
+            fieldTypes[i] = match?.FieldType ?? FieldType.String;
+        }
+
         var records = new List<GenericRecord>(lines.Count - dataStart);
         for (int i = dataStart; i < lines.Count; i++)
         {
@@ -59,10 +70,31 @@ public sealed class CsvRecordReader : IRecordReader
             var fields = ParseFields(lines[i]);
             var record = new GenericRecord(effectiveSchema);
             for (int j = 0; j < Math.Min(headers.Count, fields.Count); j++)
-                record.SetField(headers[j], fields[j]);
+                record.SetField(headers[j], CoerceValue(fields[j], fieldTypes[j]));
             records.Add(record);
         }
         return records;
+    }
+
+    /// <summary>
+    /// Parse a CSV cell into the declared field type. CSV-empty cells become null
+    /// (so downstream defaults/coalesce work). Parse failures fall back to the
+    /// raw string so data isn't silently dropped.
+    /// </summary>
+    private static object? CoerceValue(string raw, FieldType type)
+    {
+        if (type == FieldType.String) return raw;
+        if (string.IsNullOrEmpty(raw)) return null;
+        return type switch
+        {
+            FieldType.Boolean => bool.TryParse(raw, out var b) ? b : raw,
+            FieldType.Int => int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var i) ? i : raw,
+            FieldType.Long => long.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var l) ? l : raw,
+            FieldType.Float => float.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var f) ? f : raw,
+            FieldType.Double => double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out var d) ? d : raw,
+            FieldType.Bytes => Encoding.UTF8.GetBytes(raw),
+            _ => raw
+        };
     }
 
     private List<string> ParseFields(string line)

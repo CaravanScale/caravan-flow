@@ -295,15 +295,18 @@ public sealed class PutFile : IProcessor
     private readonly string _namingAttr;
     private readonly string _prefix;
     private readonly string _suffix;
+    private readonly string _format;
     private readonly IContentStore _store;
     private long _counter;
 
-    public PutFile(string outputDir, string namingAttr, string prefix, string suffix, IContentStore store)
+    public PutFile(string outputDir, string namingAttr, string prefix, string suffix, IContentStore store,
+        string format = "raw")
     {
         _outputDir = outputDir;
         _namingAttr = namingAttr;
         _prefix = prefix;
         _suffix = string.IsNullOrEmpty(suffix) ? ".dat" : suffix;
+        _format = format;
         _store = store;
         Directory.CreateDirectory(outputDir);
     }
@@ -313,6 +316,12 @@ public sealed class PutFile : IProcessor
         var (data, error) = ContentHelpers.Resolve(_store, ff.Content);
         if (error != "")
             return FailureResult.Rent(error, ff);
+
+        // V3 framing wraps attributes + content. The on-disk file is then a
+        // self-describing NiFi FlowFile that GetFile (with unpack_v3=true)
+        // can ingest losslessly on the other side.
+        if (_format == "v3")
+            data = FlowFileV3.Pack(ff, data);
 
         string fileName;
         if (ff.Attributes.TryGetValue(_namingAttr, out var attrName) && !string.IsNullOrEmpty(attrName))
@@ -376,11 +385,87 @@ public sealed class PutStdout : IProcessor
         if (error != "")
             return FailureResult.Rent(error, ff);
 
-        if (_format == "hex")
+        if (_format == "v3")
+        {
+            var packed = FlowFileV3.Pack(ff, data);
+            Console.WriteLine($"[ff-{ff.NumericId}] v3 ({packed.Length} bytes) {Convert.ToHexString(packed[..Math.Min(packed.Length, 128)])}");
+        }
+        else if (_format == "hex")
             Console.WriteLine($"[ff-{ff.NumericId}] ({data.Length} bytes) {Convert.ToHexString(data[..Math.Min(data.Length, 128)])}");
         else
             Console.WriteLine($"[ff-{ff.NumericId}] {Encoding.UTF8.GetString(data)}");
 
         return SingleResult.Rent(ff);
+    }
+}
+
+// --- PackageFlowFileV3: encode (attributes + content) as a V3 binary blob ---
+
+/// <summary>
+/// Wraps a FlowFile's attributes + content into a single NiFi FlowFile V3 binary
+/// blob. The output FlowFile carries that binary as its content; downstream sinks
+/// (PutFile, PutHTTP, PutStdout) can write it verbatim and another zinc-flow or
+/// NiFi instance with a V3-aware reader will round-trip the original attributes.
+///
+/// Lets V3 framing be a pipeline step rather than a sink-only concern.
+/// </summary>
+public sealed class PackageFlowFileV3 : IProcessor
+{
+    private readonly IContentStore _store;
+
+    public PackageFlowFileV3(IContentStore store) => _store = store;
+
+    public ProcessorResult Process(FlowFile ff)
+    {
+        var (data, error) = ContentHelpers.Resolve(_store, ff.Content);
+        if (error != "")
+            return FailureResult.Rent(error, ff);
+
+        var packed = FlowFileV3.Pack(ff, data);
+        var packedContent = ContentHelpers.MaybeOffload(_store, packed);
+        var updated = FlowFile.WithContent(ff, packedContent);
+        // Mark MIME type so HTTP sinks can advertise it correctly.
+        updated = FlowFile.WithAttribute(updated, "http.content.type", "application/flowfile-v3");
+        updated = FlowFile.WithAttribute(updated, "v3.packaged", "true");
+        return SingleResult.Rent(updated);
+    }
+}
+
+// --- UnpackageFlowFileV3: decode a V3-binary content blob into one or more FlowFiles ---
+
+/// <summary>
+/// Inverse of PackageFlowFileV3. Treats the FlowFile's content as V3-framed bytes
+/// (which can hold N FlowFiles concatenated) and emits each unpacked FlowFile
+/// with its original attributes restored.
+///
+/// On non-V3 input (no magic header), emits a FailureResult so the caller can
+/// route to an error handler instead of silently discarding.
+/// </summary>
+public sealed class UnpackageFlowFileV3 : IProcessor
+{
+    private static readonly byte[] V3Magic = "NiFiFF3"u8.ToArray();
+    private readonly IContentStore _store;
+
+    public UnpackageFlowFileV3(IContentStore store) => _store = store;
+
+    public ProcessorResult Process(FlowFile ff)
+    {
+        var (data, error) = ContentHelpers.Resolve(_store, ff.Content);
+        if (error != "")
+            return FailureResult.Rent(error, ff);
+
+        if (data.Length < V3Magic.Length || !data.AsSpan(0, V3Magic.Length).SequenceEqual(V3Magic))
+            return FailureResult.Rent("not a V3-framed FlowFile (missing NiFiFF3 magic)", ff);
+
+        var unpacked = FlowFileV3.UnpackAll(data);
+        if (unpacked.Count == 0)
+            return FailureResult.Rent("V3 stream contained no FlowFiles", ff);
+
+        if (unpacked.Count == 1)
+            return SingleResult.Rent(unpacked[0]);
+
+        var result = MultipleResult.Rent();
+        result.FlowFiles.AddRange(unpacked);
+        return result;
     }
 }

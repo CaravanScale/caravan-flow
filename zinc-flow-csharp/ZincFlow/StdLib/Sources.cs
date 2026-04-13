@@ -23,18 +23,24 @@ public sealed class GetFile : PollingSource
 {
     public override string SourceType => "GetFile";
 
+    // V3 magic header bytes: "NiFiFF3"
+    private static readonly byte[] V3Magic = "NiFiFF3"u8.ToArray();
+
     private readonly string _inputDir;
     private readonly string _processedDir;
     private readonly string _pattern;
     private readonly IContentStore _store;
+    private readonly bool _unpackV3;
 
-    public GetFile(string name, string inputDir, string pattern, int pollIntervalMs, IContentStore store)
+    public GetFile(string name, string inputDir, string pattern, int pollIntervalMs, IContentStore store,
+        bool unpackV3 = true)
         : base(name, pollIntervalMs)
     {
         _inputDir = inputDir;
         _processedDir = Path.Combine(inputDir, ".processed");
         _pattern = string.IsNullOrEmpty(pattern) ? "*" : pattern;
         _store = store;
+        _unpackV3 = unpackV3;
         Directory.CreateDirectory(_inputDir);
         Directory.CreateDirectory(_processedDir);
     }
@@ -51,6 +57,26 @@ public sealed class GetFile : PollingSource
                 {
                     var fileName = Path.GetFileName(filePath);
                     var data = File.ReadAllBytes(filePath);
+
+                    // Sniff V3 magic. A V3-framed file may contain N FlowFiles concatenated;
+                    // each gets its original attributes restored. Source attributes (filename
+                    // etc.) are layered on top so downstream still knows where it came from.
+                    if (_unpackV3 && IsV3(data))
+                    {
+                        var unpacked = FlowFileV3.UnpackAll(data);
+                        for (int i = 0; i < unpacked.Count; i++)
+                        {
+                            var ff = unpacked[i];
+                            ff = FlowFile.WithAttribute(ff, "filename", fileName);
+                            ff = FlowFile.WithAttribute(ff, "path", filePath);
+                            ff = FlowFile.WithAttribute(ff, "source", Name);
+                            ff = FlowFile.WithAttribute(ff, "v3.frame.index", i.ToString());
+                            ff = FlowFile.WithAttribute(ff, "v3.frame.count", unpacked.Count.ToString());
+                            results.Add(ff);
+                        }
+                        continue;
+                    }
+
                     var content = ContentHelpers.MaybeOffload(_store, data);
                     results.Add(FlowFile.CreateWithContent(content, new Dictionary<string, string>
                     {
@@ -66,6 +92,9 @@ public sealed class GetFile : PollingSource
         catch (DirectoryNotFoundException) { Directory.CreateDirectory(_inputDir); }
         return results;
     }
+
+    private static bool IsV3(byte[] data)
+        => data.Length >= V3Magic.Length && data.AsSpan(0, V3Magic.Length).SequenceEqual(V3Magic);
 
     protected override void OnIngested(FlowFile ff)
     {
@@ -158,7 +187,10 @@ public sealed class ListenHTTP : IConnectorSource
         await ctx.Request.Body.CopyToAsync(ms);
         var body = ms.ToArray();
 
-        if (ctx.Request.ContentType == "application/octet-stream")
+        // Accept either the official NiFi MIME type (application/flowfile-v3) or
+        // the bare octet-stream (NiFi's older Site-to-Site default) for V3 framing.
+        var contentType = ctx.Request.ContentType ?? "";
+        if (contentType == "application/flowfile-v3" || contentType == "application/octet-stream")
         {
             var flowfiles = FlowFileV3.UnpackAll(body);
             int accepted = 0;

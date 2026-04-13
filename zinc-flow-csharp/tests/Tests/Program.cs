@@ -10,6 +10,7 @@ CodecTests.RunAll();
 ExpressionTests.RunAll();
 ValidatorTests.RunAll();
 EmbeddedSchemaRegistryTests.RunAll();
+FlowFileV3BoundaryTests.RunAll();
 FabricTests.RunAll();
 SourceTests.RunAll();
 PipelineTests.RunAll();

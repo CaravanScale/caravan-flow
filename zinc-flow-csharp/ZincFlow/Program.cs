@@ -126,7 +126,8 @@ if (!string.IsNullOrEmpty(fileInputDir))
 {
     var pattern = GetConfigString(config, "sources.file.pattern", "*");
     var pollMs = int.TryParse(GetConfigString(config, "sources.file.poll_interval_ms", "1000"), out var p) ? p : 1000;
-    fab.AddSource(new GetFile("file-ingest", fileInputDir, pattern, pollMs, store));
+    var unpackV3 = GetConfigString(config, "sources.file.unpack_v3", "true") != "false";
+    fab.AddSource(new GetFile("file-ingest", fileInputDir, pattern, pollMs, store, unpackV3));
 }
 
 // ListenHTTP source — default ingest on port 9092, configurable

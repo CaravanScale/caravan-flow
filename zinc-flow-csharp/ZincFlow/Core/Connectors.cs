@@ -49,6 +49,13 @@ public abstract class PollingSource : IConnectorSource
     protected abstract List<FlowFile> Poll(CancellationToken ct);
 
     /// <summary>
+    /// Public seam that runs one poll cycle synchronously. Lets tests and
+    /// admin tools drive a polling source on demand without standing up a
+    /// timer or relying on reflection (the latter is AOT-hostile).
+    /// </summary>
+    public List<FlowFile> PollOnce(CancellationToken ct = default) => Poll(ct);
+
+    /// <summary>
     /// Called after a FlowFile is successfully ingested (pipeline accepted it).
     /// Override to perform post-ingest work (e.g., move file to .processed).
     /// </summary>

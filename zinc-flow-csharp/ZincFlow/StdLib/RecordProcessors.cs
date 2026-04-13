@@ -276,18 +276,33 @@ public sealed class ConvertRecordToOCF : IProcessor
 
 /// <summary>
 /// ConvertCSVToRecord: CSV content → RecordContent.
-/// Config: delimiter, has_header.
+///
+/// Config:
+///   delimiter    — single character separator, default ","
+///   has_header   — first row is the header, default true
+///   fields       — optional explicit schema as "name:type,name:type" pairs
+///                  (same syntax as ConvertAvroToRecord). When supplied, CSV
+///                  cells are parsed into the declared CLR types (Long, Double,
+///                  Boolean, Int, Float, Bytes) — the reader otherwise treats
+///                  every cell as a string, which loses type fidelity when
+///                  forwarding to schema-rich sinks like Avro/OCF.
+///
+/// When `fields` is set and `has_header` is true, the header row is still
+/// consumed (and ignored). Schema field order wins.
 /// </summary>
 public sealed class ConvertCSVToRecord : IProcessor
 {
     private readonly string _schemaName;
     private readonly CsvRecordReader _reader;
+    private readonly Schema? _explicitSchema;
     private readonly IContentStore _store;
 
-    public ConvertCSVToRecord(string schemaName, char delimiter, bool hasHeader, IContentStore store)
+    public ConvertCSVToRecord(string schemaName, char delimiter, bool hasHeader, IContentStore store,
+        string fieldDefs = "")
     {
         _schemaName = schemaName;
         _reader = new CsvRecordReader(delimiter, hasHeader);
+        _explicitSchema = ConvertAvroToRecord.ParseFieldDefs(schemaName, fieldDefs);
         _store = store;
     }
 
@@ -305,7 +320,7 @@ public sealed class ConvertCSVToRecord : IProcessor
         else
             return SingleResult.Rent(ff);
 
-        var schema = new Schema(_schemaName, []);
+        var schema = _explicitSchema ?? new Schema(_schemaName, []);
         var records = _reader.Read(data, schema);
         if (records.Count == 0)
             return FailureResult.Rent("no records parsed from CSV", ff);
