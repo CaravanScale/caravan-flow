@@ -98,15 +98,24 @@ public sealed class ConvertRecordToAvro : IProcessor
 
 /// <summary>
 /// ConvertOCFToRecord: Avro Object Container File → RecordContent.
-/// Schema is embedded in the OCF header — no config needed.
-/// Supports null and deflate codecs.
+/// Schema is embedded in the OCF header — no config needed for the simple case.
+///
+/// Optional `readerSchema` triggers Avro schema-evolution semantics: decoded
+/// records are projected onto the reader schema with type promotion (int→long
+/// etc.) and missing-field defaults. Throws at process time if the writer
+/// schema in the file is incompatible with the supplied reader schema.
 /// </summary>
 public sealed class ConvertOCFToRecord : IProcessor
 {
     private readonly IContentStore _store;
     private readonly OCFReader _reader = new();
+    private readonly Schema? _readerSchema;
 
-    public ConvertOCFToRecord(IContentStore store) => _store = store;
+    public ConvertOCFToRecord(IContentStore store, Schema? readerSchema = null)
+    {
+        _store = store;
+        _readerSchema = readerSchema;
+    }
 
     public ProcessorResult Process(FlowFile ff)
     {
@@ -126,7 +135,7 @@ public sealed class ConvertOCFToRecord : IProcessor
         List<GenericRecord> records;
         try
         {
-            (schema, records) = _reader.Read(data);
+            (schema, records) = _reader.Read(data, _readerSchema);
         }
         catch (Exception ex)
         {

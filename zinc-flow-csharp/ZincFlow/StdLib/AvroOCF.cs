@@ -26,7 +26,14 @@ public static class AvroOCF
 
 public sealed class OCFReader
 {
-    public (Schema Schema, List<GenericRecord> Records) Read(byte[] data)
+    /// <summary>
+    /// Reads an OCF file. If <paramref name="readerSchema"/> is provided, decoded
+    /// records are projected onto it (Avro schema-evolution semantics: type
+    /// promotion, field add with default, field removal). Throws if the writer
+    /// schema embedded in the file isn't compatible with the reader schema.
+    /// When omitted, returns records under the writer schema as decoded.
+    /// </summary>
+    public (Schema Schema, List<GenericRecord> Records) Read(byte[] data, Schema? readerSchema = null)
     {
         if (data.Length < AvroOCF.Magic.Length + 16)
             throw new InvalidOperationException("OCF truncated: missing magic or sync");
@@ -93,6 +100,17 @@ public sealed class OCFReader
                 records.Add(record);
                 blockOffset += bytesRead;
             }
+        }
+
+        if (readerSchema is not null)
+        {
+            var compat = SchemaResolver.Check(readerSchema, schema);
+            if (!compat.IsCompatible)
+                throw new InvalidOperationException("OCF reader schema incompatible: " + string.Join("; ", compat.Errors));
+            var projected = new List<GenericRecord>(records.Count);
+            foreach (var r in records)
+                projected.Add(SchemaResolver.Project(r, readerSchema, schema));
+            return (readerSchema, projected);
         }
 
         return (schema, records);

@@ -93,8 +93,14 @@ public static class BuiltinProcessors
             (ctx, config) => new ConvertRecordToAvro());
 
         reg.Register(
-            new ProcessorInfo("ConvertOCFToRecord", "Decode Avro OCF (.avro file) into records", []),
-            (ctx, config) => new ConvertOCFToRecord(ctx.GetContentStoreOrDefault()));
+            new ProcessorInfo("ConvertOCFToRecord", "Decode Avro OCF (.avro file) into records", ["reader_schema"]),
+            (ctx, config) =>
+            {
+                Schema? readerSchema = null;
+                if (config.TryGetValue("reader_schema", out var rsJson) && !string.IsNullOrWhiteSpace(rsJson))
+                    readerSchema = AvroSchemaJson.Parse(rsJson);
+                return new ConvertOCFToRecord(ctx.GetContentStoreOrDefault(), readerSchema);
+            });
 
         reg.Register(
             new ProcessorInfo("ConvertRecordToOCF", "Encode records to Avro OCF (.avro file)", ["codec"]),

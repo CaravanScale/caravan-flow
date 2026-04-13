@@ -45,6 +45,12 @@ public static class CodecTests
         TestNestedPathsInExtractRecordField();
         TestNestedPathsInComputeExpression();
         TestSetByPathCreatesIntermediates();
+        TestSchemaEvolutionPromotion();
+        TestSchemaEvolutionFieldAddedWithDefault();
+        TestSchemaEvolutionFieldAddedNoDefault();
+        TestSchemaEvolutionFieldRemoved();
+        TestSchemaEvolutionIncompatible();
+        TestOCFRoundtripWithEvolution();
     }
 
     static void TestAvroZigzagVarint()
@@ -720,6 +726,141 @@ public static class CodecTests
         AssertTrue("doubled = 20", outRec.GetField("doubled") is long d && d == 20);
         AssertTrue("plus_five = 25", outRec.GetField("plus_five") is long p && p == 25);
         AssertTrue("final = 625", outRec.GetField("final") is long f && f == 625);
+    }
+
+    static void TestSchemaEvolutionPromotion()
+    {
+        Console.WriteLine("--- Schema evolution: type promotion ---");
+        var writer = new Schema("rec", [
+            new Field("count", FieldType.Int),
+            new Field("amount", FieldType.Long),
+            new Field("rate", FieldType.Float),
+            new Field("name", FieldType.String)
+        ]);
+        var reader = new Schema("rec", [
+            new Field("count", FieldType.Long),       // int → long
+            new Field("amount", FieldType.Double),    // long → double
+            new Field("rate", FieldType.Double),      // float → double
+            new Field("name", FieldType.Bytes)        // string → bytes
+        ]);
+        var compat = SchemaResolver.Check(reader, writer);
+        AssertTrue("promotion compat", compat.IsCompatible);
+
+        var rec = new GenericRecord(writer);
+        rec.SetField("count", 42);
+        rec.SetField("amount", 1000L);
+        rec.SetField("rate", 1.5f);
+        rec.SetField("name", "Alice");
+
+        var projected = SchemaResolver.Project(rec, reader, writer);
+        AssertTrue("count promoted to long", projected.GetField("count") is long l && l == 42L);
+        AssertTrue("amount promoted to double", projected.GetField("amount") is double d && Math.Abs(d - 1000.0) < 0.001);
+        AssertTrue("rate promoted to double", projected.GetField("rate") is double dr && Math.Abs(dr - 1.5) < 0.001);
+        AssertTrue("name promoted to bytes", projected.GetField("name") is byte[] b && System.Text.Encoding.UTF8.GetString(b) == "Alice");
+    }
+
+    static void TestSchemaEvolutionFieldAddedWithDefault()
+    {
+        Console.WriteLine("--- Schema evolution: reader adds field with default ---");
+        var writer = new Schema("rec", [new Field("name", FieldType.String)]);
+        var reader = new Schema("rec", [
+            new Field("name", FieldType.String),
+            new Field("status", FieldType.String, defaultValue: "active")
+        ]);
+        var compat = SchemaResolver.Check(reader, writer);
+        AssertTrue("add-with-default compat", compat.IsCompatible);
+        AssertTrue("warning for missing-from-writer", compat.Warnings.Any(w => w.Contains("status") && w.Contains("default")));
+
+        var rec = new GenericRecord(writer);
+        rec.SetField("name", "Bob");
+        var projected = SchemaResolver.Project(rec, reader, writer);
+        AssertEqual("name preserved", projected.GetField("name")?.ToString() ?? "", "Bob");
+        AssertEqual("status defaulted", projected.GetField("status")?.ToString() ?? "", "active");
+    }
+
+    static void TestSchemaEvolutionFieldAddedNoDefault()
+    {
+        Console.WriteLine("--- Schema evolution: reader adds field without default (error) ---");
+        var writer = new Schema("rec", [new Field("name", FieldType.String)]);
+        var reader = new Schema("rec", [
+            new Field("name", FieldType.String),
+            new Field("required_field", FieldType.Long)
+        ]);
+        var compat = SchemaResolver.Check(reader, writer);
+        AssertFalse("add-without-default not compat", compat.IsCompatible);
+        AssertTrue("error mentions required_field", compat.Errors.Any(e => e.Contains("required_field")));
+    }
+
+    static void TestSchemaEvolutionFieldRemoved()
+    {
+        Console.WriteLine("--- Schema evolution: reader drops a writer field ---");
+        var writer = new Schema("rec", [
+            new Field("name", FieldType.String),
+            new Field("dropped", FieldType.Long)
+        ]);
+        var reader = new Schema("rec", [new Field("name", FieldType.String)]);
+        var compat = SchemaResolver.Check(reader, writer);
+        AssertTrue("drop is compat", compat.IsCompatible);
+        AssertTrue("warning for dropped field", compat.Warnings.Any(w => w.Contains("dropped") && w.Contains("writer-only")));
+
+        var rec = new GenericRecord(writer);
+        rec.SetField("name", "Carol");
+        rec.SetField("dropped", 999L);
+        var projected = SchemaResolver.Project(rec, reader, writer);
+        AssertEqual("name preserved", projected.GetField("name")?.ToString() ?? "", "Carol");
+        AssertTrue("dropped not in target", projected.GetField("dropped") is null);
+    }
+
+    static void TestSchemaEvolutionIncompatible()
+    {
+        Console.WriteLine("--- Schema evolution: incompatible promotion (error) ---");
+        var writer = new Schema("rec", [new Field("amount", FieldType.Double)]);
+        var reader = new Schema("rec", [new Field("amount", FieldType.Int)]); // double → int not allowed
+        var compat = SchemaResolver.Check(reader, writer);
+        AssertFalse("double→int not compat", compat.IsCompatible);
+    }
+
+    static void TestOCFRoundtripWithEvolution()
+    {
+        Console.WriteLine("--- OCF: write with v1, read with v2 (evolved) ---");
+        // V1: writer schema with name+age (int)
+        var v1 = new Schema("user", [
+            new Field("name", FieldType.String),
+            new Field("age", FieldType.Int)
+        ]);
+        var rec = new GenericRecord(v1);
+        rec.SetField("name", "Dan");
+        rec.SetField("age", 25);
+        var bytes = new OCFWriter().Write([rec], v1);
+
+        // V2: drop age, promote nothing, add status with default
+        var v2 = new Schema("user", [
+            new Field("name", FieldType.String),
+            new Field("status", FieldType.String, defaultValue: "unknown")
+        ]);
+        var (decodedSchema, decoded) = new OCFReader().Read(bytes, readerSchema: v2);
+        AssertTrue("returned schema is reader", decodedSchema == v2);
+        AssertEqual("name preserved through evolution", decoded[0].GetField("name")?.ToString() ?? "", "Dan");
+        AssertEqual("status from default", decoded[0].GetField("status")?.ToString() ?? "", "unknown");
+        AssertTrue("age dropped", decoded[0].GetField("age") is null);
+
+        // V3: promote int → long
+        var v3 = new Schema("user", [
+            new Field("name", FieldType.String),
+            new Field("age", FieldType.Long)
+        ]);
+        var (_, decodedV3) = new OCFReader().Read(bytes, readerSchema: v3);
+        AssertTrue("age promoted to long", decodedV3[0].GetField("age") is long la && la == 25L);
+
+        // V4: incompatible reader (requires non-default field) → throws
+        var v4 = new Schema("user", [
+            new Field("name", FieldType.String),
+            new Field("must_have", FieldType.Long)
+        ]);
+        var threw = false;
+        try { new OCFReader().Read(bytes, readerSchema: v4); }
+        catch (InvalidOperationException) { threw = true; }
+        AssertTrue("incompatible reader throws", threw);
     }
 
     static GenericRecord BuildNestedRecord()
