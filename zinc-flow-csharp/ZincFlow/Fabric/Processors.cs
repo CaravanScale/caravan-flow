@@ -93,12 +93,24 @@ public static class BuiltinProcessors
             (ctx, config) => new ConvertRecordToAvro());
 
         reg.Register(
-            new ProcessorInfo("ConvertOCFToRecord", "Decode Avro OCF (.avro file) into records", ["reader_schema"]),
+            new ProcessorInfo("ConvertOCFToRecord", "Decode Avro OCF (.avro file) into records",
+                ["reader_schema", "reader_schema_subject", "reader_schema_version"]),
             (ctx, config) =>
             {
                 Schema? readerSchema = null;
+                // Inline JSON schema takes priority over registry lookup.
                 if (config.TryGetValue("reader_schema", out var rsJson) && !string.IsNullOrWhiteSpace(rsJson))
+                {
                     readerSchema = AvroSchemaJson.Parse(rsJson);
+                }
+                else if (config.TryGetValue("reader_schema_subject", out var subject) && !string.IsNullOrWhiteSpace(subject))
+                {
+                    if (!ctx.TryGetProvider<SchemaRegistryProvider>("schema_registry", out var srProvider) || srProvider is null)
+                        throw new InvalidOperationException("reader_schema_subject set but no schema_registry provider configured");
+                    var version = config.GetValueOrDefault("reader_schema_version", "latest");
+                    var (_, schema) = srProvider.Client.GetSubjectVersionAsync(subject, version).GetAwaiter().GetResult();
+                    readerSchema = schema;
+                }
                 return new ConvertOCFToRecord(ctx.GetContentStoreOrDefault(), readerSchema);
             });
 

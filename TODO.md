@@ -17,7 +17,7 @@
 
 **Three runtimes:**
 - **Go** — 11MB static binary, 599K ff/s, zero deps. Edge, embedded, performance-critical.
-- **C# .NET 10** — 26MB AOT binary, 2M+ ff/s, zero GC during execution. Maximum throughput, .NET ecosystems. 762 tests pass under both JIT and AOT, zero analyzer warnings.
+- **C# .NET 10** — 27MB AOT binary, 2M+ ff/s, zero GC during execution. Maximum throughput, .NET ecosystems. 832 tests pass under both JIT and AOT, zero analyzer warnings.
 - **Python 3.14t** — 14MB native binary, 95K ff/s, pandas/numpy/sklearn integration. Python orgs.
 
 ---
@@ -87,9 +87,12 @@ Make zinc-flow useful for real workloads without requiring NATS or K8s. A single
 - [x] **Typed expression engine** — hand-rolled tokenizer + shunting-yard + stack VM. Tagged EvalValue (Long/Double/Bool/String/Null) with type promotion. Operators: `+ - * / %`, `== != < > <= >=`, `&& || !`, parens, unary minus. Functions: upper/lower/trim/length/substring/replace/concat/contains/startsWith/endsWith/coalesce/if/int/long/double/string/bool/abs/min/max/floor/ceil/round/pow/sqrt/isNull/isEmpty.
 - [x] **TransformRecord `compute:` directive** — typed expression evaluation against record fields. Output schema preserves original FieldType for unmodified fields and infers from first record for new fields. Chained computes see prior writes.
 - [x] **Nested field paths** — dotted access (`user.profile.name`) in QueryRecord, ExtractRecordField, RecordValueResolver, DictValueResolver. `RecordHelpers.GetByPath/SetByPath` walks GenericRecord and `Dictionary<string, object?>` values.
-- [ ] **Snappy/zstd OCF codecs** — null + deflate today; snappy/zstd require external libraries.
-- [ ] **Avro schema evolution** — reader schema differs from writer schema; field additions with defaults, type promotion (int→long etc.).
-- [ ] **Schema registry** — Confluent or similar; resolve schema by ID.
+- [x] **`zinc-flow validate` subcommand** — pre-flight config check that catches unknown types, missing config keys, malformed regex, dangling connections, and DAG cycles. Exit 0 valid, 1 errors, 2 usage. Wraps the existing structural ConfigValidator with factory-construction probing.
+- [x] **Avro schema evolution** — `SchemaResolver` implements Avro 1.11 resolution: int→long/float/double, long→float/double, float→double, string↔bytes promotion; reader-only fields filled from defaults; writer-only fields dropped. `ConvertOCFToRecord` accepts `reader_schema` (inline JSON) or `reader_schema_subject` (registry-backed).
+- [x] **Zstd OCF codec** — `zstandard` codec via ZstdSharp.Port (pure managed, AOT-safe). null + deflate + zstandard supported; codec name follows the Avro spec ("zstandard", not "zstd").
+- [x] **Schema registry (Confluent-style)** — `SchemaRegistryClient` with HTTP GET/POST + by-id and by-(subject,version) caching. Optional Basic auth. `SchemaRegistryProvider` registered at startup if config has `schema_registry.url`. `ConvertOCFToRecord` accepts `reader_schema_subject` to fetch the reader schema from the registry at construction time.
+- [ ] **Snappy OCF codec** — least common in modern Avro; deferred until a concrete user needs it.
+- [ ] **Confluent wire format** — 1-byte magic + 4-byte schema ID prefix on Kafka messages. Different from OCF (which embeds the full schema). Defer until we have a Kafka source/sink.
 - [ ] **Apache Parquet support** — deferred; row-oriented flow model doesn't benefit from columnar storage. Revisit for one-shot batch ingest sources only.
 
 ---

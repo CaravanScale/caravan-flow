@@ -80,6 +80,18 @@ globalCtx.AddProvider(configProvider);
 globalCtx.AddProvider(loggingProvider);
 globalCtx.AddProvider(provenanceProvider);
 
+// Optional schema registry — wired only if config has schema_registry.url
+var srUrl = GetConfigString(config, "schema_registry.url", "");
+if (!string.IsNullOrEmpty(srUrl))
+{
+    var srAuth = GetConfigString(config, "schema_registry.auth", "");
+    var srClient = new ZincFlow.StdLib.SchemaRegistryClient(srUrl, basicAuth: string.IsNullOrEmpty(srAuth) ? null : srAuth);
+    var srProvider = new SchemaRegistryProvider(srClient);
+    srProvider.Enable();
+    globalCtx.AddProvider(srProvider);
+    Console.WriteLine($"[schema-registry] connected to {srUrl}");
+}
+
 // Create registry
 var reg = new Registry();
 BuiltinProcessors.RegisterAll(reg);

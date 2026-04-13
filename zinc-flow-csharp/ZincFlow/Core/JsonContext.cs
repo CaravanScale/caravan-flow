@@ -14,12 +14,12 @@ namespace ZincFlow.Core;
 [JsonSerializable(typeof(Dictionary<string, string>))]
 [JsonSerializable(typeof(Dictionary<string, object?>))]
 [JsonSerializable(typeof(List<Dictionary<string, object?>>))]
-internal partial class ZincJsonContext : JsonSerializerContext { }
+public partial class ZincJsonContext : JsonSerializerContext { }
 
 // AOT-safe JSON writer for open shapes: recursively serializes anything the
 // codebase actually hands to JSON output — primitives, IDictionary, IEnumerable,
 // and JsonElement. Uses runtime interface dispatch only, no reflection.
-internal static class ZincJson
+public static class ZincJson
 {
     public static byte[] Serialize(object? value)
     {
