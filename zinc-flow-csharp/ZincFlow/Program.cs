@@ -14,6 +14,24 @@ if (mode == "--bench" || mode == "bench")
     return;
 }
 
+if (mode == "validate" || mode == "--validate")
+{
+    Environment.Exit(RunValidate(args.Length > 1 ? args[1] : null));
+    return;
+}
+
+if (mode == "--help" || mode == "-h" || mode == "help")
+{
+    Console.WriteLine("zinc-flow — data flow engine");
+    Console.WriteLine();
+    Console.WriteLine("Usage:");
+    Console.WriteLine("  zinc-flow                  Start the server using ./config.yaml (default)");
+    Console.WriteLine("  zinc-flow validate [path]  Check a config without starting; exit 0 on success, 1 on errors");
+    Console.WriteLine("  zinc-flow bench            Run pipeline throughput benchmarks");
+    Console.WriteLine("  zinc-flow help             Show this message");
+    return;
+}
+
 // --- Production server mode ---
 Console.WriteLine("zinc-flow-csharp starting");
 
@@ -218,6 +236,43 @@ lifetime.ApplicationStopping.Register(() =>
 app.Run();
 
 // --- Helpers ---
+
+static int RunValidate(string? pathArg)
+{
+    var path = pathArg ?? Path.Combine(Directory.GetCurrentDirectory(), "config.yaml");
+    if (!File.Exists(path))
+    {
+        Console.Error.WriteLine($"validate: config file not found: {path}");
+        return 2;
+    }
+
+    Dictionary<string, object?> config;
+    try
+    {
+        config = YamlParser.Parse(File.ReadAllText(path));
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"validate: YAML parse failed: {ex.Message}");
+        return 1;
+    }
+
+    var reg = new Registry();
+    BuiltinProcessors.RegisterAll(reg);
+    var result = FlowValidator.Validate(config, reg);
+
+    Console.WriteLine($"validate: {path}");
+    if (result.Issues.Count == 0)
+    {
+        Console.WriteLine("  no issues — config is valid");
+        return 0;
+    }
+    foreach (var issue in result.Issues)
+        Console.WriteLine($"  {issue}");
+    Console.WriteLine();
+    Console.WriteLine($"summary: {result.ErrorCount} error(s), {result.WarningCount} warning(s)");
+    return result.HasErrors ? 1 : 0;
+}
 
 static string GetConfigString(Dictionary<string, object?> config, string dotPath, string defaultVal)
 {

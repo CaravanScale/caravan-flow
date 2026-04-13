@@ -8,6 +8,7 @@ CoreTests.RunAll();
 ProcessorTests.RunAll();
 CodecTests.RunAll();
 ExpressionTests.RunAll();
+ValidatorTests.RunAll();
 FabricTests.RunAll();
 SourceTests.RunAll();
 PipelineTests.RunAll();
