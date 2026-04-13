@@ -17,7 +17,7 @@
 
 **Three runtimes:**
 - **Go** — 11MB static binary, 599K ff/s, zero deps. Edge, embedded, performance-critical.
-- **C# .NET 10** — 16MB AOT binary, 2M+ ff/s, zero GC during execution. Maximum throughput, .NET ecosystems.
+- **C# .NET 10** — 26MB AOT binary, 2M+ ff/s, zero GC during execution. Maximum throughput, .NET ecosystems. 762 tests pass under both JIT and AOT, zero analyzer warnings.
 - **Python 3.14t** — 14MB native binary, 95K ff/s, pandas/numpy/sklearn integration. Python orgs.
 
 ---
@@ -73,11 +73,24 @@ Make zinc-flow useful for real workloads without requiring NATS or K8s. A single
 - [x] Hot reload — watch config.yaml, atomic pipeline graph swap on change
 - [x] NiFi-style connections replaced IRS global routing
 - [x] Direct pipeline executor (no inter-stage queues, Apache Camel-style)
-- [x] 17 processor types in StdLib
-- [x] 438 tests, 0 failures (core types, processors, codecs, DAG, failure scenarios, e2e pipelines)
+- [x] RouteOnAttribute processor — conditional branching using predicate engine
+- [x] Read-only management dashboard — single-file dashboard.html served at `/`, dagre DAG layout, live processor stats
+- [x] AOT hardening — source-generated JsonContext + Utf8JsonWriter for open shapes, [FromBody] parameter binding for mutation handlers, zero analyzer warnings
+- [x] `test --aot` mode in zinc-csharp build tool — publishes test project as Native AOT binary for nightly CI
 - [ ] `zinc-flow validate` — check config without starting
-- [ ] RouteOnAttribute processor — conditional branching using predicate engine
 - [ ] Custom processor loading — register processors from external packages
+
+### Phase 2e: Avro fidelity & expression engine (C#)
+- [x] **Avro Object Container File (OCF)** — read real `.avro` files end-to-end. Magic bytes, Avro-encoded metadata map, 16-byte sync marker, arbitrary block count, null + deflate codecs. `ConvertOCFToRecord` + `ConvertRecordToOCF` processors with embedded JSON schema.
+- [x] **Avro JSON schema parse/emit** — `AvroSchemaJson` round-trips primitives, nullable-primitive unions (`["null", T]`), and logical-type annotations.
+- [x] **Logical types** — TimestampMillis, TimestampMicros, Date, TimeMillis, TimeMicros, Uuid, Decimal (precision/scale). Underlying primitive storage preserved for byte fidelity; LogicalTypeHelpers converts to/from DateTime/DateOnly/TimeOnly/Guid/decimal.
+- [x] **Typed expression engine** — hand-rolled tokenizer + shunting-yard + stack VM. Tagged EvalValue (Long/Double/Bool/String/Null) with type promotion. Operators: `+ - * / %`, `== != < > <= >=`, `&& || !`, parens, unary minus. Functions: upper/lower/trim/length/substring/replace/concat/contains/startsWith/endsWith/coalesce/if/int/long/double/string/bool/abs/min/max/floor/ceil/round/pow/sqrt/isNull/isEmpty.
+- [x] **TransformRecord `compute:` directive** — typed expression evaluation against record fields. Output schema preserves original FieldType for unmodified fields and infers from first record for new fields. Chained computes see prior writes.
+- [x] **Nested field paths** — dotted access (`user.profile.name`) in QueryRecord, ExtractRecordField, RecordValueResolver, DictValueResolver. `RecordHelpers.GetByPath/SetByPath` walks GenericRecord and `Dictionary<string, object?>` values.
+- [ ] **Snappy/zstd OCF codecs** — null + deflate today; snappy/zstd require external libraries.
+- [ ] **Avro schema evolution** — reader schema differs from writer schema; field additions with defaults, type promotion (int→long etc.).
+- [ ] **Schema registry** — Confluent or similar; resolve schema by ID.
+- [ ] **Apache Parquet support** — deferred; row-oriented flow model doesn't benefit from columnar storage. Revisit for one-shot batch ingest sources only.
 
 ---
 
