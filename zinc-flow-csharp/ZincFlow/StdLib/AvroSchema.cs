@@ -63,6 +63,8 @@ public static class AvroSchemaJson
 
             string? fieldName = null;
             FieldType? fieldType = null;
+            LogicalType logical = LogicalType.None;
+            int precision = 0, scale = 0;
 
             while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
             {
@@ -71,64 +73,119 @@ public static class AvroSchemaJson
                 reader.Read();
 
                 if (prop == "name") fieldName = reader.GetString();
-                else if (prop == "type") fieldType = ParseTypeToken(ref reader);
+                else if (prop == "type")
+                {
+                    var parsed = ParseTypeToken(ref reader);
+                    fieldType = parsed.FieldType;
+                    if (parsed.LogicalType != LogicalType.None) logical = parsed.LogicalType;
+                    if (parsed.Precision > 0) precision = parsed.Precision;
+                    if (parsed.Scale > 0) scale = parsed.Scale;
+                }
                 else SkipValue(ref reader);
             }
 
             if (fieldName is null || fieldType is null)
                 throw new InvalidOperationException("field missing name or type");
-            result.Add(new Field(fieldName, fieldType.Value));
+            result.Add(new Field(fieldName, fieldType.Value, logicalType: logical, precision: precision, scale: scale));
         }
         return result;
     }
 
-    // Parse a "type" token: primitive string, nullable-union array ["null", T], or nested type object.
-    private static FieldType ParseTypeToken(ref Utf8JsonReader reader)
+    private readonly record struct ParsedType(FieldType FieldType, LogicalType LogicalType, int Precision, int Scale)
+    {
+        public static ParsedType Of(FieldType ft) => new(ft, LogicalType.None, 0, 0);
+    }
+
+    // Parse a "type" token: primitive string, nullable-union, or annotated type object.
+    private static ParsedType ParseTypeToken(ref Utf8JsonReader reader)
     {
         if (reader.TokenType == JsonTokenType.String)
-            return MapPrimitive(reader.GetString() ?? "");
+            return ParsedType.Of(MapPrimitive(reader.GetString() ?? ""));
 
         if (reader.TokenType == JsonTokenType.StartArray)
         {
-            // Union: take first non-null branch as the effective type (nullability erased).
-            FieldType? resolved = null;
+            ParsedType? resolved = null;
             while (reader.Read() && reader.TokenType != JsonTokenType.EndArray)
             {
                 if (reader.TokenType == JsonTokenType.String)
                 {
                     var s = reader.GetString();
                     if (s == "null") continue;
-                    resolved ??= MapPrimitive(s ?? "");
+                    resolved ??= ParsedType.Of(MapPrimitive(s ?? ""));
+                }
+                else if (reader.TokenType == JsonTokenType.StartObject)
+                {
+                    var inner = ParseTypeObject(ref reader);
+                    resolved ??= inner;
                 }
                 else
                 {
                     SkipValue(ref reader);
-                    resolved ??= FieldType.String;
+                    resolved ??= ParsedType.Of(FieldType.String);
                 }
             }
-            return resolved ?? FieldType.String;
+            return resolved ?? ParsedType.Of(FieldType.String);
         }
 
         if (reader.TokenType == JsonTokenType.StartObject)
-        {
-            // Nested type object — extract its "type" field; fall back to String for unsupported shapes.
-            FieldType result = FieldType.String;
-            while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
-            {
-                if (reader.TokenType == JsonTokenType.PropertyName && reader.GetString() == "type")
-                {
-                    reader.Read();
-                    if (reader.TokenType == JsonTokenType.String)
-                        result = MapPrimitive(reader.GetString() ?? "");
-                    else SkipValue(ref reader);
-                }
-                else SkipValue(ref reader);
-            }
-            return result;
-        }
+            return ParseTypeObject(ref reader);
 
         throw new InvalidOperationException($"unsupported type token: {reader.TokenType}");
     }
+
+    // Parse {"type": ..., "logicalType": ..., "precision": ..., "scale": ...}
+    private static ParsedType ParseTypeObject(ref Utf8JsonReader reader)
+    {
+        FieldType primitive = FieldType.String;
+        LogicalType logical = LogicalType.None;
+        int precision = 0, scale = 0;
+
+        while (reader.Read() && reader.TokenType != JsonTokenType.EndObject)
+        {
+            if (reader.TokenType != JsonTokenType.PropertyName) continue;
+            var prop = reader.GetString();
+            reader.Read();
+
+            if (prop == "type")
+            {
+                if (reader.TokenType == JsonTokenType.String)
+                    primitive = MapPrimitive(reader.GetString() ?? "");
+                else SkipValue(ref reader);
+            }
+            else if (prop == "logicalType")
+                logical = MapLogical(reader.GetString() ?? "");
+            else if (prop == "precision")
+                precision = reader.TryGetInt32(out var p) ? p : 0;
+            else if (prop == "scale")
+                scale = reader.TryGetInt32(out var s) ? s : 0;
+            else SkipValue(ref reader);
+        }
+        return new ParsedType(primitive, logical, precision, scale);
+    }
+
+    private static LogicalType MapLogical(string name) => name switch
+    {
+        "timestamp-millis" => LogicalType.TimestampMillis,
+        "timestamp-micros" => LogicalType.TimestampMicros,
+        "date" => LogicalType.Date,
+        "time-millis" => LogicalType.TimeMillis,
+        "time-micros" => LogicalType.TimeMicros,
+        "uuid" => LogicalType.Uuid,
+        "decimal" => LogicalType.Decimal,
+        _ => LogicalType.None
+    };
+
+    private static string LogicalName(LogicalType lt) => lt switch
+    {
+        LogicalType.TimestampMillis => "timestamp-millis",
+        LogicalType.TimestampMicros => "timestamp-micros",
+        LogicalType.Date => "date",
+        LogicalType.TimeMillis => "time-millis",
+        LogicalType.TimeMicros => "time-micros",
+        LogicalType.Uuid => "uuid",
+        LogicalType.Decimal => "decimal",
+        _ => ""
+    };
 
     private static FieldType MapPrimitive(string typeName) => typeName switch
     {
@@ -166,7 +223,22 @@ public static class AvroSchemaJson
             {
                 writer.WriteStartObject();
                 writer.WriteString("name", f.Name);
-                writer.WriteString("type", PrimitiveName(f.FieldType));
+                if (f.LogicalType == LogicalType.None)
+                {
+                    writer.WriteString("type", PrimitiveName(f.FieldType));
+                }
+                else
+                {
+                    writer.WriteStartObject("type");
+                    writer.WriteString("type", PrimitiveName(f.FieldType));
+                    writer.WriteString("logicalType", LogicalName(f.LogicalType));
+                    if (f.LogicalType == LogicalType.Decimal)
+                    {
+                        if (f.Precision > 0) writer.WriteNumber("precision", f.Precision);
+                        if (f.Scale > 0) writer.WriteNumber("scale", f.Scale);
+                    }
+                    writer.WriteEndObject();
+                }
                 writer.WriteEndObject();
             }
             writer.WriteEndArray();

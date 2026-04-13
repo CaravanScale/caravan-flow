@@ -8,19 +8,42 @@ public enum FieldType
     Array, Map, Record, Enum, Union
 }
 
+// --- Logical types: semantic annotations on top of primitives.
+// Storage stays on the underlying primitive (long for timestamps, int for dates,
+// string for uuid, bytes for decimal); the tag travels with the schema so OCF
+// roundtrips preserve intent. Use LogicalTypeHelpers for conversions.
+public enum LogicalType
+{
+    None,
+    TimestampMillis,   // long: millis since Unix epoch (UTC)
+    TimestampMicros,   // long: micros since Unix epoch (UTC)
+    Date,              // int: days since Unix epoch
+    TimeMillis,        // int: millis past midnight
+    TimeMicros,        // long: micros past midnight
+    Uuid,              // string: RFC 4122
+    Decimal            // bytes: two's complement big-endian; uses Precision/Scale
+}
+
 // --- Field: named, typed column ---
 
 public sealed class Field
 {
     public string Name { get; }
     public FieldType FieldType { get; }
+    public LogicalType LogicalType { get; }
+    public int Precision { get; }       // Decimal only
+    public int Scale { get; }           // Decimal only
     public object? DefaultValue { get; }
 
-    public Field(string name, FieldType fieldType, object? defaultValue = null)
+    public Field(string name, FieldType fieldType, object? defaultValue = null,
+                 LogicalType logicalType = LogicalType.None, int precision = 0, int scale = 0)
     {
         Name = name;
         FieldType = fieldType;
         DefaultValue = defaultValue;
+        LogicalType = logicalType;
+        Precision = precision;
+        Scale = scale;
     }
 }
 

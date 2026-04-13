@@ -30,6 +30,10 @@ public static class CodecTests
         TestOCFRoundtripDeflateCodec();
         TestOCFReadPrebuilt();
         TestOCFProcessorRoundtrip();
+        TestLogicalTypesSchemaRoundtrip();
+        TestLogicalTypeHelpers();
+        TestOCFLogicalTypePreserved();
+        TestDecimalBytesRoundtrip();
         TestEvaluateExpression();
         TestEvaluateExpressionFunctions();
         TestTransformRecord();
@@ -497,6 +501,123 @@ public static class CodecTests
         try { reader.Read(bad); }
         catch (InvalidOperationException) { threw = true; }
         AssertTrue("bad magic throws", threw);
+    }
+
+    static void TestLogicalTypesSchemaRoundtrip()
+    {
+        Console.WriteLine("--- Avro: logical types in schema parse/emit ---");
+        var json = "{\"type\":\"record\",\"name\":\"Event\",\"fields\":[" +
+                   "{\"name\":\"id\",\"type\":{\"type\":\"string\",\"logicalType\":\"uuid\"}}," +
+                   "{\"name\":\"created_at\",\"type\":{\"type\":\"long\",\"logicalType\":\"timestamp-millis\"}}," +
+                   "{\"name\":\"birthday\",\"type\":{\"type\":\"int\",\"logicalType\":\"date\"}}," +
+                   "{\"name\":\"start_time\",\"type\":{\"type\":\"int\",\"logicalType\":\"time-millis\"}}," +
+                   "{\"name\":\"amount\",\"type\":{\"type\":\"bytes\",\"logicalType\":\"decimal\",\"precision\":12,\"scale\":2}}]}";
+        var schema = AvroSchemaJson.Parse(json);
+        var byName = schema.Fields.ToDictionary(f => f.Name, f => f);
+
+        AssertTrue("uuid logical type", byName["id"].LogicalType == LogicalType.Uuid);
+        AssertTrue("uuid underlying = String", byName["id"].FieldType == FieldType.String);
+        AssertTrue("timestamp-millis logical", byName["created_at"].LogicalType == LogicalType.TimestampMillis);
+        AssertTrue("timestamp-millis underlying = Long", byName["created_at"].FieldType == FieldType.Long);
+        AssertTrue("date logical", byName["birthday"].LogicalType == LogicalType.Date);
+        AssertTrue("date underlying = Int", byName["birthday"].FieldType == FieldType.Int);
+        AssertTrue("time-millis logical", byName["start_time"].LogicalType == LogicalType.TimeMillis);
+        AssertTrue("decimal logical", byName["amount"].LogicalType == LogicalType.Decimal);
+        AssertTrue("decimal precision", byName["amount"].Precision == 12);
+        AssertTrue("decimal scale", byName["amount"].Scale == 2);
+
+        // Emit + reparse roundtrip
+        var emitted = AvroSchemaJson.Emit(schema);
+        AssertTrue("emitted has uuid", emitted.Contains("\"logicalType\":\"uuid\""));
+        AssertTrue("emitted has timestamp-millis", emitted.Contains("\"logicalType\":\"timestamp-millis\""));
+        AssertTrue("emitted has decimal precision", emitted.Contains("\"precision\":12"));
+        AssertTrue("emitted has decimal scale", emitted.Contains("\"scale\":2"));
+
+        var reparsed = AvroSchemaJson.Parse(emitted);
+        var reByName = reparsed.Fields.ToDictionary(f => f.Name, f => f);
+        AssertTrue("reparse uuid", reByName["id"].LogicalType == LogicalType.Uuid);
+        AssertTrue("reparse decimal scale preserved", reByName["amount"].Scale == 2);
+    }
+
+    static void TestLogicalTypeHelpers()
+    {
+        Console.WriteLine("--- LogicalTypeHelpers: conversions ---");
+        // timestamp-millis
+        var dt = new DateTime(2024, 6, 15, 12, 30, 45, DateTimeKind.Utc);
+        var millis = LogicalTypeHelpers.ToTimestampMillis(dt);
+        var roundDt = LogicalTypeHelpers.FromTimestampMillis(millis);
+        AssertTrue("timestamp-millis roundtrip ms", roundDt == dt);
+
+        // timestamp-micros (DateTime resolution = 100ns; ensure micro precision survives)
+        var dtMicro = new DateTime(2024, 6, 15, 12, 30, 45, DateTimeKind.Utc).AddTicks(1230); // 123 micros
+        var micros = LogicalTypeHelpers.ToTimestampMicros(dtMicro);
+        var roundMicro = LogicalTypeHelpers.FromTimestampMicros(micros);
+        AssertTrue("timestamp-micros roundtrip", roundMicro == dtMicro);
+
+        // date
+        var d = new DateOnly(2024, 6, 15);
+        var days = LogicalTypeHelpers.ToDate(d);
+        AssertTrue("date roundtrip", LogicalTypeHelpers.FromDate(days) == d);
+
+        // time-millis
+        var t = new TimeOnly(14, 30, 0);
+        var tMillis = LogicalTypeHelpers.ToTimeMillis(t);
+        AssertTrue("time-millis roundtrip", LogicalTypeHelpers.FromTimeMillis(tMillis) == t);
+
+        // time-micros
+        var tMicro = new TimeOnly(14, 30, 0).Add(TimeSpan.FromTicks(5000)); // 500 micros
+        var tMicros = LogicalTypeHelpers.ToTimeMicros(tMicro);
+        AssertTrue("time-micros roundtrip", LogicalTypeHelpers.FromTimeMicros(tMicros) == tMicro);
+
+        // uuid
+        var g = Guid.NewGuid();
+        AssertTrue("uuid roundtrip", LogicalTypeHelpers.FromUuid(LogicalTypeHelpers.ToUuid(g)) == g);
+    }
+
+    static void TestOCFLogicalTypePreserved()
+    {
+        Console.WriteLine("--- OCF: logical type metadata roundtrips through file ---");
+        var schema = new Schema("event", [
+            new Field("event_id", FieldType.String, logicalType: LogicalType.Uuid),
+            new Field("ts", FieldType.Long, logicalType: LogicalType.TimestampMillis),
+            new Field("event_date", FieldType.Int, logicalType: LogicalType.Date)
+        ]);
+        var rec = new GenericRecord(schema);
+        var g = Guid.NewGuid();
+        var dt = new DateTime(2024, 6, 15, 12, 0, 0, DateTimeKind.Utc);
+        var d = new DateOnly(2024, 6, 15);
+        rec.SetField("event_id", LogicalTypeHelpers.ToUuid(g));
+        rec.SetField("ts", LogicalTypeHelpers.ToTimestampMillis(dt));
+        rec.SetField("event_date", LogicalTypeHelpers.ToDate(d));
+
+        var bytes = new OCFWriter(AvroOCF.CodecNull).Write([rec], schema);
+        var (decodedSchema, decoded) = new OCFReader().Read(bytes);
+
+        var byName = decodedSchema.Fields.ToDictionary(f => f.Name, f => f);
+        AssertTrue("decoded uuid logical", byName["event_id"].LogicalType == LogicalType.Uuid);
+        AssertTrue("decoded ts logical", byName["ts"].LogicalType == LogicalType.TimestampMillis);
+        AssertTrue("decoded date logical", byName["event_date"].LogicalType == LogicalType.Date);
+
+        // Values survive (they're stored as the underlying primitive)
+        AssertTrue("uuid value", LogicalTypeHelpers.FromUuid(decoded[0].GetField("event_id")?.ToString() ?? "") == g);
+        AssertTrue("ts value", LogicalTypeHelpers.FromTimestampMillis((long)(decoded[0].GetField("ts") ?? 0L)) == dt);
+        AssertTrue("date value", LogicalTypeHelpers.FromDate(Convert.ToInt32(decoded[0].GetField("event_date") ?? 0)) == d);
+    }
+
+    static void TestDecimalBytesRoundtrip()
+    {
+        Console.WriteLine("--- LogicalTypeHelpers: decimal byte roundtrip ---");
+        // Common scales
+        decimal[] values = { 0m, 1m, -1m, 1234.56m, -987.65m, 99999999.99m, 0.01m };
+        foreach (var v in values)
+        {
+            var bytes = LogicalTypeHelpers.ToDecimalBytes(v, 2);
+            var back = LogicalTypeHelpers.FromDecimalBytes(bytes, 2);
+            AssertTrue($"decimal({v}) roundtrip", back == v);
+        }
+        // Different scale
+        var bigBytes = LogicalTypeHelpers.ToDecimalBytes(123.456789m, 6);
+        AssertTrue("decimal scale 6 roundtrip", LogicalTypeHelpers.FromDecimalBytes(bigBytes, 6) == 123.456789m);
     }
 
     static void TestTransformRecordCompute()
