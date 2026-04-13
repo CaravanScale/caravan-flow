@@ -1,0 +1,68 @@
+# 03 — Read real .avro files from disk
+#
+# Watches /tmp/avro-in for .avro files (Avro Object Container Files — the
+# format Kafka Connect, Spark, and avro-tools produce). Decodes with the
+# embedded schema, transforms, writes back as zstandard-compressed OCF.
+#
+# Try it:
+#   ./build/ZincFlow validate examples/03-avro-ocf.yaml
+#   mkdir -p /tmp/avro-in /tmp/avro-out
+#   cp examples/03-avro-ocf.yaml config.yaml && ./build/ZincFlow
+#   # Drop a .avro file into /tmp/avro-in/ — it'll be processed and moved
+#   # to /tmp/avro-in/.processed/, output lands in /tmp/avro-out/.
+
+server:
+  port: 9091
+
+content:
+  dir: /tmp/zinc-flow-csharp/content
+
+sources:
+  file:
+    input_dir: /tmp/avro-in
+    pattern: "*.avro"
+    poll_interval_ms: 1000
+
+flow:
+  processors:
+
+    # OCF reader. With no reader_schema config, decodes using the writer
+    # schema from the file header — supports null, deflate, zstandard codecs.
+    parse:
+      type: ConvertOCFToRecord
+      requires: [content]
+      connections:
+        success: [transform]
+        failure: [errors]
+
+    # Add a derived field. Original field types are preserved.
+    transform:
+      type: TransformRecord
+      config:
+        operations: >
+          compute:processed_at:long(1234567890);
+          compute:summary:concat("rec-", string(id))
+      connections:
+        success: [encode]
+
+    # Write back as OCF with zstandard compression (most space-efficient codec).
+    # Supported codecs: null, deflate, zstandard.
+    encode:
+      type: ConvertRecordToOCF
+      config:
+        codec: zstandard
+      connections:
+        success: [write]
+
+    write:
+      type: PutFile
+      requires: [content]
+      config:
+        output_dir: /tmp/avro-out
+        naming_attribute: filename
+        suffix: .processed.avro
+
+    errors:
+      type: LogAttribute
+      config:
+        prefix: avro-error

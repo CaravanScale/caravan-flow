@@ -1,0 +1,88 @@
+# 05 — Schema-registry-backed Avro pipeline
+#
+# Reader schema is fetched from a Confluent-style registry by subject + version.
+# The registry URL is configured globally; processors that need it declare
+# `requires: [schema_registry]`.
+#
+# Schemas are cached per (id) and per (subject, version). "latest" lookups
+# always hit the wire so newly-promoted versions get picked up on the next read.
+#
+# Try it:
+#   ./build/ZincFlow validate examples/05-schema-registry.yaml
+#
+# To run end-to-end you need a registry reachable at the configured URL.
+# For local testing, point at https://github.com/confluentinc/schema-registry
+# or a Karapace instance.
+
+server:
+  port: 9091
+
+content:
+  dir: /tmp/zinc-flow-csharp/content
+
+# NEW: global schema registry config. Auto-registers a SchemaRegistryProvider
+# at startup if `url` is set. `auth` is optional Basic auth ("user:pass").
+schema_registry:
+  url: http://schema-registry:8081
+  # auth: alice:s3cret
+
+sources:
+  file:
+    input_dir: /tmp/avro-in
+    pattern: "*.avro"
+
+flow:
+  processors:
+
+    parse:
+      type: ConvertOCFToRecord
+      requires: [content, schema_registry]
+      config:
+        reader_schema_subject: orders
+        # Pin to a specific version for reproducibility, or use "latest"
+        # to track the registry's latest-promoted version.
+        reader_schema_version: latest
+      connections:
+        success: [filter]
+        failure: [errors]
+
+    filter:
+      type: QueryRecord
+      config:
+        # Nested-path predicates work too: e.g., "user.country = US"
+        where: "amount > 100"
+      connections:
+        success: [transform]
+
+    transform:
+      type: TransformRecord
+      config:
+        operations: >
+          compute:total:amount * qty;
+          compute:tax:total * if(region == "US", 0.07, 0.15);
+          compute:label:upper(region) + "-" + string(round(total + tax))
+      connections:
+        success: [encode]
+
+    # Write back as zstd-compressed OCF. The output schema is whatever the
+    # records carry — same as the registry-fetched reader schema, plus any
+    # fields added by `compute:`.
+    encode:
+      type: ConvertRecordToOCF
+      config:
+        codec: zstandard
+      connections:
+        success: [write]
+
+    write:
+      type: PutFile
+      requires: [content]
+      config:
+        output_dir: /tmp/avro-out
+        naming_attribute: filename
+        suffix: .processed.avro
+
+    errors:
+      type: LogAttribute
+      config:
+        prefix: registry-error

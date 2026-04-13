@@ -2,6 +2,10 @@
 
 C# / .NET 10 port of the zinc-flow engine. Uses ThreadStatic object pools, ArrayPool byte buffers, ref-counted Content, and AttributeMap overlay chains to achieve 2M+ ff/s with zero GC during execution.
 
+**Start here:** [`docs/getting-started.md`](docs/getting-started.md) — install, CLI, config structure, processor catalog, expression language, management API.
+
+**Examples:** [`examples/`](examples/) — five validated configs covering hello-world, JSON pipelines, Avro OCF, schema evolution, and registry-backed schemas.
+
 ## Quick Start
 
 ```bash

@@ -97,21 +97,24 @@ public static class BuiltinProcessors
                 ["reader_schema", "reader_schema_subject", "reader_schema_version"]),
             (ctx, config) =>
             {
-                Schema? readerSchema = null;
+                Schema? staticSchema = null;
+                SchemaRegistryProvider? registry = null;
+                string? subject = null;
+                var version = config.GetValueOrDefault("reader_schema_version", "latest");
+
                 // Inline JSON schema takes priority over registry lookup.
                 if (config.TryGetValue("reader_schema", out var rsJson) && !string.IsNullOrWhiteSpace(rsJson))
                 {
-                    readerSchema = AvroSchemaJson.Parse(rsJson);
+                    staticSchema = AvroSchemaJson.Parse(rsJson);
                 }
-                else if (config.TryGetValue("reader_schema_subject", out var subject) && !string.IsNullOrWhiteSpace(subject))
+                else if (config.TryGetValue("reader_schema_subject", out var subj) && !string.IsNullOrWhiteSpace(subj))
                 {
                     if (!ctx.TryGetProvider<SchemaRegistryProvider>("schema_registry", out var srProvider) || srProvider is null)
                         throw new InvalidOperationException("reader_schema_subject set but no schema_registry provider configured");
-                    var version = config.GetValueOrDefault("reader_schema_version", "latest");
-                    var (_, schema) = srProvider.Client.GetSubjectVersionAsync(subject, version).GetAwaiter().GetResult();
-                    readerSchema = schema;
+                    registry = srProvider;
+                    subject = subj;
                 }
-                return new ConvertOCFToRecord(ctx.GetContentStoreOrDefault(), readerSchema);
+                return new ConvertOCFToRecord(ctx.GetContentStoreOrDefault(), staticSchema, registry, subject, version);
             });
 
         reg.Register(

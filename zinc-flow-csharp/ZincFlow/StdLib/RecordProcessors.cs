@@ -100,21 +100,40 @@ public sealed class ConvertRecordToAvro : IProcessor
 /// ConvertOCFToRecord: Avro Object Container File → RecordContent.
 /// Schema is embedded in the OCF header — no config needed for the simple case.
 ///
-/// Optional `readerSchema` triggers Avro schema-evolution semantics: decoded
-/// records are projected onto the reader schema with type promotion (int→long
-/// etc.) and missing-field defaults. Throws at process time if the writer
-/// schema in the file is incompatible with the supplied reader schema.
+/// Optional reader-schema sources (checked in order):
+///   1. <paramref name="staticReaderSchema"/> — set directly, e.g. from inline
+///      JSON in config.
+///   2. <paramref name="registryProvider"/> + subject/version — fetched lazily
+///      on the first Process() call so the server can start before the registry
+///      is reachable, and so the validator can construct without network calls.
+///
+/// When a reader schema is in play, decoded records are projected onto it via
+/// Avro schema-evolution rules (type promotion, defaults). Incompatible
+/// writer/reader pairs surface as a FailureResult, not an unhandled throw.
 /// </summary>
 public sealed class ConvertOCFToRecord : IProcessor
 {
     private readonly IContentStore _store;
     private readonly OCFReader _reader = new();
-    private readonly Schema? _readerSchema;
+    private readonly Schema? _staticReaderSchema;
+    private readonly SchemaRegistryProvider? _registryProvider;
+    private readonly string? _registrySubject;
+    private readonly string _registryVersion;
+    private Schema? _resolvedReaderSchema;
+    private readonly object _resolveLock = new();
 
-    public ConvertOCFToRecord(IContentStore store, Schema? readerSchema = null)
+    public ConvertOCFToRecord(
+        IContentStore store,
+        Schema? staticReaderSchema = null,
+        SchemaRegistryProvider? registryProvider = null,
+        string? registrySubject = null,
+        string registryVersion = "latest")
     {
         _store = store;
-        _readerSchema = readerSchema;
+        _staticReaderSchema = staticReaderSchema;
+        _registryProvider = registryProvider;
+        _registrySubject = registrySubject;
+        _registryVersion = registryVersion;
     }
 
     public ProcessorResult Process(FlowFile ff)
@@ -131,11 +150,27 @@ public sealed class ConvertOCFToRecord : IProcessor
         else
             return SingleResult.Rent(ff);
 
+        // Resolve the reader schema lazily. Static wins; otherwise hit the registry
+        // (cached after the first call). Registry failures become FailureResult so
+        // the running server doesn't crash on a transient registry outage.
+        Schema? readerSchema = _staticReaderSchema;
+        if (readerSchema is null && _registryProvider is not null && _registrySubject is not null)
+        {
+            try
+            {
+                readerSchema = ResolveFromRegistry();
+            }
+            catch (Exception ex)
+            {
+                return FailureResult.Rent($"registry lookup failed for {_registrySubject}@{_registryVersion}: {ex.Message}", ff);
+            }
+        }
+
         Schema schema;
         List<GenericRecord> records;
         try
         {
-            (schema, records) = _reader.Read(data, _readerSchema);
+            (schema, records) = _reader.Read(data, readerSchema);
         }
         catch (Exception ex)
         {
@@ -147,6 +182,24 @@ public sealed class ConvertOCFToRecord : IProcessor
 
         var updated = FlowFile.WithContent(ff, new RecordContent(schema, records));
         return SingleResult.Rent(updated);
+    }
+
+    private Schema ResolveFromRegistry()
+    {
+        // Cache the registry-fetched schema unless the caller asked for "latest" —
+        // in that case re-query so newly promoted versions get picked up.
+        if (_registryVersion != "latest" && _resolvedReaderSchema is not null)
+            return _resolvedReaderSchema;
+        lock (_resolveLock)
+        {
+            if (_registryVersion != "latest" && _resolvedReaderSchema is not null)
+                return _resolvedReaderSchema;
+            var (_, schema) = _registryProvider!.Client
+                .GetSubjectVersionAsync(_registrySubject!, _registryVersion)
+                .GetAwaiter().GetResult();
+            _resolvedReaderSchema = schema;
+            return schema;
+        }
     }
 }
 

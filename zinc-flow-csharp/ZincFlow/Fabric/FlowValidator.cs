@@ -1,4 +1,5 @@
 using ZincFlow.Core;
+using ZincFlow.StdLib;
 
 namespace ZincFlow.Fabric;
 
@@ -51,7 +52,7 @@ public static class FlowValidator
         var procDefs = Fabric.AsStringDict(flowDict.GetValueOrDefault("processors"));
         if (procDefs is null) return result;
 
-        var ctx = BuildSyntheticContext();
+        var ctx = BuildSyntheticContext(config);
 
         foreach (var (name, defObj) in procDefs)
         {
@@ -85,7 +86,7 @@ public static class FlowValidator
         return result;
     }
 
-    private static ScopedContext BuildSyntheticContext()
+    private static ScopedContext BuildSyntheticContext(Dictionary<string, object?> config)
     {
         var providers = new Dictionary<string, IProvider>
         {
@@ -94,7 +95,32 @@ public static class FlowValidator
             ["provenance"] = new ProvenanceProvider(),
             ["config"] = new ConfigProvider(new())
         };
+
+        // Mirror Program.cs: if the config declares a schema registry, register
+        // a stub provider so processors that `requires: [schema_registry]`
+        // can be constructed during validation. The actual fetch is lazy,
+        // so we don't need a reachable URL — just a provider of the right type.
+        var srUrl = GetConfigString(config, "schema_registry.url");
+        if (!string.IsNullOrEmpty(srUrl))
+        {
+            var srProvider = new SchemaRegistryProvider(new SchemaRegistryClient(srUrl));
+            srProvider.Enable();
+            providers["schema_registry"] = srProvider;
+        }
+
         foreach (var p in providers.Values) p.Enable();
         return new ScopedContext(providers);
+    }
+
+    private static string GetConfigString(Dictionary<string, object?> config, string dotPath)
+    {
+        var parts = dotPath.Split('.');
+        object? cur = config;
+        foreach (var part in parts)
+        {
+            if (Fabric.TryGetDictValue(cur, part, out cur)) continue;
+            return "";
+        }
+        return cur?.ToString() ?? "";
     }
 }
