@@ -1,4 +1,3 @@
-using System.Text.Json;
 using ZincFlow.Core;
 using ZincFlow.Fabric;
 
@@ -11,7 +10,7 @@ internal static class SourceHelpers
     internal static Task WriteJson(HttpResponse response, object value)
     {
         response.ContentType = "application/json";
-        return response.WriteAsync(JsonSerializer.Serialize(value, ZincFlow.Core.JsonOpts.Default));
+        return response.WriteAsync(ZincFlow.Core.ZincJson.SerializeToString(value));
     }
 }
 
@@ -123,8 +122,7 @@ public sealed class ListenHTTP : IConnectorSource
                 builder.WebHost.UseUrls($"http://0.0.0.0:{_port}");
                 builder.Services.ConfigureHttpJsonOptions(options =>
                 {
-                    options.SerializerOptions.TypeInfoResolverChain.Insert(0,
-                        new System.Text.Json.Serialization.Metadata.DefaultJsonTypeInfoResolver());
+                    options.SerializerOptions.TypeInfoResolverChain.Insert(0, ZincFlow.Core.ZincJsonContext.Default);
                 });
 
                 _app = builder.Build();

@@ -116,11 +116,10 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
 
-// Enable reflection-based JSON serialization (needed for Dict/anonymous types with AOT)
+// Use source-generated ZincJsonContext for AOT-safe JSON (no reflection fallback).
 builder.Services.ConfigureHttpJsonOptions(options =>
 {
-    options.SerializerOptions.TypeInfoResolverChain.Insert(0,
-        new System.Text.Json.Serialization.Metadata.DefaultJsonTypeInfoResolver());
+    options.SerializerOptions.TypeInfoResolverChain.Insert(0, ZincFlow.Core.ZincJsonContext.Default);
 });
 
 var port = GetConfigString(config, "server.port", "9091");

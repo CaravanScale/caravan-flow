@@ -1,16 +1,6 @@
 using System.Text.Json;
-using System.Text.Json.Serialization.Metadata;
 
 namespace ZincFlow.Core;
-
-// Shared options with reflection-based resolver (needed for AOT/trimmed builds)
-internal static class JsonOpts
-{
-    internal static readonly JsonSerializerOptions Default = new()
-    {
-        TypeInfoResolver = new DefaultJsonTypeInfoResolver()
-    };
-}
 
 // --- JSON RecordReader: JSON array → GenericRecords ---
 
@@ -118,13 +108,13 @@ public sealed class JsonRecordReader : IRecordReader
 
     private static bool TryDeserializeArray(byte[] data, out List<Dictionary<string, object?>>? result)
     {
-        try { result = JsonSerializer.Deserialize<List<Dictionary<string, object?>>>(data, JsonOpts.Default); return true; }
+        try { result = JsonSerializer.Deserialize(data, ZincJsonContext.Default.ListDictionaryStringObject); return true; }
         catch { result = null; return false; }
     }
 
     private static bool TryDeserializeObject(byte[] data, out Dictionary<string, object?>? result)
     {
-        try { result = JsonSerializer.Deserialize<Dictionary<string, object?>>(data, JsonOpts.Default); return true; }
+        try { result = JsonSerializer.Deserialize(data, ZincJsonContext.Default.DictionaryStringObject); return true; }
         catch { result = null; return false; }
     }
 }
@@ -135,26 +125,24 @@ public sealed class JsonRecordWriter : IRecordWriter
 {
     public byte[] Write(List<GenericRecord> records, Schema schema)
     {
-        var rawList = new List<Dictionary<string, object?>>(records.Count);
-        foreach (var record in records)
+        using var ms = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(ms))
         {
-            var raw = new Dictionary<string, object?>();
-            foreach (var f in schema.Fields)
+            writer.WriteStartArray();
+            foreach (var record in records)
             {
-                var val = record.GetField(f.Name);
-                if (val is not null)
-                    raw[f.Name] = val;
+                writer.WriteStartObject();
+                foreach (var f in schema.Fields)
+                {
+                    var val = record.GetField(f.Name);
+                    if (val is null) continue;
+                    writer.WritePropertyName(f.Name);
+                    ZincJson.WriteValue(writer, val);
+                }
+                writer.WriteEndObject();
             }
-            rawList.Add(raw);
+            writer.WriteEndArray();
         }
-
-        try
-        {
-            return JsonSerializer.SerializeToUtf8Bytes(rawList, JsonOpts.Default);
-        }
-        catch
-        {
-            return [];
-        }
+        return ms.ToArray();
     }
 }

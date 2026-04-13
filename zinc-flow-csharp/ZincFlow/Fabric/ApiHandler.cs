@@ -1,4 +1,4 @@
-using System.Text.Json;
+using Microsoft.AspNetCore.Mvc;
 using ZincFlow.Core;
 
 namespace ZincFlow.Fabric;
@@ -12,9 +12,8 @@ public sealed class ApiHandler
     private readonly Fabric _fab;
     private string? _configPath;
 
-    // AOT-safe JSON serialization — use this instead of Json()
     private static IResult Json(object value)
-        => Results.Content(JsonSerializer.Serialize(value, JsonOpts.Default), "application/json");
+        => Results.Content(ZincJson.SerializeToString(value), "application/json");
 
     public ApiHandler(Fabric fab) => _fab = fab;
 
@@ -98,9 +97,8 @@ public sealed class ApiHandler
 
     // --- Processor management ---
 
-    private async Task<IResult> AddProcessor(HttpContext ctx)
+    private IResult AddProcessor([FromBody] Dictionary<string, object?>? req)
     {
-        var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, object?>>(JsonOpts.Default);
         if (req is null) return Json(new Dictionary<string, object?> { ["error"] = "invalid json" });
         var name = req.GetValueOrDefault("name")?.ToString() ?? "";
         var type = req.GetValueOrDefault("type")?.ToString() ?? "";
@@ -145,9 +143,8 @@ public sealed class ApiHandler
             : Json(new Dictionary<string, object?> { ["error"] = "processor already exists or unknown type" });
     }
 
-    private async Task<IResult> RemoveProcessor(HttpContext ctx)
+    private IResult RemoveProcessor([FromBody] Dictionary<string, string>? req)
     {
-        var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>(JsonOpts.Default);
         var name = req?.GetValueOrDefault("name") ?? "";
         if (name == "") return Json(new Dictionary<string, object?> { ["error"] = "name required" });
         return _fab.RemoveProcessor(name)
@@ -155,9 +152,8 @@ public sealed class ApiHandler
             : Json(new Dictionary<string, object?> { ["error"] = "processor not found" });
     }
 
-    private async Task<IResult> EnableProcessor(HttpContext ctx)
+    private IResult EnableProcessor([FromBody] Dictionary<string, string>? req)
     {
-        var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>(JsonOpts.Default);
         var name = req?.GetValueOrDefault("name") ?? "";
         if (name == "") return Json(new Dictionary<string, object?> { ["error"] = "name required" });
         return _fab.EnableProcessor(name)
@@ -165,9 +161,8 @@ public sealed class ApiHandler
             : Json(new Dictionary<string, object?> { ["error"] = "processor not found" });
     }
 
-    private async Task<IResult> DisableProcessor(HttpContext ctx)
+    private IResult DisableProcessor([FromBody] Dictionary<string, string>? req)
     {
-        var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>(JsonOpts.Default);
         var name = req?.GetValueOrDefault("name") ?? "";
         if (name == "") return Json(new Dictionary<string, object?> { ["error"] = "name required" });
         return _fab.DisableProcessor(name)
@@ -175,9 +170,8 @@ public sealed class ApiHandler
             : Json(new Dictionary<string, object?> { ["error"] = "processor not found" });
     }
 
-    private async Task<IResult> ProcessorState(HttpContext ctx)
+    private IResult ProcessorState([FromBody] Dictionary<string, string>? req)
     {
-        var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>(JsonOpts.Default);
         var name = req?.GetValueOrDefault("name") ?? "";
         if (name == "") return Json(new Dictionary<string, object?> { ["error"] = "name required" });
         return Json(new Dictionary<string, object?> { ["name"] = name, ["state"] = _fab.GetProcessorState(name).ToString().ToUpperInvariant() });
@@ -195,9 +189,8 @@ public sealed class ApiHandler
         }).ToList());
     }
 
-    private async Task<IResult> EnableProvider(HttpContext ctx)
+    private IResult EnableProvider([FromBody] Dictionary<string, string>? req)
     {
-        var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>(JsonOpts.Default);
         var name = req?.GetValueOrDefault("name") ?? "";
         if (name == "") return Json(new Dictionary<string, object?> { ["error"] = "name required" });
         return _fab.EnableProvider(name)
@@ -205,9 +198,8 @@ public sealed class ApiHandler
             : Json(new Dictionary<string, object?> { ["error"] = "provider not found" });
     }
 
-    private async Task<IResult> DisableProvider(HttpContext ctx)
+    private IResult DisableProvider([FromBody] Dictionary<string, string>? req)
     {
-        var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>(JsonOpts.Default);
         var name = req?.GetValueOrDefault("name") ?? "";
         if (name == "") return Json(new Dictionary<string, object?> { ["error"] = "name required" });
         return _fab.DisableProvider(name)
@@ -286,9 +278,8 @@ public sealed class ApiHandler
         return Json(_fab.GetSources().Select(s => new Dictionary<string, object?> { ["name"] = s.Name, ["type"] = s.Type, ["running"] = s.Running }).ToList());
     }
 
-    private async Task<IResult> StartSource(HttpContext ctx)
+    private IResult StartSource([FromBody] Dictionary<string, string>? req)
     {
-        var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>(JsonOpts.Default);
         var name = req?.GetValueOrDefault("name") ?? "";
         if (name == "") return Json(new Dictionary<string, object?> { ["error"] = "name required" });
         return _fab.StartSource(name)
@@ -296,9 +287,8 @@ public sealed class ApiHandler
             : Json(new Dictionary<string, object?> { ["error"] = "source not found" });
     }
 
-    private async Task<IResult> StopSource(HttpContext ctx)
+    private IResult StopSource([FromBody] Dictionary<string, string>? req)
     {
-        var req = await ctx.Request.ReadFromJsonAsync<Dictionary<string, string>>(JsonOpts.Default);
         var name = req?.GetValueOrDefault("name") ?? "";
         if (name == "") return Json(new Dictionary<string, object?> { ["error"] = "name required" });
         return _fab.StopSource(name)
