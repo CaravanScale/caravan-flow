@@ -24,4 +24,4 @@ trim_metadata = false
 server = true
 
 [csharp.nuget]
-packages = ["YamlDotNet:16.3.0"]
+packages = ["YamlDotNet:16.3.0", "ZstdSharp.Port:0.8.4"]

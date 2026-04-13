@@ -22,6 +22,10 @@ public static class AvroOCF
     public static readonly byte[] Magic = [0x4F, 0x62, 0x6A, 0x01]; // "Obj\x01"
     public const string CodecNull = "null";
     public const string CodecDeflate = "deflate";
+    public const string CodecZstandard = "zstandard";
+
+    internal static bool IsSupportedCodec(string codec)
+        => codec == CodecNull || codec == CodecDeflate || codec == CodecZstandard;
 }
 
 public sealed class OCFReader
@@ -59,7 +63,7 @@ public sealed class OCFReader
         string codec = AvroOCF.CodecNull;
         if (metadata.TryGetValue("avro.codec", out var codecBytes))
             codec = Encoding.UTF8.GetString(codecBytes);
-        if (codec != AvroOCF.CodecNull && codec != AvroOCF.CodecDeflate)
+        if (!AvroOCF.IsSupportedCodec(codec))
             throw new InvalidOperationException($"unsupported OCF codec: {codec}");
 
         // Sync marker
@@ -92,6 +96,8 @@ public sealed class OCFReader
 
             if (codec == AvroOCF.CodecDeflate)
                 blockData = Inflate(blockData);
+            else if (codec == AvroOCF.CodecZstandard)
+                blockData = ZstdInflate(blockData);
 
             int blockOffset = 0;
             for (long i = 0; i < count; i++)
@@ -154,6 +160,13 @@ public sealed class OCFReader
         deflate.CopyTo(output);
         return output.ToArray();
     }
+
+    private static byte[] ZstdInflate(byte[] compressed)
+    {
+        using var decompressor = new ZstdSharp.Decompressor();
+        // Decompress in one shot — Decompressor.Unwrap allocates the right size.
+        return decompressor.Unwrap(compressed).ToArray();
+    }
 }
 
 public sealed class OCFWriter
@@ -162,7 +175,7 @@ public sealed class OCFWriter
 
     public OCFWriter(string codec = AvroOCF.CodecNull)
     {
-        if (codec != AvroOCF.CodecNull && codec != AvroOCF.CodecDeflate)
+        if (!AvroOCF.IsSupportedCodec(codec))
             throw new ArgumentException($"unsupported OCF codec: {codec}");
         _codec = codec;
     }
@@ -178,6 +191,8 @@ public sealed class OCFWriter
 
         if (_codec == AvroOCF.CodecDeflate)
             blockBytes = Deflate(blockBytes);
+        else if (_codec == AvroOCF.CodecZstandard)
+            blockBytes = ZstdDeflate(blockBytes);
 
         // Sync marker — 16 random bytes
         var sync = new byte[16];
@@ -225,5 +240,13 @@ public sealed class OCFWriter
         using (var deflate = new DeflateStream(output, CompressionLevel.Fastest, leaveOpen: true))
             deflate.Write(raw, 0, raw.Length);
         return output.ToArray();
+    }
+
+    private static byte[] ZstdDeflate(byte[] raw)
+    {
+        // Default compression level (3) — Avro OCF spec doesn't pin a level; this matches
+        // most reference implementations.
+        using var compressor = new ZstdSharp.Compressor();
+        return compressor.Wrap(raw).ToArray();
     }
 }

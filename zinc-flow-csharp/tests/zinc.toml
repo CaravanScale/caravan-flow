@@ -21,7 +21,7 @@ stack_traces = false
 trim_metadata = false
 
 [csharp.nuget]
-packages = ["YamlDotNet:16.3.0"]
+packages = ["YamlDotNet:16.3.0", "ZstdSharp.Port:0.8.4"]
 
 [csharp.references]
 # Project reference to the main ZincFlow project

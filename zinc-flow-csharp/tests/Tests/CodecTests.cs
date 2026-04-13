@@ -51,6 +51,9 @@ public static class CodecTests
         TestSchemaEvolutionFieldRemoved();
         TestSchemaEvolutionIncompatible();
         TestOCFRoundtripWithEvolution();
+        TestOCFRoundtripZstandard();
+        TestOCFZstandardCompresses();
+        TestOCFRejectsUnknownCodec();
     }
 
     static void TestAvroZigzagVarint()
@@ -726,6 +729,93 @@ public static class CodecTests
         AssertTrue("doubled = 20", outRec.GetField("doubled") is long d && d == 20);
         AssertTrue("plus_five = 25", outRec.GetField("plus_five") is long p && p == 25);
         AssertTrue("final = 625", outRec.GetField("final") is long f && f == 625);
+    }
+
+    static void TestOCFRoundtripZstandard()
+    {
+        Console.WriteLine("--- OCF: roundtrip (zstandard codec) ---");
+        var schema = new Schema("event", [
+            new Field("ts", FieldType.Long),
+            new Field("payload", FieldType.String)
+        ]);
+        var records = new List<GenericRecord>();
+        for (int i = 0; i < 100; i++)
+        {
+            var r = new GenericRecord(schema);
+            r.SetField("ts", (long)(1700000000 + i));
+            r.SetField("payload", "the quick brown fox jumps over the lazy dog");
+            records.Add(r);
+        }
+
+        var bytes = new OCFWriter(AvroOCF.CodecZstandard).Write(records, schema);
+        var (decodedSchema, decoded) = new OCFReader().Read(bytes);
+        AssertEqual("zstd schema name", decodedSchema.Name, "event");
+        AssertIntEqual("zstd record count", decoded.Count, 100);
+        AssertEqual("zstd first payload",
+            decoded[0].GetField("payload")?.ToString() ?? "",
+            "the quick brown fox jumps over the lazy dog");
+        AssertTrue("zstd last ts", decoded[99].GetField("ts") is long l && l == 1700000099);
+    }
+
+    static void TestOCFZstandardCompresses()
+    {
+        Console.WriteLine("--- OCF: zstd actually compresses repetitive data ---");
+        var schema = new Schema("log", [new Field("line", FieldType.String)]);
+        var records = new List<GenericRecord>();
+        for (int i = 0; i < 1000; i++)
+        {
+            var r = new GenericRecord(schema);
+            r.SetField("line", "INFO 2024-06-15 connection established to upstream service");
+            records.Add(r);
+        }
+
+        var rawBytes = new OCFWriter(AvroOCF.CodecNull).Write(records, schema);
+        var zstdBytes = new OCFWriter(AvroOCF.CodecZstandard).Write(records, schema);
+        var deflateBytes = new OCFWriter(AvroOCF.CodecDeflate).Write(records, schema);
+
+        // Highly repetitive payload — zstd should be much smaller than null and competitive with deflate.
+        AssertTrue($"zstd ({zstdBytes.Length}B) smaller than null ({rawBytes.Length}B)",
+            zstdBytes.Length < rawBytes.Length / 2);
+        AssertTrue($"deflate ({deflateBytes.Length}B) smaller than null ({rawBytes.Length}B)",
+            deflateBytes.Length < rawBytes.Length / 2);
+        // Both should decompress identically
+        var (_, fromZstd) = new OCFReader().Read(zstdBytes);
+        var (_, fromDeflate) = new OCFReader().Read(deflateBytes);
+        AssertIntEqual("zstd decoded count", fromZstd.Count, 1000);
+        AssertIntEqual("deflate decoded count", fromDeflate.Count, 1000);
+    }
+
+    static void TestOCFRejectsUnknownCodec()
+    {
+        Console.WriteLine("--- OCF: unknown codec rejected at construction time ---");
+        var threw = false;
+        try { _ = new OCFWriter("snappy"); }
+        catch (ArgumentException) { threw = true; }
+        AssertTrue("snappy not yet supported (writer)", threw);
+
+        var threwReader = false;
+        try { new OCFReader().Read(BuildBadCodecBytes()); }
+        catch (InvalidOperationException) { threwReader = true; }
+        AssertTrue("reader rejects unknown codec metadata", threwReader);
+    }
+
+    static byte[] BuildBadCodecBytes()
+    {
+        // Hand-build a minimal OCF with avro.codec = "snappy" so the reader hits the unsupported branch.
+        using var ms = new MemoryStream();
+        ms.Write(AvroOCF.Magic);
+        // Metadata map with two entries: avro.schema (minimal) + avro.codec=snappy.
+        var schemaJson = System.Text.Encoding.UTF8.GetBytes("{\"type\":\"record\",\"name\":\"x\",\"fields\":[]}");
+        AvroEncoding.WriteVarint(ms, 2);
+        AvroEncoding.WriteString(ms, "avro.schema");
+        AvroEncoding.WriteVarint(ms, schemaJson.Length); ms.Write(schemaJson);
+        AvroEncoding.WriteString(ms, "avro.codec");
+        var snappyBytes = System.Text.Encoding.UTF8.GetBytes("snappy");
+        AvroEncoding.WriteVarint(ms, snappyBytes.Length); ms.Write(snappyBytes);
+        AvroEncoding.WriteVarint(ms, 0); // map terminator
+        // 16-byte sync marker
+        ms.Write(new byte[16]);
+        return ms.ToArray();
     }
 
     static void TestSchemaEvolutionPromotion()
