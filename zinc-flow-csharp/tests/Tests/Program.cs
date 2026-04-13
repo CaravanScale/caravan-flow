@@ -7,6 +7,7 @@ Console.WriteLine();
 CoreTests.RunAll();
 ProcessorTests.RunAll();
 CodecTests.RunAll();
+ExpressionTests.RunAll();
 FabricTests.RunAll();
 SourceTests.RunAll();
 PipelineTests.RunAll();

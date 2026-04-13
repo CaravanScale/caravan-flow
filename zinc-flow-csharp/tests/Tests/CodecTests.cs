@@ -33,6 +33,9 @@ public static class CodecTests
         TestEvaluateExpression();
         TestEvaluateExpressionFunctions();
         TestTransformRecord();
+        TestTransformRecordCompute();
+        TestTransformRecordPreservesTypes();
+        TestTransformRecordChainedCompute();
     }
 
     static void TestAvroZigzagVarint()
@@ -494,6 +497,103 @@ public static class CodecTests
         try { reader.Read(bad); }
         catch (InvalidOperationException) { threw = true; }
         AssertTrue("bad magic throws", threw);
+    }
+
+    static void TestTransformRecordCompute()
+    {
+        Console.WriteLine("--- TransformRecord: compute (typed expressions) ---");
+        var schema = new Schema("order", [
+            new Field("price", FieldType.Double),
+            new Field("quantity", FieldType.Long),
+            new Field("region", FieldType.String)
+        ]);
+        var rec = new GenericRecord(schema);
+        rec.SetField("price", 9.99);
+        rec.SetField("quantity", 3L);
+        rec.SetField("region", "US");
+        var rc = new RecordContent(schema, [rec]);
+        var ff = FlowFile.CreateWithContent(rc, new());
+
+        // Computed total + conditional shipping fee + uppercased region label
+        var proc = new TransformRecord(
+            "compute:total:price * quantity;" +
+            "compute:shipping:if(total > 25, 0, 5);" +
+            "compute:label:upper(region) + \"-\" + string(round(total))");
+        var result = proc.Process(ff);
+        var outFf = ((SingleResult)result).FlowFile;
+        var outRc = (RecordContent)outFf.Content;
+        var outRec = outRc.Records[0];
+
+        var total = outRec.GetField("total");
+        AssertTrue("total is double type", total is double);
+        AssertTrue("total value", total is double d && Math.Abs(d - 29.97) < 0.001);
+
+        var shipping = outRec.GetField("shipping");
+        AssertTrue("shipping is long type", shipping is long);
+        AssertTrue("shipping = 0 (over threshold)", shipping is long s && s == 0);
+
+        AssertEqual("label string", outRec.GetField("label")?.ToString() ?? "", "US-30");
+
+        // Schema should reflect inferred types
+        var schemaByName = outRc.Schema.Fields.ToDictionary(f => f.Name, f => f.FieldType);
+        AssertTrue("schema total = Double", schemaByName.GetValueOrDefault("total") == FieldType.Double);
+        AssertTrue("schema shipping = Long", schemaByName.GetValueOrDefault("shipping") == FieldType.Long);
+        AssertTrue("schema label = String", schemaByName.GetValueOrDefault("label") == FieldType.String);
+    }
+
+    static void TestTransformRecordPreservesTypes()
+    {
+        Console.WriteLine("--- TransformRecord: preserves original field types ---");
+        var schema = new Schema("user", [
+            new Field("id", FieldType.Long),
+            new Field("name", FieldType.String),
+            new Field("age", FieldType.Int),
+            new Field("balance", FieldType.Double),
+            new Field("active", FieldType.Boolean)
+        ]);
+        var rec = new GenericRecord(schema);
+        rec.SetField("id", 12345L);
+        rec.SetField("name", "alice");
+        rec.SetField("age", 30);
+        rec.SetField("balance", 1500.50);
+        rec.SetField("active", true);
+        var ff = FlowFile.CreateWithContent(new RecordContent(schema, [rec]), new());
+
+        // toUpper changes a String — schema should stay String. Untouched fields keep types.
+        var proc = new TransformRecord("toUpper:name");
+        var outRc = (RecordContent)((SingleResult)proc.Process(ff)).FlowFile.Content;
+        var byName = outRc.Schema.Fields.ToDictionary(f => f.Name, f => f.FieldType);
+        AssertTrue("id stays Long", byName["id"] == FieldType.Long);
+        AssertTrue("age stays Int", byName["age"] == FieldType.Int);
+        AssertTrue("balance stays Double", byName["balance"] == FieldType.Double);
+        AssertTrue("active stays Boolean", byName["active"] == FieldType.Boolean);
+        AssertTrue("name stays String", byName["name"] == FieldType.String);
+
+        // Verify values too
+        var outRec = outRc.Records[0];
+        AssertTrue("id value preserved", outRec.GetField("id") is long l && l == 12345L);
+        AssertTrue("age value preserved", outRec.GetField("age") is int i && i == 30);
+        AssertTrue("balance value preserved", outRec.GetField("balance") is double b && Math.Abs(b - 1500.50) < 0.001);
+        AssertTrue("active value preserved", outRec.GetField("active") is true);
+    }
+
+    static void TestTransformRecordChainedCompute()
+    {
+        Console.WriteLine("--- TransformRecord: chained compute sees prior writes ---");
+        var schema = new Schema("calc", [new Field("x", FieldType.Long)]);
+        var rec = new GenericRecord(schema);
+        rec.SetField("x", 10L);
+        var ff = FlowFile.CreateWithContent(new RecordContent(schema, [rec]), new());
+
+        // Each compute should see the prior step's writes via DictValueResolver.
+        var proc = new TransformRecord(
+            "compute:doubled:x * 2;" +
+            "compute:plus_five:doubled + 5;" +
+            "compute:final:plus_five * plus_five");
+        var outRec = ((RecordContent)((SingleResult)proc.Process(ff)).FlowFile.Content).Records[0];
+        AssertTrue("doubled = 20", outRec.GetField("doubled") is long d && d == 20);
+        AssertTrue("plus_five = 25", outRec.GetField("plus_five") is long p && p == 25);
+        AssertTrue("final = 625", outRec.GetField("final") is long f && f == 625);
     }
 
     static void TestOCFProcessorRoundtrip()

@@ -156,24 +156,42 @@ public sealed class EvaluateExpression : IProcessor
 
 /// <summary>
 /// TransformRecord: field-level operations on RecordContent.
-/// Config: operations as comma-separated directives.
+/// Config: operations as semicolon-separated directives.
 ///
 /// Directives:
-///   rename:oldName:newName   — rename a field
-///   remove:fieldName         — remove a field
-///   add:fieldName:value      — add a field with a literal value
-///   copy:source:target       — copy field value to new field
-///   toUpper:fieldName        — uppercase a string field
-///   toLower:fieldName        — lowercase a string field
-///   default:fieldName:value  — set field to value if null/missing
+///   rename:oldName:newName       — rename a field
+///   remove:fieldName             — remove a field
+///   add:fieldName:value          — add a string-typed field with a literal value
+///   copy:source:target           — copy field value to new field (preserves type)
+///   toUpper:fieldName            — uppercase a string field
+///   toLower:fieldName            — lowercase a string field
+///   default:fieldName:value      — set field to string value if null/missing
+///   compute:targetField:expression — evaluate expression against record fields,
+///                                    store the typed result. Each compute step
+///                                    sees the field state from prior steps.
+///
+/// Output schema preserves the type of unmodified fields and infers types from
+/// the first record for new/computed fields. Schema is no longer flattened to
+/// String — Long stays Long, Double stays Double, etc.
 /// </summary>
 public sealed class TransformRecord : IProcessor
 {
     private readonly List<(string Op, string Arg1, string Arg2)> _operations;
+    private readonly Dictionary<string, CompiledExpression> _compiled = new();
 
     public TransformRecord(string operations)
     {
         _operations = ParseOperations(operations);
+        // Pre-compile compute expressions; keep failed parses out of the cache so
+        // the runtime sees the field as missing rather than crashing the pipeline.
+        foreach (var (op, _, expr) in _operations)
+        {
+            if (op == "compute" && !string.IsNullOrEmpty(expr) && !_compiled.ContainsKey(expr))
+            {
+                try { _compiled[expr] = ExpressionEngine.Compile(expr); }
+                catch (FormatException) { /* skip; runtime treats it as a no-op */ }
+            }
+        }
     }
 
     public ProcessorResult Process(FlowFile ff)
@@ -181,80 +199,109 @@ public sealed class TransformRecord : IProcessor
         if (ff.Content is not RecordContent rc || rc.Records.Count == 0)
             return SingleResult.Rent(ff);
 
-        // Collect all field names that will exist after transformations
-        // Start with existing schema fields, then apply add/rename/remove to determine final fields
-        var baseFieldNames = rc.Schema.Fields.Select(f => f.Name).ToList();
-        var finalFieldNames = new List<string>(baseFieldNames);
-        foreach (var (op, arg1, arg2) in _operations)
-        {
-            switch (op)
-            {
-                case "rename":
-                    finalFieldNames.Remove(arg1);
-                    if (!finalFieldNames.Contains(arg2)) finalFieldNames.Add(arg2);
-                    break;
-                case "remove":
-                    finalFieldNames.Remove(arg1);
-                    break;
-                case "add":
-                    if (!finalFieldNames.Contains(arg1)) finalFieldNames.Add(arg1);
-                    break;
-                case "copy":
-                    if (!finalFieldNames.Contains(arg2)) finalFieldNames.Add(arg2);
-                    break;
-                case "default":
-                    if (!finalFieldNames.Contains(arg1)) finalFieldNames.Add(arg1);
-                    break;
-            }
-        }
-
-        var newSchema = new Schema(rc.Schema.Name, finalFieldNames.Select(n => new Field(n, FieldType.String)).ToList());
-
-        var transformed = new List<GenericRecord>(rc.Records.Count);
+        // Apply operations to a per-record dict copy.
+        var transformedDicts = new List<Dictionary<string, object?>>(rc.Records.Count);
         foreach (var record in rc.Records)
         {
-            // Work on a mutable dictionary copy, then build GenericRecord at the end
             var dict = record.ToDictionary();
             foreach (var (op, arg1, arg2) in _operations)
-            {
-                switch (op)
-                {
-                    case "rename":
-                        if (dict.Remove(arg1, out var renameVal))
-                            dict[arg2] = renameVal;
-                        break;
-                    case "remove":
-                        dict.Remove(arg1);
-                        break;
-                    case "add":
-                        dict[arg1] = arg2;
-                        break;
-                    case "copy":
-                        if (dict.TryGetValue(arg1, out var copyVal))
-                            dict[arg2] = copyVal;
-                        break;
-                    case "toUpper":
-                        if (dict.TryGetValue(arg1, out var upperVal) && upperVal is string us)
-                            dict[arg1] = us.ToUpperInvariant();
-                        break;
-                    case "toLower":
-                        if (dict.TryGetValue(arg1, out var lowerVal) && lowerVal is string ls)
-                            dict[arg1] = ls.ToLowerInvariant();
-                        break;
-                    case "default":
-                        if (!dict.ContainsKey(arg1) || dict[arg1] is null)
-                            dict[arg1] = arg2;
-                        break;
-                }
-            }
-            var newRecord = new GenericRecord(newSchema);
-            foreach (var (k, v) in dict)
-                newRecord.SetField(k, v);
-            transformed.Add(newRecord);
+                ApplyOp(dict, op, arg1, arg2);
+            transformedDicts.Add(dict);
         }
 
-        var updated = FlowFile.WithContent(ff, new RecordContent(newSchema, transformed));
-        return SingleResult.Rent(updated);
+        // Build the output schema. For each final field, prefer the original FieldType
+        // when the field name pre-existed and we haven't overwritten its kind; otherwise
+        // infer from the first record's value.
+        var origByName = rc.Schema.Fields.ToDictionary(f => f.Name, f => f);
+        var firstDict = transformedDicts[0];
+        var newFields = new List<Field>(firstDict.Count);
+        foreach (var (name, value) in firstDict)
+        {
+            var inferred = InferFieldType(value);
+            FieldType chosen;
+            if (origByName.TryGetValue(name, out var origField) && IsCompatible(origField.FieldType, inferred))
+                chosen = origField.FieldType;
+            else
+                chosen = inferred == FieldType.Null ? FieldType.String : inferred;
+            newFields.Add(new Field(name, chosen));
+        }
+        var newSchema = new Schema(rc.Schema.Name, newFields);
+
+        var transformed = new List<GenericRecord>(transformedDicts.Count);
+        foreach (var dict in transformedDicts)
+        {
+            var rec = new GenericRecord(newSchema);
+            foreach (var (k, v) in dict) rec.SetField(k, v);
+            transformed.Add(rec);
+        }
+
+        return SingleResult.Rent(FlowFile.WithContent(ff, new RecordContent(newSchema, transformed)));
+    }
+
+    private void ApplyOp(Dictionary<string, object?> dict, string op, string arg1, string arg2)
+    {
+        switch (op)
+        {
+            case "rename":
+                if (dict.Remove(arg1, out var renameVal))
+                    dict[arg2] = renameVal;
+                break;
+            case "remove":
+                dict.Remove(arg1);
+                break;
+            case "add":
+                dict[arg1] = arg2;
+                break;
+            case "copy":
+                if (dict.TryGetValue(arg1, out var copyVal))
+                    dict[arg2] = copyVal;
+                break;
+            case "toUpper":
+                if (dict.TryGetValue(arg1, out var upperVal) && upperVal is string us)
+                    dict[arg1] = us.ToUpperInvariant();
+                break;
+            case "toLower":
+                if (dict.TryGetValue(arg1, out var lowerVal) && lowerVal is string ls)
+                    dict[arg1] = ls.ToLowerInvariant();
+                break;
+            case "default":
+                if (!dict.ContainsKey(arg1) || dict[arg1] is null)
+                    dict[arg1] = arg2;
+                break;
+            case "compute":
+                if (_compiled.TryGetValue(arg2, out var expr))
+                {
+                    var resolver = new DictValueResolver(dict);
+                    dict[arg1] = expr.Eval(resolver).ToObject();
+                }
+                break;
+        }
+    }
+
+    private static FieldType InferFieldType(object? v) => v switch
+    {
+        null => FieldType.Null,
+        bool => FieldType.Boolean,
+        int => FieldType.Int,
+        long => FieldType.Long,
+        short => FieldType.Int,
+        byte => FieldType.Int,
+        float => FieldType.Float,
+        double => FieldType.Double,
+        string => FieldType.String,
+        byte[] => FieldType.Bytes,
+        _ => FieldType.String
+    };
+
+    // Original type wins when both are numeric (don't downgrade Long→Int) or
+    // both are strings, or both null. Otherwise the inferred (post-transform) type wins.
+    private static bool IsCompatible(FieldType orig, FieldType inferred)
+    {
+        if (orig == inferred) return true;
+        if (inferred == FieldType.Null) return true;
+        bool origNumeric = orig is FieldType.Int or FieldType.Long or FieldType.Float or FieldType.Double;
+        bool infNumeric = inferred is FieldType.Int or FieldType.Long or FieldType.Float or FieldType.Double;
+        return origNumeric && infNumeric;
     }
 
     private static List<(string, string, string)> ParseOperations(string ops)
