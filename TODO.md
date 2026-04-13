@@ -97,6 +97,20 @@ Make zinc-flow useful for real workloads without requiring NATS or K8s. A single
 - [ ] **Confluent wire format** — 1-byte magic + 4-byte schema ID prefix on Kafka messages. Different from OCF (which embeds the full schema). Defer until we have a Kafka source/sink.
 - [ ] **Apache Parquet support** — deferred; row-oriented flow model doesn't benefit from columnar storage. Revisit for one-shot batch ingest sources only.
 
+### Phase 2f: Fleet UI (DESIGNED, EXECUTION DEFERRED)
+
+Headless workers + separate `zinc-flow-ui` binary that fronts a fleet via HTTP. NiFi 1 binds the UI to one node; DeltaFi has no good UI story. We do better with two independent binaries.
+
+**Full design:** [`zinc-flow-csharp/docs/design-fleet-ui.md`](zinc-flow-csharp/docs/design-fleet-ui.md). Detailed implementation plan with file paths, test cases, and verification: `~/.claude/plans/kind-orbiting-moth.md`.
+
+Decisions locked: Blazor WASM stack (no NPM), workflow-style fixed-slot layout (no positions in git), layered config files for secrets (`config.yaml` ← `config.local.yaml` ← `secrets.yaml`), processor versioning (`type: Foo@1.2.0`), discovery via static list + opt-in worker self-registration.
+
+Phases:
+- [ ] **0. Worker prep** — `ConfigLoader` (layered overlays), `YamlEmitter`, `ProcessorInfo.Version`, `/api/identity`, `UIRegistrationProvider`, mutation API extensions (`PUT /processors/{n}/config`, `POST /flow/save`), `GET /api/provenance/failures`, `GET /api/overlays`, optional `VersionControlProvider`. ~40 new test assertions.
+- [ ] **1. UI scaffold** (single-worker mode) — new `zinc-flow-ui-csharp/` sibling project, Blazor WASM SPA, workflow-style flow visualization, provenance lineage inspector with failure queue.
+- [ ] **2. Multi-worker registry** — node registry on UI (static + self-registered, heartbeat liveness), aggregated views across the fleet.
+- [ ] **3. Editor + git** — insert/wire/edit processors, save back to YAML, optional commit/push.
+
 ---
 
 ## Phase 3 — Multi-Instance
