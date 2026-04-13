@@ -60,9 +60,13 @@ defaults:
   max_hops: 50               # max processor hops per FlowFile (cycle guard)
   max_concurrent_executions: 100  # backpressure semaphore
 
-schema_registry:             # optional — auto-wires SchemaRegistryProvider
-  url: http://schema-registry:8081
-  auth: user:pass            # optional Basic auth
+schemas:                     # optional — pre-load the embedded schema registry
+  orders:
+    file: schemas/orders.avsc       # path relative to this config file
+  events:
+    inline: |                       # or inline JSON
+      {"type":"record","name":"Event","fields":[
+        {"name":"ts","type":{"type":"long","logicalType":"timestamp-millis"}}]}
 
 sources:                     # ingest connectors
   listen_http: { port: 9092, path: / }
@@ -228,18 +232,70 @@ LogicalTypeHelpers.FromUuid(rec.GetField("user_id")!);    // → Guid
 LogicalTypeHelpers.FromDecimalBytes(bytes, scale: 2);     // → decimal
 ```
 
-## Schema registry
+## Schema registry (embedded)
+
+zinc-flow ships with an in-process schema registry. No external service — fits
+airgapped deployments. Three population paths:
+
+**1. Config (`schemas:` section).** Loaded at startup, re-applied on hot reload:
 
 ```yaml
-schema_registry:
-  url: http://schema-registry:8081
-  auth: user:pass            # optional
+schemas:
+  orders:
+    file: schemas/orders.avsc       # path relative to the config file
+  users:
+    inline: |                       # or inline JSON
+      {"type":"record","name":"User","fields":[
+        {"name":"id","type":"long"},
+        {"name":"name","type":"string"}]}
 ```
 
-The `SchemaRegistryProvider` is auto-wired at startup. Processors request it via
-`requires: [schema_registry]` and configure `reader_schema_subject` (+ optional
-`reader_schema_version`, defaults to `latest`). Schemas cache by id and by
-(subject, version); `latest` lookups always hit the wire.
+**2. REST.** Confluent-shape endpoints under `/api/schema-registry/*` on the
+management port. Existing tooling that targets the Confluent API works against
+us:
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/schema-registry/subjects` | List all subjects |
+| `GET /api/schema-registry/subjects/{s}/versions` | List versions for a subject |
+| `GET /api/schema-registry/subjects/{s}/versions/{v\|latest}` | Fetch a specific version |
+| `GET /api/schema-registry/schemas/ids/{id}` | Fetch by global id |
+| `POST /api/schema-registry/subjects/{s}/versions` | Register (`{"schema":"..."}`); returns `{"id":N}`. Identical schema = same id (dedup). |
+| `DELETE /api/schema-registry/subjects/{s}` | Drop a subject |
+| `DELETE /api/schema-registry/subjects/{s}/versions/{v}` | Drop one version |
+
+**3. Auto-capture from incoming OCF files.** Set `auto_register_subject` on
+`ConvertOCFToRecord` and every `.avro` file's writer schema is registered under
+that subject. Identical schemas are no-ops; new schemas become new versions.
+This is the airgapped magic — the first file teaches the registry:
+
+```yaml
+parse:
+  type: ConvertOCFToRecord
+  requires: [content, schema_registry]
+  config: { auto_register_subject: discovered }
+```
+
+**Reading with a registered schema.** Processors that need a reader schema
+reference it by subject:
+
+```yaml
+parse:
+  type: ConvertOCFToRecord
+  requires: [content, schema_registry]
+  config:
+    reader_schema_subject: orders
+    reader_schema_version: latest    # or "3" to pin
+```
+
+Lookup is lazy (first FlowFile triggers it) and cached. `latest` always
+re-resolves so newly-promoted versions get picked up.
+
+**Caveats.** Storage is in-memory. Restart loses runtime registrations;
+config-loaded ones come back on the next boot. Disk persistence is a future
+follow-up. Hot-reload of `config.yaml` re-applies the `schemas:` section as an
+additive upsert (changes create new versions; missing subjects are left alone —
+DELETE via REST or restart to remove).
 
 ## Management API + dashboard
 
@@ -275,13 +331,14 @@ unaffected).
 
 ## Examples
 
-The `examples/` directory ships five validated configs:
+The `examples/` directory ships six validated configs:
 
 1. `01-hello-flow.yaml` — minimal HTTP → log → file.
 2. `02-json-pipeline.yaml` — parse, filter, typed transforms, write.
 3. `03-avro-ocf.yaml` — read real `.avro` files, transform, write back zstd-compressed.
 4. `04-schema-evolution.yaml` — inline reader schema with type promotion + defaults.
-5. `05-schema-registry.yaml` — registry-backed reader schemas.
+5. `05-schema-registry.yaml` — embedded registry pre-loaded from a `.avsc` file.
+6. `06-embedded-schema-registry.yaml` — registry REST API + auto-capture from incoming files.
 
 Validate any of them before deploying:
 

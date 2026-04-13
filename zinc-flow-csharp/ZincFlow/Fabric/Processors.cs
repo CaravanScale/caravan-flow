@@ -94,13 +94,20 @@ public static class BuiltinProcessors
 
         reg.Register(
             new ProcessorInfo("ConvertOCFToRecord", "Decode Avro OCF (.avro file) into records",
-                ["reader_schema", "reader_schema_subject", "reader_schema_version"]),
+                ["reader_schema", "reader_schema_subject", "reader_schema_version", "auto_register_subject"]),
             (ctx, config) =>
             {
                 Schema? staticSchema = null;
                 SchemaRegistryProvider? registry = null;
                 string? subject = null;
                 var version = config.GetValueOrDefault("reader_schema_version", "latest");
+                string? autoRegister = config.GetValueOrDefault("auto_register_subject", "");
+                if (string.IsNullOrWhiteSpace(autoRegister)) autoRegister = null;
+
+                // Resolve registry provider once — needed for both reader_schema_subject
+                // and auto_register_subject.
+                if (ctx.TryGetProvider<SchemaRegistryProvider>("schema_registry", out var srProvider))
+                    registry = srProvider;
 
                 // Inline JSON schema takes priority over registry lookup.
                 if (config.TryGetValue("reader_schema", out var rsJson) && !string.IsNullOrWhiteSpace(rsJson))
@@ -109,12 +116,18 @@ public static class BuiltinProcessors
                 }
                 else if (config.TryGetValue("reader_schema_subject", out var subj) && !string.IsNullOrWhiteSpace(subj))
                 {
-                    if (!ctx.TryGetProvider<SchemaRegistryProvider>("schema_registry", out var srProvider) || srProvider is null)
-                        throw new InvalidOperationException("reader_schema_subject set but no schema_registry provider configured");
-                    registry = srProvider;
+                    if (registry is null)
+                        throw new InvalidOperationException("reader_schema_subject set but no schema_registry provider available");
                     subject = subj;
                 }
-                return new ConvertOCFToRecord(ctx.GetContentStoreOrDefault(), staticSchema, registry, subject, version);
+
+                if (autoRegister is not null && registry is null)
+                    throw new InvalidOperationException("auto_register_subject set but no schema_registry provider available");
+
+                return new ConvertOCFToRecord(
+                    ctx.GetContentStoreOrDefault(),
+                    staticSchema, registry, subject, version,
+                    autoRegister);
             });
 
         reg.Register(

@@ -104,8 +104,13 @@ public sealed class ConvertRecordToAvro : IProcessor
 ///   1. <paramref name="staticReaderSchema"/> — set directly, e.g. from inline
 ///      JSON in config.
 ///   2. <paramref name="registryProvider"/> + subject/version — fetched lazily
-///      on the first Process() call so the server can start before the registry
-///      is reachable, and so the validator can construct without network calls.
+///      on the first Process() call. Cached unless version is "latest".
+///
+/// Optional <paramref name="autoRegisterSubject"/>: after a successful decode,
+/// the writer schema embedded in the OCF is registered under this subject in
+/// the embedded registry. Identical-schema dedup means re-reading a known file
+/// is a no-op; a never-before-seen schema becomes a new version. Auto-register
+/// failures are logged but never block the FlowFile (advisory side effect).
 ///
 /// When a reader schema is in play, decoded records are projected onto it via
 /// Avro schema-evolution rules (type promotion, defaults). Incompatible
@@ -119,6 +124,7 @@ public sealed class ConvertOCFToRecord : IProcessor
     private readonly SchemaRegistryProvider? _registryProvider;
     private readonly string? _registrySubject;
     private readonly string _registryVersion;
+    private readonly string? _autoRegisterSubject;
     private Schema? _resolvedReaderSchema;
     private readonly object _resolveLock = new();
 
@@ -127,13 +133,15 @@ public sealed class ConvertOCFToRecord : IProcessor
         Schema? staticReaderSchema = null,
         SchemaRegistryProvider? registryProvider = null,
         string? registrySubject = null,
-        string registryVersion = "latest")
+        string registryVersion = "latest",
+        string? autoRegisterSubject = null)
     {
         _store = store;
         _staticReaderSchema = staticReaderSchema;
         _registryProvider = registryProvider;
         _registrySubject = registrySubject;
         _registryVersion = registryVersion;
+        _autoRegisterSubject = autoRegisterSubject;
     }
 
     public ProcessorResult Process(FlowFile ff)
@@ -166,11 +174,14 @@ public sealed class ConvertOCFToRecord : IProcessor
             }
         }
 
-        Schema schema;
+        // First decode pass: always with the writer schema (no projection) so we
+        // can capture the writer schema for auto-registration. If a reader schema
+        // is in play, project as a second step.
+        Schema writerSchema;
         List<GenericRecord> records;
         try
         {
-            (schema, records) = _reader.Read(data, readerSchema);
+            (writerSchema, records) = _reader.Read(data, readerSchema: null);
         }
         catch (Exception ex)
         {
@@ -180,7 +191,37 @@ public sealed class ConvertOCFToRecord : IProcessor
         if (records.Count == 0)
             return FailureResult.Rent("no records in OCF", ff);
 
-        var updated = FlowFile.WithContent(ff, new RecordContent(schema, records));
+        // Auto-register the writer schema if configured. Fire-and-forget on failure —
+        // the advisory side effect must never block the data flow.
+        if (_autoRegisterSubject is not null && _registryProvider is not null)
+        {
+            try
+            {
+                _registryProvider.Registry
+                    .RegisterAsync(_autoRegisterSubject, writerSchema)
+                    .GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"[ocf] auto-register failed for subject '{_autoRegisterSubject}': {ex.Message}");
+            }
+        }
+
+        // If a reader schema was supplied, project the writer-decoded records onto it.
+        Schema effectiveSchema = writerSchema;
+        if (readerSchema is not null)
+        {
+            var compat = SchemaResolver.Check(readerSchema, writerSchema);
+            if (!compat.IsCompatible)
+                return FailureResult.Rent("OCF reader schema incompatible: " + string.Join("; ", compat.Errors), ff);
+            var projected = new List<GenericRecord>(records.Count);
+            foreach (var r in records)
+                projected.Add(SchemaResolver.Project(r, readerSchema, writerSchema));
+            records = projected;
+            effectiveSchema = readerSchema;
+        }
+
+        var updated = FlowFile.WithContent(ff, new RecordContent(effectiveSchema, records));
         return SingleResult.Rent(updated);
     }
 
@@ -194,7 +235,7 @@ public sealed class ConvertOCFToRecord : IProcessor
         {
             if (_registryVersion != "latest" && _resolvedReaderSchema is not null)
                 return _resolvedReaderSchema;
-            var (_, schema) = _registryProvider!.Client
+            var (_, schema) = _registryProvider!.Registry
                 .GetSubjectVersionAsync(_registrySubject!, _registryVersion)
                 .GetAwaiter().GetResult();
             _resolvedReaderSchema = schema;

@@ -1,0 +1,91 @@
+# 06 — Embedded schema registry: REST + auto-capture from incoming files
+#
+# Three ways schemas land in the embedded registry:
+#
+#   1. CONFIG (`schemas:` section) — loaded at startup, re-applied on hot reload.
+#   2. REST  — POST to /api/schema-registry/subjects/<subject>/versions
+#   3. AUTO  — `auto_register_subject` on ConvertOCFToRecord captures the writer
+#              schema from every incoming .avro file. Identical files are no-ops
+#              (dedup); a never-before-seen schema becomes a new version under
+#              that subject. Ideal for airgapped systems: the first .avro file
+#              teaches the registry.
+#
+# Try it:
+#   ./build/ZincFlow validate examples/06-embedded-schema-registry.yaml
+#   cp examples/06-embedded-schema-registry.yaml config.yaml && ./build/ZincFlow
+#
+# Watch what the registry knows:
+#   curl -s http://localhost:9091/api/schema-registry/subjects
+#
+# Register a schema by hand:
+#   curl -X POST http://localhost:9091/api/schema-registry/subjects/items/versions \
+#     -H 'Content-Type: application/vnd.schemaregistry.v1+json' \
+#     -d '{"schema":"{\"type\":\"record\",\"name\":\"Item\",\"fields\":[{\"name\":\"sku\",\"type\":\"string\"}]}"}'
+#   # → {"id":N}
+#
+# Re-POST the same body — returns the same id (identical-schema dedup).
+#
+# Drop a real .avro file into /tmp/avro-in/:
+#   curl -s http://localhost:9091/api/schema-registry/subjects   # now includes "discovered"
+#   curl -s http://localhost:9091/api/schema-registry/subjects/discovered/versions/latest
+#
+# Delete a subject:
+#   curl -X DELETE http://localhost:9091/api/schema-registry/subjects/items
+#
+# Edit this file to add a new entry under `schemas:`, save → hot-reload picks
+# it up; check /api/schema-registry/subjects to confirm.
+
+server:
+  port: 9091
+
+content:
+  dir: /tmp/zinc-flow-csharp/content
+
+# Pre-load (mix of file + inline shown).
+schemas:
+  orders:
+    file: schemas/orders.avsc
+  events:
+    inline: |
+      {"type":"record","name":"Event","fields":[
+        {"name":"ts","type":{"type":"long","logicalType":"timestamp-millis"}},
+        {"name":"kind","type":"string"}]}
+
+sources:
+  file:
+    input_dir: /tmp/avro-in
+    pattern: "*.avro"
+
+flow:
+  processors:
+
+    # Auto-capture writer schemas under the subject "discovered" as files arrive.
+    # The registry will accumulate every distinct writer schema seen.
+    parse:
+      type: ConvertOCFToRecord
+      requires: [content, schema_registry]
+      config:
+        auto_register_subject: discovered
+      connections:
+        success: [encode]
+        failure: [errors]
+
+    encode:
+      type: ConvertRecordToOCF
+      config:
+        codec: zstandard
+      connections:
+        success: [write]
+
+    write:
+      type: PutFile
+      requires: [content]
+      config:
+        output_dir: /tmp/avro-out
+        naming_attribute: filename
+        suffix: .seen.avro
+
+    errors:
+      type: LogAttribute
+      config:
+        prefix: capture-error

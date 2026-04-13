@@ -80,17 +80,21 @@ globalCtx.AddProvider(configProvider);
 globalCtx.AddProvider(loggingProvider);
 globalCtx.AddProvider(provenanceProvider);
 
-// Optional schema registry — wired only if config has schema_registry.url
-var srUrl = GetConfigString(config, "schema_registry.url", "");
-if (!string.IsNullOrEmpty(srUrl))
-{
-    var srAuth = GetConfigString(config, "schema_registry.auth", "");
-    var srClient = new ZincFlow.StdLib.SchemaRegistryClient(srUrl, basicAuth: string.IsNullOrEmpty(srAuth) ? null : srAuth);
-    var srProvider = new SchemaRegistryProvider(srClient);
-    srProvider.Enable();
-    globalCtx.AddProvider(srProvider);
-    Console.WriteLine($"[schema-registry] connected to {srUrl}");
-}
+// Embedded schema registry — always wired (airgapped, no remote backend).
+// Pre-loads from the optional `schemas:` section in config, then exposes REST
+// endpoints under /api/schema-registry/* on the management port and supports
+// auto-capture from incoming OCF files via ConvertOCFToRecord's
+// auto_register_subject config.
+var embeddedRegistry = new ZincFlow.StdLib.EmbeddedSchemaRegistry();
+var schemaConfigDir = File.Exists(configPath) ? Path.GetDirectoryName(Path.GetFullPath(configPath)) : null;
+var schemasSection = ZincFlow.Fabric.Fabric.AsStringDict(config.GetValueOrDefault("schemas"));
+var preloaded = embeddedRegistry.LoadFromConfig(schemasSection, schemaConfigDir);
+var srProvider = new SchemaRegistryProvider(embeddedRegistry);
+srProvider.Enable();
+globalCtx.AddProvider(srProvider);
+Console.WriteLine($"[schema-registry] embedded ({preloaded} subjects preloaded)");
+if (!string.IsNullOrEmpty(GetConfigString(config, "schema_registry.url", "")))
+    Console.Error.WriteLine("[schema-registry] WARNING: schema_registry.url is set but ignored — this build only supports the embedded backend");
 
 // Create registry
 var reg = new Registry();
@@ -180,6 +184,9 @@ var api = new ApiHandler(fab);
 api.SetConfigPath(configPath);
 api.MapRoutes(app);
 
+// Schema registry REST endpoints (Confluent path shapes under /api/schema-registry)
+new SchemaRegistryHandler(embeddedRegistry).MapRoutes(app);
+
 // Prometheus metrics
 var metrics = new MetricsHandler(fab);
 app.Map("/metrics", (RequestDelegate)metrics.HandleMetrics);
@@ -220,6 +227,14 @@ if (File.Exists(configPath))
                     Console.Error.WriteLine($"  {err}");
             }
             fab.ReloadFlow(newConfig);
+
+            // Re-apply schemas: section. Additive upsert — identical schemas
+            // are no-ops, changed schemas become new versions, missing
+            // subjects are left in place (DELETE via REST or restart to remove).
+            var newSchemasSection = ZincFlow.Fabric.Fabric.AsStringDict(newConfig.GetValueOrDefault("schemas"));
+            var added = embeddedRegistry.LoadFromConfig(newSchemasSection, schemaConfigDir);
+            if (added > 0)
+                Console.WriteLine($"[hot-reload] schemas re-applied ({added} subjects)");
         }
         catch (Exception ex)
         {

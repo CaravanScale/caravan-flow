@@ -305,27 +305,22 @@ public sealed class ContentProvider : IProvider
 }
 
 /// <summary>
-/// Wraps a Confluent-style schema registry client as a provider. Constructed
-/// at server startup if the global config has a `schema_registry.url` entry.
-/// Processors that need registry-backed schemas (e.g. ConvertOCFToRecord with
-/// reader_schema_subject) request this provider via requires=["schema_registry"].
+/// Wraps the embedded schema registry as a provider. Always constructed at
+/// startup (airgapped — no remote registry option). Processors that need
+/// registry-backed schemas (e.g. ConvertOCFToRecord with reader_schema_subject
+/// or auto_register_subject) request this provider via
+/// requires=["schema_registry"].
 /// </summary>
-public sealed class SchemaRegistryProvider : IProvider, IDisposable
+public sealed class SchemaRegistryProvider : IProvider
 {
     public string Name => "schema_registry";
     public string ProviderType => "schema_registry";
     public ComponentState State { get; private set; } = ComponentState.Disabled;
-    public ZincFlow.StdLib.SchemaRegistryClient Client { get; }
+    public ZincFlow.StdLib.EmbeddedSchemaRegistry Registry { get; }
 
-    public SchemaRegistryProvider(ZincFlow.StdLib.SchemaRegistryClient client) => Client = client;
+    public SchemaRegistryProvider(ZincFlow.StdLib.EmbeddedSchemaRegistry registry) => Registry = registry;
 
     public void Enable() => State = ComponentState.Enabled;
     public void Disable(int drainTimeout) => State = ComponentState.Disabled;
-    public void Shutdown()
-    {
-        State = ComponentState.Disabled;
-        Client.Dispose();
-    }
-
-    public void Dispose() => Client.Dispose();
+    public void Shutdown() => State = ComponentState.Disabled;
 }

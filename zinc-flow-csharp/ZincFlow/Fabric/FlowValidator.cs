@@ -96,31 +96,15 @@ public static class FlowValidator
             ["config"] = new ConfigProvider(new())
         };
 
-        // Mirror Program.cs: if the config declares a schema registry, register
-        // a stub provider so processors that `requires: [schema_registry]`
-        // can be constructed during validation. The actual fetch is lazy,
-        // so we don't need a reachable URL — just a provider of the right type.
-        var srUrl = GetConfigString(config, "schema_registry.url");
-        if (!string.IsNullOrEmpty(srUrl))
-        {
-            var srProvider = new SchemaRegistryProvider(new SchemaRegistryClient(srUrl));
-            srProvider.Enable();
-            providers["schema_registry"] = srProvider;
-        }
+        // Mirror Program.cs: always wire an embedded schema registry provider so
+        // processors that `requires: [schema_registry]` can be constructed during
+        // validation. No data load is needed — the validator only checks that
+        // construction works, not that fetches succeed.
+        var srProvider = new SchemaRegistryProvider(new EmbeddedSchemaRegistry());
+        srProvider.Enable();
+        providers["schema_registry"] = srProvider;
 
         foreach (var p in providers.Values) p.Enable();
         return new ScopedContext(providers);
-    }
-
-    private static string GetConfigString(Dictionary<string, object?> config, string dotPath)
-    {
-        var parts = dotPath.Split('.');
-        object? cur = config;
-        foreach (var part in parts)
-        {
-            if (Fabric.TryGetDictValue(cur, part, out cur)) continue;
-            return "";
-        }
-        return cur?.ToString() ?? "";
     }
 }

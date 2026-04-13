@@ -1,18 +1,18 @@
-# 05 — Schema-registry-backed Avro pipeline
+# 05 — Schema-registry-backed Avro pipeline (embedded registry, config-loaded)
 #
-# Reader schema is fetched from a Confluent-style registry by subject + version.
-# The registry URL is configured globally; processors that need it declare
-# `requires: [schema_registry]`.
-#
-# Schemas are cached per (id) and per (subject, version). "latest" lookups
-# always hit the wire so newly-promoted versions get picked up on the next read.
+# zinc-flow ships an in-process schema registry — no external service needed,
+# fits airgapped deployments. Schemas are loaded from the `schemas:` section
+# at startup; processors reference them by subject just like with a remote
+# registry. REST endpoints under /api/schema-registry/* are also live for
+# runtime registration / inspection (see example 06).
 #
 # Try it:
 #   ./build/ZincFlow validate examples/05-schema-registry.yaml
+#   cp examples/05-schema-registry.yaml config.yaml && ./build/ZincFlow
 #
-# To run end-to-end you need a registry reachable at the configured URL.
-# For local testing, point at https://github.com/confluentinc/schema-registry
-# or a Karapace instance.
+# Inspect the loaded schema:
+#   curl -s http://localhost:9091/api/schema-registry/subjects
+#   curl -s http://localhost:9091/api/schema-registry/subjects/orders/versions/latest
 
 server:
   port: 9091
@@ -20,11 +20,12 @@ server:
 content:
   dir: /tmp/zinc-flow-csharp/content
 
-# NEW: global schema registry config. Auto-registers a SchemaRegistryProvider
-# at startup if `url` is set. `auth` is optional Basic auth ("user:pass").
-schema_registry:
-  url: http://schema-registry:8081
-  # auth: alice:s3cret
+# Pre-load schemas into the embedded registry. Each subject is one of:
+#   inline: <Avro JSON schema as a string (multiline `|` works)>
+#   file:   <path to .avsc, relative to this config file>
+schemas:
+  orders:
+    file: schemas/orders.avsc
 
 sources:
   file:
@@ -40,7 +41,7 @@ flow:
       config:
         reader_schema_subject: orders
         # Pin to a specific version for reproducibility, or use "latest"
-        # to track the registry's latest-promoted version.
+        # to always pick up the most-recently-registered version.
         reader_schema_version: latest
       connections:
         success: [filter]

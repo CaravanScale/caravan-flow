@@ -17,7 +17,7 @@
 
 **Three runtimes:**
 - **Go** — 11MB static binary, 599K ff/s, zero deps. Edge, embedded, performance-critical.
-- **C# .NET 10** — 27MB AOT binary, 2M+ ff/s, zero GC during execution. Maximum throughput, .NET ecosystems. 832 tests pass under both JIT and AOT, zero analyzer warnings.
+- **C# .NET 10** — 27MB AOT binary, 2M+ ff/s, zero GC during execution. Maximum throughput, .NET ecosystems. 857 tests pass under both JIT and AOT, zero analyzer warnings.
 - **Python 3.14t** — 14MB native binary, 95K ff/s, pandas/numpy/sklearn integration. Python orgs.
 
 ---
@@ -90,7 +90,8 @@ Make zinc-flow useful for real workloads without requiring NATS or K8s. A single
 - [x] **`zinc-flow validate` subcommand** — pre-flight config check that catches unknown types, missing config keys, malformed regex, dangling connections, and DAG cycles. Exit 0 valid, 1 errors, 2 usage. Wraps the existing structural ConfigValidator with factory-construction probing.
 - [x] **Avro schema evolution** — `SchemaResolver` implements Avro 1.11 resolution: int→long/float/double, long→float/double, float→double, string↔bytes promotion; reader-only fields filled from defaults; writer-only fields dropped. `ConvertOCFToRecord` accepts `reader_schema` (inline JSON) or `reader_schema_subject` (registry-backed).
 - [x] **Zstd OCF codec** — `zstandard` codec via ZstdSharp.Port (pure managed, AOT-safe). null + deflate + zstandard supported; codec name follows the Avro spec ("zstandard", not "zstd").
-- [x] **Schema registry (Confluent-style)** — `SchemaRegistryClient` with HTTP GET/POST + by-id and by-(subject,version) caching. Optional Basic auth. `SchemaRegistryProvider` registered at startup if config has `schema_registry.url`. `ConvertOCFToRecord` accepts `reader_schema_subject` to fetch the reader schema from the registry at construction time.
+- [x] **Embedded schema registry (airgapped)** — in-process `EmbeddedSchemaRegistry` is the sole backend. Three population paths: `schemas:` config section (pre-load + hot reload), Confluent-shape REST endpoints under `/api/schema-registry/*`, and auto-capture from incoming OCF files via `ConvertOCFToRecord`'s `auto_register_subject`. Identical-schema dedup means re-reading known files is free; new schemas become new versions automatically.
+- [ ] **Schema persistence to disk** — embedded registry is in-memory only; runtime registrations are lost on restart (config-loaded ones come back). Add an optional file-backed store for persistence.
 - [ ] **Snappy OCF codec** — least common in modern Avro; deferred until a concrete user needs it.
 - [ ] **Confluent wire format** — 1-byte magic + 4-byte schema ID prefix on Kafka messages. Different from OCF (which embeds the full schema). Defer until we have a Kafka source/sink.
 - [ ] **Apache Parquet support** — deferred; row-oriented flow model doesn't benefit from columnar storage. Revisit for one-shot batch ingest sources only.
