@@ -97,6 +97,81 @@ public sealed class ConvertRecordToAvro : IProcessor
 }
 
 /// <summary>
+/// ConvertOCFToRecord: Avro Object Container File → RecordContent.
+/// Schema is embedded in the OCF header — no config needed.
+/// Supports null and deflate codecs.
+/// </summary>
+public sealed class ConvertOCFToRecord : IProcessor
+{
+    private readonly IContentStore _store;
+    private readonly OCFReader _reader = new();
+
+    public ConvertOCFToRecord(IContentStore store) => _store = store;
+
+    public ProcessorResult Process(FlowFile ff)
+    {
+        byte[] data;
+        if (ff.Content is Raw raw)
+            data = raw.Data.ToArray();
+        else if (ff.Content is ClaimContent)
+        {
+            var (resolved, error) = ContentHelpers.Resolve(_store, ff.Content);
+            if (error != "") return FailureResult.Rent(error, ff);
+            data = resolved;
+        }
+        else
+            return SingleResult.Rent(ff);
+
+        Schema schema;
+        List<GenericRecord> records;
+        try
+        {
+            (schema, records) = _reader.Read(data);
+        }
+        catch (Exception ex)
+        {
+            return FailureResult.Rent($"OCF decode failed: {ex.Message}", ff);
+        }
+
+        if (records.Count == 0)
+            return FailureResult.Rent("no records in OCF", ff);
+
+        var updated = FlowFile.WithContent(ff, new RecordContent(schema, records));
+        return SingleResult.Rent(updated);
+    }
+}
+
+/// <summary>
+/// ConvertRecordToOCF: RecordContent → Avro Object Container File.
+/// Emits a single-block OCF with embedded JSON schema. Optional deflate codec.
+/// </summary>
+public sealed class ConvertRecordToOCF : IProcessor
+{
+    private readonly OCFWriter _writer;
+
+    public ConvertRecordToOCF(string codec = AvroOCF.CodecNull) => _writer = new OCFWriter(codec);
+
+    public ProcessorResult Process(FlowFile ff)
+    {
+        if (ff.Content is not RecordContent rc || rc.Records.Count == 0)
+            return SingleResult.Rent(ff);
+
+        byte[] bytes;
+        try
+        {
+            bytes = _writer.Write(rc.Records, rc.Schema);
+        }
+        catch (Exception ex)
+        {
+            return FailureResult.Rent($"OCF encode failed: {ex.Message}", ff);
+        }
+
+        var updated = FlowFile.WithContent(ff, Raw.Rent(bytes));
+        return SingleResult.Rent(updated);
+    }
+}
+
+/// <summary>
 /// ConvertCSVToRecord: CSV content → RecordContent.
 /// Config: delimiter, has_header.
 /// </summary>

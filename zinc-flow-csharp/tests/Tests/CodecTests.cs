@@ -25,6 +25,11 @@ public static class CodecTests
         TestConvertCSVToRecord();
         TestConvertRecordToCSV();
         TestAvroJsonRoundtrip();
+        TestAvroSchemaJsonParse();
+        TestOCFRoundtripNullCodec();
+        TestOCFRoundtripDeflateCodec();
+        TestOCFReadPrebuilt();
+        TestOCFProcessorRoundtrip();
         TestEvaluateExpression();
         TestEvaluateExpressionFunctions();
         TestTransformRecord();
@@ -395,5 +400,124 @@ public static class CodecTests
         AssertEqual("added source", rec.GetField("source")?.ToString() ?? "", "api");
         AssertEqual("default missing", rec.GetField("missing")?.ToString() ?? "", "none");
         AssertEqual("age preserved", rec.GetField("age")?.ToString() ?? "", "30");
+    }
+
+    static void TestAvroSchemaJsonParse()
+    {
+        Console.WriteLine("--- Avro: JSON schema parse/emit ---");
+        var json = "{\"type\":\"record\",\"name\":\"User\",\"fields\":[" +
+                   "{\"name\":\"id\",\"type\":\"long\"}," +
+                   "{\"name\":\"name\",\"type\":\"string\"}," +
+                   "{\"name\":\"email\",\"type\":[\"null\",\"string\"]}," +
+                   "{\"name\":\"active\",\"type\":\"boolean\"}]}";
+        var schema = AvroSchemaJson.Parse(json);
+        AssertEqual("schema name", schema.Name, "User");
+        AssertIntEqual("field count", schema.Fields.Count, 4);
+        AssertEqual("id is long", schema.Fields[0].FieldType.ToString(), "Long");
+        AssertEqual("name is string", schema.Fields[1].FieldType.ToString(), "String");
+        // Nullable-union ["null","string"] should resolve to String (nullability erased).
+        AssertEqual("email resolves to string", schema.Fields[2].FieldType.ToString(), "String");
+        AssertEqual("active is boolean", schema.Fields[3].FieldType.ToString(), "Boolean");
+
+        var emitted = AvroSchemaJson.Emit(schema);
+        AssertTrue("emitted has record type", emitted.Contains("\"type\":\"record\""));
+        AssertTrue("emitted has User name", emitted.Contains("\"name\":\"User\""));
+        AssertTrue("emitted has id field", emitted.Contains("\"name\":\"id\""));
+
+        // Roundtrip: re-parse the emitted output.
+        var reparsed = AvroSchemaJson.Parse(emitted);
+        AssertIntEqual("reparse field count", reparsed.Fields.Count, 4);
+    }
+
+    static void TestOCFRoundtripNullCodec()
+    {
+        Console.WriteLine("--- OCF: roundtrip (null codec) ---");
+        var schema = new Schema("user", [
+            new Field("id", FieldType.Long),
+            new Field("name", FieldType.String),
+            new Field("score", FieldType.Double)
+        ]);
+        var records = new List<GenericRecord>();
+        for (int i = 0; i < 3; i++)
+        {
+            var r = new GenericRecord(schema);
+            r.SetField("id", (long)(i + 1));
+            r.SetField("name", $"user-{i}");
+            r.SetField("score", i * 1.5);
+            records.Add(r);
+        }
+
+        var writer = new OCFWriter(AvroOCF.CodecNull);
+        var bytes = writer.Write(records, schema);
+        AssertTrue("ocf magic Obj", bytes.Length > 4 && bytes[0] == 0x4F && bytes[1] == 0x62 && bytes[2] == 0x6A && bytes[3] == 0x01);
+
+        var reader = new OCFReader();
+        var (decodedSchema, decoded) = reader.Read(bytes);
+        AssertEqual("decoded schema name", decodedSchema.Name, "user");
+        AssertIntEqual("decoded record count", decoded.Count, 3);
+        AssertEqual("record 0 name", decoded[0].GetField("name")?.ToString() ?? "", "user-0");
+        AssertIntEqual("record 2 id", (int)(long)(decoded[2].GetField("id") ?? 0L), 3);
+    }
+
+    static void TestOCFRoundtripDeflateCodec()
+    {
+        Console.WriteLine("--- OCF: roundtrip (deflate codec) ---");
+        var schema = new Schema("event", [
+            new Field("ts", FieldType.Long),
+            new Field("message", FieldType.String)
+        ]);
+        var records = new List<GenericRecord>();
+        // Many repetitive records so deflate compresses meaningfully.
+        for (int i = 0; i < 50; i++)
+        {
+            var r = new GenericRecord(schema);
+            r.SetField("ts", (long)(1700000000 + i));
+            r.SetField("message", "login success login success login success");
+            records.Add(r);
+        }
+
+        var writer = new OCFWriter(AvroOCF.CodecDeflate);
+        var bytes = writer.Write(records, schema);
+
+        var reader = new OCFReader();
+        var (_, decoded) = reader.Read(bytes);
+        AssertIntEqual("deflate decoded count", decoded.Count, 50);
+        AssertEqual("deflate last message", decoded[49].GetField("message")?.ToString() ?? "", "login success login success login success");
+    }
+
+    static void TestOCFReadPrebuilt()
+    {
+        Console.WriteLine("--- OCF: rejects bad magic ---");
+        var bad = new byte[] { 0x00, 0x00, 0x00, 0x00, 0x00 };
+        var reader = new OCFReader();
+        var threw = false;
+        try { reader.Read(bad); }
+        catch (InvalidOperationException) { threw = true; }
+        AssertTrue("bad magic throws", threw);
+    }
+
+    static void TestOCFProcessorRoundtrip()
+    {
+        Console.WriteLine("--- OCF processors: JSON -> Record -> OCF -> Record -> JSON ---");
+        var store = new MemoryContentStore();
+        var json = "[{\"city\":\"Boston\",\"pop\":675000},{\"city\":\"Portland\",\"pop\":650000}]";
+        var ff = FlowFile.Create(Encoding.UTF8.GetBytes(json), new());
+
+        var r1 = (SingleResult)new ConvertJSONToRecord("cities", store).Process(ff);
+        var r2 = (SingleResult)new ConvertRecordToOCF(AvroOCF.CodecNull).Process(r1.FlowFile);
+        AssertTrue("ocf raw content", r2.FlowFile.Content is Raw);
+        var (ocfBytes, _) = ContentHelpers.Resolve(store, r2.FlowFile.Content);
+        AssertTrue("ocf has magic", ocfBytes.Length > 4 && ocfBytes[0] == 0x4F);
+
+        var r3 = (SingleResult)new ConvertOCFToRecord(store).Process(r2.FlowFile);
+        var rc = (RecordContent)r3.FlowFile.Content;
+        AssertIntEqual("round-trip record count", rc.Records.Count, 2);
+        AssertEqual("record 0 city", rc.Records[0].GetField("city")?.ToString() ?? "", "Boston");
+
+        var r4 = (SingleResult)new ConvertRecordToJSON().Process(r3.FlowFile);
+        var (jsonBytes, _) = ContentHelpers.Resolve(store, r4.FlowFile.Content);
+        var outJson = Encoding.UTF8.GetString(jsonBytes);
+        AssertTrue("final json has Boston", outJson.Contains("Boston"));
+        AssertTrue("final json has Portland", outJson.Contains("Portland"));
     }
 }
