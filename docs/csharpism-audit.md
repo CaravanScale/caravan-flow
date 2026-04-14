@@ -1,162 +1,308 @@
 # csharpism audit — today's commits
 
-Ground rule: csharp is the source of **design** (what the system does,
-what components exist, what the architecture looks like), not the
-source of **code idioms** (how control flow is shaped, how errors are
-reported, how partial states are represented).
+Ground rule: csharp is the source of **design** (what the system
+does, what components exist, what the architecture looks like), not
+the source of **code idioms** (how control flow is shaped, how
+errors are reported, how partial states are represented).
 
 Zinc's design constraint: **everything that can fail must go through
 the error mechanism** — `T?` return + `Error(reason)` + `or { }` at
-the call site. Silent skips, silent fallbacks, and partial-construction
-short-circuits are category errors.
+the call site. Silent skips, silent fallbacks, and partial-
+construction short-circuits are category errors.
 
-This doc surveys every pattern in today's commits (`b8b1e19` through
-`ddc9c8a`) where a csharp idiom leaked into Zinc code. Each entry
-flags the site, names the idiom, and marks whether it's been fixed,
-is pending a decision, or is benign.
+This doc is the exhaustive file-by-file survey of today's commits
+(`ef15d0b` through `ddc9c8a` on zinc-flow; `b8b1e19` through
+`26b21cd` on zinc-go). Every site where a csharp idiom leaked is
+flagged with `file:line`, the specific idiom, and a proposed Zinc
+design.
 
 ---
 
-## Fixed
+## Fixed already
 
-### A1. Bare `return` in constructor body (FilterAttribute)
-- **Site:** `src/processors/filter_attribute.zn:25` (pre-fix)
-- **Idiom:** csharp allows `if (bad) return;` in a ctor. Partial
-  object visible to caller, no failure signal.
-- **Resolution:** zinc-go now rejects bare-return-in-ctor at compile
-  time (`zinc-go/internal/codegen_go/codegen_types.go` +
-  `examples-fail/ctor_bare_return.zn`). Site rewritten with guard-
-  invert pattern. Commit: `26b21cd` (compiler) + `ddc9c8a` (site).
+### A1. Bare `return` inside constructor bodies
+- **Resolution:** zinc-go now rejects at compile time via
+  `checkCtorBodyNoBareReturn` in
+  `zinc-go/internal/codegen_go/codegen_types.go`. Recurses into
+  nested `if / for / while / match / parallel for` blocks AND into
+  `or { }` handlers on Var/TupleVar/Assign/Expr/ParallelFor stmts.
+  Deliberately does NOT recurse into `spawn { }` or deferred
+  closures (bare return there is scoped to that closure, not the
+  ctor).
+- **Negative tests:** `zinc-go/examples-fail/ctor_bare_return.zn`
+  (direct if-guard) + `ctor_bare_return_in_handler.zn`
+  (`or { return }`). Commit: `26b21cd` + follow-up coverage
+  extension.
+- **Site rewrite:** `src/processors/filter_attribute.zn:24` now
+  guard-inverts around the empty-spec path. Commit: `ddc9c8a`.
 
 ---
 
 ## Pending — needs design decision
 
-### B1. `atoi`-style silent fallback parsers
-- **Sites:**
-  - `src/fabric/source/generate.zn:atoi` (`batch_size`,
-    `poll_interval_ms`)
-  - `src/processors/extract_record_field.zn:parseIntOr`
-    (`record_index`)
-  - `src/processors/text_processors.zn:textParseInt` (`header_lines`)
-- **Idiom:** csharp `int.TryParse(s, out var n) ? n : fallback`.
-  Bad input silently becomes the default. The user sets
-  `batch_size: "seven"` in YAML and gets batch_size=1 with no warning.
-- **Zinc design:** `parseInt(s): int?` returning `Error("not a
-  number: %s")`. Callers get an `or { fallback }` explicit-default
-  form at every site — the fallback becomes a deliberate choice at
-  the call site, not a hidden behavior in the parser.
+Grouped by category. File:line references from the committed state.
 
-### B2. `parseRoutes` silently drops malformed route entries
-- **Site:** `src/processors/route_on_attribute.zn:42-63`
-- **Idiom:** csharp `SplitStringOptions.RemoveEmptyEntries` +
-  `if (parts.Length < 2) continue`. A misconfigured route string
-  produces a processor that silently routes less traffic than the
-  user expected.
-- **Zinc design:** `RouteOnAttribute(spec): RouteOnAttribute?`
-  factory. Parse errors abort construction and surface as a
-  registry-create failure. Pipeline fails to load on typo.
+### B. Silent-fallback int parsers (Group)
+Copies of csharp's `int.TryParse(s, out var n) ? n : fallback`. Bad
+input silently becomes the default; user misconfiguration hides.
 
-### B3. `parseFields` / `parseOperations` / `parseAttributes`
-- **Sites:**
-  - `src/processors/extract_record_field.zn:parseFields`
-  - `src/processors/transform_record.zn:parseOperations`
-  - `src/fabric/source/generate.zn:parseAttributes`
-- **Idiom:** same as B2 — silent-skip on any malformed `k:v` pair.
+- `src/fabric/source/generate.zn:205` — `atoi(s, fallback)`, called
+  for `batch_size` and `poll_interval_ms`.
+- `src/processors/extract_record_field.zn:125` — `parseIntOr`,
+  called for `record_index`.
+- `src/processors/text_processors.zn:243` — `textParseInt`, called
+  for `header_lines`.
 
-### B4. TransformRecord silently skips unknown op names
-- **Site:** `src/processors/transform_record.zn:applyOne` (last
-  fallthrough — including `compute` which isn't implemented)
-- **Idiom:** csharp `switch { ... default: break; }`.
-  `transform_record.applyOne` falls through silently on unrecognized
-  ops. If a user writes `compute:foo:bar` today, the whole op is
-  dropped with no signal.
-- **Zinc design:** factory validates op vocabulary at config time;
-  unrecognized op → `Error`. `compute` stays unimplemented but
-  registering it in the "known but not implemented" set produces a
-  different, clearer error ("compute op not yet implemented — pending
-  expression engine port") vs. "unknown op".
+**Zinc design:** `parseInt(s): int?` returning
+`Error("not a number: %s")`. Callers take an `or { fallback }` at
+each site — the fallback becomes a deliberate choice at the call
+site, not hidden behavior in the parser.
 
-### B5. ExtractRecordField silently skips missing fields
-- **Site:** `src/processors/extract_record_field.zn:process` loop
-- **Idiom:** csharp `if (val is not null) result = ...`. If the
-  record has no field by that name, the attribute simply isn't set.
-- **Zinc design decision:** this one is arguably **benign** — the
-  semantic intent is "extract what's there." But the current behavior
-  silently hides a config/data mismatch (user names a field that was
-  renamed upstream). A `strict: true` config mode that errors on
-  missing fields would be worth adding.
+### C. Silent-drop malformed config parsers (Group)
+Copies of csharp's `SplitStringOptions.RemoveEmptyEntries` +
+`if (parts.Length < 2) continue`. Malformed config entries silently
+disappear; load succeeds with a partial processor.
 
-### B6. RouteOnAttribute fall-through to `"unmatched"`
-- **Site:** `src/processors/route_on_attribute.zn:process` final
-  return
-- **Idiom:** csharp-style "default route." When no predicate matches,
-  the FlowFile goes to relationship `"unmatched"` — silent by
-  default.
-- **Zinc design decision:** this is actually **load-bearing** — lots
-  of NiFi configs rely on a catch-all route. But the FlowFile still
-  needs a wired `unmatched:` target in the YAML, or the executor
-  drops it silently. Consider: log-warn on unwired `unmatched`
-  fallthrough.
+- `src/processors/route_on_attribute.zn:34-63` (`parseRoutes`) — doc
+  at line 12-13 explicitly admits the csharpism.
+- `src/processors/extract_record_field.zn:38-82` (`parseFields` +
+  `addPair`) — doc at line 16-17 + 42-44 admits it.
+- `src/processors/transform_record.zn:parseOperations +
+  addEntry` — doc at line 197-199 admits it.
+- `src/fabric/source/generate.zn:parseAttributes + addPair`
+  (lines 64-99).
 
-### B7. Fabric.loadFlow silently skips unknown processor types
-- **Site:** `src/fabric/runtime/runtime.zn:loadFlow` — `if
-  !reg.has(typeName) { logging.error(...); continue }`
-- **Idiom:** csharp `Console.Error.WriteLine("Unknown processor
-  type: {typeName}")` + `continue`. Load "succeeds," pipeline comes
-  up missing a processor, FlowFiles dead-letter or hang depending on
-  where the missing processor sat in the graph.
+**Zinc design:** factories return `ProcessorFn?` /
+`ConnectorSource?`. Parse errors abort construction and surface at
+the registry level. Pipeline fails to load on typo.
+
+### D. Unknown-op silent-skip (inside TransformRecord)
+- `src/processors/transform_record.zn:151-200` — `applyOne` falls
+  through silently on any op name it doesn't recognize, including
+  `compute` which isn't implemented.
+- **Zinc design:** factory validates op vocabulary at construction
+  time; unrecognized op → `Error`. `compute` stays registered as
+  "known but not implemented" so its error message is clearer than
+  the catch-all.
+
+### E. Unknown-operator silent-false (inside RouteOnAttribute)
+- `src/processors/route_on_attribute.zn:85-114` — `evaluate` falls
+  through to `return false` if `op` isn't in the known set. A route
+  with `op: WEIRDOP` silently never matches.
+- **Zinc design:** validate operator strings at `parseRoutes` time;
+  unknown op → factory-level Error.
+
+### F. Missing-required-config silent-empty-string (factories group)
+When a config key is missing, `config["key"]` returns `""` (Go map
+zero value). Factories use these without checking, constructing
+processors with empty-string "config."
+
+- `src/processors/update_attribute.zn:33` — `config["key"]` /
+  `config["value"]` silently `""`.
+- `src/processors/builtin.zn:100` — `AddAttributeFactory` same.
+- `src/processors/builtin.zn:105, 108` — `FileSinkFactory` silent
+  `config["output_dir"]`.
+- `src/processors/builtin.zn:112` — `LogProcessorFactory` silent
+  `config["prefix"]`.
+- `src/processors/put_file.zn:91-92` — missing `output_dir` →
+  empty, leading to writes at `"/filename"`.
+
+**Zinc design:** factory validates required keys up front, returns
+Error if missing. Once `ProcessorFactory` returns `ProcessorFn?`
+this is a one-line check per factory.
+
+### G. Silent defaults on known optional keys
+Similar shape but for config keys that have defaults. Less severe
+than F — the default is documented and intentional. Still, a silent
+"I substituted a default for what you typed" when the user TYPED
+something is a leak.
+
+- `src/processors/put_stdout.zn:73-76` — default `format="raw"`.
+- `src/processors/put_stdout.zn:55-58` — unknown format silently
+  falls through to raw-text output.
+- `src/processors/put_file.zn:60-62` — non-"v3" format silently
+  treated as "raw" for the output bytes.
+- `src/processors/put_file.zn:101-104` — default format="raw".
+- `src/processors/builtin.zn:115-119` — JsonToRecordsFactory silent
+  default `schemaName = "default"`.
+- `src/processors/log_attribute.zn:41-46` — factory default
+  `prefix = "flow"`. (Marginal — prefix is descriptive only.)
+
+**Zinc design:** validate the value is in the allowed set; reject
+unknown values at factory time. Defaults that are ACTUALLY set by
+the user (vs. missing) should at minimum be validated.
+
+### H. Silent pass-through on wrong content variant
+Processors match `ff.content` and silently `Single(ff)` on variants
+they don't handle.
+
+- `src/processors/builtin.zn:RecordsToJson.process` (lines
+  232-247) — Raw and Claim variants silently pass through unchanged
+  (comment says "If content is already Raw, passes through
+  unchanged" but a processor named "records to json" doing nothing
+  on non-record input is surprising).
+- `src/processors/extract_record_field.zn:100-105` — non-Record
+  content passes through silently. Comment acknowledges this as
+  intentional (pipeline keeps moving).
+
+**Zinc design decision:** arguably benign for ExtractRecordField
+(staged pipeline with optional records). For RecordsToJson it's
+likely an error — the processor can't do its job, so the FlowFile
+should go to a failure route.
+
+### I. Silent-skip missing Record field (ExtractRecordField)
+- `src/processors/extract_record_field.zn:92-96` — missing field
+  silently omitted from attribute set. csharp behaves the same;
+  doc at line 16-17 admits it.
+- **Zinc design decision:** benign for soft-extract workloads; a
+  `strict: true` config mode that errors on missing fields would
+  cover the hard-extract case without breaking back-compat.
+
+### J. RouteOnAttribute fall-through to `"unmatched"`
+- `src/processors/route_on_attribute.zn:71` — when no predicate
+  matches, FlowFile goes to relationship `"unmatched"`.
+- **Zinc design decision:** load-bearing — NiFi configs rely on a
+  catch-all. But if `unmatched:` isn't wired in the YAML, the
+  FlowFile drops silently in the executor (pushDownstream with no
+  targets returns without Failure). Proposed mitigation: loadFlow
+  warns when a processor's declared routes include `unmatched` and
+  no `unmatched:` connection is wired. (Or all processors get a
+  reserved `unmatched` warning.)
+
+### K. Fabric loadFlow silently skips unknown processor types
+- `src/fabric/runtime/runtime.zn:108-111` — `if !reg.has(typeName)
+  { logging.error + continue }`. Load "succeeds," pipeline is
+  partial.
 - **Zinc design:** `loadFlow` should return a load-result with
-  collected errors; any unknown type aborts the whole load. This
-  also applies to a processor targeting a connection whose target
-  doesn't exist (currently caught at execute-time with a log-error
-  + drop).
+  collected errors; any unknown type aborts the whole load.
 
-### B8. Fabric.ingestAndExecute returns false on no entry points
-- **Site:** `src/fabric/runtime/runtime.zn:ingestAndExecute` first
-  guard
-- **Idiom:** csharp `return false` as backpressure signal. The bool
-  return IS the error channel here — the source gets told "not
-  accepted." Technically this IS using an error mechanism (bool),
-  not a silent drop.
-- **Status:** **benign** — the IngestFn contract is
-  `Fn<(FlowFile), bool>` where false means "pipeline couldn't take
-  it." This is the right shape for an event-driven source.
+### L. ExecuteGraph unknown-processor drop at runtime
+- `src/fabric/runtime/runtime.zn:217-221` — runtime-robustness
+  pattern: keep going on bad state. If K is fixed, this branch is
+  unreachable and could be a panic/invariant assertion.
 
-### B9. ExecuteGraph unknown-processor drop at runtime
-- **Site:** `src/fabric/runtime/runtime.zn:executeGraph` — `if
-  !g.hasProcessor(item.processor) { logging.error(...); continue }`
-- **Idiom:** runtime robustness pattern — keep going on bad state.
-  If loadFlow validated the graph (B7), this branch should be
-  unreachable and could be a panic ("graph invariant violated").
-- **Zinc design:** couple with B7. Once loadFlow rejects invalid
-  topologies, this guard becomes an assertion.
+### M. Fabric.addProcessor returns bool but factory can't fail
+- `src/fabric/runtime/runtime.zn:598-624` — `reg.create()` returns
+  non-optional `ProcessorFn`. Factory-internal failures (bad config,
+  provider missing) can't be reported to Fabric. Tightly coupled
+  to F.
+- **Zinc design:** `Registry.create` returns `ProcessorFn?`;
+  `addProcessor` returns `bool` OR an error-string; `loadFlow`
+  collects all per-processor errors.
+
+### N. buildScopedContextFor silently drops missing providers
+- `src/fabric/runtime/runtime.zn:672-691` — `or { continue }`
+  silently skips providers that a processor declared in `requires`
+  but globalCtx doesn't have. Processor gets a partial scope.
+- **Zinc design:** if a processor `requires` provider X and X isn't
+  present, construction aborts with Error.
+
+### O. PipelineGraph accessors return silently-bogus defaults
+- `src/core/pipeline_graph.zn:103-105` — `getProcessor` "panics if
+  unknown" (docstring admits). csharpism: throw vs. return
+  `ProcessorFn?`.
+- `src/core/pipeline_graph.zn:120-125` — `getState` returns
+  DISABLED silently when name unknown.
+- `src/core/pipeline_graph.zn:132-136` — `setState` silently
+  no-ops on unknown name.
+- `src/core/pipeline_graph.zn:168-173` — `getRequires` returns
+  empty list on unknown name.
+
+**Zinc design:** accessors return `T?` (e.g.
+`getProcessor(name): ProcessorFn?`,
+`getState(name): ComponentState?`). Callers get explicit failure
+and can `or { }` a decision at the call site.
+
+### P. Fabric.getProcessorType returns "unknown" string
+- `src/fabric/runtime/runtime.zn:438-443` — silent sentinel
+  "unknown" instead of error.
+- **Zinc design:** `getProcessorType(name): String?`.
+
+### Q. handlers.zn ignores replayAt return
+- `src/fabric/api/handlers.zn:109` — `fab.replayAt(sourceProc, ff)`
+  return value (bool) ignored. If replay fails (unknown processor),
+  user gets 200 "replayed" response.
+- `src/fabric/api/handlers.zn:123` — same pattern in
+  dlqReplayAllHandler.
+- **Zinc design:** check return, write 404/409 when false.
+
+### R. handlers.zn empty `or { }` swallows unmarshal error
+- `src/fabric/api/handlers.zn:279` — `json.Unmarshal(configBytes,
+  rawConfig) or {}` — empty handler block silently drops the
+  unmarshal error, then continues as if config was empty.
+- **Zinc design:** surface as 400 response with the error message,
+  OR at minimum log it.
+
+### S. GenerateFlowFile loadGenerateSource silent skip on missing content
+- `src/fabric/source/generate.zn:181-184` — `if
+  !cfg.has("sources.generate.content") { return }`. A `sources.generate`
+  section without `content` silently registers no source.
+- **Zinc design decision:** if sources.generate exists but content
+  missing → Error; if whole sources.generate is absent → fine.
+
+### T. put_file.basename silently strips directory traversal
+- `src/processors/put_file.zn:79` + basename helper at line
+  112-128 — attacker sending `filename: "../../etc/passwd"` gets
+  silently reduced to "passwd" (written into output_dir).
+- **Zinc design decision:** reject-with-Failure when the naming
+  attribute contains `/` or `..` rather than silently sanitizing.
+  Silent sanitize is a security anti-pattern: attacker learns their
+  payload "worked" (no error) and iterates.
 
 ---
 
-## Out of scope (zinc-go compiler)
+## zinc-go compiler commits (audited)
 
-Today's compiler commits (`b8b1e19`..`ddc9c8a`) were all
-**correctness fixes** — the compiler was emitting wrong Go for
-realistic Zinc code. No csharp idioms snuck in EXCEPT the short-lived
-`inConstructor` hack which is reverted (see A1).
+| Commit | Files | Verdict |
+|---|---|---|
+| `26b21cd` | codegen_types.go | **Zinc-correct.** Replaces the prior csharpism hack. The `switch` default case in `checkCtorStmtNoBareReturn` deliberately does nothing for Stmt types that can't contain nested control flow (Break, Continue, AssertStmt, PrintStmt, etc.) — not a silent skip, a correct no-op. |
+| `9caffb1` | codegen_exprs.go | **Zinc-correct.** Field-casing + lambda return-type inference — both are compiler correctness fixes. |
+| `3a1d569` | codegen_resolve.go, codegen_stmts.go, codegen_types.go | **Zinc-correct.** Param-type propagation so `.keys()`/`.values()` stay typed through realistic receiver shapes. |
+| `2d86ec4` | codegen_calls.go, codegen_resolve.go, codegen_stmts.go | **Zinc-correct.** Receiver-shape sweep. No idioms imported. |
+| `e83cdd7` | codegen_calls.go, codegen_resolve.go | **Zinc-correct.** IndexExpr walking, typed channel recv. |
+| `5178cde` | codegen_calls.go, codegen_resolve.go, codegen_stmts.go | **Zinc-correct.** Map K/V typed generation. |
+| `afc4d16` | codegen_calls.go, codegen_exprs.go, codegen_resolve.go, codegen_stmts.go | **Zinc-correct.** Six identifier-vs-package precedence fixes. |
+| `0865ec0` | codegen_calls.go | **Zinc-correct.** Field-name shadows subpackage. |
+| `d8453bd` | codegen_stmts.go | **Zinc-correct.** `Error(...)` interpolation emission. |
+| `53529ea`, `05631de`, `049b7b9`, `91eec11`, `92aa080`, `a738e0c`, `b8b1e19`, `f0c6c1d` | various | Audited, all compiler/stdlib correctness. |
+
+**Only csharpism found in compiler:** the short-lived `inConstructor`
+emission hack from an earlier iteration (now reverted by `26b21cd`
+and documented in A1).
 
 ---
 
 ## Proposed execution order
 
-1. **B1** (atoi → `parseInt(s): int?`) — localized, motivates the
-   pattern before the bigger factory-refactor.
-2. **B2/B3** combined — change the parse helpers to return error
-   lists; factories that see errors log loudly (first fallback) or
-   fail to construct (once factories return `T?`).
-3. **Factory refactor** — lift `ProcessorFactory` to
-   `Fn<(ScopedContext, Map<String, String>), ProcessorFn?>`.
-   Registry's `create()` propagates. Fabric.loadFlow collects and
-   reports.
-4. **B7/B9** — tighten loadFlow validation; demote execute-time
-   unknown-processor guard to an invariant check.
-5. **B4** — unknown op in TransformRecord → construct-time error
-   via the now-T? factory.
-6. **B5/B6** — add explicit strict modes; add unwired-unmatched
-   warning at load.
+1. **Group B** (atoi → `parseInt(s): int?`) — localized, motivates
+   the pattern and migrates all three sites.
+2. **Factory refactor** — lift `ProcessorFactory` to
+   `Fn<(ScopedContext, Map<String, String>), ProcessorFn?>` and
+   `SourceFactory` to `Fn<(String, Map<String, String>), ConnectorSource?>`.
+   `Registry.create` propagates. Fabric.loadFlow collects errors
+   from every failed factory and reports the aggregate.
+3. **Group F** — once factories can fail, validate required config
+   keys at load time.
+4. **Groups C + D + E** — parse helpers surface Error on malformed
+   input; factories propagate.
+5. **Groups K + L + M + N + O + P** — tighten loadFlow validation;
+   demote execute-time guards to invariant assertions. PipelineGraph
+   accessors return `T?`.
+6. **Groups G + H + I + J + S + T** — case-by-case decisions:
+   add explicit strict modes, warn on unwired `unmatched`, reject
+   rather than silently sanitize in PutFile.
+7. **Groups Q + R** — handlers.zn response-path polish.
+
+---
+
+## Summary
+
+- **1 fixed** (A1, bare-return-in-ctor).
+- **19 pending** across 11 groups (B–T) — every one is a silent
+  skip, silent fallback, or silent default that should surface
+  through the error mechanism.
+- **Compiler commits** clean; the one csharpism (A1) is already
+  reverted.
+- **Execution order** starts localized (B) and ends with
+  fine-grained policy (Q/R), so we can make incremental progress
+  without the big ProcessorFactory refactor blocking small wins.

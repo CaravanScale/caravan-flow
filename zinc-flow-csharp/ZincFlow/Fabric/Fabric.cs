@@ -69,6 +69,12 @@ public sealed class Fabric
         var processorStates = new Dictionary<string, ComponentState>();
         var processorDefs = new Dictionary<string, (string Type, Dictionary<string, string> Config, List<string> Requires)>();
 
+        // Collect every ConfigException across the load pass so the operator
+        // sees all config problems at once instead of fixing one, re-running,
+        // and hitting the next. Any accumulated entries → AggregateException
+        // thrown at the end (empty pipeline never silently loads).
+        var loadErrors = new List<ConfigException>();
+
         // Read processors
         var flowDict = AsStringDict(config.GetValueOrDefault("flow"));
         if (flowDict is not null)
@@ -79,10 +85,23 @@ public sealed class Fabric
                 foreach (var (name, defObj) in procDefs)
                 {
                     var def = AsStringDict(defObj);
-                    if (def is null) continue;
+                    if (def is null)
+                    {
+                        loadErrors.Add(new ConfigException(name, "processor definition missing or not a map"));
+                        continue;
+                    }
 
                     var typeName = GetStr(def, "type");
-                    if (!_reg.Has(typeName)) { Console.Error.WriteLine($"Unknown processor type: {typeName}"); continue; }
+                    if (string.IsNullOrEmpty(typeName))
+                    {
+                        loadErrors.Add(new ConfigException(name, "missing required key: type"));
+                        continue;
+                    }
+                    if (!_reg.Has(typeName))
+                    {
+                        loadErrors.Add(new ConfigException(name, $"unknown processor type: {typeName}"));
+                        continue;
+                    }
 
                     // Config map
                     var procConfig = new Dictionary<string, string>();
@@ -102,8 +121,23 @@ public sealed class Fabric
                     var conns = ParseConnections(def);
                     connections[name] = conns;
 
+                    // Factory invocation — any ConfigException raised by the
+                    // factory (missing key, unparseable value, unknown op)
+                    // gets tagged with the processor name and collected.
                     var ctx = BuildScopedContext(requires);
-                    var proc = _reg.Create(typeName, ctx, procConfig);
+                    IProcessor proc;
+                    try
+                    {
+                        proc = _reg.Create(typeName, ctx, procConfig);
+                    }
+                    catch (ConfigException ex)
+                    {
+                        loadErrors.Add(ex.ComponentName is null
+                            ? new ConfigException(name, ex.Message)
+                            : ex);
+                        continue;
+                    }
+
                     processors[name] = proc;
                     processorNames.Add(name);
                     processorStates[name] = ComponentState.Enabled;
@@ -114,12 +148,24 @@ public sealed class Fabric
             }
         }
 
-        // DAG validation and entry-point computation
+        // DAG validation. Errors collected into the same aggregate so the
+        // operator sees connection problems alongside processor-factory
+        // problems in one report. Warnings keep going to stdout — they're
+        // not fatal.
         var dagResult = DagValidator.Validate(connections);
         foreach (var err in dagResult.Errors)
-            Console.Error.WriteLine($"[fabric] DAG error: {err}");
+            loadErrors.Add(new ConfigException($"DAG: {err}"));
         foreach (var warn in dagResult.Warnings)
             Console.WriteLine($"[fabric] DAG warning: {warn}");
+
+        // Abort the load if anything went wrong. No partial-graph
+        // publish — the pipeline either loads cleanly or doesn't load
+        // at all, so a typo can never produce a half-wired runtime.
+        if (loadErrors.Count > 0)
+            throw new AggregateException(
+                $"flow load failed with {loadErrors.Count} config error(s)",
+                loadErrors);
+
         Console.WriteLine($"[fabric] entry points: [{string.Join(", ", dagResult.EntryPoints)}]");
 
         // Initialize per-processor counters

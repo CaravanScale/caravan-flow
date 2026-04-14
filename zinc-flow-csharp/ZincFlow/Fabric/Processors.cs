@@ -12,7 +12,9 @@ public static class BuiltinProcessors
     {
         reg.Register(
             new ProcessorInfo("UpdateAttribute", "Sets key=value attribute on FlowFiles", ["key", "value"]),
-            (ctx, config) => new UpdateAttribute(config["key"], config["value"]));
+            (ctx, config) => new UpdateAttribute(
+                ConfigHelpers.RequireString(config, "key"),
+                ConfigHelpers.GetString(config, "value")));
 
         reg.Register(
             new ProcessorInfo("LogAttribute", "Logs FlowFile attributes and passes through", ["prefix"]),
@@ -36,20 +38,20 @@ public static class BuiltinProcessors
             new ProcessorInfo("PutHTTP", "POST FlowFile to downstream HTTP endpoint",
                 ["endpoint", "format"]),
             (ctx, config) => new PutHTTP(
-                config["endpoint"],
-                config.GetValueOrDefault("format", "raw"),
+                ConfigHelpers.RequireString(config, "endpoint"),
+                ConfigHelpers.GetString(config, "format", "raw"),
                 ctx.GetContentStoreOrDefault()));
 
         reg.Register(
             new ProcessorInfo("PutFile", "Write FlowFile content to directory",
                 ["output_dir", "naming_attribute", "prefix", "suffix", "format"]),
             (ctx, config) => new PutFile(
-                config["output_dir"],
-                config.GetValueOrDefault("naming_attribute", "filename"),
-                config.GetValueOrDefault("prefix", ""),
-                config.GetValueOrDefault("suffix", ""),
+                ConfigHelpers.RequireString(config, "output_dir"),
+                ConfigHelpers.GetString(config, "naming_attribute", "filename"),
+                ConfigHelpers.GetString(config, "prefix"),
+                ConfigHelpers.GetString(config, "suffix"),
                 ctx.GetContentStoreOrDefault(),
-                config.GetValueOrDefault("format", "raw")));
+                ConfigHelpers.GetString(config, "format", "raw")));
 
         reg.Register(
             new ProcessorInfo("PutStdout", "Write FlowFile content to stdout", ["format"]),
@@ -71,17 +73,17 @@ public static class BuiltinProcessors
             new ProcessorInfo("ReplaceText", "Regex find/replace on content",
                 ["pattern", "replacement", "mode"]),
             (ctx, config) => new ReplaceText(
-                config["pattern"],
-                config.GetValueOrDefault("replacement", ""),
-                config.GetValueOrDefault("mode", "all"),
+                ConfigHelpers.RequireString(config, "pattern"),
+                ConfigHelpers.GetString(config, "replacement"),
+                ConfigHelpers.GetString(config, "mode", "all"),
                 ctx.GetContentStoreOrDefault()));
 
         reg.Register(
             new ProcessorInfo("ExtractText", "Regex capture groups → attributes",
                 ["pattern", "group_names"]),
             (ctx, config) => new ExtractText(
-                config["pattern"],
-                config.GetValueOrDefault("group_names", ""),
+                ConfigHelpers.RequireString(config, "pattern"),
+                ConfigHelpers.GetString(config, "group_names"),
                 ctx.GetContentStoreOrDefault()));
 
         reg.Register(
@@ -89,8 +91,9 @@ public static class BuiltinProcessors
                 ["delimiter", "header_lines"]),
             (ctx, config) =>
             {
-                int headerLines = int.TryParse(config.GetValueOrDefault("header_lines", "0"), out var h) ? h : 0;
-                return new SplitText(config["delimiter"], headerLines, ctx.GetContentStoreOrDefault());
+                var delim = ConfigHelpers.RequireString(config, "delimiter");
+                var headerLines = ConfigHelpers.ParseInt(config.GetValueOrDefault("header_lines"), "header_lines", 0);
+                return new SplitText(delim, headerLines, ctx.GetContentStoreOrDefault());
             });
 
         // --- Record conversion ---
@@ -154,14 +157,14 @@ public static class BuiltinProcessors
                 ["delimiter", "has_header", "fields", "schema_name"]),
             (ctx, config) =>
             {
-                var delim = config.GetValueOrDefault("delimiter", ",");
-                var hasHeader = config.GetValueOrDefault("has_header", "true") != "false";
+                var delim = ParseSingleCharDelim(config, "delimiter", ',');
+                var hasHeader = ParseBool(config, "has_header", true);
                 return new ConvertCSVToRecord(
-                    config.GetValueOrDefault("schema_name", "default"),
-                    delim.Length > 0 ? delim[0] : ',',
+                    ConfigHelpers.GetString(config, "schema_name", "default"),
+                    delim,
                     hasHeader,
                     ctx.GetContentStoreOrDefault(),
-                    config.GetValueOrDefault("fields", ""));
+                    ConfigHelpers.GetString(config, "fields"));
             });
 
         reg.Register(
@@ -169,9 +172,9 @@ public static class BuiltinProcessors
                 ["delimiter", "include_header"]),
             (ctx, config) =>
             {
-                var delim = config.GetValueOrDefault("delimiter", ",");
-                var includeHeader = config.GetValueOrDefault("include_header", "true") != "false";
-                return new ConvertRecordToCSV(delim.Length > 0 ? delim[0] : ',', includeHeader);
+                var delim = ParseSingleCharDelim(config, "delimiter", ',');
+                var includeHeader = ParseBool(config, "include_header", true);
+                return new ConvertRecordToCSV(delim, includeHeader);
             });
 
         // --- Expression / Transform ---
@@ -206,8 +209,8 @@ public static class BuiltinProcessors
         reg.Register(
             new ProcessorInfo("ExtractRecordField", "Extract record fields into FlowFile attributes", ["fields", "record_index"]),
             (ctx, config) => new ExtractRecordField(
-                config.GetValueOrDefault("fields", ""),
-                int.TryParse(config.GetValueOrDefault("record_index", "0"), out var ri) ? ri : 0));
+                ConfigHelpers.RequireString(config, "fields"),
+                ConfigHelpers.ParseInt(config.GetValueOrDefault("record_index"), "record_index", 0)));
 
         reg.Register(
             new ProcessorInfo("QueryRecord", "Filter records by predicate", ["where"]),
@@ -220,5 +223,31 @@ public static class BuiltinProcessors
             (ctx, config) => new FilterAttribute(
                 config.GetValueOrDefault("mode", "remove"),
                 config.GetValueOrDefault("attributes", "")));
+    }
+
+    // ParseSingleCharDelim — delimiter keys are user-facing as strings in
+    // YAML but the CSV reader/writer wants a single char. The prior
+    // `delim.Length > 0 ? delim[0] : ','` fallback silently turned an
+    // empty or too-long value into a comma. Now: empty → fallback (key
+    // legitimately absent); non-empty but multi-char → ConfigException.
+    private static char ParseSingleCharDelim(IReadOnlyDictionary<string, string> config, string key, char fallback)
+    {
+        if (!config.TryGetValue(key, out var raw) || string.IsNullOrEmpty(raw))
+            return fallback;
+        if (raw.Length != 1)
+            throw new ConfigException($"config key '{key}' must be a single character; got: '{raw}'");
+        return raw[0];
+    }
+
+    // ParseBool — same rule as the other helpers: empty → fallback, typo
+    // → ConfigException. The prior `val != "false"` form silently treated
+    // any typo (incluing "faslse") as "true."
+    private static bool ParseBool(IReadOnlyDictionary<string, string> config, string key, bool fallback)
+    {
+        if (!config.TryGetValue(key, out var raw) || string.IsNullOrEmpty(raw))
+            return fallback;
+        if (string.Equals(raw, "true", StringComparison.OrdinalIgnoreCase)) return true;
+        if (string.Equals(raw, "false", StringComparison.OrdinalIgnoreCase)) return false;
+        throw new ConfigException($"config key '{key}' must be 'true' or 'false'; got: '{raw}'");
     }
 }

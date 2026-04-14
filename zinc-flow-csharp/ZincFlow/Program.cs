@@ -55,8 +55,12 @@ else
 
 // Create providers
 var contentDir = GetConfigString(config, "content.dir", "/tmp/zinc-flow-csharp/content");
-if (int.TryParse(GetConfigString(config, "content.offload_threshold_kb", "256"), out var threshKb))
-    ContentHelpers.ClaimThreshold = threshKb * 1024;
+// Not ParseInt's empty-is-default path — the fallback "256" comes from
+// GetConfigString, so the string is always present here. Bad input
+// must throw rather than silently use the compiled-in default.
+ContentHelpers.ClaimThreshold = ConfigHelpers.ParseIntRaw(
+    GetConfigString(config, "content.offload_threshold_kb", "256"),
+    "content.offload_threshold_kb") * 1024;
 var store = new FileContentStore(contentDir);
 var cleanup = new ContentStoreCleanup(store, contentDir);
 ContentStoreCleanup.Instance = cleanup;
@@ -125,7 +129,9 @@ var fileInputDir = GetConfigString(config, "sources.file.input_dir", "");
 if (!string.IsNullOrEmpty(fileInputDir))
 {
     var pattern = GetConfigString(config, "sources.file.pattern", "*");
-    var pollMs = int.TryParse(GetConfigString(config, "sources.file.poll_interval_ms", "1000"), out var p) ? p : 1000;
+    var pollMs = ConfigHelpers.ParseIntRaw(
+        GetConfigString(config, "sources.file.poll_interval_ms", "1000"),
+        "sources.file.poll_interval_ms");
     var unpackV3 = GetConfigString(config, "sources.file.unpack_v3", "true") != "false";
     fab.AddSource(new GetFile("file-ingest", fileInputDir, pattern, pollMs, store, unpackV3));
 }
@@ -141,8 +147,12 @@ if (!string.IsNullOrEmpty(genContent))
 {
     var genType = GetConfigString(config, "sources.generate.content_type", "");
     var genAttrs = GetConfigString(config, "sources.generate.attributes", "");
-    var genBatch = int.TryParse(GetConfigString(config, "sources.generate.batch_size", "1"), out var gb) ? gb : 1;
-    var genPoll = int.TryParse(GetConfigString(config, "sources.generate.poll_interval_ms", "1000"), out var gp) ? gp : 1000;
+    var genBatch = ConfigHelpers.ParseIntRaw(
+        GetConfigString(config, "sources.generate.batch_size", "1"),
+        "sources.generate.batch_size");
+    var genPoll = ConfigHelpers.ParseIntRaw(
+        GetConfigString(config, "sources.generate.poll_interval_ms", "1000"),
+        "sources.generate.poll_interval_ms");
     fab.AddSource(new GenerateFlowFile("generator", genPoll, genContent, genType, genAttrs, genBatch));
 }
 
@@ -203,7 +213,9 @@ _ = Task.Run(async () =>
 });
 
 // Content store cleanup
-var sweepMs = int.TryParse(GetConfigString(config, "content.sweep_interval_ms", "300000"), out var si) ? si : 300_000;
+var sweepMs = ConfigHelpers.ParseIntRaw(
+    GetConfigString(config, "content.sweep_interval_ms", "300000"),
+    "content.sweep_interval_ms");
 var appCts = new CancellationTokenSource();
 cleanup.StartPeriodicSweep(sweepMs, appCts.Token);
 
