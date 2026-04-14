@@ -37,9 +37,25 @@
 
 - [x] Provider lifecycle (ENABLED/DISABLED), ScopedContext, dependency cascade
 - [x] Map-keyed YAML config, graceful shutdown
-- [x] 30 tests, 137+ assertions, 10 e2e scenarios (Go)
+- [x] **41 tests via `zinc test`** — core (8) + processors (7) + routing (7) + fabric/queue/DLQ (9) + scenarios (10). Real `go test` integration, `stdlib.asserts` helpers, exit-code-honest failures. (Was 30 tests / 137 assertions under the old `run_tests.sh` src/main.zn-swap hack — retired.)
 - [x] zinc-flow-python port — 129 assertions, DataFrame processors
 - [x] zinc-flow-csharp port — 149 assertions, ThreadStatic pools, ArrayPool, ref-counted Content, 2M+ ff/s AOT
+
+## Phase 0 — Zinc compiler gap closure ✓
+
+Prerequisite for porting zinc-flow's processor set to the Zinc language (re-establishing parity with the csharp reference). Audit at [docs/zinc-compiler-audit.md](docs/zinc-compiler-audit.md). Nine compiler tickets (ZCA-01 through ZCA-09) resolved across 10 commits in the [zinc](https://github.com/ZincScale/zinc) repo:
+
+- [x] `[imports]` alias resolution in flat-src projects (ZCA-01 + ZCA-02)
+- [x] Nested user-generic type args — `Box<List<int>>` (ZCA-04)
+- [x] Same-package `Map<K, UserClass>` pointer codegen (ZCA-05)
+- [x] Compile-time exhaustive `match` enforcement on sealed types (ZCA-03)
+- [x] `_v` unused-var fix for discard/wildcard case arms (ZCA-06)
+- [x] Zero-param lambda parse `() -> { body }` (ZCA-07)
+- [x] `zinc test` command + `test "name" { body }` syntax + `stdlib/asserts` module (ZCA-08)
+- [x] `fmt.Errorf` with constant format string for `Error("...${interp}")` — go-vet clean (ZCA-09)
+- [x] Unified `[deps]` + `[replace]` in `zinc.toml` (alias-keyed, no duplication with `[imports]`)
+
+Remaining probes (D closure-bridge, E spawn/channels, M testing) all passed; no additional compiler gaps for MVP.
 
 ---
 

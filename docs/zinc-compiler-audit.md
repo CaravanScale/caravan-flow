@@ -86,13 +86,33 @@ Probes 1–4 are the MVP gate. Probe 5 can happen in parallel but isn't MVP-bloc
 
 ---
 
-## Exit criteria for Phase 0
+## Exit criteria for Phase 0 — **ALL MET**
 
-- [ ] Probes 1–4 green under `zinc build` producing native Go binaries.
-- [ ] Any MVP-blocking gap has a ticket filed in `/home/vrjoshi/proj/zinc/` with a repro.
-- [ ] Non-blocking gaps documented in matrix with ticket IDs and "deferred to PhaseN" notes.
-- [ ] Probe 5 (closure bridge) resolved by Phase 4 start — not Phase 0 exit requirement.
-- [ ] This doc's matrix has no `unknown` or `probe` rows for MVP-blocking categories.
+- [x] Probes 1–4 green under `zinc build` producing native Go binaries.
+- [x] Probe 5 (closure bridge) resolved early — zero-param lambda parse gap (ZCA-07) fixed during probe execution.
+- [x] All MVP-blocking gaps fixed (not just ticketed).
+- [x] Matrix has no `unknown` or `probe` rows — every category is OK or FIXED.
+
+## Resolution summary
+
+Nine compiler tickets filed + fixed + committed, all pushed to `github.com/ZincScale/zinc`:
+
+| Ticket | Fix | Commit |
+|---|---|---|
+| ZCA-01 | `go.mod` `require` from zinc.toml deps (symptom of ZCA-02) | `b8b1e19` |
+| ZCA-02 | `[imports]` alias resolution in flat-src projects | `b8b1e19` |
+| ZCA-04 | Parser `>>` tokenization in nested user-generic types | `a738e0c` |
+| ZCA-05 | Same-package `Map<K, UserClass>` pointer codegen | `a738e0c` |
+| ZCA-03 | Compile-time exhaustive-match enforcement on sealed types | `92aa080` |
+| ZCA-06 | `_v` unused-var for discard/wildcard case arms | `91eec11` |
+| ZCA-07 | Zero-param lambda parse `() -> { body }` | `049b7b9` |
+| ZCA-08 | `zinc test` command + `test "name" { body }` + `stdlib/asserts` | `05631de` |
+| ZCA-09 | `fmt.Errorf` constant-format-string for `Error("…${interp}")` | `d8453bd` |
+| +UX    | Unified `[deps]` + alias-keyed `[replace]` in zinc.toml | `53529ea` |
+
+Full regression at Phase 0 close: 59/59 zinc-go e2e · 41/41 zinc-flow tests · zinc-flow build clean · stdlib build clean.
+
+**Phase 0 done.** Handoff to Phase 1 (direct-pipeline runtime port) or Phase 2 (MVP processor port) at the plan file's discretion.
 
 ---
 

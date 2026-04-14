@@ -19,8 +19,11 @@ NiFi's processor model with Camel's direct pipeline execution and Zinc's simplic
 
 ```bash
 # Build and run
-./zinc build
+zinc build .
 ./zinc-out/zinc-flow
+
+# Run the test suite
+zinc test .
 
 # Ingest a FlowFile
 curl -X POST http://localhost:9092/ -d '{"hello":"world"}' -H 'X-Flow-type: order'
@@ -57,16 +60,21 @@ zinc-flow/
 │   │   ├── delivery/http.zn   — HTTP delivery adapter
 │   │   └── model/             — V3 serde + result JSON
 │   ├── processors/builtin.zn  — 5 built-in processors
-│   └── main.zn                — Bootstrap + HTTP server
+│   ├── main.zn                — Bootstrap + HTTP server
+│   ├── test_helpers_test.zn   — Shared test fixtures (testContext, JSON data)
+│   ├── core_test.zn           — FlowFile / Content / V3 serde tests (8)
+│   ├── processors_test.zn     — Processor tests (7)
+│   ├── routing_test.zn        — Predicate routing tests (7)
+│   ├── fabric_test.zn         — Fabric + FlowQueue + DLQ tests (9)
+│   └── scenarios_test.zn      — End-to-end flow scenarios (10)
 ├── zinc-flow-csharp/          — C# .NET 10 runtime (17 processors, 395 tests)
 ├── zinc-flow-python/          — Python 3.14t runtime
-├── test/
-│   ├── test_main.zn           — 30 tests, 137+ assertions, 10 scenarios
-│   └── test_helpers.zn        — Test utilities + assertions
 ├── config.yaml                — Flow definition (processors, connections)
 ├── zinc.toml                  — Project config
 └── TODO.md                    — Roadmap
 ```
+
+Tests use `test "name" { body }` blocks via the `zinc test` command (integrates with `go test` tooling: `-v`, `-run pattern`, `-race`, coverage). Assertions come from `stdlib.asserts`. Run everything with `zinc test .` — 41 tests.
 
 ## Architecture
 
