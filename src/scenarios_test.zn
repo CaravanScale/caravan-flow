@@ -1,0 +1,294 @@
+// End-to-end scenario tests — exercise the fabric through queues,
+// sessions, routing, backpressure, retries, DLQ, and provider cascades.
+// Migrated from test_main.zn.
+
+import core
+import fabric.router
+import fabric.registry
+import fabric.runtime
+import processors
+import stdlib.asserts
+import stdlib.logging
+import time
+
+test "scenario: processor chain — tagger → logger through queues + sessions" {
+    var scopedCtx = testScopedContext()
+    var reg = Registry()
+    registerBuiltins(reg)
+    var tagger = reg.create("add-attribute", scopedCtx, Map<String, String>{"key": "env", "value": "dev"})
+    var logger = reg.create("log", scopedCtx, Map<String, String>{"prefix": "chain-test"})
+
+    var tagQueue = FlowQueue("tag-env", 100, long(1024 * 1024), long(30000000000))
+    var logQueue = FlowQueue("logger", 100, long(1024 * 1024), long(30000000000))
+    var allQueues = Map<String, FlowQueue>{}
+    allQueues["tag-env"] = tagQueue
+    allQueues["logger"] = logQueue
+
+    var tagEngine = RulesEngine()
+    tagEngine.addOrReplaceRuleset("flow", List<RoutingRule>[
+        RoutingRule("to-logger", BaseRule("env", EXISTS, ""), Destination("logger", "local"), true)
+    ])
+    var logEngine = RulesEngine() // logger is terminal — no onward route
+
+    var dlq = DLQ()
+    var tagSession = ProcessSession(tagQueue, tagger, "tag-env", tagEngine, allQueues, dlq, 5)
+    var logSession = ProcessSession(logQueue, logger, "logger", logEngine, allQueues, dlq, 5)
+
+    var ff = createFlowFile("hello".toBytes(), Map<String, String>{"type": "order"})
+    tagQueue.offer(ff)
+    asserts.equalInt(t, tagQueue.visibleCount(), 1)
+
+    asserts.isTrue(t, tagSession.execute(), "tag session executed")
+    asserts.equalInt(t, tagQueue.visibleCount(), 0)
+    asserts.equalInt(t, logQueue.visibleCount(), 1)
+
+    asserts.isTrue(t, logSession.execute(), "log session executed")
+    asserts.equalInt(t, logQueue.visibleCount(), 0)
+    asserts.equalInt(t, dlq.count(), 0)
+}
+
+test "scenario: disable/enable processor — state transitions correctly" {
+    var ctx = testContext()
+    var reg = Registry()
+    registerBuiltins(reg)
+    var fab = Fabric(reg, ctx)
+
+    fab.addProcessor("tagger", "add-attribute", Map<String, String>{"key": "env", "value": "test"})
+
+    match fab.getProcessorState("tagger") {
+        case ENABLED { }
+        case _ { t.Errorf("initially expected ENABLED") }
+    }
+
+    fab.disableProcessor("tagger", 1)
+
+    var ff = createFlowFile("test".toBytes(), Map<String, String>{"type": "test"})
+    fab.ingest(ff)
+
+    fab.enableProcessor("tagger")
+    match fab.getProcessorState("tagger") {
+        case ENABLED { }
+        case _ { t.Errorf("after enableProcessor expected ENABLED") }
+    }
+}
+
+test "scenario: backpressure propagation — full downstream nacks upstream item" {
+    var smallQueue = FlowQueue("small", 3, long(1024), long(30000000000))
+    var downstreamQueue = FlowQueue("downstream", 3, long(1024), long(30000000000))
+    var allQueues = Map<String, FlowQueue>{}
+    allQueues["small"] = smallQueue
+    allQueues["downstream"] = downstreamQueue
+
+    var engine = RulesEngine()
+    engine.addOrReplaceRuleset("flow", List<RoutingRule>[
+        RoutingRule("forward", BaseRule("type", EXISTS, ""), Destination("downstream", "local"), true)
+    ])
+
+    var proc = LogProcessor("bp-test")
+    var dlq = DLQ()
+    var session = ProcessSession(smallQueue, proc, "small", engine, allQueues, dlq, 5)
+
+    var i = 0
+    while i < 3 {
+        downstreamQueue.offer(createFlowFile("fill".toBytes(), Map<String, String>{"type": "x"}))
+        i = i + 1
+    }
+    asserts.isFalse(t, downstreamQueue.hasCapacity(), "downstream full")
+
+    smallQueue.offer(createFlowFile("blocked".toBytes(), Map<String, String>{"type": "test"}))
+    asserts.isTrue(t, session.execute(), "session ran")
+
+    asserts.equalInt(t, smallQueue.visibleCount(), 1)
+    asserts.equalInt(t, smallQueue.claim().attemptCount, 1)
+}
+
+test "scenario: retry exhaustion — exceeding maxRetries lands in DLQ" {
+    var sourceQueue = FlowQueue("source", 100, long(1024 * 1024), long(30000000000))
+    var destQueue = FlowQueue("dest", 0, long(0), long(30000000000))
+    var allQueues = Map<String, FlowQueue>{}
+    allQueues["dest"] = destQueue
+
+    var engine = RulesEngine()
+    engine.addOrReplaceRuleset("flow", List<RoutingRule>[
+        RoutingRule("to-dest", BaseRule("type", EXISTS, ""), Destination("dest", "local"), true)
+    ])
+
+    var proc = LogProcessor("retry-test")
+    var dlq = DLQ()
+    var maxRetries = 3
+    var session = ProcessSession(sourceQueue, proc, "source", engine, allQueues, dlq, maxRetries)
+
+    var ff = createFlowFile("will-fail".toBytes(), Map<String, String>{"type": "test"})
+    sourceQueue.offer(ff)
+
+    var attempt = 0
+    while attempt < maxRetries + 1 {
+        session.execute()
+        attempt = attempt + 1
+    }
+
+    asserts.equalInt(t, dlq.count(), 1)
+    asserts.equalInt(t, sourceQueue.visibleCount(), 0)
+
+    var entries = dlq.list()
+    asserts.equalString(t, entries[0].sourceProcessor, "source")
+    asserts.equalString(t, entries[0].lastError, "max retries exceeded")
+}
+
+test "scenario: DLQ replay — re-inject into source queue, claim, ack" {
+    var dlq = DLQ()
+    var sourceQueue = FlowQueue("my-proc", 100, long(1024 * 1024), long(30000000000))
+
+    var ff = createFlowFile("replay-test".toBytes(), Map<String, String>{"type": "order"})
+    dlq.add(ff, "my-proc", "my-proc", 5, "processing failed")
+    asserts.equalInt(t, dlq.count(), 1)
+
+    var entries = dlq.list()
+    var replayed = dlq.replay(entries[0].id)
+    asserts.equalString(t, replayed.id, ff.id)
+    asserts.equalInt(t, dlq.count(), 0)
+
+    sourceQueue.offer(replayed)
+    asserts.equalInt(t, sourceQueue.visibleCount(), 1)
+
+    var entry = sourceQueue.claim()
+    asserts.equalString(t, entry.flowFile.id, ff.id)
+    sourceQueue.ack(entry.id)
+    asserts.equalInt(t, sourceQueue.visibleCount(), 0)
+}
+
+test "scenario: scoped provider isolation — only declared providers visible" {
+    var store = MemoryContentStore()
+    var cp = ContentProvider("content", store)
+    cp.enable()
+
+    var lm = logging.LogManager()
+    var lp = LoggingProvider(lm)
+    lp.enable()
+
+    var scoped = Map<String, Provider>{}
+    scoped["content"] = cp
+    var ctx = ScopedContext(scoped)
+
+    var p = ctx.getProvider("content") or {
+        t.Errorf("content provider should exist")
+        return
+    }
+    asserts.equalString(t, p.getType(), "content")
+    asserts.equalInt(t, len(ctx.listProviders()), 1)
+}
+
+test "scenario: dependency cascade — disable provider drains dependent processors" {
+    var store = MemoryContentStore()
+    var cp = ContentProvider("content", store)
+    cp.enable()
+
+    var globalCtx = ProcessorContext()
+    globalCtx.addProvider(cp)
+    globalCtx.registerDependent("content", "file-sink")
+
+    var reg = Registry()
+    registerBuiltins(reg)
+    var fab = Fabric(reg, globalCtx)
+    fab.addProcessor("file-sink", "file-sink", Map<String, String>{"output_dir": "/tmp/test"})
+
+    match fab.getProcessorState("file-sink") {
+        case ENABLED { }
+        case _ { t.Errorf("initially expected ENABLED") }
+    }
+
+    fab.disableProvider("content", 1)
+    asserts.isFalse(t, cp.isEnabled(), "content provider disabled")
+
+    match fab.getProcessorState("file-sink") {
+        case DRAINING { }
+        case DISABLED { }
+        case ENABLED { t.Errorf("sink should not be ENABLED after cascade") }
+    }
+}
+
+test "scenario: enableProcessor — path works when providers enabled" {
+    var store = MemoryContentStore()
+    var cp = ContentProvider("content", store)
+
+    var globalCtx = ProcessorContext()
+    globalCtx.addProvider(cp)
+
+    var reg = Registry()
+    registerBuiltins(reg)
+    var fab = Fabric(reg, globalCtx)
+
+    fab.addProcessor("sink", "file-sink", Map<String, String>{"output_dir": "/tmp/test"})
+    fab.disableProcessor("sink", 0)
+
+    cp.enable()
+    asserts.isTrue(t, fab.enableProcessor("sink"), "enable succeeds with provider enabled")
+
+    cp.disable(0)
+    fab.disableProcessor("sink", 0)
+    time.Sleep(200 * time.Millisecond)
+}
+
+test "scenario: IRS fan-out — one source routes to multiple destinations" {
+    var tagger = AddAttribute("env", "prod")
+
+    var srcQueue = FlowQueue("source", 100, long(1024 * 1024), long(30000000000))
+    var destA = FlowQueue("dest-a", 100, long(1024 * 1024), long(30000000000))
+    var destB = FlowQueue("dest-b", 100, long(1024 * 1024), long(30000000000))
+    var destC = FlowQueue("dest-c", 100, long(1024 * 1024), long(30000000000))
+    var allQueues = Map<String, FlowQueue>{}
+    allQueues["source"] = srcQueue
+    allQueues["dest-a"] = destA
+    allQueues["dest-b"] = destB
+    allQueues["dest-c"] = destC
+
+    var engine = RulesEngine()
+    engine.addOrReplaceRuleset("flow", List<RoutingRule>[
+        RoutingRule("to-a", BaseRule("env", EXISTS, ""), Destination("dest-a", "local"), true),
+        RoutingRule("to-b", BaseRule("env", EXISTS, ""), Destination("dest-b", "local"), true),
+        RoutingRule("to-c", BaseRule("env", EXISTS, ""), Destination("dest-c", "local"), true)
+    ])
+
+    var dlq = DLQ()
+    var session = ProcessSession(srcQueue, tagger, "source", engine, allQueues, dlq, 5)
+
+    var ff = createFlowFile("fanout".toBytes(), Map<String, String>{"type": "order"})
+    srcQueue.offer(ff)
+    session.execute()
+
+    asserts.equalInt(t, destA.visibleCount(), 1)
+    asserts.equalInt(t, destB.visibleCount(), 1)
+    asserts.equalInt(t, destC.visibleCount(), 1)
+    asserts.equalInt(t, srcQueue.visibleCount(), 0)
+    asserts.equalInt(t, dlq.count(), 0)
+
+    var entryA = destA.claim()
+    asserts.equalString(t, entryA.flowFile.attributes["env"], "prod")
+    destA.ack(entryA.id)
+}
+
+test "scenario: visibility timeout — claimed item returns to visible after TTL" {
+    var q = FlowQueue("vis-test", 10, long(1024), long(500000000))
+    q.startReaper()
+
+    var ff = createFlowFile("timeout-test".toBytes(), Map<String, String>{"type": "test"})
+    q.offer(ff)
+
+    var entry = q.claim()
+    asserts.isTrue(t, entry.id != "", "claimed non-empty")
+    asserts.equalInt(t, q.visibleCount(), 0)
+    asserts.equalInt(t, q.invisibleCount(), 1)
+    asserts.equalInt(t, entry.attemptCount, 0)
+
+    time.Sleep(2 * time.Second)
+
+    asserts.equalInt(t, q.visibleCount(), 1)
+    asserts.equalInt(t, q.invisibleCount(), 0)
+
+    var reclaimed = q.claim()
+    asserts.isTrue(t, reclaimed.id != "", "reclaimed non-empty")
+    asserts.equalInt(t, reclaimed.attemptCount, 1)
+
+    q.ack(reclaimed.id)
+    asserts.equalInt(t, q.visibleCount(), 0)
+}

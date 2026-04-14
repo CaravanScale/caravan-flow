@@ -1,0 +1,164 @@
+// Fabric + FlowQueue + DLQ + ScopedContext + Provider lifecycle tests.
+// Migrated from test_main.zn.
+
+import core
+import fabric.router
+import fabric.registry
+import fabric.runtime
+import processors
+import stdlib.asserts
+
+// --- Fabric Integration ---
+
+test "fabric multi-hop — engine resolves sequential rule destinations" {
+    var ctx = testContext()
+    var reg = Registry()
+    registerBuiltins(reg)
+
+    var fab = Fabric(reg, ctx)
+
+    var engine = RulesEngine()
+    var r1 = RoutingRule("all-to-tag", BaseRule("type", EXISTS, ""), Destination("tag-env", "local"), true)
+    var r2 = RoutingRule("tagged-to-log", BaseRule("env", EXISTS, ""), Destination("logger", "local"), true)
+    engine.addOrReplaceRuleset("flow", List<RoutingRule>[r1, r2])
+
+    Map<String, String> attrs = {"type": "order"}
+    var dests1 = engine.getDestinations(attrs)
+    asserts.equalInt(t, len(dests1), 1)
+    asserts.equalString(t, dests1[0].endpoint, "tag-env")
+
+    Map<String, String> taggedAttrs = {"type": "order", "env": "prod"}
+    asserts.equalInt(t, len(engine.getDestinations(taggedAttrs)), 2)
+
+    var ff = createFlowFile("multi-hop".toBytes(), Map<String, String>{"type": "test"})
+    asserts.isTrue(t, fab.ingest(ff), "ingest accepted")
+}
+
+test "fabric DLQ — starts empty, unrouted ingest doesn't add entries" {
+    var ctx = testContext()
+    var reg = Registry()
+    registerBuiltins(reg)
+
+    var fab = Fabric(reg, ctx)
+    asserts.equalInt(t, fab.getDlqCount(), 0)
+
+    var ff = createFlowFile("test".toBytes(), Map<String, String>{"type": "unknown"})
+    asserts.isTrue(t, fab.ingest(ff), "ingest accepted")
+    asserts.equalInt(t, fab.getDlqCount(), 0)
+}
+
+// --- FlowQueue ---
+
+test "FlowQueue — offer, claim, ack cycle" {
+    var q = FlowQueue("test-q", 100, long(1024 * 1024), long(30000000000))
+    var ff = createFlowFile("hello".toBytes(), Map<String, String>{"key": "val"})
+
+    asserts.isTrue(t, q.offer(ff), "offer accepted")
+    asserts.equalInt(t, q.visibleCount(), 1)
+    asserts.equalInt(t, q.invisibleCount(), 0)
+
+    var entry = q.claim()
+    asserts.isTrue(t, entry.id != "", "claim non-empty")
+    asserts.equalString(t, entry.flowFile.id, ff.id)
+    asserts.equalInt(t, q.visibleCount(), 0)
+    asserts.equalInt(t, q.invisibleCount(), 1)
+
+    q.ack(entry.id)
+    asserts.equalInt(t, q.visibleCount(), 0)
+    asserts.equalInt(t, q.invisibleCount(), 0)
+}
+
+test "FlowQueue — backpressure rejects third offer over capacity" {
+    var q = FlowQueue("bp-q", 2, long(1024), long(30000000000))
+
+    asserts.isTrue(t, q.offer(createFlowFile("a".toBytes(), Map<String, String>{})), "first offer")
+    asserts.isTrue(t, q.offer(createFlowFile("b".toBytes(), Map<String, String>{})), "second offer")
+    asserts.isFalse(t, q.offer(createFlowFile("c".toBytes(), Map<String, String>{})), "third rejected (backpressure)")
+    asserts.isFalse(t, q.hasCapacity(), "no capacity left")
+}
+
+test "FlowQueue — nack returns FlowFile to visible, increments attemptCount" {
+    var q = FlowQueue("an-q", 100, long(1024 * 1024), long(30000000000))
+    var ff = createFlowFile("test".toBytes(), Map<String, String>{})
+    q.offer(ff)
+
+    var entry = q.claim()
+    asserts.equalInt(t, entry.attemptCount, 0)
+
+    q.nack(entry.id)
+    asserts.equalInt(t, q.visibleCount(), 1)
+    asserts.equalInt(t, q.invisibleCount(), 0)
+
+    var retried = q.claim()
+    asserts.equalInt(t, retried.attemptCount, 1)
+    q.ack(retried.id)
+}
+
+// --- DLQ ---
+
+test "DLQ — add captures processor name, queue, attempt count, error" {
+    var dlq = DLQ()
+    asserts.equalInt(t, dlq.count(), 0)
+
+    var ff = createFlowFile("failed".toBytes(), Map<String, String>{"type": "test"})
+    dlq.add(ff, "my-proc", "my-queue", 3, "processing error")
+    asserts.equalInt(t, dlq.count(), 1)
+
+    var entries = dlq.list()
+    asserts.equalInt(t, len(entries), 1)
+    asserts.equalString(t, entries[0].sourceProcessor, "my-proc")
+    asserts.equalString(t, entries[0].lastError, "processing error")
+    asserts.equalInt(t, entries[0].attemptCount, 3)
+}
+
+test "DLQ — replay returns FlowFile and removes from DLQ" {
+    var dlq = DLQ()
+    var ff = createFlowFile("replay-me".toBytes(), Map<String, String>{"id": "123"})
+    dlq.add(ff, "proc", "queue", 5, "max retries")
+    asserts.equalInt(t, dlq.count(), 1)
+
+    var entries = dlq.list()
+    var replayedFf = dlq.replay(entries[0].id)
+    asserts.equalString(t, replayedFf.id, ff.id)
+    asserts.equalInt(t, dlq.count(), 0)
+}
+
+// --- ScopedContext ---
+
+test "ScopedContext — provider lookup via declared scope" {
+    var store = MemoryContentStore()
+    var cp = ContentProvider("content", store)
+    cp.enable()
+
+    var providers = Map<String, Provider>{}
+    providers["content"] = cp
+    var ctx = ScopedContext(providers)
+
+    asserts.equalInt(t, len(ctx.listProviders()), 1)
+
+    var p = ctx.getProvider("content") or {
+        t.Errorf("content provider should exist")
+        return
+    }
+    asserts.equalString(t, p.getName(), "content")
+}
+
+// --- Provider lifecycle ---
+
+test "Provider lifecycle — enable, disable, re-enable, shutdown" {
+    var store = MemoryContentStore()
+    var cp = ContentProvider("content", store)
+
+    asserts.isFalse(t, cp.isEnabled(), "initially disabled")
+
+    cp.enable()
+    asserts.isTrue(t, cp.isEnabled(), "after enable")
+
+    cp.disable(0)
+    asserts.isFalse(t, cp.isEnabled(), "after disable")
+
+    cp.enable()
+    asserts.isTrue(t, cp.isEnabled(), "re-enabled")
+    cp.shutdown()
+    asserts.isFalse(t, cp.isEnabled(), "after shutdown")
+}

@@ -1,0 +1,37 @@
+// Test-only helpers. Lives in *_test.zn so it's excluded from the prod
+// binary (go build skips *_test.go files) but available to sibling
+// *_test.zn files.
+
+import core
+
+// testContext builds a ProcessorContext backed by MemoryContentStore.
+// Used by any test that needs to exercise the content provider path.
+pub fn testContext(): ProcessorContext {
+    var store = MemoryContentStore()
+    var cp = ContentProvider("content", store)
+    cp.enable()
+    var ctx = ProcessorContext()
+    ctx.addProvider(cp)
+    return ctx
+}
+
+// testScopedContext builds a ScopedContext with a single content provider.
+// Mirrors what the fabric gives a processor at scope-construction time.
+pub fn testScopedContext(): ScopedContext {
+    var store = MemoryContentStore()
+    var cp = ContentProvider("content", store)
+    cp.enable()
+    var providers = Map<String, Provider>{}
+    providers["content"] = cp
+    return ScopedContext(providers)
+}
+
+// Canned JSON test data. Single-quoted strings are literal (no interpolation).
+
+pub fn testJsonArray(): byte[] {
+    return '[{"name": "Alice", "amount": 42}]'.toBytes()
+}
+
+pub fn testJsonGeo(): byte[] {
+    return '[{"city": "Portland"}]'.toBytes()
+}

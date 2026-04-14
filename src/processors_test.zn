@@ -1,0 +1,137 @@
+// Processor tests. Migrated from test_main.zn. Each `fn testFoo()` is now
+// a `test "foo"` block; the old `print("FAIL: ...")` branches became
+// `t.Errorf(...)` so go test actually fails when a wrong variant is
+// returned. All assertions go through stdlib.asserts.
+
+import core
+import processors
+import stdlib.asserts
+
+test "AddAttribute — sets attribute, preserves existing attrs" {
+    var proc = AddAttribute("env", "prod")
+    var ff = createFlowFile("data".toBytes(), Map<String, String>{"type": "order"})
+    var result = proc.process(ff)
+
+    match result {
+        case Single(out) {
+            asserts.equalString(t, out.attributes["env"], "prod")
+            asserts.equalString(t, out.attributes["type"], "order")
+        }
+        case _ { t.Errorf("expected Single, got %v", result) }
+    }
+}
+
+test "LogProcessor — passes through unchanged" {
+    var proc = LogProcessor("test")
+    var ff = createFlowFile("data".toBytes(), Map<String, String>{"type": "order"})
+    var result = proc.process(ff)
+
+    match result {
+        case Single(out) {
+            asserts.isTrue(t, out.id == ff.id, "id preserved")
+            asserts.equalString(t, out.attributes["type"], "order")
+        }
+        case _ { t.Errorf("expected Single, got %v", result) }
+    }
+}
+
+test "FileSink — writes to disk, returns Dropped" {
+    var store = MemoryContentStore()
+    var proc = FileSink("/tmp/zinc-flow-test/output", store)
+    var ff = createFlowFile("sink test".toBytes(), Map<String, String>{})
+    var result = proc.process(ff)
+
+    match result {
+        case Dropped(reason) {
+            asserts.isTrue(t, reason.startsWith("written to"), "reason starts with 'written to'")
+        }
+        case _ { t.Errorf("expected Dropped, got %v", result) }
+    }
+}
+
+test "JsonToRecords — parses JSON array into records" {
+    var store = MemoryContentStore()
+    var proc = JsonToRecords("order", store)
+    var ff = createFlowFile(testJsonArray(), Map<String, String>{})
+    var result = proc.process(ff)
+
+    match result {
+        case Single(out) {
+            asserts.isTrue(t, isRecord(out.content), "content is records")
+        }
+        case _ { t.Errorf("expected Single, got %v", result) }
+    }
+}
+
+test "RecordsToJson — serializes records back to JSON bytes" {
+    var fields = List<Field>[Field("name", STRING, null)]
+    var schema = schemaFromFields("test", fields)
+    var rec = GenericRecord(schema)
+    rec.setField("name", "Bob")
+
+    var ff = createFlowFileWithContent(
+        Records(schema, List<GenericRecord>[rec]),
+        Map<String, String>{}
+    )
+
+    var proc = RecordsToJson()
+    var result = proc.process(ff)
+
+    match result {
+        case Single(out) {
+            asserts.isFalse(t, isRecord(out.content), "output is raw not records")
+            var store = MemoryContentStore()
+            var resolved = resolve(store, out.content)
+            asserts.contains(t, string(resolved.data), "Bob")
+        }
+        case _ { t.Errorf("expected Single, got %v", result) }
+    }
+}
+
+test "JSON roundtrip — Records→JSON→Records preserves data" {
+    var fields = List<Field>[Field("city", STRING, null)]
+    var schema = schemaFromFields("geo", fields)
+    var rec = GenericRecord(schema)
+    rec.setField("city", "Portland")
+
+    var ff = createFlowFileWithContent(
+        Records(schema, List<GenericRecord>[rec]),
+        Map<String, String>{}
+    )
+
+    var store = MemoryContentStore()
+    var toJson = RecordsToJson()
+    var step1 = toJson.process(ff)
+
+    match step1 {
+        case Single(jsonFF) {
+            asserts.isFalse(t, isRecord(jsonFF.content), "step1 output is raw")
+            var resolved = resolve(store, jsonFF.content)
+            asserts.contains(t, string(resolved.data), "Portland")
+
+            var toRec = JsonToRecords("geo", store)
+            var step2 = toRec.process(jsonFF)
+            match step2 {
+                case Single(recordsFF) {
+                    asserts.isTrue(t, isRecord(recordsFF.content), "step2 output is records")
+                }
+                case _ { t.Errorf("step2: expected Single, got %v", step2) }
+            }
+        }
+        case _ { t.Errorf("step1: expected Single, got %v", step1) }
+    }
+}
+
+test "JsonToRecords — empty JSON array returns Failure" {
+    var store = MemoryContentStore()
+    var proc = JsonToRecords("test", store)
+    var ff = createFlowFile("[]".toBytes(), Map<String, String>{})
+    var result = proc.process(ff)
+
+    match result {
+        case Failure(reason, _) {
+            asserts.contains(t, reason, "no records")
+        }
+        case _ { t.Errorf("expected Failure, got %v", result) }
+    }
+}
