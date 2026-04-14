@@ -5,10 +5,9 @@ main = "main.zn"
 
 [go]
 version = "1.26"
-deps = ["github.com/ZincScale/zinc-stdlib v0.0.0"]
 
-[go.replace]
-github.com/ZincScale/zinc-stdlib = "/home/vrjoshi/proj/zinc/stdlib/zinc-out"
-
-[imports]
+[deps]
 stdlib = "github.com/ZincScale/zinc-stdlib"
+
+[replace]
+stdlib = "/home/vrjoshi/proj/zinc/stdlib/zinc-out"
