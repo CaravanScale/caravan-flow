@@ -121,18 +121,13 @@ class PipelineGraph {
     // computeEntryPoints walks the connection map and marks as entry points
     // any processor that appears as a source but never as a target.
     // Sources ingest FlowFiles to these.
-    //
-    // NOTE: iterates the relationship map directly (`for _, targets in m`)
-    // instead of via `m.keys()` — the latter generates `[]interface{}` for
-    // class fields (ZCA-11 followup) because the `.keys()` rewrite only
-    // type-resolves simple locals, not field-access receivers.
     pub fn computeEntryPoints() {
         var targetSet = Map<String, bool>{}
         for name in processorNames {
             if connections.containsKey(name) {
                 var rels = connections[name]
-                for _, targets in rels {
-                    for target in targets {
+                for rel in rels.keys() {
+                    for target in rels[rel] {
                         targetSet[target] = true
                     }
                 }
