@@ -484,6 +484,41 @@ class Fabric {
 
     // --- Dynamic processor management ---
 
+    // setMaxHops overrides the default hop limit. Primarily for tests —
+    // production sets this via `defaults.max_hops` in config.
+    pub fn setMaxHops(int n) { maxHops = n }
+
+    // connect wires `src[relationship] → targets`. Overwrites any prior
+    // target list for the same (src, relationship) pair.
+    pub fn connect(String src, String relationship, List<String> targets) {
+        graph.addConnection(src, relationship, targets)
+    }
+
+    // computeEntryPoints recomputes the entry-point set after manual
+    // wiring. loadFlow/addProcessor call this automatically; tests that
+    // build graphs via connect() should call it once the topology is final.
+    pub fn computeEntryPoints() { graph.computeEntryPoints() }
+
+    // addProcessorInstance registers a pre-built ProcessorFn in the active
+    // graph. Complementary to addProcessor: that variant uses the registry
+    // to construct, this one accepts any instance (test-only scaffolding
+    // plus any caller that wants to bypass the registry).
+    pub fn addProcessorInstance(String name, ProcessorFn proc, List<String> requires): bool {
+        var g = snapshotGraph()
+        if g.hasProcessor(name) {
+            logging.warn("processor already exists", "name", name)
+            return false
+        }
+        for provName in requires {
+            globalCtx.registerDependent(provName, name)
+        }
+        g.addProcessor(name, proc, requires)
+        g.computeEntryPoints()
+        processorCounts[name] = 0
+        processorErrors[name] = 0
+        return true
+    }
+
     // addProcessor creates a new processor from the registry and wires it
     // into the active graph. Returns false on duplicate name or unknown
     // type. Connections are empty by default; callers may follow up with
