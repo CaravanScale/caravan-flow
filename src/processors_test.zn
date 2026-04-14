@@ -316,6 +316,149 @@ test "GenerateFlowFile — malformed attributes spec tolerated, no panic" {
     asserts.equalString(t, batch[0].attributes["source"], "gen-malformed")
 }
 
+// --- ExtractRecordField (Phase 3.1) ---
+
+fn buildRecordFlowFile(Map<String, Object> kv): FlowFile {
+    var fields = List<Field>[]
+    for k in kv.keys() {
+        fields = append(fields, Field(k, STRING, null))
+    }
+    var schema = Schema("test", fields)
+    var rec = GenericRecord(schema)
+    for k in kv.keys() {
+        rec.setField(k, kv[k])
+    }
+    var records = List<GenericRecord>[rec]
+    return FlowFile("ff-test", Map<String, String>{}, Records(schema, records), 0)
+}
+
+test "ExtractRecordField — extracts fields onto attributes" {
+    var proc = ExtractRecordField("name:customer.name;amount:order.total", 0)
+    var ff = buildRecordFlowFile(Map<String, Object>{"name": "alice", "amount": "42"})
+    var result = proc.process(ff)
+
+    match result {
+        case Single(out) {
+            asserts.equalString(t, out.attributes["customer.name"], "alice")
+            asserts.equalString(t, out.attributes["order.total"], "42")
+        }
+        case _ { t.Errorf("expected Single, got %v", result) }
+    }
+}
+
+test "ExtractRecordField — missing field silently skipped, not a failure" {
+    var proc = ExtractRecordField("name:cname;absent:ghost", 0)
+    var ff = buildRecordFlowFile(Map<String, Object>{"name": "bob"})
+    var result = proc.process(ff)
+
+    match result {
+        case Single(out) {
+            asserts.equalString(t, out.attributes["cname"], "bob")
+            asserts.isFalse(t, out.attributes.containsKey("ghost"), "ghost attribute not set")
+        }
+        case _ { t.Errorf("expected Single, got %v", result) }
+    }
+}
+
+test "ExtractRecordField — non-Records content passes through unchanged" {
+    var proc = ExtractRecordField("x:y", 0)
+    var ff = createFlowFile("raw".toBytes(), Map<String, String>{"orig": "attr"})
+    var result = proc.process(ff)
+
+    match result {
+        case Single(out) {
+            asserts.equalString(t, out.attributes["orig"], "attr")
+            asserts.isFalse(t, out.attributes.containsKey("y"), "no extraction on Raw content")
+        }
+        case _ { t.Errorf("expected Single, got %v", result) }
+    }
+}
+
+test "ExtractRecordField — malformed config skipped, empty extracts no attrs" {
+    var proc = ExtractRecordField("garbage;no_colon;:empty_field;name_only:;", 0)
+    var ff = buildRecordFlowFile(Map<String, Object>{"name": "x"})
+    var result = proc.process(ff)
+    match result {
+        case Single(out) { asserts.equalInt(t, len(out.attributes), 0) }
+        case _ { t.Errorf("expected Single") }
+    }
+}
+
+// --- TransformRecord (Phase 3.2) ---
+
+fn firstRecordFields(FlowFile ff): GenericRecord {
+    match ff.content {
+        case Records(_, records) {
+            return records[0]
+        }
+        case _ {
+            // unreachable in the test body — helper called with Record ffs only
+            return GenericRecord(Schema("empty", List<Field>[]))
+        }
+    }
+}
+
+test "TransformRecord — rename, add, remove operations apply to every record" {
+    var proc = TransformRecord("rename:name:customer; add:env:dev; remove:obsolete")
+    var ff = buildRecordFlowFile(Map<String, Object>{"name": "alice", "obsolete": "drop"})
+    var result = proc.process(ff)
+
+    match result {
+        case Single(out) {
+            var r = firstRecordFields(out)
+            asserts.equalString(t, str(r.getField("customer")), "alice")
+            asserts.equalString(t, str(r.getField("env")), "dev")
+            asserts.isTrue(t, r.getField("name") == null, "old name removed")
+            asserts.isTrue(t, r.getField("obsolete") == null, "obsolete removed")
+        }
+        case _ { t.Errorf("expected Single, got %v", result) }
+    }
+}
+
+test "TransformRecord — copy, toUpper, toLower, default" {
+    var proc = TransformRecord("copy:src:dst; toUpper:src; toLower:other; default:missing:DEFAULT")
+    var ff = buildRecordFlowFile(Map<String, Object>{"src": "hello", "other": "WORLD"})
+    var result = proc.process(ff)
+
+    match result {
+        case Single(out) {
+            var r = firstRecordFields(out)
+            asserts.equalString(t, str(r.getField("src")), "HELLO")
+            asserts.equalString(t, str(r.getField("dst")), "hello")
+            asserts.equalString(t, str(r.getField("other")), "world")
+            asserts.equalString(t, str(r.getField("missing")), "DEFAULT")
+        }
+        case _ { t.Errorf("expected Single, got %v", result) }
+    }
+}
+
+test "TransformRecord — unknown op (incl. compute) skipped, no panic" {
+    // `compute` isn't implemented yet; it must be silently skipped so
+    // a misconfigured pipeline degrades gracefully.
+    var proc = TransformRecord("compute:total:amount * qty; rename:x:y")
+    var ff = buildRecordFlowFile(Map<String, Object>{"x": "one", "amount": "2", "qty": "3"})
+    var result = proc.process(ff)
+
+    match result {
+        case Single(out) {
+            var r = firstRecordFields(out)
+            asserts.equalString(t, str(r.getField("y")), "one")
+            // `compute` skipped → no "total" field appears.
+            asserts.isTrue(t, r.getField("total") == null, "compute op ignored")
+        }
+        case _ { t.Errorf("expected Single, got %v", result) }
+    }
+}
+
+test "TransformRecord — non-Records content passes through" {
+    var proc = TransformRecord("add:x:y")
+    var ff = createFlowFile("raw".toBytes(), Map<String, String>{})
+    match proc.process(ff) {
+        case Single(_) { }
+        case _ { t.Errorf("expected Single") }
+    }
+}
+
 test "PutStdout — Records content returns Failure (raw-bytes resolution unsupported)" {
     // Failure path: the resolver can't materialize Records as raw bytes.
     // PutStdout in non-attrs mode must surface this as Failure, not

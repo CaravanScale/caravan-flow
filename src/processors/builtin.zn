@@ -26,6 +26,24 @@ pub fn registerBuiltins(Registry reg) {
         ProcessorInfo("PutStdout", "Writes FlowFile to stdout", List<String>["format"]),
         PutStdoutFactory
     )
+    reg.register(
+        ProcessorInfo("ConvertJSONToRecord", "Parses JSON content into Avro records", List<String>["schema_name"]),
+        JsonToRecordsFactory
+    )
+    reg.register(
+        ProcessorInfo("ConvertRecordToJSON", "Serializes Avro records back to JSON", List<String>[]),
+        RecordsToJsonFactory
+    )
+    reg.register(
+        ProcessorInfo("ExtractRecordField", "Extracts record fields onto FlowFile attributes",
+            List<String>["fields", "record_index"]),
+        ExtractRecordFieldFactory
+    )
+    reg.register(
+        ProcessorInfo("TransformRecord", "Rewrites records via rename/add/copy/remove/default/toUpper/toLower ops",
+            List<String>["operations"]),
+        TransformRecordFactory
+    )
     // --- zinc-native / legacy names ---
     reg.register(
         ProcessorInfo("add-attribute", "Adds key=value attribute to FlowFiles", List<String>["key", "value"]),

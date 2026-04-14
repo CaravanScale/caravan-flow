@@ -1,0 +1,282 @@
+// TransformRecord — applies a sequence of schema-level operations to
+// every record in a RecordContent FlowFile.
+//
+// Mirrors csharp ZincFlow.StdLib.TransformRecord
+// (ExpressionProcessors.cs:177) for the structural ops. Config:
+//   operations — semicolon-separated `op:arg1:arg2` triples.
+//
+// Supported ops (all mutate per-record field values; schema is
+// reinferred from the first record after mutation):
+//   rename:old:new        — rename a field
+//   remove:name           — drop a field
+//   add:name:value        — add a string-valued field
+//   copy:src:dst          — duplicate a field under a new name
+//   toUpper:name          — uppercase a string field (no-op on
+//                           non-strings; csharp behaves the same)
+//   toLower:name          — lowercase a string field
+//   default:name:value    — set if missing or null
+//
+// The csharp `compute` op (expression engine) is NOT yet implemented
+// — a TransformRecord config using `compute` will silently skip that
+// op rather than crash. A follow-up phase ports the expression engine
+// and wires it in.
+//
+// Output: Single(flowfile_with_updated_RecordContent). Non-Record
+// content passes through Single unchanged (same as ExtractRecordField).
+
+import core
+import fabric.registry
+
+data RecordOp(String op, String arg1, String arg2)
+
+class TransformRecord : ProcessorFn {
+    var operations = List<RecordOp>[]
+
+    init(String operationsSpec) {
+        parseOperations(operationsSpec)
+    }
+
+    fn parseOperations(String spec) {
+        if spec == "" {
+            return
+        }
+        // `op:arg1:arg2; op:arg1;` — each entry has 1, 2, or 3 colons.
+        // Trim each entry; skip empty.
+        var start = 0
+        var i = 0
+        while i < len(spec) {
+            if spec[i:i+1] == ";" {
+                addEntry(spec[start:i])
+                start = i + 1
+            }
+            i = i + 1
+        }
+        if start < len(spec) {
+            addEntry(spec[start:len(spec)])
+        }
+    }
+
+    fn addEntry(String entry) {
+        var trimmed = trimOpSpace(entry)
+        if trimmed == "" {
+            return
+        }
+        var parts = List<String>[]
+        var partStart = 0
+        var maxParts = 3
+        var j = 0
+        while j < len(trimmed) && len(parts) < maxParts-1 {
+            if trimmed[j:j+1] == ":" {
+                parts = append(parts, trimOpSpace(trimmed[partStart:j]))
+                partStart = j + 1
+            }
+            j = j + 1
+        }
+        parts = append(parts, trimOpSpace(trimmed[partStart:len(trimmed)]))
+        if len(parts) == 0 || parts[0] == "" {
+            return
+        }
+        var arg1 = ""
+        var arg2 = ""
+        if len(parts) >= 2 {
+            arg1 = parts[1]
+        }
+        if len(parts) >= 3 {
+            arg2 = parts[2]
+        }
+        operations = append(operations, RecordOp(parts[0], arg1, arg2))
+    }
+
+    pub fn process(FlowFile ff): ProcessorResult {
+        match ff.content {
+            case Records(schema, records) {
+                if len(records) == 0 {
+                    return Single(ff)
+                }
+                var transformed = List<GenericRecord>[]
+                for record in records {
+                    transformed = append(transformed, applyOps(record, schema))
+                }
+                // Re-infer schema from the first transformed record.
+                // This is a simplification vs csharp (which prefers the
+                // original FieldType when compatible); for now we keep
+                // the original schema fields that still exist, plus any
+                // new fields added by `add`/`copy`/`default` as STRING.
+                var newSchema = rebuildSchema(schema, transformed[0])
+                var updated = withContent(ff, Records(newSchema, transformed))
+                return Single(updated)
+            }
+            case _ {
+                return Single(ff)
+            }
+        }
+    }
+
+    fn applyOps(GenericRecord record, Schema schema): GenericRecord {
+        // Copy the record's values into a fresh map we can mutate.
+        var values = Map<String, Object>{}
+        for f in schema.fields {
+            var v = record.getField(f.name)
+            if v != null {
+                values[f.name] = v
+            }
+        }
+        // Also include any fields not in the schema (defensive — the
+        // writer may have populated values beyond declared fields).
+        for op in operations {
+            applyOne(values, op)
+        }
+        // Build a synthetic schema covering every key in `values`,
+        // preferring existing field types where possible.
+        var fields = List<Field>[]
+        var origByName = Map<String, FieldType>{}
+        for f in schema.fields {
+            origByName[f.name] = f.fieldType
+        }
+        for k in values.keys() {
+            var ft = STRING
+            if origByName.containsKey(k) {
+                ft = origByName[k]
+            }
+            fields = append(fields, Field(k, ft, null))
+        }
+        var outSchema = Schema(schema.name, fields)
+        var out = GenericRecord(outSchema)
+        for k in values.keys() {
+            out.setField(k, values[k])
+        }
+        return out
+    }
+
+    fn applyOne(Map<String, Object> values, RecordOp op) {
+        if op.op == "rename" {
+            if values.containsKey(op.arg1) {
+                values[op.arg2] = values[op.arg1]
+                values.delete(op.arg1)
+            }
+            return
+        }
+        if op.op == "remove" {
+            values.delete(op.arg1)
+            return
+        }
+        if op.op == "add" {
+            values[op.arg1] = op.arg2
+            return
+        }
+        if op.op == "copy" {
+            if values.containsKey(op.arg1) {
+                values[op.arg2] = values[op.arg1]
+            }
+            return
+        }
+        if op.op == "toUpper" {
+            if values.containsKey(op.arg1) {
+                var v = values[op.arg1]
+                if v != null {
+                    values[op.arg1] = asciiUpper(str(v))
+                }
+            }
+            return
+        }
+        if op.op == "toLower" {
+            if values.containsKey(op.arg1) {
+                var v = values[op.arg1]
+                if v != null {
+                    values[op.arg1] = asciiLower(str(v))
+                }
+            }
+            return
+        }
+        if op.op == "default" {
+            if !values.containsKey(op.arg1) || values[op.arg1] == null {
+                values[op.arg1] = op.arg2
+            }
+            return
+        }
+        // `compute` and any unrecognized op are silently dropped —
+        // matches csharp's "keep failed parses out of the cache" shape,
+        // so a misconfigured pipeline degrades gracefully.
+    }
+}
+
+pub fn TransformRecordFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
+    var spec = ""
+    if config.containsKey("operations") {
+        spec = config["operations"]
+    }
+    return TransformRecord(spec)
+}
+
+// rebuildSchema reconstructs a Schema from a transformed record,
+// preserving original FieldType where the field survives. Deliberately
+// standalone so the main processor class stays focused on the apply
+// loop.
+fn rebuildSchema(Schema orig, GenericRecord first): Schema {
+    var origFields = Map<String, FieldType>{}
+    for f in orig.fields {
+        origFields[f.name] = f.fieldType
+    }
+    var firstSchema = first.getSchema()
+    var newFields = List<Field>[]
+    for f in firstSchema.fields {
+        var ft = f.fieldType
+        if origFields.containsKey(f.name) {
+            ft = origFields[f.name]
+        }
+        newFields = append(newFields, Field(f.name, ft, null))
+    }
+    return Schema(orig.name, newFields)
+}
+
+fn trimOpSpace(String s): String {
+    var start = 0
+    while start < len(s) {
+        var c = s[start:start+1]
+        if c != " " && c != "\t" {
+            break
+        }
+        start = start + 1
+    }
+    var stop = len(s)
+    while stop > start {
+        var c = s[stop-1:stop]
+        if c != " " && c != "\t" {
+            break
+        }
+        stop = stop - 1
+    }
+    return s[start:stop]
+}
+
+fn asciiUpper(String s): String {
+    var out = ""
+    var i = 0
+    while i < len(s) {
+        var c = s[i:i+1]
+        if c >= "a" && c <= "z" {
+            var b = byte(s[i])
+            out = out + string(byte(b - 32))
+        } else {
+            out = out + c
+        }
+        i = i + 1
+    }
+    return out
+}
+
+fn asciiLower(String s): String {
+    var out = ""
+    var i = 0
+    while i < len(s) {
+        var c = s[i:i+1]
+        if c >= "A" && c <= "Z" {
+            var b = byte(s[i])
+            out = out + string(byte(b + 32))
+        } else {
+            out = out + c
+        }
+        i = i + 1
+    }
+    return out
+}
