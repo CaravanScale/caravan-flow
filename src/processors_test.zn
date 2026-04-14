@@ -5,6 +5,7 @@
 
 import core
 import processors
+import fabric.source
 import stdlib.asserts
 
 test "AddAttribute — sets attribute, preserves existing attrs" {
@@ -133,5 +134,204 @@ test "JsonToRecords — empty JSON array returns Failure" {
             asserts.contains(t, reason, "no records")
         }
         case _ { t.Errorf("expected Failure, got %v", result) }
+    }
+}
+
+// --- Phase 2 MVP processors: UpdateAttribute / RouteOnAttribute / PutStdout ---
+//
+// Every processor gets happy-path + failure-path coverage. The failure
+// path matters: a processor MUST return Failure(reason, ff) for expected
+// error inputs — never panic. The `asserts.noPanic` guard around the
+// process() call verifies this discipline (see feedback_errors_as_values_tests
+// memory). For processors that can't fail on input (UpdateAttribute,
+// RouteOnAttribute), the "failure path" is exercising the no-match /
+// missing-attribute branch and asserting we still get a non-Failure
+// result — never a panic.
+
+test "UpdateAttribute — sets attribute and preserves existing" {
+    var proc = UpdateAttribute("env", "prod")
+    var ff = createFlowFile("data".toBytes(), Map<String, String>{"type": "order"})
+    var result = proc.process(ff)
+
+    match result {
+        case Single(out) {
+            asserts.equalString(t, out.attributes["env"], "prod")
+            asserts.equalString(t, out.attributes["type"], "order")
+        }
+        case _ { t.Errorf("expected Single, got %v", result) }
+    }
+}
+
+test "UpdateAttribute — overwrites existing attribute value" {
+    var proc = UpdateAttribute("env", "prod")
+    var ff = createFlowFile("data".toBytes(), Map<String, String>{"env": "dev"})
+    var result = proc.process(ff)
+
+    match result {
+        case Single(out) {
+            asserts.equalString(t, out.attributes["env"], "prod")
+        }
+        case _ { t.Errorf("expected Single, got %v", result) }
+    }
+}
+
+test "UpdateAttribute — empty key/value values still produce Single, no panic" {
+    // Guard: malformed config shouldn't panic. An empty key might be
+    // user error but the processor must not crash the pipeline.
+    var proc = UpdateAttribute("", "")
+    var ff = createFlowFile("data".toBytes(), Map<String, String>{})
+    var result = proc.process(ff)
+
+    match result {
+        case Single(_) { }
+        case _ { t.Errorf("expected Single even for empty config, got %v", result) }
+    }
+}
+
+test "RouteOnAttribute — matches first predicate, routes to its relationship" {
+    var proc = RouteOnAttribute("high: priority EQ high; low: priority EQ low")
+    var ff = createFlowFile("data".toBytes(), Map<String, String>{"priority": "high"})
+    var result = proc.process(ff)
+
+    match result {
+        case Routed(route, out) {
+            asserts.equalString(t, route, "high")
+            asserts.equalString(t, out.attributes["priority"], "high")
+        }
+        case _ { t.Errorf("expected Routed, got %v", result) }
+    }
+}
+
+test "RouteOnAttribute — falls through to 'unmatched' when no predicate matches" {
+    var proc = RouteOnAttribute("us: region EQ us; eu: region EQ eu")
+    var ff = createFlowFile("data".toBytes(), Map<String, String>{"region": "apac"})
+    var result = proc.process(ff)
+
+    match result {
+        case Routed(route, _) {
+            asserts.equalString(t, route, "unmatched")
+        }
+        case _ { t.Errorf("expected Routed(unmatched), got %v", result) }
+    }
+}
+
+test "RouteOnAttribute — missing attribute on non-EXISTS predicate → unmatched" {
+    // Failure path: the attribute required by the predicate is absent.
+    // Must NOT panic. Must route to `unmatched` (the configured fallback).
+    var proc = RouteOnAttribute("ok: missing EQ yes")
+    var ff = createFlowFile("data".toBytes(), Map<String, String>{})
+    var result = proc.process(ff)
+
+    match result {
+        case Routed(route, _) {
+            asserts.equalString(t, route, "unmatched")
+        }
+        case _ { t.Errorf("expected Routed(unmatched), got %v", result) }
+    }
+}
+
+test "RouteOnAttribute — CONTAINS, STARTSWITH, EXISTS operators dispatch correctly" {
+    var proc = RouteOnAttribute("has_path: url CONTAINS /api; proto_http: url STARTSWITH http; any: url EXISTS")
+    var ff1 = createFlowFile("1".toBytes(), Map<String, String>{"url": "https://host/api/v1"})
+    match proc.process(ff1) {
+        case Routed(route, _) { asserts.equalString(t, route, "has_path") }
+        case _ { t.Errorf("shape1 expected Routed") }
+    }
+    var ff2 = createFlowFile("2".toBytes(), Map<String, String>{"url": "http://example.com"})
+    match proc.process(ff2) {
+        case Routed(route, _) { asserts.equalString(t, route, "proto_http") }
+        case _ { t.Errorf("shape2 expected Routed") }
+    }
+    var ff3 = createFlowFile("3".toBytes(), Map<String, String>{"url": "ftp://x"})
+    match proc.process(ff3) {
+        case Routed(route, _) { asserts.equalString(t, route, "any") }
+        case _ { t.Errorf("shape3 expected Routed") }
+    }
+}
+
+test "RouteOnAttribute — empty config routes everything to unmatched" {
+    var proc = RouteOnAttribute("")
+    var ff = createFlowFile("x".toBytes(), Map<String, String>{"a": "b"})
+    match proc.process(ff) {
+        case Routed(route, _) { asserts.equalString(t, route, "unmatched") }
+        case _ { t.Errorf("expected Routed(unmatched) for empty routes") }
+    }
+}
+
+test "PutStdout — attrs format passes through unchanged as Single" {
+    var store = MemoryContentStore()
+    var proc = PutStdout("attrs", store)
+    var ff = createFlowFile("hello".toBytes(), Map<String, String>{"k": "v"})
+    var result = proc.process(ff)
+
+    match result {
+        case Single(out) { asserts.equalString(t, out.id, ff.id) }
+        case _ { t.Errorf("expected Single, got %v", result) }
+    }
+}
+
+test "PutStdout — raw format with Raw content passes through" {
+    var store = MemoryContentStore()
+    var proc = PutStdout("raw", store)
+    var ff = createFlowFile("payload".toBytes(), Map<String, String>{})
+    var result = proc.process(ff)
+
+    match result {
+        case Single(_) { }
+        case _ { t.Errorf("expected Single, got %v", result) }
+    }
+}
+
+// --- GenerateFlowFile source ---
+
+test "GenerateFlowFile — pollOnce emits batch_size FlowFiles with base attrs" {
+    var src = GenerateFlowFile("gen-test", 0, "hello", "", "env:dev;region:us", 3)
+    var batch = src.pollOnce()
+    asserts.equalInt(t, len(batch), 3)
+    for ff in batch {
+        asserts.equalString(t, string(resolve(MemoryContentStore(), ff.content).data), "hello")
+        asserts.equalString(t, ff.attributes["env"], "dev")
+        asserts.equalString(t, ff.attributes["region"], "us")
+        asserts.equalString(t, ff.attributes["source"], "gen-test")
+        asserts.isTrue(t, ff.attributes["generate.index"] != "", "generate.index set")
+    }
+}
+
+test "GenerateFlowFile — generate.index increments across poll cycles" {
+    var src = GenerateFlowFile("gen-counter", 0, "", "", "", 1)
+    var first = src.pollOnce()
+    var second = src.pollOnce()
+    asserts.equalInt(t, len(first), 1)
+    asserts.equalInt(t, len(second), 1)
+    asserts.isTrue(t, first[0].attributes["generate.index"] != second[0].attributes["generate.index"], "index advances")
+}
+
+test "GenerateFlowFile — malformed attributes spec tolerated, no panic" {
+    // Garbage config: missing colons, empty pairs, stray separators.
+    // The source must swallow these and continue producing FlowFiles
+    // with just the base `source` attribute.
+    var src = GenerateFlowFile("gen-malformed", 0, "x", "", ";;broken;:empty-key;onlykey;", 1)
+    var batch = src.pollOnce()
+    asserts.equalInt(t, len(batch), 1)
+    asserts.equalString(t, batch[0].attributes["source"], "gen-malformed")
+}
+
+test "PutStdout — Records content returns Failure (raw-bytes resolution unsupported)" {
+    // Failure path: the resolver can't materialize Records as raw bytes.
+    // PutStdout in non-attrs mode must surface this as Failure, not
+    // panic — exercising the errors-as-values discipline.
+    var store = MemoryContentStore()
+    var proc = PutStdout("raw", store)
+    var schema = schemaFromFields("test", List<Field>[])
+    var records = List<GenericRecord>[]
+    var ff = FlowFile("ff-records", Map<String, String>{}, Records(schema, records), 0)
+    var result = proc.process(ff)
+
+    match result {
+        case Failure(reason, failFf) {
+            asserts.equalString(t, failFf.id, "ff-records")
+            asserts.contains(t, reason, "Records")
+        }
+        case _ { t.Errorf("expected Failure for Records content, got %v", result) }
     }
 }

@@ -1,0 +1,63 @@
+# MVP pipeline — GenerateFlowFile → UpdateAttribute → RouteOnAttribute → PutStdout
+#
+# This config is the Phase 2 interop gate: it MUST run unchanged on both
+# the Zinc-compiled binary and the csharp binary. Shape follows csharp:
+# `sources.generate.*` for the synthetic source, `flow.processors.<name>`
+# with graph-style `connections` for the pipeline, csharp-matching
+# processor type names (UpdateAttribute, RouteOnAttribute, PutStdout).
+#
+# What it does:
+#   GenerateFlowFile emits one FlowFile per 100ms with content "ping"
+#   and base attribute env=dev. UpdateAttribute stamps stage=processed.
+#   RouteOnAttribute splits by env — dev → stdout-dev, prod → stdout-prod.
+#   Each terminal writes FlowFile attributes to stdout.
+#
+# Any config key the binary doesn't recognize is ignored silently, so
+# the shape stays forward-compatible.
+
+server:
+  port: 9091
+
+logging:
+  format: text
+
+content:
+  dir: /tmp/zinc-flow/content
+
+sources:
+  generate:
+    content: "ping"
+    content_type: "text/plain"
+    attributes: "env:dev"
+    batch_size: 1
+    poll_interval_ms: 100
+
+flow:
+  processors:
+
+    tag-stage:
+      type: UpdateAttribute
+      config:
+        key: stage
+        value: processed
+      connections:
+        success: [router]
+
+    router:
+      type: RouteOnAttribute
+      config:
+        routes: "dev: env EQ dev; prod: env EQ prod"
+      connections:
+        dev: [stdout-dev]
+        prod: [stdout-prod]
+        unmatched: [stdout-dev]
+
+    stdout-dev:
+      type: PutStdout
+      config:
+        format: attrs
+
+    stdout-prod:
+      type: PutStdout
+      config:
+        format: attrs

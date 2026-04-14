@@ -1,0 +1,85 @@
+// PutStdout — writes the FlowFile to stdout in a configurable format.
+//
+// Mirrors csharp ZincFlow.StdLib.PutStdout (Processors.cs:355). The
+// `format` config picks one of:
+//   • "attrs" — "[ff-<id>] k=v k=v ..." listing every attribute. Content
+//     is not resolved, so Claim-backed FlowFiles stay cheap.
+//   • "raw"   — UTF-8 content payload preceded by "[ff-<id>] ".
+//   • "hex"   — hex-encoded first 128 bytes, preceded by size.
+//   • "v3"    — NiFi FlowFile V3 binary packed form (for round-trip).
+//
+// The "attrs" mode is the MVP sink: it terminates the pipeline with
+// observable output a shared integration test can assert against.
+// Returns Single(ff) so a chained sink (e.g., PutFile) can run after.
+
+import core
+import fabric.registry
+import fabric.model
+import io
+import fmt
+import encoding.hex
+
+class PutStdout : ProcessorFn {
+    String format
+    ContentStore store
+
+    init(String format, ContentStore store) {
+        this.format = format
+        this.store = store
+    }
+
+    pub fn process(FlowFile ff): ProcessorResult {
+        if format == "attrs" {
+            printAttrs(ff)
+            return Single(ff)
+        }
+
+        var resolved = resolve(store, ff.content)
+        if resolved.errorMsg != "" {
+            return Failure(resolved.errorMsg, ff)
+        }
+
+        if format == "v3" {
+            var packed = packFlowFile(ff, resolved.data)
+            var prefix = 128
+            if len(packed) < prefix {
+                prefix = len(packed)
+            }
+            fmt.Printf("[ff-%s] v3 (%d bytes) %s\n", ff.id, len(packed), hex.EncodeToString(packed[0:prefix]))
+        } else if format == "hex" {
+            var prefix = 128
+            if len(resolved.data) < prefix {
+                prefix = len(resolved.data)
+            }
+            fmt.Printf("[ff-%s] (%d bytes) %s\n", ff.id, len(resolved.data), hex.EncodeToString(resolved.data[0:prefix]))
+        } else {
+            // "raw" and any unknown format fall through to text output.
+            fmt.Printf("[ff-%s] %s\n", ff.id, string(resolved.data))
+        }
+
+        return Single(ff)
+    }
+
+    fn printAttrs(FlowFile ff) {
+        var line = "[ff-" + ff.id + "]"
+        for k in ff.attributes.keys() {
+            line = line + " " + k + "=" + ff.attributes[k]
+        }
+        fmt.Println(line)
+    }
+}
+
+pub fn PutStdoutFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
+    var format = "raw"
+    if config.containsKey("format") && config["format"] != "" {
+        format = config["format"]
+    }
+    // Resolve content store via the scoped context; fall back to an
+    // in-memory store so the processor works even without a configured
+    // ContentProvider (useful for unit tests).
+    var p = ctx.getProvider("content") or {
+        return PutStdout(format, MemoryContentStore())
+    }
+    var cp = p as ContentProvider
+    return PutStdout(format, cp.getStore())
+}

@@ -6,7 +6,27 @@ import stdlib.logging
 import os
 
 // registerBuiltins registers all built-in processors with the registry.
+// Type names match csharp where interop matters (UpdateAttribute,
+// RouteOnAttribute, PutStdout) — the shared YAML fixture resolves to
+// the same processor on both binaries. The older kebab-case names
+// (add-attribute, file-sink, log, ...) stay registered for backward
+// compatibility with zinc-native configs.
 pub fn registerBuiltins(Registry reg) {
+    // --- csharp-interop names: MVP pipeline ---
+    reg.register(
+        ProcessorInfo("UpdateAttribute", "Sets key=value attribute on FlowFiles", List<String>["key", "value"]),
+        UpdateAttributeFactory
+    )
+    reg.register(
+        ProcessorInfo("RouteOnAttribute", "Routes FlowFiles based on attribute predicates",
+            List<String>["routes"]),
+        RouteOnAttributeFactory
+    )
+    reg.register(
+        ProcessorInfo("PutStdout", "Writes FlowFile to stdout", List<String>["format"]),
+        PutStdoutFactory
+    )
+    // --- zinc-native / legacy names ---
     reg.register(
         ProcessorInfo("add-attribute", "Adds key=value attribute to FlowFiles", List<String>["key", "value"]),
         AddAttributeFactory

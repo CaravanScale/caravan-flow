@@ -48,6 +48,12 @@ class Fabric {
     // API handlers can report "what was this processor configured as?"
     var processorDefs = Map<String, ProcessorDef>{}
 
+    // Registered source connectors. The key is the user-facing source
+    // name (not the SourceType), so a flow can have multiple instances
+    // of the same type (e.g., two GenerateFlowFile sources on different
+    // content). startAsync calls start() on each.
+    var sources = Map<String, ConnectorSource>{}
+
     int maxHops
     int totalProcessed
     int activeExecutions
@@ -300,17 +306,83 @@ class Fabric {
         }
     }
 
+    // --- Source management ---
+
+    // addSource registers a ConnectorSource. If the fabric is already
+    // running, the source is started immediately; otherwise it waits
+    // for startAsync.
+    pub fn addSource(ConnectorSource source) {
+        sources[source.getName()] = source
+        if running {
+            source.start((FlowFile ff) -> ingestAndExecute(ff))
+            logging.info("source started", "name", source.getName(), "type", source.getSourceType())
+        }
+    }
+
+    pub fn startSource(String name): bool {
+        if !sources.containsKey(name) {
+            return false
+        }
+        var src = sources[name]
+        if !src.isRunning() {
+            src.start((FlowFile ff) -> ingestAndExecute(ff))
+            logging.info("source started", "name", name, "type", src.getSourceType())
+        }
+        return true
+    }
+
+    pub fn stopSource(String name): bool {
+        if !sources.containsKey(name) {
+            return false
+        }
+        sources[name].stop()
+        logging.info("source stopped", "name", name)
+        return true
+    }
+
+    // getSources returns (name, type, running) triples for every
+    // registered source.
+    pub fn getSources(): List<Map<String, String>> {
+        var result = List<Map<String, String>>[]
+        for name in sources.keys() {
+            var src = sources[name]
+            var entry = Map<String, String>{}
+            entry["name"] = name
+            entry["type"] = src.getSourceType()
+            if src.isRunning() {
+                entry["running"] = "true"
+            } else {
+                entry["running"] = "false"
+            }
+            result = append(result, entry)
+        }
+        return result
+    }
+
     // --- Lifecycle ---
 
     pub fn startAsync() {
         running = true
+        // Start every registered source — they each kick off their own
+        // loops and feed us via ingestAndExecute.
+        for name in sources.keys() {
+            var src = sources[name]
+            if !src.isRunning() {
+                src.start((FlowFile ff) -> ingestAndExecute(ff))
+            }
+            logging.info("source started", "name", name, "type", src.getSourceType())
+        }
         logging.info("fabric started",
             "processors", len(graph.getProcessorNames()),
-            "entry_points", len(graph.getEntryPoints()))
+            "entry_points", len(graph.getEntryPoints()),
+            "sources", len(sources))
     }
 
     pub fn stopAsync() {
         running = false
+        for name in sources.keys() {
+            sources[name].stop()
+        }
     }
 
     // --- Source-side ingest (kept for back-compat with HTTP source). ---
