@@ -7,7 +7,6 @@ import encoding.json
 import core
 import fabric.runtime
 import fabric.registry
-import fabric.router
 
 // ApiHandler holds a reference to the fabric for serving API requests.
 class ApiHandler {
@@ -44,39 +43,16 @@ class ApiHandler {
         writeJson(w, result)
     }
 
-    // GET /api/routes — list all routing rules
-    pub fn routesHandler(ResponseWriter w, Request r) {
-        var engine = fab.getEngine()
-        var rules = engine.getAllRules()
-        var result = List<Map<String, Object>>[]
-        for rule in rules {
-            var entry = Map<String, Object>{}
-            entry["name"] = rule.name
-            entry["enabled"] = rule.enabled
-            entry["destination"] = rule.destination.endpoint
-            entry["condition"] = formatCondition(rule.condition)
-            result = append(result, entry)
-        }
-        writeJson(w, result)
-    }
-
-    // GET /api/flow — full flow graph (processors + routes)
+    // GET /api/flow — full flow graph (processors + connections + stats).
+    // Replaces the old `/api/routes` view — in the direct-pipeline model
+    // routing lives on processor connections ("success"/"failure"/...),
+    // not in a standalone rules engine. Attribute-predicate routing is
+    // the RouteOnAttribute processor's responsibility (Phase 3).
     pub fn flowHandler(ResponseWriter w, Request r) {
         var flow = Map<String, Object>{}
         flow["processors"] = fab.getProcessorNames()
-
-        var engine = fab.getEngine()
-        var rules = engine.getAllRules()
-        var routes = List<Map<String, Object>>[]
-        for rule in rules {
-            var entry = Map<String, Object>{}
-            entry["name"] = rule.name
-            entry["enabled"] = rule.enabled
-            entry["destination"] = rule.destination.endpoint
-            entry["condition"] = formatCondition(rule.condition)
-            routes = append(routes, entry)
-        }
-        flow["routes"] = routes
+        flow["entry_points"] = fab.getEntryPoints()
+        flow["connections"] = fab.getConnections()
         flow["stats"] = fab.getStats()
         writeJson(w, flow)
     }
@@ -128,10 +104,10 @@ class ApiHandler {
             writeError(w, 404, "dlq entry not found")
             return
         }
-        var sourceQueue = entry.sourceQueue
+        var sourceProc = entry.sourceProcessor
         var ff = dlq.replay(id)
-        fab.replayToQueue(sourceQueue, ff)
-        writeJson(w, Map<String, Object>{"status": "replayed", "id": id, "flowFileId": ff.id, "queue": sourceQueue})
+        fab.replayAt(sourceProc, ff)
+        writeJson(w, Map<String, Object>{"status": "replayed", "id": id, "flowFileId": ff.id, "processor": sourceProc})
     }
 
     // POST /api/dlq/replay-all — replay all DLQ entries to their source queues
@@ -144,7 +120,7 @@ class ApiHandler {
         var entries = dlq.replayAll()
         var count = 0
         for entry in entries {
-            fab.replayToQueue(entry.sourceQueue, entry.flowFile)
+            fab.replayAt(entry.sourceProcessor, entry.flowFile)
             count = count + 1
         }
         writeJson(w, Map<String, Object>{"status": "replayed", "count": count})
@@ -177,9 +153,11 @@ class ApiHandler {
         writeJson(w, Map<String, Object>{"status": "removed", "id": id})
     }
 
-    // GET /api/queues — queue depths for all processors
-    pub fn queuesHandler(ResponseWriter w, Request r) {
-        writeJson(w, fab.getQueueStats())
+    // GET /api/stats/processors — per-processor processed/error counters.
+    // Replaces the old /api/queues endpoint; direct-pipeline doesn't have
+    // per-processor queues to report depth on.
+    pub fn processorStatsHandler(ResponseWriter w, Request r) {
+        writeJson(w, fab.getProcessorStats())
     }
 
     // POST /api/processors/enable — enable a processor
@@ -343,96 +321,10 @@ class ApiHandler {
         writeJson(w, Map<String, Object>{"status": "removed", "name": name})
     }
 
-    // POST /api/routes — add a routing rule
-    // Body: {"name": "my-route", "attribute": "type", "operator": "EQ", "value": "order", "destination": "proc-1"}
-    pub fn addRouteHandler(ResponseWriter w, Request r) {
-        if r.Method != "POST" {
-            writeError(w, 405, "method not allowed")
-            return
-        }
-        var body = readBody(r)
-        if body == null {
-            writeError(w, 400, "failed to read body")
-            return
-        }
-        var req = Map<String, Object>{}
-        json.Unmarshal(body, req) or {
-            writeError(w, 400, "invalid json")
-            return
-        }
-        var name = strVal(req, "name")
-        var attr = strVal(req, "attribute")
-        var op = strVal(req, "operator")
-        var val = strVal(req, "value")
-        var dest = strVal(req, "destination")
-        if name == "" || attr == "" || op == "" || dest == "" {
-            writeError(w, 400, "name, attribute, operator, and destination are required")
-            return
-        }
-        fab.addRoute(name, attr, op, val, dest)
-        w.WriteHeader(201)
-        writeJson(w, Map<String, Object>{"status": "created", "name": name})
-    }
-
-    // DELETE /api/routes — remove a routing rule
-    // Body: {"name": "my-route"}
-    pub fn removeRouteHandler(ResponseWriter w, Request r) {
-        if r.Method != "DELETE" {
-            writeError(w, 405, "method not allowed")
-            return
-        }
-        var body = readBody(r)
-        if body == null {
-            writeError(w, 400, "failed to read body")
-            return
-        }
-        var req = Map<String, Object>{}
-        json.Unmarshal(body, req) or {
-            writeError(w, 400, "invalid json")
-            return
-        }
-        var name = strVal(req, "name")
-        if name == "" {
-            writeError(w, 400, "name is required")
-            return
-        }
-        var ok = fab.removeRoute(name)
-        if !ok {
-            writeError(w, 404, "route not found")
-            return
-        }
-        writeJson(w, Map<String, Object>{"status": "removed", "name": name})
-    }
-
-    // PUT /api/routes/toggle — toggle a routing rule enabled/disabled
-    // Body: {"name": "my-route"}
-    pub fn toggleRouteHandler(ResponseWriter w, Request r) {
-        if r.Method != "PUT" {
-            writeError(w, 405, "method not allowed")
-            return
-        }
-        var body = readBody(r)
-        if body == null {
-            writeError(w, 400, "failed to read body")
-            return
-        }
-        var req = Map<String, Object>{}
-        json.Unmarshal(body, req) or {
-            writeError(w, 400, "invalid json")
-            return
-        }
-        var name = strVal(req, "name")
-        if name == "" {
-            writeError(w, 400, "name is required")
-            return
-        }
-        var ok = fab.toggleRoute(name)
-        if !ok {
-            writeError(w, 404, "route not found")
-            return
-        }
-        writeJson(w, Map<String, Object>{"status": "toggled", "name": name})
-    }
+    // (Route CRUD handlers removed — direct-pipeline routes live on
+    // processor connections, not in a standalone rules engine. Mutate
+    // via addProcessor / removeProcessor or full flow reload. Attribute-
+    // predicate routing belongs to a RouteOnAttribute processor — Phase 3.)
 
     // GET /api/providers — list all providers and their states
     pub fn providersHandler(ResponseWriter w, Request r) {
@@ -558,33 +450,3 @@ fn writeJson(ResponseWriter w, Object data) {
     w.Write(body)
 }
 
-// formatCondition converts a RuleType to a human-readable string.
-fn formatCondition(RuleType condition): String {
-    match condition {
-        case BaseRule(attr, op, val) {
-            return "${attr} ${formatOp(op)} ${val}"
-        }
-        case CompositeRule(left, joiner, right) {
-            var joinStr = "AND"
-            match joiner {
-                case OR { joinStr = "OR" }
-            }
-            return "(${formatCondition(left)} ${joinStr} ${formatCondition(right)})"
-        }
-    }
-    return "unknown"
-}
-
-fn formatOp(Operator op): String {
-    match op {
-        case EQ { return "==" }
-        case NEQ { return "!=" }
-        case CONTAINS { return "contains" }
-        case STARTSWITH { return "startsWith" }
-        case ENDSWITH { return "endsWith" }
-        case EXISTS { return "exists" }
-        case GT { return ">" }
-        case LT { return "<" }
-    }
-    return "?"
-}

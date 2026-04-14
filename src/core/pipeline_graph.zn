@@ -98,6 +98,23 @@ class PipelineGraph {
         return processors.containsKey(name)
     }
 
+    // getProcessor returns the processor instance, or panics if unknown.
+    // Callers must check `hasProcessor` first for unknown-name recovery.
+    pub fn getProcessor(String name): ProcessorFn {
+        return processors[name]
+    }
+
+    // getProcessorNames returns the ordered list of registered processor names.
+    pub fn getProcessorNames(): List<String> {
+        return processorNames
+    }
+
+    // getConnections returns the adjacency map keyed by processor name, then
+    // by relationship. Read-only view for introspection.
+    pub fn getConnections(): Map<String, Map<String, List<String>>> {
+        return connections
+    }
+
     // getState returns the lifecycle state of `name`, or DISABLED if unknown
     // (safer default than ENABLED — an unrecognized processor shouldn't run).
     pub fn getState(String name): ComponentState {
