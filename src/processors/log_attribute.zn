@@ -1,0 +1,47 @@
+// LogAttribute — logs the FlowFile (id + every attribute) and passes
+// through unchanged.
+//
+// Mirrors csharp ZincFlow.StdLib.LogAttribute (Processors.cs:102).
+// Config:
+//   prefix — label emitted as the log source.
+//
+// Separate from the older LogProcessor (builtin.zn) because LogAttribute
+// includes a full attribute dump in the log line, whereas LogProcessor
+// logs only id + attributes-as-whole. In csharp LogAttribute walks the
+// attribute overlay chain; in Zinc we just iterate the plain map.
+
+import core
+import fabric.registry
+import stdlib.logging
+
+class LogAttribute : ProcessorFn {
+    String prefix
+
+    init(String prefix) {
+        this.prefix = prefix
+    }
+
+    pub fn process(FlowFile ff): ProcessorResult {
+        // Collect attributes into positional args. stdlib.logging takes
+        // (msg, key, value, key, value, ...) via varargs; we build that
+        // shape by concatenating into a slice of Objects.
+        //
+        // Keep this simple: one info() call per attribute is legible
+        // enough for a logger without paying the structured-log cost
+        // of dynamically building a slice. Loggers like slog dedupe
+        // adjacent lines via handlers.
+        logging.info("flowfile", "processor", prefix, "id", ff.id)
+        for k in ff.attributes.keys() {
+            logging.info("flowfile.attr", "processor", prefix, "id", ff.id, "key", k, "value", ff.attributes[k])
+        }
+        return Single(ff)
+    }
+}
+
+pub fn LogAttributeFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
+    var prefix = "flow"
+    if config.containsKey("prefix") && config["prefix"] != "" {
+        prefix = config["prefix"]
+    }
+    return LogAttribute(prefix)
+}

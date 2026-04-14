@@ -459,6 +459,267 @@ test "TransformRecord — non-Records content passes through" {
     }
 }
 
+// --- Phase 3.5: Text processors (ReplaceText / ExtractText / SplitText) ---
+
+test "ReplaceText — mode=all replaces every occurrence" {
+    var store = MemoryContentStore()
+    var proc = ReplaceText("foo", "bar", "all", store)
+    var ff = createFlowFile("foo and foo again".toBytes(), Map<String, String>{})
+    var result = proc.process(ff)
+
+    match result {
+        case Single(out) {
+            match out.content {
+                case Raw(bytes) { asserts.equalString(t, string(bytes), "bar and bar again") }
+                case _ { t.Errorf("expected Raw content") }
+            }
+        }
+        case _ { t.Errorf("expected Single, got %v", result) }
+    }
+}
+
+test "ReplaceText — mode=first replaces only the first match" {
+    var store = MemoryContentStore()
+    var proc = ReplaceText("foo", "bar", "first", store)
+    var ff = createFlowFile("foo and foo".toBytes(), Map<String, String>{})
+    var result = proc.process(ff)
+
+    match result {
+        case Single(out) {
+            match out.content {
+                case Raw(bytes) { asserts.equalString(t, string(bytes), "bar and foo") }
+                case _ { t.Errorf("expected Raw") }
+            }
+        }
+        case _ { t.Errorf("expected Single") }
+    }
+}
+
+test "ReplaceText — invalid regex pattern returns Failure, not panic" {
+    var store = MemoryContentStore()
+    // Unclosed character class — Go regex rejects this at compile time.
+    var proc = ReplaceText("[unterminated", "x", "all", store)
+    var ff = createFlowFile("test".toBytes(), Map<String, String>{})
+    var result = proc.process(ff)
+
+    match result {
+        case Failure(reason, _) { asserts.contains(t, reason, "invalid regex") }
+        case _ { t.Errorf("expected Failure on bad regex, got %v", result) }
+    }
+}
+
+test "ExtractText — named capture groups become attributes" {
+    var store = MemoryContentStore()
+    var proc = ExtractText("(?P<proto>https?)://(?P<host>[^/]+)", "", store)
+    var ff = createFlowFile("visit https://example.com/path".toBytes(), Map<String, String>{})
+    var result = proc.process(ff)
+
+    match result {
+        case Single(out) {
+            asserts.equalString(t, out.attributes["proto"], "https")
+            asserts.equalString(t, out.attributes["host"], "example.com")
+        }
+        case _ { t.Errorf("expected Single") }
+    }
+}
+
+test "ExtractText — positional groups via group_names config" {
+    var store = MemoryContentStore()
+    var proc = ExtractText("(\\d+)-(\\d+)", "major,minor", store)
+    var ff = createFlowFile("version 42-7 released".toBytes(), Map<String, String>{})
+    var result = proc.process(ff)
+
+    match result {
+        case Single(out) {
+            asserts.equalString(t, out.attributes["major"], "42")
+            asserts.equalString(t, out.attributes["minor"], "7")
+        }
+        case _ { t.Errorf("expected Single") }
+    }
+}
+
+test "ExtractText — no match returns Single with unchanged attrs" {
+    var store = MemoryContentStore()
+    var proc = ExtractText("^zzz$", "", store)
+    var ff = createFlowFile("not matching".toBytes(), Map<String, String>{"orig": "a"})
+    var result = proc.process(ff)
+
+    match result {
+        case Single(out) {
+            asserts.equalString(t, out.attributes["orig"], "a")
+            asserts.equalInt(t, len(out.attributes), 1)
+        }
+        case _ { t.Errorf("expected Single") }
+    }
+}
+
+test "ExtractText — invalid regex returns Failure" {
+    var store = MemoryContentStore()
+    var proc = ExtractText("[broken", "x", store)
+    var ff = createFlowFile("anything".toBytes(), Map<String, String>{})
+    match proc.process(ff) {
+        case Failure(reason, _) { asserts.contains(t, reason, "invalid regex") }
+        case _ { t.Errorf("expected Failure") }
+    }
+}
+
+test "SplitText — single delimiter yields Multiple FlowFiles with split.index" {
+    var store = MemoryContentStore()
+    var proc = SplitText(",", 0, store)
+    var ff = createFlowFile("a,b,c".toBytes(), Map<String, String>{})
+    var result = proc.process(ff)
+
+    match result {
+        case Multiple(ffs) {
+            asserts.equalInt(t, len(ffs), 3)
+            var idxs = List<String>[]
+            for f in ffs {
+                idxs = append(idxs, f.attributes["split.index"])
+            }
+            // Order is preserved — indexes 0,1,2 in order of the input.
+            asserts.equalString(t, idxs[0], "0")
+            asserts.equalString(t, idxs[1], "1")
+            asserts.equalString(t, idxs[2], "2")
+            asserts.equalString(t, ffs[0].attributes["split.count"], "3")
+        }
+        case _ { t.Errorf("expected Multiple, got %v", result) }
+    }
+}
+
+test "SplitText — single-chunk content (no delimiter match) passes through as Single" {
+    var store = MemoryContentStore()
+    var proc = SplitText(",", 0, store)
+    var ff = createFlowFile("nosplit".toBytes(), Map<String, String>{})
+    match proc.process(ff) {
+        case Single(_) { }
+        case _ { t.Errorf("expected Single") }
+    }
+}
+
+test "SplitText — header_lines prepended to each split" {
+    var store = MemoryContentStore()
+    // CSV-style: first line is the header, splits carry it.
+    var proc = SplitText("\n", 1, store)
+    var ff = createFlowFile("col1,col2\nrow1a,row1b\nrow2a,row2b".toBytes(), Map<String, String>{})
+    var result = proc.process(ff)
+
+    match result {
+        case Multiple(ffs) {
+            asserts.equalInt(t, len(ffs), 2)
+            for f in ffs {
+                match f.content {
+                    case Raw(b) { asserts.isTrue(t, string(b).contains("col1,col2"), "header present") }
+                    case _ { t.Errorf("expected Raw") }
+                }
+            }
+        }
+        case _ { t.Errorf("expected Multiple") }
+    }
+}
+
+test "SplitText — invalid delimiter regex returns Failure" {
+    var store = MemoryContentStore()
+    var proc = SplitText("[broken", 0, store)
+    var ff = createFlowFile("a,b".toBytes(), Map<String, String>{})
+    match proc.process(ff) {
+        case Failure(reason, _) { asserts.contains(t, reason, "invalid delimiter") }
+        case _ { t.Errorf("expected Failure") }
+    }
+}
+
+// --- Phase 3.6: LogAttribute / FilterAttribute / PutFile ---
+
+test "FilterAttribute — default mode=remove drops listed attributes" {
+    var proc = FilterAttribute("", "secret;internal")
+    var ff = createFlowFile("x".toBytes(), Map<String, String>{
+        "public": "p", "secret": "s", "internal": "i"
+    })
+    match proc.process(ff) {
+        case Single(out) {
+            asserts.equalString(t, out.attributes["public"], "p")
+            asserts.isFalse(t, out.attributes.containsKey("secret"), "secret dropped")
+            asserts.isFalse(t, out.attributes.containsKey("internal"), "internal dropped")
+        }
+        case _ { t.Errorf("expected Single") }
+    }
+}
+
+test "FilterAttribute — mode=keep retains only listed attributes" {
+    var proc = FilterAttribute("keep", "env;region")
+    var ff = createFlowFile("x".toBytes(), Map<String, String>{
+        "env": "prod", "region": "us", "noise": "drop"
+    })
+    match proc.process(ff) {
+        case Single(out) {
+            asserts.equalInt(t, len(out.attributes), 2)
+            asserts.equalString(t, out.attributes["env"], "prod")
+            asserts.equalString(t, out.attributes["region"], "us")
+        }
+        case _ { t.Errorf("expected Single") }
+    }
+}
+
+test "FilterAttribute — empty attribute list is a no-op (removes nothing in remove mode)" {
+    var proc = FilterAttribute("", "")
+    var ff = createFlowFile("x".toBytes(), Map<String, String>{"k": "v"})
+    match proc.process(ff) {
+        case Single(out) { asserts.equalString(t, out.attributes["k"], "v") }
+        case _ { t.Errorf("expected Single") }
+    }
+}
+
+test "LogAttribute — passes through unchanged (logs are observational)" {
+    var proc = LogAttribute("tagged")
+    var ff = createFlowFile("content".toBytes(), Map<String, String>{"env": "dev"})
+    match proc.process(ff) {
+        case Single(out) {
+            asserts.equalString(t, out.id, ff.id)
+            asserts.equalString(t, out.attributes["env"], "dev")
+        }
+        case _ { t.Errorf("expected Single") }
+    }
+}
+
+test "PutFile — writes content under output_dir, records output.path + output.size" {
+    var store = MemoryContentStore()
+    // Use a per-test subdir so parallel tests don't collide.
+    var dir = "/tmp/zinc-flow-test/put-file-basic"
+    var proc = PutFile(dir, "filename", "", ".dat", "raw", store)
+    var ff = createFlowFile("hello".toBytes(), Map<String, String>{"filename": "greeting.txt"})
+    match proc.process(ff) {
+        case Single(out) {
+            asserts.equalString(t, out.attributes["output.path"], dir + "/greeting.txt")
+            asserts.equalString(t, out.attributes["output.size"], "5")
+        }
+        case _ { t.Errorf("expected Single") }
+    }
+}
+
+test "PutFile — missing naming attribute falls back to counter + suffix" {
+    var store = MemoryContentStore()
+    var dir = "/tmp/zinc-flow-test/put-file-fallback"
+    var proc = PutFile(dir, "filename", "batch-", ".dat", "raw", store)
+    var ff = createFlowFile("x".toBytes(), Map<String, String>{})
+    match proc.process(ff) {
+        case Single(out) {
+            // First FF gets counter=1 → "batch-1.dat"
+            asserts.equalString(t, out.attributes["output.path"], dir + "/batch-1.dat")
+        }
+        case _ { t.Errorf("expected Single") }
+    }
+}
+
+test "PutFile — Records content returns Failure (can't resolve to bytes)" {
+    var store = MemoryContentStore()
+    var proc = PutFile("/tmp/zinc-flow-test/put-file-rec", "filename", "", ".dat", "raw", store)
+    var schema = schemaFromFields("test", List<Field>[])
+    var ff = FlowFile("ff-r", Map<String, String>{}, Records(schema, List<GenericRecord>[]), 0)
+    match proc.process(ff) {
+        case Failure(reason, _) { asserts.contains(t, reason, "Records") }
+        case _ { t.Errorf("expected Failure on Records content") }
+    }
+}
+
 test "PutStdout — Records content returns Failure (raw-bytes resolution unsupported)" {
     // Failure path: the resolver can't materialize Records as raw bytes.
     // PutStdout in non-attrs mode must surface this as Failure, not

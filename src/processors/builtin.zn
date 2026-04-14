@@ -44,6 +44,35 @@ pub fn registerBuiltins(Registry reg) {
             List<String>["operations"]),
         TransformRecordFactory
     )
+    reg.register(
+        ProcessorInfo("ReplaceText", "Regex find/replace on content",
+            List<String>["pattern", "replacement", "mode"]),
+        ReplaceTextFactory
+    )
+    reg.register(
+        ProcessorInfo("ExtractText", "Regex captures → FlowFile attributes",
+            List<String>["pattern", "group_names"]),
+        ExtractTextFactory
+    )
+    reg.register(
+        ProcessorInfo("SplitText", "Regex delimiter → Multiple FlowFiles",
+            List<String>["delimiter", "header_lines"]),
+        SplitTextFactory
+    )
+    reg.register(
+        ProcessorInfo("LogAttribute", "Logs FlowFile attributes and passes through", List<String>["prefix"]),
+        LogAttributeFactory
+    )
+    reg.register(
+        ProcessorInfo("FilterAttribute", "Keeps or removes named FlowFile attributes",
+            List<String>["mode", "attributes"]),
+        FilterAttributeFactory
+    )
+    reg.register(
+        ProcessorInfo("PutFile", "Writes FlowFile content to a directory",
+            List<String>["output_dir", "naming_attribute", "prefix", "suffix", "format"]),
+        PutFileFactory
+    )
     // --- zinc-native / legacy names ---
     reg.register(
         ProcessorInfo("add-attribute", "Adds key=value attribute to FlowFiles", List<String>["key", "value"]),
