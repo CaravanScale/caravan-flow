@@ -27,12 +27,12 @@ class ProcessSession {
     // execute runs one claim/process/route/ack cycle. Returns true if work was done.
     pub fn execute(): bool {
         var entry = source.claim()
-        if entry.id == "" {
+        if (entry.id == "") {
             return false
         }
 
         // Check retry limit before processing
-        if entry.attemptCount >= maxRetries {
+        if (entry.attemptCount >= maxRetries) {
             dlq.add(entry.flowFile, processorName, source.getName(), entry.attemptCount, "max retries exceeded")
             source.ack(entry.id)
             return true
@@ -42,26 +42,26 @@ class ProcessSession {
         var result = processor.process(entry.flowFile)
 
         // Handle result by type
-        match result {
+        match (result) {
             case Single(ff) {
-                if routeResult(ff, entry) {
+                if (routeResult(ff, entry)) {
                     source.ack(entry.id)
                 }
             }
             case Multiple(ffs) {
                 var allRouted = true
-                for ff in ffs {
-                    if !routeResult(ff, entry) {
+                for (ff in ffs) {
+                    if (!routeResult(ff, entry)) {
                         allRouted = false
                         break
                     }
                 }
-                if allRouted {
+                if (allRouted) {
                     source.ack(entry.id)
                 }
             }
             case Routed(_, ff) {
-                if routeResult(ff, entry) {
+                if (routeResult(ff, entry)) {
                     source.ack(entry.id)
                 }
             }
@@ -82,15 +82,15 @@ class ProcessSession {
         var destinations = irs.getDestinations(ff.attributes)
 
         // No destinations — terminal processor, nothing to route
-        if len(destinations) == 0 {
+        if (len(destinations) == 0) {
             return true
         }
 
         // Pre-check ALL destination queues have capacity (all-or-nothing)
-        for dest in destinations {
+        for (dest in destinations) {
             var queueName = dest.endpoint
-            if destQueues.containsKey(queueName) {
-                if !destQueues[queueName].hasCapacity() {
+            if (destQueues.containsKey(queueName)) {
+                if (!destQueues[queueName].hasCapacity()) {
                     source.nack(entry.id)
                     return false
                 }
@@ -98,9 +98,9 @@ class ProcessSession {
         }
 
         // All clear — offer to all destination queues
-        for dest in destinations {
+        for (dest in destinations) {
             var queueName = dest.endpoint
-            if destQueues.containsKey(queueName) {
+            if (destQueues.containsKey(queueName)) {
                 destQueues[queueName].offerWithSource(ff, processorName)
             }
         }

@@ -22,7 +22,7 @@ class HttpSource {
 
     // handler processes an incoming HTTP request as a FlowFile.
     pub fn handler(ResponseWriter w, Request r) {
-        if r.Method != "POST" {
+        if (r.Method != "POST") {
             w.WriteHeader(405)
             w.Write('{"error":"method not allowed"}'.toBytes())
             return
@@ -38,7 +38,7 @@ class HttpSource {
         var contentType = r.Header.Get("Content-Type")
 
         // Check if this is a NiFi FlowFile V3 binary payload
-        if contentType == "application/octet-stream" {
+        if (contentType == "application/octet-stream") {
             handleV3(w, body)
             return
         }
@@ -49,7 +49,7 @@ class HttpSource {
         var ff = createFlowFileWithContent(content, attrs)
 
         var accepted = fab.ingest(ff)
-        if !accepted {
+        if (!accepted) {
             w.WriteHeader(503)
             w.Write('{"error":"backpressure","message":"ingest queue full"}'.toBytes())
             return
@@ -63,8 +63,8 @@ class HttpSource {
     fn handleV3(ResponseWriter w, byte[] body) {
         var flowfiles = unpackAll(body)
         var accepted = 0
-        for ff in flowfiles {
-            if fab.ingest(ff) {
+        for (ff in flowfiles) {
+            if (fab.ingest(ff)) {
                 accepted = accepted + 1
             }
         }
@@ -81,8 +81,8 @@ class HttpSource {
         attrs["http.host"] = r.Host
 
         // Copy custom headers starting with X-Flow-
-        for key, values in r.Header {
-            if key.startsWith("X-Flow-") {
+        for (key, values in r.Header) {
+            if (key.startsWith("X-Flow-")) {
                 var attrKey = key[7:len(key)].lower()
                 attrs[attrKey] = values[0]
             }

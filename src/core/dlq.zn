@@ -19,7 +19,7 @@ class DLQ {
 
     // add stores a failed flowfile in the DLQ.
     pub fn add(FlowFile ff, String sourceProc, String sourceQueue, int attempts, String error) {
-        lock mu {
+        lock (mu) {
             idCounter = idCounter + 1
             var entryId = "dlq-" + str(idCounter)
             var now = long(time.Now().UnixNano())
@@ -30,8 +30,8 @@ class DLQ {
 
     // get retrieves a specific DLQ entry.
     pub fn get(String id): DLQEntry {
-        lock mu {
-            if entries.containsKey(id) {
+        lock (mu) {
+            if (entries.containsKey(id)) {
                 return entries[id]
             }
         }
@@ -42,8 +42,8 @@ class DLQ {
     // list returns all DLQ entries.
     pub fn list(): List<DLQEntry> {
         var result = List<DLQEntry>[]
-        lock mu {
-            for _, entry in entries {
+        lock (mu) {
+            for (_, entry in entries) {
                 result = append(result, entry)
             }
         }
@@ -52,7 +52,7 @@ class DLQ {
 
     // remove discards a DLQ entry.
     pub fn remove(String id) {
-        lock mu {
+        lock (mu) {
             entries.delete(id)
         }
     }
@@ -60,7 +60,7 @@ class DLQ {
     // count returns the number of entries in the DLQ.
     pub fn count(): int {
         var c = 0
-        lock mu {
+        lock (mu) {
             c = len(entries)
         }
         return c
@@ -68,8 +68,8 @@ class DLQ {
 
     // replay removes an entry and returns the FlowFile for re-injection.
     pub fn replay(String id): FlowFile {
-        lock mu {
-            if entries.containsKey(id) {
+        lock (mu) {
+            if (entries.containsKey(id)) {
                 var entry = entries[id]
                 entries.delete(id)
                 return entry.flowFile
@@ -82,8 +82,8 @@ class DLQ {
     // replayAll removes all entries and returns their FlowFiles.
     pub fn replayAll(): List<DLQEntry> {
         var result = List<DLQEntry>[]
-        lock mu {
-            for _, entry in entries {
+        lock (mu) {
+            for (_, entry in entries) {
                 result = append(result, entry)
             }
             entries = Map<String, DLQEntry>{}

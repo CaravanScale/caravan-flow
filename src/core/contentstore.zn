@@ -78,7 +78,7 @@ class MemoryContentStore : ContentStore {
     }
 
     pub fn retrieve(String claimId): byte[] {
-        if data.containsKey(claimId) {
+        if (data.containsKey(claimId)) {
             return data[claimId]
         }
         return byte[0]
@@ -95,7 +95,7 @@ class MemoryContentStore : ContentStore {
 
 // maybeOffload checks content size and offloads to the store if needed.
 pub fn maybeOffload(ContentStore store, byte[] data): Content {
-    if len(data) > CONTENT_CLAIM_THRESHOLD {
+    if (len(data) > CONTENT_CLAIM_THRESHOLD) {
         var claimId = store.store(data)
         return Claim(claimId, long(len(data)))
     }
@@ -110,7 +110,7 @@ data ResolveResult(
 
 // resolve retrieves the raw bytes for any Content variant.
 pub fn resolve(ContentStore store, Content c): ResolveResult {
-    match c {
+    match (c) {
         case Raw(bytes) {
             return ResolveResult(bytes, "")
         }

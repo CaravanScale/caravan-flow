@@ -12,25 +12,25 @@ class RulesEngine {
 
     // Add or replace an entire ruleset.
     pub fn addOrReplaceRuleset(String name, List<RoutingRule> rules) {
-        lock mu {
+        lock (mu) {
             rulesets[name] = rules
         }
     }
 
     // Remove a ruleset entirely.
     pub fn removeRuleset(String name) {
-        lock mu {
+        lock (mu) {
             rulesets.remove(name)
         }
     }
 
     // Toggle a specific rule's enabled state.
     pub fn toggleRule(String rulesetName, String ruleName) {
-        lock mu {
+        lock (mu) {
             var rules = rulesets[rulesetName]
             var updated = List<RoutingRule>[]
-            for r in rules {
-                if r.name == ruleName {
+            for (r in rules) {
+                if (r.name == ruleName) {
                     updated = append(updated, RoutingRule(r.name, r.condition, r.destination, !r.enabled))
                 } else {
                     updated = append(updated, r)
@@ -49,9 +49,9 @@ class RulesEngine {
     pub fn getAllRules(): List<RoutingRule> {
         var result = List<RoutingRule>[]
         var names = rulesets.keys()
-        for name in names {
+        for (name in names) {
             var rules = rulesets[name]
-            for r in rules {
+            for (r in rules) {
                 result = append(result, r)
             }
         }
@@ -63,10 +63,10 @@ class RulesEngine {
     pub fn getDestinations(Map<String, String> attributes): List<Destination> {
         var destinations = List<Destination>[]
         var names = rulesets.keys()
-        for name in names {
+        for (name in names) {
             var rules = rulesets[name]
-            for rule in rules {
-                if rule.enabled && evaluate(rule.condition, attributes) {
+            for (rule in rules) {
+                if (rule.enabled && evaluate(rule.condition, attributes)) {
                     destinations = append(destinations, rule.destination)
                 }
             }
@@ -77,13 +77,13 @@ class RulesEngine {
 
 // evaluate — recursively evaluate a RuleType against attributes.
 fn evaluate(RuleType condition, Map<String, String> attributes): boolean {
-    match condition {
+    match (condition) {
         case BaseRule(attribute, operator, value) {
             return evaluateBase(attribute, operator, value, attributes)
         }
         case CompositeRule(left, joiner, right) {
             var leftResult = evaluate(left, attributes)
-            match joiner {
+            match (joiner) {
                 case AND {
                     return leftResult && evaluate(right, attributes)
                 }
@@ -98,18 +98,18 @@ fn evaluate(RuleType condition, Map<String, String> attributes): boolean {
 
 // evaluateBase — evaluate a single attribute predicate.
 fn evaluateBase(String attribute, Operator operator, String value, Map<String, String> attributes): boolean {
-    match operator {
+    match (operator) {
         case EXISTS {
             return attributes.containsKey(attribute)
         }
     }
 
-    if !attributes.containsKey(attribute) {
+    if (!attributes.containsKey(attribute)) {
         return false
     }
 
     var actual = attributes[attribute]
-    match operator {
+    match (operator) {
         case EQ {
             return actual == value
         }

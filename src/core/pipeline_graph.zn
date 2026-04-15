@@ -59,13 +59,13 @@ class PipelineGraph {
     // addProcessor registers a processor instance under `name`. Overwrites
     // any existing entry with the same name.
     pub fn addProcessor(String name, ProcessorFn proc, List<String> requires) {
-        if !processors.containsKey(name) {
+        if (!processors.containsKey(name)) {
             processorNames = append(processorNames, name)
         }
         processors[name] = proc
         processorStates[name] = ENABLED
         processorRequires[name] = requires
-        if !connections.containsKey(name) {
+        if (!connections.containsKey(name)) {
             connections[name] = Map<String, List<String>>{}
         }
     }
@@ -73,7 +73,7 @@ class PipelineGraph {
     // addConnection wires `src[relationship] → targets`. Multiple calls
     // with the same (src, relationship) replace the previous target list.
     pub fn addConnection(String src, String relationship, List<String> targets) {
-        if !connections.containsKey(src) {
+        if (!connections.containsKey(src)) {
             connections[src] = Map<String, List<String>>{}
         }
         connections[src][relationship] = targets
@@ -83,11 +83,11 @@ class PipelineGraph {
     // or an empty list if the relationship has no configured outgoing edges.
     // An empty result means "terminal for this output" — caller should drop.
     pub fn getTargets(String procName, String relationship): List<String> {
-        if !connections.containsKey(procName) {
+        if (!connections.containsKey(procName)) {
             return List<String>[]
         }
         var rels = connections[procName]
-        if !rels.containsKey(relationship) {
+        if (!rels.containsKey(relationship)) {
             return List<String>[]
         }
         return rels[relationship]
@@ -118,7 +118,7 @@ class PipelineGraph {
     // getState returns the lifecycle state of `name`, or DISABLED if unknown
     // (safer default than ENABLED — an unrecognized processor shouldn't run).
     pub fn getState(String name): ComponentState {
-        if !processorStates.containsKey(name) {
+        if (!processorStates.containsKey(name)) {
             return DISABLED
         }
         return processorStates[name]
@@ -130,7 +130,7 @@ class PipelineGraph {
     // Param is `newState` rather than `state` to avoid shadowing — see
     // comment in computeEntryPoints below.
     pub fn setState(String name, ComponentState newState) {
-        if processorStates.containsKey(name) {
+        if (processorStates.containsKey(name)) {
             processorStates[name] = newState
         }
     }
@@ -140,19 +140,19 @@ class PipelineGraph {
     // Sources ingest FlowFiles to these.
     pub fn computeEntryPoints() {
         var targetSet = Map<String, bool>{}
-        for name in processorNames {
-            if connections.containsKey(name) {
+        for (name in processorNames) {
+            if (connections.containsKey(name)) {
                 var rels = connections[name]
-                for rel in rels.keys() {
-                    for target in rels[rel] {
+                for (rel in rels.keys()) {
+                    for (target in rels[rel]) {
                         targetSet[target] = true
                     }
                 }
             }
         }
         var entries = List<String>[]
-        for name in processorNames {
-            if !targetSet.containsKey(name) {
+        for (name in processorNames) {
+            if (!targetSet.containsKey(name)) {
                 entries = append(entries, name)
             }
         }
@@ -166,7 +166,7 @@ class PipelineGraph {
 
     // getRequires returns the declared provider dependencies of `name`.
     pub fn getRequires(String name): List<String> {
-        if !processorRequires.containsKey(name) {
+        if (!processorRequires.containsKey(name)) {
             return List<String>[]
         }
         return processorRequires[name]

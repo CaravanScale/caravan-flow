@@ -47,7 +47,7 @@ class GenericRecord {
     }
 
     pub fn getField(String key): Object {
-        if values.containsKey(key) {
+        if (values.containsKey(key)) {
             return values[key]
         }
         return null

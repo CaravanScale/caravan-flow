@@ -13,7 +13,7 @@ test "AddAttribute — sets attribute, preserves existing attrs" {
     var ff = createFlowFile("data".toBytes(), Map<String, String>{"type": "order"})
     var result = proc.process(ff)
 
-    match result {
+    match (result) {
         case Single(out) {
             asserts.equalString(t, out.attributes["env"], "prod")
             asserts.equalString(t, out.attributes["type"], "order")
@@ -27,7 +27,7 @@ test "LogProcessor — passes through unchanged" {
     var ff = createFlowFile("data".toBytes(), Map<String, String>{"type": "order"})
     var result = proc.process(ff)
 
-    match result {
+    match (result) {
         case Single(out) {
             asserts.isTrue(t, out.id == ff.id, "id preserved")
             asserts.equalString(t, out.attributes["type"], "order")
@@ -42,7 +42,7 @@ test "FileSink — writes to disk, returns Dropped" {
     var ff = createFlowFile("sink test".toBytes(), Map<String, String>{})
     var result = proc.process(ff)
 
-    match result {
+    match (result) {
         case Dropped(reason) {
             asserts.isTrue(t, reason.startsWith("written to"), "reason starts with 'written to'")
         }
@@ -56,7 +56,7 @@ test "JsonToRecords — parses JSON array into records" {
     var ff = createFlowFile(testJsonArray(), Map<String, String>{})
     var result = proc.process(ff)
 
-    match result {
+    match (result) {
         case Single(out) {
             asserts.isTrue(t, isRecord(out.content), "content is records")
         }
@@ -78,7 +78,7 @@ test "RecordsToJson — serializes records back to JSON bytes" {
     var proc = RecordsToJson()
     var result = proc.process(ff)
 
-    match result {
+    match (result) {
         case Single(out) {
             asserts.isFalse(t, isRecord(out.content), "output is raw not records")
             var store = MemoryContentStore()
@@ -104,7 +104,7 @@ test "JSON roundtrip — Records→JSON→Records preserves data" {
     var toJson = RecordsToJson()
     var step1 = toJson.process(ff)
 
-    match step1 {
+    match (step1) {
         case Single(jsonFF) {
             asserts.isFalse(t, isRecord(jsonFF.content), "step1 output is raw")
             var resolved = resolve(store, jsonFF.content)
@@ -112,7 +112,7 @@ test "JSON roundtrip — Records→JSON→Records preserves data" {
 
             var toRec = JsonToRecords("geo", store)
             var step2 = toRec.process(jsonFF)
-            match step2 {
+            match (step2) {
                 case Single(recordsFF) {
                     asserts.isTrue(t, isRecord(recordsFF.content), "step2 output is records")
                 }
@@ -129,7 +129,7 @@ test "JsonToRecords — empty JSON array returns Failure" {
     var ff = createFlowFile("[]".toBytes(), Map<String, String>{})
     var result = proc.process(ff)
 
-    match result {
+    match (result) {
         case Failure(reason, _) {
             asserts.contains(t, reason, "no records")
         }
@@ -153,7 +153,7 @@ test "UpdateAttribute — sets attribute and preserves existing" {
     var ff = createFlowFile("data".toBytes(), Map<String, String>{"type": "order"})
     var result = proc.process(ff)
 
-    match result {
+    match (result) {
         case Single(out) {
             asserts.equalString(t, out.attributes["env"], "prod")
             asserts.equalString(t, out.attributes["type"], "order")
@@ -167,7 +167,7 @@ test "UpdateAttribute — overwrites existing attribute value" {
     var ff = createFlowFile("data".toBytes(), Map<String, String>{"env": "dev"})
     var result = proc.process(ff)
 
-    match result {
+    match (result) {
         case Single(out) {
             asserts.equalString(t, out.attributes["env"], "prod")
         }
@@ -182,7 +182,7 @@ test "UpdateAttribute — empty key/value values still produce Single, no panic"
     var ff = createFlowFile("data".toBytes(), Map<String, String>{})
     var result = proc.process(ff)
 
-    match result {
+    match (result) {
         case Single(_) { }
         case _ { t.Errorf("expected Single even for empty config, got %v", result) }
     }
@@ -193,7 +193,7 @@ test "RouteOnAttribute — matches first predicate, routes to its relationship" 
     var ff = createFlowFile("data".toBytes(), Map<String, String>{"priority": "high"})
     var result = proc.process(ff)
 
-    match result {
+    match (result) {
         case Routed(route, out) {
             asserts.equalString(t, route, "high")
             asserts.equalString(t, out.attributes["priority"], "high")
@@ -207,7 +207,7 @@ test "RouteOnAttribute — falls through to 'unmatched' when no predicate matche
     var ff = createFlowFile("data".toBytes(), Map<String, String>{"region": "apac"})
     var result = proc.process(ff)
 
-    match result {
+    match (result) {
         case Routed(route, _) {
             asserts.equalString(t, route, "unmatched")
         }
@@ -222,7 +222,7 @@ test "RouteOnAttribute — missing attribute on non-EXISTS predicate → unmatch
     var ff = createFlowFile("data".toBytes(), Map<String, String>{})
     var result = proc.process(ff)
 
-    match result {
+    match (result) {
         case Routed(route, _) {
             asserts.equalString(t, route, "unmatched")
         }
@@ -233,17 +233,17 @@ test "RouteOnAttribute — missing attribute on non-EXISTS predicate → unmatch
 test "RouteOnAttribute — CONTAINS, STARTSWITH, EXISTS operators dispatch correctly" {
     var proc = RouteOnAttribute("has_path: url CONTAINS /api; proto_http: url STARTSWITH http; any: url EXISTS")
     var ff1 = createFlowFile("1".toBytes(), Map<String, String>{"url": "https://host/api/v1"})
-    match proc.process(ff1) {
+    match (proc.process(ff1)) {
         case Routed(route, _) { asserts.equalString(t, route, "has_path") }
         case _ { t.Errorf("shape1 expected Routed") }
     }
     var ff2 = createFlowFile("2".toBytes(), Map<String, String>{"url": "http://example.com"})
-    match proc.process(ff2) {
+    match (proc.process(ff2)) {
         case Routed(route, _) { asserts.equalString(t, route, "proto_http") }
         case _ { t.Errorf("shape2 expected Routed") }
     }
     var ff3 = createFlowFile("3".toBytes(), Map<String, String>{"url": "ftp://x"})
-    match proc.process(ff3) {
+    match (proc.process(ff3)) {
         case Routed(route, _) { asserts.equalString(t, route, "any") }
         case _ { t.Errorf("shape3 expected Routed") }
     }
@@ -252,7 +252,7 @@ test "RouteOnAttribute — CONTAINS, STARTSWITH, EXISTS operators dispatch corre
 test "RouteOnAttribute — empty config routes everything to unmatched" {
     var proc = RouteOnAttribute("")
     var ff = createFlowFile("x".toBytes(), Map<String, String>{"a": "b"})
-    match proc.process(ff) {
+    match (proc.process(ff)) {
         case Routed(route, _) { asserts.equalString(t, route, "unmatched") }
         case _ { t.Errorf("expected Routed(unmatched) for empty routes") }
     }
@@ -264,7 +264,7 @@ test "PutStdout — attrs format passes through unchanged as Single" {
     var ff = createFlowFile("hello".toBytes(), Map<String, String>{"k": "v"})
     var result = proc.process(ff)
 
-    match result {
+    match (result) {
         case Single(out) { asserts.equalString(t, out.id, ff.id) }
         case _ { t.Errorf("expected Single, got %v", result) }
     }
@@ -276,7 +276,7 @@ test "PutStdout — raw format with Raw content passes through" {
     var ff = createFlowFile("payload".toBytes(), Map<String, String>{})
     var result = proc.process(ff)
 
-    match result {
+    match (result) {
         case Single(_) { }
         case _ { t.Errorf("expected Single, got %v", result) }
     }
@@ -288,7 +288,7 @@ test "GenerateFlowFile — pollOnce emits batch_size FlowFiles with base attrs" 
     var src = GenerateFlowFile("gen-test", 0, "hello", "", "env:dev;region:us", 3)
     var batch = src.pollOnce()
     asserts.equalInt(t, len(batch), 3)
-    for ff in batch {
+    for (ff in batch) {
         asserts.equalString(t, string(resolve(MemoryContentStore(), ff.content).data), "hello")
         asserts.equalString(t, ff.attributes["env"], "dev")
         asserts.equalString(t, ff.attributes["region"], "us")
@@ -320,12 +320,12 @@ test "GenerateFlowFile — malformed attributes spec tolerated, no panic" {
 
 fn buildRecordFlowFile(Map<String, Object> kv): FlowFile {
     var fields = List<Field>[]
-    for k in kv.keys() {
+    for (k in kv.keys()) {
         fields = append(fields, Field(k, STRING, null))
     }
     var schema = Schema("test", fields)
     var rec = GenericRecord(schema)
-    for k in kv.keys() {
+    for (k in kv.keys()) {
         rec.setField(k, kv[k])
     }
     var records = List<GenericRecord>[rec]
@@ -337,7 +337,7 @@ test "ExtractRecordField — extracts fields onto attributes" {
     var ff = buildRecordFlowFile(Map<String, Object>{"name": "alice", "amount": "42"})
     var result = proc.process(ff)
 
-    match result {
+    match (result) {
         case Single(out) {
             asserts.equalString(t, out.attributes["customer.name"], "alice")
             asserts.equalString(t, out.attributes["order.total"], "42")
@@ -351,7 +351,7 @@ test "ExtractRecordField — missing field silently skipped, not a failure" {
     var ff = buildRecordFlowFile(Map<String, Object>{"name": "bob"})
     var result = proc.process(ff)
 
-    match result {
+    match (result) {
         case Single(out) {
             asserts.equalString(t, out.attributes["cname"], "bob")
             asserts.isFalse(t, out.attributes.containsKey("ghost"), "ghost attribute not set")
@@ -365,7 +365,7 @@ test "ExtractRecordField — non-Records content passes through unchanged" {
     var ff = createFlowFile("raw".toBytes(), Map<String, String>{"orig": "attr"})
     var result = proc.process(ff)
 
-    match result {
+    match (result) {
         case Single(out) {
             asserts.equalString(t, out.attributes["orig"], "attr")
             asserts.isFalse(t, out.attributes.containsKey("y"), "no extraction on Raw content")
@@ -378,7 +378,7 @@ test "ExtractRecordField — malformed config skipped, empty extracts no attrs" 
     var proc = ExtractRecordField("garbage;no_colon;:empty_field;name_only:;", 0)
     var ff = buildRecordFlowFile(Map<String, Object>{"name": "x"})
     var result = proc.process(ff)
-    match result {
+    match (result) {
         case Single(out) { asserts.equalInt(t, len(out.attributes), 0) }
         case _ { t.Errorf("expected Single") }
     }
@@ -387,7 +387,7 @@ test "ExtractRecordField — malformed config skipped, empty extracts no attrs" 
 // --- TransformRecord (Phase 3.2) ---
 
 fn firstRecordFields(FlowFile ff): GenericRecord {
-    match ff.content {
+    match (ff.content) {
         case Records(_, records) {
             return records[0]
         }
@@ -403,7 +403,7 @@ test "TransformRecord — rename, add, remove operations apply to every record" 
     var ff = buildRecordFlowFile(Map<String, Object>{"name": "alice", "obsolete": "drop"})
     var result = proc.process(ff)
 
-    match result {
+    match (result) {
         case Single(out) {
             var r = firstRecordFields(out)
             asserts.equalString(t, str(r.getField("customer")), "alice")
@@ -420,7 +420,7 @@ test "TransformRecord — copy, toUpper, toLower, default" {
     var ff = buildRecordFlowFile(Map<String, Object>{"src": "hello", "other": "WORLD"})
     var result = proc.process(ff)
 
-    match result {
+    match (result) {
         case Single(out) {
             var r = firstRecordFields(out)
             asserts.equalString(t, str(r.getField("src")), "HELLO")
@@ -439,7 +439,7 @@ test "TransformRecord — unknown op (incl. compute) skipped, no panic" {
     var ff = buildRecordFlowFile(Map<String, Object>{"x": "one", "amount": "2", "qty": "3"})
     var result = proc.process(ff)
 
-    match result {
+    match (result) {
         case Single(out) {
             var r = firstRecordFields(out)
             asserts.equalString(t, str(r.getField("y")), "one")
@@ -453,7 +453,7 @@ test "TransformRecord — unknown op (incl. compute) skipped, no panic" {
 test "TransformRecord — non-Records content passes through" {
     var proc = TransformRecord("add:x:y")
     var ff = createFlowFile("raw".toBytes(), Map<String, String>{})
-    match proc.process(ff) {
+    match (proc.process(ff)) {
         case Single(_) { }
         case _ { t.Errorf("expected Single") }
     }
@@ -467,9 +467,9 @@ test "ReplaceText — mode=all replaces every occurrence" {
     var ff = createFlowFile("foo and foo again".toBytes(), Map<String, String>{})
     var result = proc.process(ff)
 
-    match result {
+    match (result) {
         case Single(out) {
-            match out.content {
+            match (out.content) {
                 case Raw(bytes) { asserts.equalString(t, string(bytes), "bar and bar again") }
                 case _ { t.Errorf("expected Raw content") }
             }
@@ -484,9 +484,9 @@ test "ReplaceText — mode=first replaces only the first match" {
     var ff = createFlowFile("foo and foo".toBytes(), Map<String, String>{})
     var result = proc.process(ff)
 
-    match result {
+    match (result) {
         case Single(out) {
-            match out.content {
+            match (out.content) {
                 case Raw(bytes) { asserts.equalString(t, string(bytes), "bar and foo") }
                 case _ { t.Errorf("expected Raw") }
             }
@@ -502,7 +502,7 @@ test "ReplaceText — invalid regex pattern returns Failure, not panic" {
     var ff = createFlowFile("test".toBytes(), Map<String, String>{})
     var result = proc.process(ff)
 
-    match result {
+    match (result) {
         case Failure(reason, _) { asserts.contains(t, reason, "invalid regex") }
         case _ { t.Errorf("expected Failure on bad regex, got %v", result) }
     }
@@ -514,7 +514,7 @@ test "ExtractText — named capture groups become attributes" {
     var ff = createFlowFile("visit https://example.com/path".toBytes(), Map<String, String>{})
     var result = proc.process(ff)
 
-    match result {
+    match (result) {
         case Single(out) {
             asserts.equalString(t, out.attributes["proto"], "https")
             asserts.equalString(t, out.attributes["host"], "example.com")
@@ -529,7 +529,7 @@ test "ExtractText — positional groups via group_names config" {
     var ff = createFlowFile("version 42-7 released".toBytes(), Map<String, String>{})
     var result = proc.process(ff)
 
-    match result {
+    match (result) {
         case Single(out) {
             asserts.equalString(t, out.attributes["major"], "42")
             asserts.equalString(t, out.attributes["minor"], "7")
@@ -544,7 +544,7 @@ test "ExtractText — no match returns Single with unchanged attrs" {
     var ff = createFlowFile("not matching".toBytes(), Map<String, String>{"orig": "a"})
     var result = proc.process(ff)
 
-    match result {
+    match (result) {
         case Single(out) {
             asserts.equalString(t, out.attributes["orig"], "a")
             asserts.equalInt(t, len(out.attributes), 1)
@@ -557,7 +557,7 @@ test "ExtractText — invalid regex returns Failure" {
     var store = MemoryContentStore()
     var proc = ExtractText("[broken", "x", store)
     var ff = createFlowFile("anything".toBytes(), Map<String, String>{})
-    match proc.process(ff) {
+    match (proc.process(ff)) {
         case Failure(reason, _) { asserts.contains(t, reason, "invalid regex") }
         case _ { t.Errorf("expected Failure") }
     }
@@ -569,11 +569,11 @@ test "SplitText — single delimiter yields Multiple FlowFiles with split.index"
     var ff = createFlowFile("a,b,c".toBytes(), Map<String, String>{})
     var result = proc.process(ff)
 
-    match result {
+    match (result) {
         case Multiple(ffs) {
             asserts.equalInt(t, len(ffs), 3)
             var idxs = List<String>[]
-            for f in ffs {
+            for (f in ffs) {
                 idxs = append(idxs, f.attributes["split.index"])
             }
             // Order is preserved — indexes 0,1,2 in order of the input.
@@ -590,7 +590,7 @@ test "SplitText — single-chunk content (no delimiter match) passes through as 
     var store = MemoryContentStore()
     var proc = SplitText(",", 0, store)
     var ff = createFlowFile("nosplit".toBytes(), Map<String, String>{})
-    match proc.process(ff) {
+    match (proc.process(ff)) {
         case Single(_) { }
         case _ { t.Errorf("expected Single") }
     }
@@ -603,11 +603,11 @@ test "SplitText — header_lines prepended to each split" {
     var ff = createFlowFile("col1,col2\nrow1a,row1b\nrow2a,row2b".toBytes(), Map<String, String>{})
     var result = proc.process(ff)
 
-    match result {
+    match (result) {
         case Multiple(ffs) {
             asserts.equalInt(t, len(ffs), 2)
-            for f in ffs {
-                match f.content {
+            for (f in ffs) {
+                match (f.content) {
                     case Raw(b) { asserts.isTrue(t, string(b).contains("col1,col2"), "header present") }
                     case _ { t.Errorf("expected Raw") }
                 }
@@ -621,7 +621,7 @@ test "SplitText — invalid delimiter regex returns Failure" {
     var store = MemoryContentStore()
     var proc = SplitText("[broken", 0, store)
     var ff = createFlowFile("a,b".toBytes(), Map<String, String>{})
-    match proc.process(ff) {
+    match (proc.process(ff)) {
         case Failure(reason, _) { asserts.contains(t, reason, "invalid delimiter") }
         case _ { t.Errorf("expected Failure") }
     }
@@ -634,7 +634,7 @@ test "FilterAttribute — default mode=remove drops listed attributes" {
     var ff = createFlowFile("x".toBytes(), Map<String, String>{
         "public": "p", "secret": "s", "internal": "i"
     })
-    match proc.process(ff) {
+    match (proc.process(ff)) {
         case Single(out) {
             asserts.equalString(t, out.attributes["public"], "p")
             asserts.isFalse(t, out.attributes.containsKey("secret"), "secret dropped")
@@ -649,7 +649,7 @@ test "FilterAttribute — mode=keep retains only listed attributes" {
     var ff = createFlowFile("x".toBytes(), Map<String, String>{
         "env": "prod", "region": "us", "noise": "drop"
     })
-    match proc.process(ff) {
+    match (proc.process(ff)) {
         case Single(out) {
             asserts.equalInt(t, len(out.attributes), 2)
             asserts.equalString(t, out.attributes["env"], "prod")
@@ -662,7 +662,7 @@ test "FilterAttribute — mode=keep retains only listed attributes" {
 test "FilterAttribute — empty attribute list is a no-op (removes nothing in remove mode)" {
     var proc = FilterAttribute("", "")
     var ff = createFlowFile("x".toBytes(), Map<String, String>{"k": "v"})
-    match proc.process(ff) {
+    match (proc.process(ff)) {
         case Single(out) { asserts.equalString(t, out.attributes["k"], "v") }
         case _ { t.Errorf("expected Single") }
     }
@@ -671,7 +671,7 @@ test "FilterAttribute — empty attribute list is a no-op (removes nothing in re
 test "LogAttribute — passes through unchanged (logs are observational)" {
     var proc = LogAttribute("tagged")
     var ff = createFlowFile("content".toBytes(), Map<String, String>{"env": "dev"})
-    match proc.process(ff) {
+    match (proc.process(ff)) {
         case Single(out) {
             asserts.equalString(t, out.id, ff.id)
             asserts.equalString(t, out.attributes["env"], "dev")
@@ -686,7 +686,7 @@ test "PutFile — writes content under output_dir, records output.path + output.
     var dir = "/tmp/zinc-flow-test/put-file-basic"
     var proc = PutFile(dir, "filename", "", ".dat", "raw", store)
     var ff = createFlowFile("hello".toBytes(), Map<String, String>{"filename": "greeting.txt"})
-    match proc.process(ff) {
+    match (proc.process(ff)) {
         case Single(out) {
             asserts.equalString(t, out.attributes["output.path"], dir + "/greeting.txt")
             asserts.equalString(t, out.attributes["output.size"], "5")
@@ -700,7 +700,7 @@ test "PutFile — missing naming attribute falls back to counter + suffix" {
     var dir = "/tmp/zinc-flow-test/put-file-fallback"
     var proc = PutFile(dir, "filename", "batch-", ".dat", "raw", store)
     var ff = createFlowFile("x".toBytes(), Map<String, String>{})
-    match proc.process(ff) {
+    match (proc.process(ff)) {
         case Single(out) {
             // First FF gets counter=1 → "batch-1.dat"
             asserts.equalString(t, out.attributes["output.path"], dir + "/batch-1.dat")
@@ -714,7 +714,7 @@ test "PutFile — Records content returns Failure (can't resolve to bytes)" {
     var proc = PutFile("/tmp/zinc-flow-test/put-file-rec", "filename", "", ".dat", "raw", store)
     var schema = schemaFromFields("test", List<Field>[])
     var ff = FlowFile("ff-r", Map<String, String>{}, Records(schema, List<GenericRecord>[]), 0)
-    match proc.process(ff) {
+    match (proc.process(ff)) {
         case Failure(reason, _) { asserts.contains(t, reason, "Records") }
         case _ { t.Errorf("expected Failure on Records content") }
     }
@@ -731,7 +731,7 @@ test "PutStdout — Records content returns Failure (raw-bytes resolution unsupp
     var ff = FlowFile("ff-records", Map<String, String>{}, Records(schema, records), 0)
     var result = proc.process(ff)
 
-    match result {
+    match (result) {
         case Failure(reason, failFf) {
             asserts.equalString(t, failFf.id, "ff-records")
             asserts.contains(t, reason, "Records")

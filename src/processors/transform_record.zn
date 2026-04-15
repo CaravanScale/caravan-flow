@@ -37,64 +37,64 @@ class TransformRecord : ProcessorFn {
     }
 
     fn parseOperations(String spec) {
-        if spec == "" {
+        if (spec == "") {
             return
         }
         // `op:arg1:arg2; op:arg1;` — each entry has 1, 2, or 3 colons.
         // Trim each entry; skip empty.
         var start = 0
         var i = 0
-        while i < len(spec) {
-            if spec[i:i+1] == ";" {
+        while (i < len(spec)) {
+            if (spec[i:i+1] == ";") {
                 addEntry(spec[start:i])
                 start = i + 1
             }
             i = i + 1
         }
-        if start < len(spec) {
+        if (start < len(spec)) {
             addEntry(spec[start:len(spec)])
         }
     }
 
     fn addEntry(String entry) {
         var trimmed = trimOpSpace(entry)
-        if trimmed == "" {
+        if (trimmed == "") {
             return
         }
         var parts = List<String>[]
         var partStart = 0
         var maxParts = 3
         var j = 0
-        while j < len(trimmed) && len(parts) < maxParts-1 {
-            if trimmed[j:j+1] == ":" {
+        while (j < len(trimmed) && len(parts) < maxParts-1) {
+            if (trimmed[j:j+1] == ":") {
                 parts = append(parts, trimOpSpace(trimmed[partStart:j]))
                 partStart = j + 1
             }
             j = j + 1
         }
         parts = append(parts, trimOpSpace(trimmed[partStart:len(trimmed)]))
-        if len(parts) == 0 || parts[0] == "" {
+        if (len(parts) == 0 || parts[0] == "") {
             return
         }
         var arg1 = ""
         var arg2 = ""
-        if len(parts) >= 2 {
+        if (len(parts) >= 2) {
             arg1 = parts[1]
         }
-        if len(parts) >= 3 {
+        if (len(parts) >= 3) {
             arg2 = parts[2]
         }
         operations = append(operations, RecordOp(parts[0], arg1, arg2))
     }
 
     pub fn process(FlowFile ff): ProcessorResult {
-        match ff.content {
+        match (ff.content) {
             case Records(schema, records) {
-                if len(records) == 0 {
+                if (len(records) == 0) {
                     return Single(ff)
                 }
                 var transformed = List<GenericRecord>[]
-                for record in records {
+                for (record in records) {
                     transformed = append(transformed, applyOps(record, schema))
                 }
                 // Re-infer schema from the first transformed record.
@@ -115,81 +115,81 @@ class TransformRecord : ProcessorFn {
     fn applyOps(GenericRecord record, Schema schema): GenericRecord {
         // Copy the record's values into a fresh map we can mutate.
         var values = Map<String, Object>{}
-        for f in schema.fields {
+        for (f in schema.fields) {
             var v = record.getField(f.name)
-            if v != null {
+            if (v != null) {
                 values[f.name] = v
             }
         }
         // Also include any fields not in the schema (defensive — the
         // writer may have populated values beyond declared fields).
-        for op in operations {
+        for (op in operations) {
             applyOne(values, op)
         }
         // Build a synthetic schema covering every key in `values`,
         // preferring existing field types where possible.
         var fields = List<Field>[]
         var origByName = Map<String, FieldType>{}
-        for f in schema.fields {
+        for (f in schema.fields) {
             origByName[f.name] = f.fieldType
         }
-        for k in values.keys() {
+        for (k in values.keys()) {
             var ft = STRING
-            if origByName.containsKey(k) {
+            if (origByName.containsKey(k)) {
                 ft = origByName[k]
             }
             fields = append(fields, Field(k, ft, null))
         }
         var outSchema = Schema(schema.name, fields)
         var out = GenericRecord(outSchema)
-        for k in values.keys() {
+        for (k in values.keys()) {
             out.setField(k, values[k])
         }
         return out
     }
 
     fn applyOne(Map<String, Object> values, RecordOp op) {
-        if op.op == "rename" {
-            if values.containsKey(op.arg1) {
+        if (op.op == "rename") {
+            if (values.containsKey(op.arg1)) {
                 values[op.arg2] = values[op.arg1]
                 values.delete(op.arg1)
             }
             return
         }
-        if op.op == "remove" {
+        if (op.op == "remove") {
             values.delete(op.arg1)
             return
         }
-        if op.op == "add" {
+        if (op.op == "add") {
             values[op.arg1] = op.arg2
             return
         }
-        if op.op == "copy" {
-            if values.containsKey(op.arg1) {
+        if (op.op == "copy") {
+            if (values.containsKey(op.arg1)) {
                 values[op.arg2] = values[op.arg1]
             }
             return
         }
-        if op.op == "toUpper" {
-            if values.containsKey(op.arg1) {
+        if (op.op == "toUpper") {
+            if (values.containsKey(op.arg1)) {
                 var v = values[op.arg1]
-                if v != null {
+                if (v != null) {
                     values[op.arg1] = asciiUpper(str(v))
                 }
             }
             return
         }
-        if op.op == "toLower" {
-            if values.containsKey(op.arg1) {
+        if (op.op == "toLower") {
+            if (values.containsKey(op.arg1)) {
                 var v = values[op.arg1]
-                if v != null {
+                if (v != null) {
                     values[op.arg1] = asciiLower(str(v))
                 }
             }
             return
         }
-        if op.op == "default" {
-            if !values.containsKey(op.arg1) || values[op.arg1] == null {
+        if (op.op == "default") {
+            if (!values.containsKey(op.arg1) || values[op.arg1] == null) {
                 values[op.arg1] = op.arg2
             }
             return
@@ -202,7 +202,7 @@ class TransformRecord : ProcessorFn {
 
 pub fn TransformRecordFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
     var spec = ""
-    if config.containsKey("operations") {
+    if (config.containsKey("operations")) {
         spec = config["operations"]
     }
     return TransformRecord(spec)
@@ -214,14 +214,14 @@ pub fn TransformRecordFactory(ScopedContext ctx, Map<String, String> config): Pr
 // loop.
 fn rebuildSchema(Schema orig, GenericRecord first): Schema {
     var origFields = Map<String, FieldType>{}
-    for f in orig.fields {
+    for (f in orig.fields) {
         origFields[f.name] = f.fieldType
     }
     var firstSchema = first.getSchema()
     var newFields = List<Field>[]
-    for f in firstSchema.fields {
+    for (f in firstSchema.fields) {
         var ft = f.fieldType
-        if origFields.containsKey(f.name) {
+        if (origFields.containsKey(f.name)) {
             ft = origFields[f.name]
         }
         newFields = append(newFields, Field(f.name, ft, null))
@@ -231,17 +231,17 @@ fn rebuildSchema(Schema orig, GenericRecord first): Schema {
 
 fn trimOpSpace(String s): String {
     var start = 0
-    while start < len(s) {
+    while (start < len(s)) {
         var c = s[start:start+1]
-        if c != " " && c != "\t" {
+        if (c != " " && c != "\t") {
             break
         }
         start = start + 1
     }
     var stop = len(s)
-    while stop > start {
+    while (stop > start) {
         var c = s[stop-1:stop]
-        if c != " " && c != "\t" {
+        if (c != " " && c != "\t") {
             break
         }
         stop = stop - 1
@@ -252,9 +252,9 @@ fn trimOpSpace(String s): String {
 fn asciiUpper(String s): String {
     var out = ""
     var i = 0
-    while i < len(s) {
+    while (i < len(s)) {
         var c = s[i:i+1]
-        if c >= "a" && c <= "z" {
+        if (c >= "a" && c <= "z") {
             var b = byte(s[i])
             out = out + string(byte(b - 32))
         } else {
@@ -268,9 +268,9 @@ fn asciiUpper(String s): String {
 fn asciiLower(String s): String {
     var out = ""
     var i = 0
-    while i < len(s) {
+    while (i < len(s)) {
         var c = s[i:i+1]
-        if c >= "A" && c <= "Z" {
+        if (c >= "A" && c <= "Z") {
             var b = byte(s[i])
             out = out + string(byte(b + 32))
         } else {

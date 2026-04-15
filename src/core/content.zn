@@ -19,7 +19,7 @@ sealed class Content {
 
 // contentSize returns the logical size of the content.
 pub fn contentSize(Content c): long {
-    match c {
+    match (c) {
         case Raw(bytes) {
             return long(len(bytes))
         }
@@ -34,7 +34,7 @@ pub fn contentSize(Content c): long {
 
 // isRecord returns true if content is in parsed Avro form.
 pub fn isRecord(Content c): bool {
-    match c {
+    match (c) {
         case Records(_, _) {
             return true
         }

@@ -39,7 +39,7 @@ class PutFile : ProcessorFn {
         this.outputDir = outputDir
         this.namingAttr = namingAttr
         this.prefix = prefix
-        if suffix == "" {
+        if (suffix == "") {
             this.suffix = ".dat"
         } else {
             this.suffix = suffix
@@ -52,21 +52,21 @@ class PutFile : ProcessorFn {
 
     pub fn process(FlowFile ff): ProcessorResult {
         var resolved = resolve(store, ff.content)
-        if resolved.errorMsg != "" {
+        if (resolved.errorMsg != "") {
             return Failure(resolved.errorMsg, ff)
         }
 
         var data = resolved.data
-        if format == "v3" {
+        if (format == "v3") {
             data = packFlowFile(ff, data)
         }
 
         var fileName = ""
-        if ff.attributes.containsKey(namingAttr) && ff.attributes[namingAttr] != "" {
+        if (ff.attributes.containsKey(namingAttr) && ff.attributes[namingAttr] != "") {
             fileName = prefix + ff.attributes[namingAttr]
         } else {
             var id = long(0)
-            lock mu {
+            lock (mu) {
                 counter = counter + long(1)
                 id = counter
             }
@@ -89,17 +89,17 @@ class PutFile : ProcessorFn {
 
 pub fn PutFileFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
     var outputDir = ""
-    if config.containsKey("output_dir") { outputDir = config["output_dir"] }
+    if (config.containsKey("output_dir")) { outputDir = config["output_dir"] }
     var namingAttr = "filename"
-    if config.containsKey("naming_attribute") && config["naming_attribute"] != "" {
+    if (config.containsKey("naming_attribute") && config["naming_attribute"] != "") {
         namingAttr = config["naming_attribute"]
     }
     var prefix = ""
-    if config.containsKey("prefix") { prefix = config["prefix"] }
+    if (config.containsKey("prefix")) { prefix = config["prefix"] }
     var suffix = ""
-    if config.containsKey("suffix") { suffix = config["suffix"] }
+    if (config.containsKey("suffix")) { suffix = config["suffix"] }
     var format = "raw"
-    if config.containsKey("format") && config["format"] != "" {
+    if (config.containsKey("format") && config["format"] != "") {
         format = config["format"]
     }
     var p = ctx.getProvider("content") or {
@@ -115,13 +115,13 @@ pub fn PutFileFactory(ScopedContext ctx, Map<String, String> config): ProcessorF
 fn basename(String s): String {
     var idx = -1
     var i = 0
-    while i < len(s) {
-        if s[i:i+1] == "/" {
+    while (i < len(s)) {
+        if (s[i:i+1] == "/") {
             idx = i
         }
         i = i + 1
     }
-    if idx < 0 {
+    if (idx < 0) {
         return s
     }
     return s[idx+1:len(s)]

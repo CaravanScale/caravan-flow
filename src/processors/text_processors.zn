@@ -38,7 +38,7 @@ class ReplaceText : ProcessorFn {
 
     pub fn process(FlowFile ff): ProcessorResult {
         var resolved = resolve(store, ff.content)
-        if resolved.errorMsg != "" {
+        if (resolved.errorMsg != "") {
             return Failure(resolved.errorMsg, ff)
         }
         var re = regexp.Compile(pattern) or {
@@ -47,14 +47,14 @@ class ReplaceText : ProcessorFn {
 
         var text = string(resolved.data)
         var out = text
-        if replaceAll {
+        if (replaceAll) {
             out = re.ReplaceAllString(text, replacement)
         } else {
             // Replace only the first match by finding its index and
             // splicing manually — regexp has no built-in "first-only"
             // variant. Fallback to full replace if no match.
             var loc = re.FindStringIndex(text)
-            if loc != null {
+            if (loc != null) {
                 out = text[0:loc[0]] + re.ReplaceAllString(text[loc[0]:loc[1]], replacement) + text[loc[1]:len(text)]
             }
         }
@@ -66,11 +66,11 @@ class ReplaceText : ProcessorFn {
 
 pub fn ReplaceTextFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
     var pattern = ""
-    if config.containsKey("pattern") { pattern = config["pattern"] }
+    if (config.containsKey("pattern")) { pattern = config["pattern"] }
     var replacement = ""
-    if config.containsKey("replacement") { replacement = config["replacement"] }
+    if (config.containsKey("replacement")) { replacement = config["replacement"] }
     var mode = "all"
-    if config.containsKey("mode") && config["mode"] != "" {
+    if (config.containsKey("mode") && config["mode"] != "") {
         mode = config["mode"]
     }
     var store = resolveStore(ctx)
@@ -87,12 +87,12 @@ class ExtractText : ProcessorFn {
     init(String pattern, String groupNamesSpec, ContentStore store) {
         this.pattern = pattern
         this.store = store
-        if groupNamesSpec != "" {
+        if (groupNamesSpec != "") {
             // Comma-separated, trimmed, non-empty entries only.
             var parts = strings.Split(groupNamesSpec, ",")
-            for p in parts {
+            for (p in parts) {
                 var trimmed = strings.TrimSpace(p)
-                if trimmed != "" {
+                if (trimmed != "") {
                     groupNames = append(groupNames, trimmed)
                 }
             }
@@ -101,7 +101,7 @@ class ExtractText : ProcessorFn {
 
     pub fn process(FlowFile ff): ProcessorResult {
         var resolved = resolve(store, ff.content)
-        if resolved.errorMsg != "" {
+        if (resolved.errorMsg != "") {
             return Failure(resolved.errorMsg, ff)
         }
         var re = regexp.Compile(pattern) or {
@@ -110,7 +110,7 @@ class ExtractText : ProcessorFn {
 
         var text = string(resolved.data)
         var matches = re.FindStringSubmatch(text)
-        if matches == null || len(matches) == 0 {
+        if (matches == null || len(matches) == 0) {
             return Single(ff)
         }
 
@@ -120,9 +120,9 @@ class ExtractText : ProcessorFn {
         // entries that Go's regexp emits for positional groups).
         var names = re.SubexpNames()
         var i = 0
-        while i < len(names) && i < len(matches) {
+        while (i < len(names) && i < len(matches)) {
             var name = names[i]
-            if name != "" {
+            if (name != "") {
                 result = withAttribute(result, name, matches[i])
             }
             i = i + 1
@@ -131,8 +131,8 @@ class ExtractText : ProcessorFn {
         // Positional groups → mapped via groupNames config.
         // matches[0] is the full match; positional groups start at 1.
         var j = 0
-        while j < len(groupNames) && j+1 < len(matches) {
-            if groupNames[j] != "" {
+        while (j < len(groupNames) && j+1 < len(matches)) {
+            if (groupNames[j] != "") {
                 result = withAttribute(result, groupNames[j], matches[j+1])
             }
             j = j + 1
@@ -144,9 +144,9 @@ class ExtractText : ProcessorFn {
 
 pub fn ExtractTextFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
     var pattern = ""
-    if config.containsKey("pattern") { pattern = config["pattern"] }
+    if (config.containsKey("pattern")) { pattern = config["pattern"] }
     var groupNames = ""
-    if config.containsKey("group_names") { groupNames = config["group_names"] }
+    if (config.containsKey("group_names")) { groupNames = config["group_names"] }
     var store = resolveStore(ctx)
     return ExtractText(pattern, groupNames, store)
 }
@@ -166,7 +166,7 @@ class SplitText : ProcessorFn {
 
     pub fn process(FlowFile ff): ProcessorResult {
         var resolved = resolve(store, ff.content)
-        if resolved.errorMsg != "" {
+        if (resolved.errorMsg != "") {
             return Failure(resolved.errorMsg, ff)
         }
         var re = regexp.Compile(delimiter) or {
@@ -179,9 +179,9 @@ class SplitText : ProcessorFn {
         // each split — keeps CSV/TSV-style headers with their rows.
         var header = ""
         var body = text
-        if headerLines > 0 {
+        if (headerLines > 0) {
             var lines = strings.Split(text, "\n")
-            if len(lines) > headerLines {
+            if (len(lines) > headerLines) {
                 var headerLinesList = lines[0:headerLines]
                 header = strings.Join(headerLinesList, "\n") + "\n"
                 var remaining = lines[headerLines:len(lines)]
@@ -190,15 +190,15 @@ class SplitText : ProcessorFn {
         }
 
         var parts = re.Split(body, -1)
-        if len(parts) <= 1 {
+        if (len(parts) <= 1) {
             return Single(ff)
         }
 
         var outFiles = List<FlowFile>[]
         var i = 0
-        while i < len(parts) {
+        while (i < len(parts)) {
             var part = parts[i]
-            if strings.TrimSpace(part) == "" {
+            if (strings.TrimSpace(part) == "") {
                 i = i + 1
                 continue
             }
@@ -210,7 +210,7 @@ class SplitText : ProcessorFn {
             i = i + 1
         }
 
-        if len(outFiles) == 0 {
+        if (len(outFiles) == 0) {
             return Single(ff)
         }
         return Multiple(outFiles)
@@ -219,11 +219,11 @@ class SplitText : ProcessorFn {
 
 pub fn SplitTextFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
     var delimiter = "\n"
-    if config.containsKey("delimiter") && config["delimiter"] != "" {
+    if (config.containsKey("delimiter") && config["delimiter"] != "") {
         delimiter = config["delimiter"]
     }
     var headerLines = 0
-    if config.containsKey("header_lines") {
+    if (config.containsKey("header_lines")) {
         headerLines = textParseInt(config["header_lines"], 0)
     }
     var store = resolveStore(ctx)
@@ -241,18 +241,18 @@ fn resolveStore(ScopedContext ctx): ContentStore {
 }
 
 fn textParseInt(String s, int fallback): int {
-    if s == "" { return fallback }
+    if (s == "") { return fallback }
     var neg = false
     var start = 0
-    if s[0:1] == "-" { neg = true; start = 1 }
+    if (s[0:1] == "-") { neg = true; start = 1 }
     var n = 0
     var i = start
-    while i < len(s) {
+    while (i < len(s)) {
         var c = s[i:i+1]
-        if c < "0" || c > "9" { return fallback }
+        if (c < "0" || c > "9") { return fallback }
         n = n*10 + (int(byte(s[i])) - 48)
         i = i + 1
     }
-    if neg { return 0 - n }
+    if (neg) { return 0 - n }
     return n
 }

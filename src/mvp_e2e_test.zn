@@ -55,7 +55,7 @@ test "MVP pipeline e2e — generate → update → route → sink" {
     var src = GenerateFlowFile("gen", 0, "ping", "text/plain", "env:dev", 3)
     var batch = src.pollOnce()
     asserts.equalInt(t, len(batch), 3)
-    for ff in batch {
+    for (ff in batch) {
         fab.execute(ff, "tag-stage")
     }
 
@@ -66,7 +66,7 @@ test "MVP pipeline e2e — generate → update → route → sink" {
 
     // Each must carry stage=processed from UpdateAttribute and the
     // source-baked env=dev.
-    for ff in devSink.captured {
+    for (ff in devSink.captured) {
         asserts.equalString(t, ff.attributes["stage"], "processed")
         asserts.equalString(t, ff.attributes["env"], "dev")
         asserts.equalString(t, ff.attributes["source"], "gen")
@@ -106,7 +106,7 @@ test "MVP pipeline e2e — prod traffic lands on prod branch, dev stays empty" {
     // Source stamped env=prod.
     var src = GenerateFlowFile("gen-prod", 0, "ping", "", "env:prod", 2)
     var batch = src.pollOnce()
-    for ff in batch {
+    for (ff in batch) {
         fab.execute(ff, "tag-stage")
     }
 

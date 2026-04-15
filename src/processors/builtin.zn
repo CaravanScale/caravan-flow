@@ -114,7 +114,7 @@ fn LogProcessorFactory(ScopedContext ctx, Map<String, String> config): Processor
 
 fn JsonToRecordsFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
     var schemaName = config["schema_name"]
-    if schemaName == "" {
+    if (schemaName == "") {
         schemaName = "default"
     }
     var p = ctx.getProvider("content") or {
@@ -158,7 +158,7 @@ class FileSink : ProcessorFn {
     pub fn process(FlowFile ff): ProcessorResult {
         var path = outputDir + "/" + ff.id + ".out"
         var resolved = resolve(store, ff.content)
-        if resolved.errorMsg != "" {
+        if (resolved.errorMsg != "") {
             return Failure(resolved.errorMsg, ff)
         }
         WriteFile(path, resolved.data, 0o644)
@@ -192,13 +192,13 @@ class JsonToRecords : ProcessorFn {
     }
 
     pub fn process(FlowFile ff): ProcessorResult {
-        match ff.content {
+        match (ff.content) {
             case Raw(bytes) {
                 return parseJson(ff, bytes)
             }
             case Claim(_, _) {
                 var resolved = resolve(store, ff.content)
-                if resolved.errorMsg != "" {
+                if (resolved.errorMsg != "") {
                     return Failure(resolved.errorMsg, ff)
                 }
                 return parseJson(ff, resolved.data)
@@ -215,7 +215,7 @@ class JsonToRecords : ProcessorFn {
         var schema = schemaFromFields(schemaName, List<Field>[])
         var reader = JsonRecordReader()
         var records = reader.read(data, schema)
-        if len(records) == 0 {
+        if (len(records) == 0) {
             return Failure("no records parsed from JSON", ff)
         }
         var updated = withContent(ff, Records(schema, records))
@@ -230,7 +230,7 @@ class RecordsToJson : ProcessorFn {
     init() {}
 
     pub fn process(FlowFile ff): ProcessorResult {
-        match ff.content {
+        match (ff.content) {
             case Records(schema, records) {
                 var writer = JsonRecordWriter()
                 var bytes = writer.write(records, schema)

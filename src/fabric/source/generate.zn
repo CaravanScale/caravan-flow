@@ -42,21 +42,21 @@ class GenerateFlowFile : ConnectorSource {
     init(String name, int pollIntervalMs, String contentStr, String contentType, String attributesSpec, int batchSize) {
         this.name = name
         this.pollIntervalMs = 1000
-        if pollIntervalMs > 0 {
+        if (pollIntervalMs > 0) {
             this.pollIntervalMs = pollIntervalMs
         }
         this.content = contentStr.toBytes()
         this.batchSize = 1
-        if batchSize > 0 {
+        if (batchSize > 0) {
             this.batchSize = batchSize
         }
         this.counter = long(0)
 
         baseAttrs["source"] = name
-        if contentType != "" {
+        if (contentType != "") {
             baseAttrs["http.content.type"] = contentType
         }
-        if attributesSpec != "" {
+        if (attributesSpec != "") {
             parseAttributes(attributesSpec)
         }
     }
@@ -66,14 +66,14 @@ class GenerateFlowFile : ConnectorSource {
         // written against one binary loads the same attrs on the other.
         var start = 0
         var i = 0
-        while i < len(spec) {
-            if spec[i:i+1] == ";" {
+        while (i < len(spec)) {
+            if (spec[i:i+1] == ";") {
                 addPair(spec[start:i])
                 start = i + 1
             }
             i = i + 1
         }
-        if start < len(spec) {
+        if (start < len(spec)) {
             addPair(spec[start:len(spec)])
         }
     }
@@ -81,19 +81,19 @@ class GenerateFlowFile : ConnectorSource {
     fn addPair(String pair) {
         var colonIdx = -1
         var j = 0
-        while j < len(pair) {
-            if pair[j:j+1] == ":" {
+        while (j < len(pair)) {
+            if (pair[j:j+1] == ":") {
                 colonIdx = j
                 break
             }
             j = j + 1
         }
-        if colonIdx < 0 {
+        if (colonIdx < 0) {
             return
         }
         var k = pair[0:colonIdx]
         var v = pair[colonIdx+1:len(pair)]
-        if k != "" {
+        if (k != "") {
             baseAttrs[k] = v
         }
     }
@@ -107,12 +107,12 @@ class GenerateFlowFile : ConnectorSource {
     pub fn pollOnce(): List<FlowFile> {
         var batch = List<FlowFile>[]
         var i = 0
-        while i < batchSize {
+        while (i < batchSize) {
             var attrs = Map<String, String>{}
-            for k in baseAttrs.keys() {
+            for (k in baseAttrs.keys()) {
                 attrs[k] = baseAttrs[k]
             }
-            lock mu {
+            lock (mu) {
                 counter = counter + long(1)
                 attrs["generate.index"] = str(counter)
             }
@@ -126,14 +126,14 @@ class GenerateFlowFile : ConnectorSource {
         this.ingestFn = ingest
         running = true
         spawn {
-            while running {
+            while (running) {
                 time.Sleep(time.Duration(pollIntervalMs) * time.Millisecond)
-                if !running {
+                if (!running) {
                     break
                 }
                 var batch = pollOnce()
-                for ff in batch {
-                    if !ingestFn(ff) {
+                for (ff in batch) {
+                    if (!ingestFn(ff)) {
                         logging.warn("ingest rejected (backpressure or no entry points)", "source", name, "ff", ff.id)
                     }
                 }
@@ -152,23 +152,23 @@ class GenerateFlowFile : ConnectorSource {
 // processors transform it).
 pub fn GenerateFlowFileFactory(String name, Map<String, String> config): ConnectorSource {
     var contentStr = ""
-    if config.containsKey("content") {
+    if (config.containsKey("content")) {
         contentStr = config["content"]
     }
     var contentType = ""
-    if config.containsKey("content_type") {
+    if (config.containsKey("content_type")) {
         contentType = config["content_type"]
     }
     var attributesSpec = ""
-    if config.containsKey("attributes") {
+    if (config.containsKey("attributes")) {
         attributesSpec = config["attributes"]
     }
     var batchSize = 1
-    if config.containsKey("batch_size") {
+    if (config.containsKey("batch_size")) {
         batchSize = atoi(config["batch_size"], 1)
     }
     var pollMs = 1000
-    if config.containsKey("poll_interval_ms") {
+    if (config.containsKey("poll_interval_ms")) {
         pollMs = atoi(config["poll_interval_ms"], 1000)
     }
     return GenerateFlowFile(name, pollMs, contentStr, contentType, attributesSpec, batchSize)
@@ -179,21 +179,21 @@ pub fn GenerateFlowFileFactory(String name, Map<String, String> config): Connect
 // matches csharp's Program.cs block so the same YAML drives both
 // binaries.
 pub fn loadGenerateSource(config.Config cfg, Fabric fab) {
-    if !cfg.has("sources.generate.content") {
+    if (!cfg.has("sources.generate.content")) {
         return
     }
     var flat = Map<String, String>{}
     flat["content"] = cfg.getString("sources.generate.content")
-    if cfg.has("sources.generate.content_type") {
+    if (cfg.has("sources.generate.content_type")) {
         flat["content_type"] = cfg.getString("sources.generate.content_type")
     }
-    if cfg.has("sources.generate.attributes") {
+    if (cfg.has("sources.generate.attributes")) {
         flat["attributes"] = cfg.getString("sources.generate.attributes")
     }
-    if cfg.has("sources.generate.batch_size") {
+    if (cfg.has("sources.generate.batch_size")) {
         flat["batch_size"] = cfg.getString("sources.generate.batch_size")
     }
-    if cfg.has("sources.generate.poll_interval_ms") {
+    if (cfg.has("sources.generate.poll_interval_ms")) {
         flat["poll_interval_ms"] = cfg.getString("sources.generate.poll_interval_ms")
     }
     var src = GenerateFlowFileFactory("generate", flat)
@@ -203,26 +203,26 @@ pub fn loadGenerateSource(config.Config cfg, Fabric fab) {
 // atoi parses `s` as an int; returns `fallback` on any parse error.
 // Kept local — we avoid importing strconv just for this one callsite.
 fn atoi(String s, int fallback): int {
-    if s == "" {
+    if (s == "") {
         return fallback
     }
     var neg = false
     var start = 0
-    if s[0:1] == "-" {
+    if (s[0:1] == "-") {
         neg = true
         start = 1
     }
     var n = 0
     var i = start
-    while i < len(s) {
+    while (i < len(s)) {
         var c = s[i:i+1]
-        if c < "0" || c > "9" {
+        if (c < "0" || c > "9") {
             return fallback
         }
         n = n*10 + (int(byte(s[i])) - 48)
         i = i + 1
     }
-    if neg {
+    if (neg) {
         return 0 - n
     }
     return n

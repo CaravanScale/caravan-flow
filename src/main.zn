@@ -91,7 +91,7 @@ fn main() {
 
     // Start periodic stats reporter
     spawn {
-        while true {
+        while (true) {
             Sleep(30 * Second)
             fab.status()
         }

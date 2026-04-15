@@ -74,7 +74,7 @@ class Fabric {
     // are treated as immutable once published (mutations go via swapGraph).
     fn snapshotGraph(): PipelineGraph {
         var g = graph
-        lock mu {
+        lock (mu) {
             g = graph
         }
         return g
@@ -83,7 +83,7 @@ class Fabric {
     // swapGraph replaces the active graph. Called under exclusive intent
     // (loadFlow, addProcessor, removeProcessor, reloadFlow).
     fn swapGraph(PipelineGraph newGraph) {
-        lock mu {
+        lock (mu) {
             graph = newGraph
         }
     }
@@ -94,7 +94,7 @@ class Fabric {
     // from the given config object, instantiates each processor, wires the
     // DAG, and publishes the resulting graph. Overwrites any prior graph.
     pub fn loadFlow(config.Config cfg) {
-        if cfg.has("defaults.max_hops") {
+        if (cfg.has("defaults.max_hops")) {
             maxHops = cfg.getInt("defaults.max_hops")
         }
 
@@ -102,10 +102,10 @@ class Fabric {
         var newDefs = Map<String, ProcessorDef>{}
 
         var procKeys = cfg.getSubKeys("flow.processors")
-        for name in procKeys {
+        for (name in procKeys) {
             var prefix = "flow.processors.${name}"
             var typeName = cfg.getString(prefix + ".type")
-            if !reg.has(typeName) {
+            if (!reg.has(typeName)) {
                 logging.error("unknown processor type", "type", typeName, "name", name)
                 continue
             }
@@ -114,7 +114,7 @@ class Fabric {
             var requires = cfg.getStringSlice(prefix + ".requires")
 
             // Register dependencies so provider-disable can cascade later.
-            for provName in requires {
+            for (provName in requires) {
                 globalCtx.registerDependent(provName, name)
             }
 
@@ -126,9 +126,9 @@ class Fabric {
             // Parse connections: flow.processors.<name>.connections.<relationship> = [targets...]
             var connKeys = cfg.getSubKeys(prefix + ".connections")
             var connMap = Map<String, List<String>>{}
-            for rel in connKeys {
+            for (rel in connKeys) {
                 var targets = cfg.getStringSlice(prefix + ".connections." + rel)
-                if len(targets) > 0 {
+                if (len(targets) > 0) {
                     newGraph.addConnection(name, rel, targets)
                     connMap[rel] = targets
                 }
@@ -143,11 +143,11 @@ class Fabric {
         processorDefs = newDefs
 
         // Initialize per-processor counters (preserve existing values on reload).
-        for name in newGraph.getProcessorNames() {
-            if !processorCounts.containsKey(name) {
+        for (name in newGraph.getProcessorNames()) {
+            if (!processorCounts.containsKey(name)) {
                 processorCounts[name] = 0
             }
-            if !processorErrors.containsKey(name) {
+            if (!processorErrors.containsKey(name)) {
                 processorErrors[name] = 0
             }
         }
@@ -176,16 +176,16 @@ class Fabric {
     pub fn ingestAndExecute(FlowFile ff): bool {
         var g = snapshotGraph()
         var entries = g.getEntryPoints()
-        if len(entries) == 0 {
+        if (len(entries) == 0) {
             logging.warn("no entry points configured, dropping ff", "id", ff.id)
             return false
         }
-        if len(entries) == 1 {
+        if (len(entries) == 1) {
             return execute(ff, entries[0])
         }
         // Multiple entry points — first gets the original, rest get clones.
         var i = 1
-        while i < len(entries) {
+        while (i < len(entries)) {
             var clone = cloneFlowFile(ff)
             execute(clone, entries[i])
             i = i + 1
@@ -200,12 +200,12 @@ class Fabric {
         var work = List<WorkItem>[]
         work = append(work, WorkItem(ff, entryPoint, 0))
 
-        while len(work) > 0 {
+        while (len(work) > 0) {
             var last = len(work) - 1
             var item = work[last]
             work = work[0:last]
 
-            if item.hops >= maxHops {
+            if (item.hops >= maxHops) {
                 logging.error("max hops exceeded",
                     "processor", item.processor,
                     "max_hops", maxHops,
@@ -214,7 +214,7 @@ class Fabric {
                 continue
             }
 
-            if !g.hasProcessor(item.processor) {
+            if (!g.hasProcessor(item.processor)) {
                 logging.error("unknown processor in graph, dropping",
                     "processor", item.processor, "ff", item.ff.id)
                 continue
@@ -225,12 +225,12 @@ class Fabric {
             // work would race the cascade.
             var state = g.getState(item.processor)
             var runIt = false
-            match state {
+            match (state) {
                 case ENABLED { runIt = true }
                 case DRAINING {}
                 case DISABLED {}
             }
-            if !runIt {
+            if (!runIt) {
                 continue
             }
 
@@ -239,12 +239,12 @@ class Fabric {
             incProcCount(item.processor)
             totalProcessed = totalProcessed + 1
 
-            match result {
+            match (result) {
                 case Single(out) {
                     work = pushDownstream(work, g, out, item.processor, "success", item.hops + 1)
                 }
                 case Multiple(outs) {
-                    for out in outs {
+                    for (out in outs) {
                         work = pushDownstream(work, g, out, item.processor, "success", item.hops + 1)
                     }
                 }
@@ -256,7 +256,7 @@ class Fabric {
                 }
                 case Failure(reason, failFf) {
                     var targets = g.getTargets(item.processor, "failure")
-                    if len(targets) > 0 {
+                    if (len(targets) > 0) {
                         work = pushDownstream(work, g, failFf, item.processor, "failure", item.hops + 1)
                     } else {
                         logging.error("unhandled failure, routing to DLQ",
@@ -276,11 +276,11 @@ class Fabric {
     // target is popped first (stable DFS order).
     fn pushDownstream(List<WorkItem> work, PipelineGraph g, FlowFile ff, String fromProcessor, String relationship, int hops): List<WorkItem> {
         var targets = g.getTargets(fromProcessor, relationship)
-        if len(targets) == 0 {
+        if (len(targets) == 0) {
             return work
         }
         var i = len(targets) - 1
-        while i >= 1 {
+        while (i >= 1) {
             work = append(work, WorkItem(cloneFlowFile(ff), targets[i], hops))
             i = i - 1
         }
@@ -290,7 +290,7 @@ class Fabric {
 
     // incProcCount bumps the success counter for `name`, lazily initializing.
     fn incProcCount(String name) {
-        if processorCounts.containsKey(name) {
+        if (processorCounts.containsKey(name)) {
             processorCounts[name] = processorCounts[name] + 1
         } else {
             processorCounts[name] = 1
@@ -299,7 +299,7 @@ class Fabric {
 
     // incProcError bumps the error counter for `name`, lazily initializing.
     fn incProcError(String name) {
-        if processorErrors.containsKey(name) {
+        if (processorErrors.containsKey(name)) {
             processorErrors[name] = processorErrors[name] + 1
         } else {
             processorErrors[name] = 1
@@ -313,18 +313,18 @@ class Fabric {
     // for startAsync.
     pub fn addSource(ConnectorSource source) {
         sources[source.getName()] = source
-        if running {
+        if (running) {
             source.start((FlowFile ff) -> ingestAndExecute(ff))
             logging.info("source started", "name", source.getName(), "type", source.getSourceType())
         }
     }
 
     pub fn startSource(String name): bool {
-        if !sources.containsKey(name) {
+        if (!sources.containsKey(name)) {
             return false
         }
         var src = sources[name]
-        if !src.isRunning() {
+        if (!src.isRunning()) {
             src.start((FlowFile ff) -> ingestAndExecute(ff))
             logging.info("source started", "name", name, "type", src.getSourceType())
         }
@@ -332,7 +332,7 @@ class Fabric {
     }
 
     pub fn stopSource(String name): bool {
-        if !sources.containsKey(name) {
+        if (!sources.containsKey(name)) {
             return false
         }
         sources[name].stop()
@@ -344,12 +344,12 @@ class Fabric {
     // registered source.
     pub fn getSources(): List<Map<String, String>> {
         var result = List<Map<String, String>>[]
-        for name in sources.keys() {
+        for (name in sources.keys()) {
             var src = sources[name]
             var entry = Map<String, String>{}
             entry["name"] = name
             entry["type"] = src.getSourceType()
-            if src.isRunning() {
+            if (src.isRunning()) {
                 entry["running"] = "true"
             } else {
                 entry["running"] = "false"
@@ -365,9 +365,9 @@ class Fabric {
         running = true
         // Start every registered source — they each kick off their own
         // loops and feed us via ingestAndExecute.
-        for name in sources.keys() {
+        for (name in sources.keys()) {
             var src = sources[name]
-            if !src.isRunning() {
+            if (!src.isRunning()) {
                 src.start((FlowFile ff) -> ingestAndExecute(ff))
             }
             logging.info("source started", "name", name, "type", src.getSourceType())
@@ -380,7 +380,7 @@ class Fabric {
 
     pub fn stopAsync() {
         running = false
-        for name in sources.keys() {
+        for (name in sources.keys()) {
             sources[name].stop()
         }
     }
@@ -396,7 +396,7 @@ class Fabric {
     // rather than going through the full entry-point fan-out.
     pub fn replayAt(String processorName, FlowFile ff): bool {
         var g = snapshotGraph()
-        if !g.hasProcessor(processorName) {
+        if (!g.hasProcessor(processorName)) {
             return false
         }
         return execute(ff, processorName)
@@ -436,7 +436,7 @@ class Fabric {
     }
 
     pub fn getProcessorType(String name): String {
-        if processorDefs.containsKey(name) {
+        if (processorDefs.containsKey(name)) {
             return processorDefs[name].typeName
         }
         return "unknown"
@@ -453,16 +453,16 @@ class Fabric {
 
     pub fn getProcessorStats(): Map<String, Map<String, int>> {
         var stats = Map<String, Map<String, int>>{}
-        for name in graph.getProcessorNames() {
+        for (name in graph.getProcessorNames()) {
             // Local is `ps` (not `s`) because Zinc→Go lowers the class
             // receiver as `s` — a local named `s` would shadow it.
             var ps = Map<String, int>{}
-            if processorCounts.containsKey(name) {
+            if (processorCounts.containsKey(name)) {
                 ps["processed"] = processorCounts[name]
             } else {
                 ps["processed"] = 0
             }
-            if processorErrors.containsKey(name) {
+            if (processorErrors.containsKey(name)) {
                 ps["errors"] = processorErrors[name]
             } else {
                 ps["errors"] = 0
@@ -488,17 +488,17 @@ class Fabric {
     // provider is missing or disabled (mirrors csharp behavior).
     pub fn enableProcessor(String name): bool {
         var g = snapshotGraph()
-        if !g.hasProcessor(name) {
+        if (!g.hasProcessor(name)) {
             return false
         }
         var requires = g.getRequires(name)
-        for provName in requires {
+        for (provName in requires) {
             var prov = globalCtx.getProvider(provName) or {
                 logging.warn("cannot enable — provider missing",
                     "processor", name, "provider", provName)
                 return false
             }
-            if !prov.isEnabled() {
+            if (!prov.isEnabled()) {
                 logging.warn("cannot enable — provider disabled",
                     "processor", name, "provider", provName)
                 return false
@@ -515,7 +515,7 @@ class Fabric {
     // next execute() that touches it.
     pub fn disableProcessor(String name, int drainSecs): bool {
         var g = snapshotGraph()
-        if !g.hasProcessor(name) {
+        if (!g.hasProcessor(name)) {
             return false
         }
         g.setState(name, DISABLED)
@@ -542,8 +542,8 @@ class Fabric {
             return false
         }
         var dependents = globalCtx.getDependents(providerName)
-        for procName in dependents {
-            match getProcessorState(procName) {
+        for (procName in dependents) {
+            match (getProcessorState(procName)) {
                 case ENABLED { disableProcessor(procName, drainSecs) }
                 case DRAINING {}
                 case DISABLED {}
@@ -577,11 +577,11 @@ class Fabric {
     // plus any caller that wants to bypass the registry).
     pub fn addProcessorInstance(String name, ProcessorFn proc, List<String> requires): bool {
         var g = snapshotGraph()
-        if g.hasProcessor(name) {
+        if (g.hasProcessor(name)) {
             logging.warn("processor already exists", "name", name)
             return false
         }
-        for provName in requires {
+        for (provName in requires) {
             globalCtx.registerDependent(provName, name)
         }
         g.addProcessor(name, proc, requires)
@@ -597,11 +597,11 @@ class Fabric {
     // addConnection once that API is added.
     pub fn addProcessor(String name, String typeName, Map<String, String> pconfig): bool {
         var g = snapshotGraph()
-        if g.hasProcessor(name) {
+        if (g.hasProcessor(name)) {
             logging.warn("processor already exists", "name", name)
             return false
         }
-        if !reg.has(typeName) {
+        if (!reg.has(typeName)) {
             logging.warn("unknown processor type", "type", typeName)
             return false
         }
@@ -627,33 +627,33 @@ class Fabric {
     // the graph (rebuilds the processor list sans `name`).
     pub fn removeProcessor(String name): bool {
         var g = snapshotGraph()
-        if !g.hasProcessor(name) {
+        if (!g.hasProcessor(name)) {
             return false
         }
         // Rebuild graph without this processor. The PipelineGraph doesn't
         // expose an in-place remove, so we construct a replacement.
         var newGraph = PipelineGraph()
-        for n in g.getProcessorNames() {
-            if n == name {
+        for (n in g.getProcessorNames()) {
+            if (n == name) {
                 continue
             }
             newGraph.addProcessor(n, g.getProcessor(n), g.getRequires(n))
         }
         var allConns = g.getConnections()
-        for srcName in allConns.keys() {
-            if srcName == name {
+        for (srcName in allConns.keys()) {
+            if (srcName == name) {
                 continue
             }
             var rels = allConns[srcName]
-            for rel in rels.keys() {
+            for (rel in rels.keys()) {
                 // Drop any target that pointed at the removed processor.
                 var kept = List<String>[]
-                for t in rels[rel] {
-                    if t != name {
+                for (t in rels[rel]) {
+                    if (t != name) {
                         kept = append(kept, t)
                     }
                 }
-                if len(kept) > 0 {
+                if (len(kept) > 0) {
                     newGraph.addConnection(srcName, rel, kept)
                 }
             }
@@ -671,16 +671,16 @@ class Fabric {
     // processor. Empty requires → all providers (matches csharp).
     fn buildScopedContextFor(List<String> requires): ScopedContext {
         var scoped = Map<String, Provider>{}
-        if len(requires) == 0 {
+        if (len(requires) == 0) {
             var providerNames = globalCtx.listProviders()
-            for pn in providerNames {
+            for (pn in providerNames) {
                 var prov = globalCtx.getProvider(pn) or {
                     continue
                 }
                 scoped[pn] = prov
             }
         } else {
-            for pn in requires {
+            for (pn in requires) {
                 var prov = globalCtx.getProvider(pn) or {
                     continue
                 }
@@ -705,7 +705,7 @@ class Fabric {
 // fan-out siblings don't share mutation with each other.
 fn cloneFlowFile(FlowFile ff): FlowFile {
     var attrs = Map<String, String>{}
-    for k in ff.attributes.keys() {
+    for (k in ff.attributes.keys()) {
         attrs[k] = ff.attributes[k]
     }
     return FlowFile(ff.id, attrs, ff.content, ff.timestamp)

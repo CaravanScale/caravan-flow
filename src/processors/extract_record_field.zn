@@ -36,7 +36,7 @@ class ExtractRecordField : ProcessorFn {
     }
 
     fn parseFields(String spec) {
-        if spec == "" {
+        if (spec == "") {
             return
         }
         // Same `k:v;k:v` shape csharp uses. A pair without a colon or
@@ -44,54 +44,54 @@ class ExtractRecordField : ProcessorFn {
         // csharp's SplitStringOptions.RemoveEmptyEntries behavior.
         var start = 0
         var i = 0
-        while i < len(spec) {
-            if spec[i:i+1] == ";" {
+        while (i < len(spec)) {
+            if (spec[i:i+1] == ";") {
                 addPair(spec[start:i])
                 start = i + 1
             }
             i = i + 1
         }
-        if start < len(spec) {
+        if (start < len(spec)) {
             addPair(spec[start:len(spec)])
         }
     }
 
     fn addPair(String pair) {
         var trimmed = trimPairSpace(pair)
-        if trimmed == "" {
+        if (trimmed == "") {
             return
         }
         var colonIdx = -1
         var j = 0
-        while j < len(trimmed) {
-            if trimmed[j:j+1] == ":" {
+        while (j < len(trimmed)) {
+            if (trimmed[j:j+1] == ":") {
                 colonIdx = j
                 break
             }
             j = j + 1
         }
-        if colonIdx <= 0 || colonIdx == len(trimmed)-1 {
+        if (colonIdx <= 0 || colonIdx == len(trimmed)-1) {
             return
         }
         var fname = trimPairSpace(trimmed[0:colonIdx])
         var aname = trimPairSpace(trimmed[colonIdx+1:len(trimmed)])
-        if fname == "" || aname == "" {
+        if (fname == "" || aname == "") {
             return
         }
         mappings = append(mappings, FieldMapping(fname, aname))
     }
 
     pub fn process(FlowFile ff): ProcessorResult {
-        match ff.content {
+        match (ff.content) {
             case Records(_, records) {
-                if len(records) == 0 || recordIndex >= len(records) {
+                if (len(records) == 0 || recordIndex >= len(records)) {
                     return Single(ff)
                 }
                 var record = records[recordIndex]
                 var result = ff
-                for m in mappings {
+                for (m in mappings) {
                     var val = record.getField(m.field)
-                    if val != null {
+                    if (val != null) {
                         result = withAttribute(result, m.attr, str(val))
                     }
                 }
@@ -109,11 +109,11 @@ class ExtractRecordField : ProcessorFn {
 
 pub fn ExtractRecordFieldFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
     var fieldsSpec = ""
-    if config.containsKey("fields") {
+    if (config.containsKey("fields")) {
         fieldsSpec = config["fields"]
     }
     var idx = 0
-    if config.containsKey("record_index") {
+    if (config.containsKey("record_index")) {
         idx = parseIntOr(config["record_index"], 0)
     }
     return ExtractRecordField(fieldsSpec, idx)
@@ -123,26 +123,26 @@ pub fn ExtractRecordFieldFactory(ScopedContext ctx, Map<String, String> config):
 // Duplicated from fabric/source/generate.zn's atoi rather than
 // exposed via stdlib to avoid leaking a subpackage-private helper.
 fn parseIntOr(String s, int fallback): int {
-    if s == "" {
+    if (s == "") {
         return fallback
     }
     var neg = false
     var start = 0
-    if s[0:1] == "-" {
+    if (s[0:1] == "-") {
         neg = true
         start = 1
     }
     var n = 0
     var i = start
-    while i < len(s) {
+    while (i < len(s)) {
         var c = s[i:i+1]
-        if c < "0" || c > "9" {
+        if (c < "0" || c > "9") {
             return fallback
         }
         n = n*10 + (int(byte(s[i])) - 48)
         i = i + 1
     }
-    if neg {
+    if (neg) {
         return 0 - n
     }
     return n
@@ -150,17 +150,17 @@ fn parseIntOr(String s, int fallback): int {
 
 fn trimPairSpace(String s): String {
     var start = 0
-    while start < len(s) {
+    while (start < len(s)) {
         var c = s[start:start+1]
-        if c != " " && c != "\t" {
+        if (c != " " && c != "\t") {
             break
         }
         start = start + 1
     }
     var stop = len(s)
-    while stop > start {
+    while (stop > start) {
         var c = s[stop-1:stop]
-        if c != " " && c != "\t" {
+        if (c != " " && c != "\t") {
             break
         }
         stop = stop - 1

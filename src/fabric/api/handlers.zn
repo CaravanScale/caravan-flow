@@ -33,7 +33,7 @@ class ApiHandler {
         var reg = fab.getRegistry()
         var infos = reg.list()
         var result = List<Map<String, Object>>[]
-        for info in infos {
+        for (info in infos) {
             var entry = Map<String, Object>{}
             entry["name"] = info.name
             entry["description"] = info.description
@@ -62,7 +62,7 @@ class ApiHandler {
         var dlq = fab.getDLQ()
         var entries = dlq.list()
         var result = List<Map<String, Object>>[]
-        for entry in entries {
+        for (entry in entries) {
             var e = Map<String, Object>{}
             e["id"] = entry.id
             e["sourceProcessor"] = entry.sourceProcessor
@@ -79,12 +79,12 @@ class ApiHandler {
     // POST /api/dlq/replay — replay a DLQ entry
     // Body: {"id": "dlq-1"}
     pub fn dlqReplayHandler(ResponseWriter w, Request r) {
-        if r.Method != "POST" {
+        if (r.Method != "POST") {
             writeError(w, 405, "method not allowed")
             return
         }
         var body = readBody(r)
-        if body == null {
+        if (body == null) {
             writeError(w, 400, "failed to read body")
             return
         }
@@ -94,13 +94,13 @@ class ApiHandler {
             return
         }
         var id = strVal(req, "id")
-        if id == "" {
+        if (id == "") {
             writeError(w, 400, "id is required")
             return
         }
         var dlq = fab.getDLQ()
         var entry = dlq.get(id)
-        if entry.id == "" {
+        if (entry.id == "") {
             writeError(w, 404, "dlq entry not found")
             return
         }
@@ -112,14 +112,14 @@ class ApiHandler {
 
     // POST /api/dlq/replay-all — replay all DLQ entries to their source queues
     pub fn dlqReplayAllHandler(ResponseWriter w, Request r) {
-        if r.Method != "POST" {
+        if (r.Method != "POST") {
             writeError(w, 405, "method not allowed")
             return
         }
         var dlq = fab.getDLQ()
         var entries = dlq.replayAll()
         var count = 0
-        for entry in entries {
+        for (entry in entries) {
             fab.replayAt(entry.sourceProcessor, entry.flowFile)
             count = count + 1
         }
@@ -129,12 +129,12 @@ class ApiHandler {
     // DELETE /api/dlq — remove a DLQ entry
     // Body: {"id": "dlq-1"}
     pub fn dlqDeleteHandler(ResponseWriter w, Request r) {
-        if r.Method != "DELETE" {
+        if (r.Method != "DELETE") {
             writeError(w, 405, "method not allowed")
             return
         }
         var body = readBody(r)
-        if body == null {
+        if (body == null) {
             writeError(w, 400, "failed to read body")
             return
         }
@@ -144,7 +144,7 @@ class ApiHandler {
             return
         }
         var id = strVal(req, "id")
-        if id == "" {
+        if (id == "") {
             writeError(w, 400, "id is required")
             return
         }
@@ -163,12 +163,12 @@ class ApiHandler {
     // POST /api/processors/enable — enable a processor
     // Body: {"name": "my-proc"}
     pub fn enableProcessorHandler(ResponseWriter w, Request r) {
-        if r.Method != "POST" {
+        if (r.Method != "POST") {
             writeError(w, 405, "method not allowed")
             return
         }
         var body = readBody(r)
-        if body == null {
+        if (body == null) {
             writeError(w, 400, "failed to read body")
             return
         }
@@ -178,12 +178,12 @@ class ApiHandler {
             return
         }
         var name = strVal(req, "name")
-        if name == "" {
+        if (name == "") {
             writeError(w, 400, "name is required")
             return
         }
         var ok = fab.enableProcessor(name)
-        if !ok {
+        if (!ok) {
             writeError(w, 404, "processor not found")
             return
         }
@@ -193,12 +193,12 @@ class ApiHandler {
     // POST /api/processors/disable — disable a processor (drains first)
     // Body: {"name": "my-proc", "timeout": 60}
     pub fn disableProcessorHandler(ResponseWriter w, Request r) {
-        if r.Method != "POST" {
+        if (r.Method != "POST") {
             writeError(w, 405, "method not allowed")
             return
         }
         var body = readBody(r)
-        if body == null {
+        if (body == null) {
             writeError(w, 400, "failed to read body")
             return
         }
@@ -208,13 +208,13 @@ class ApiHandler {
             return
         }
         var name = strVal(req, "name")
-        if name == "" {
+        if (name == "") {
             writeError(w, 400, "name is required")
             return
         }
         var drainSecs = 60
         var ok = fab.disableProcessor(name, drainSecs)
-        if !ok {
+        if (!ok) {
             writeError(w, 404, "processor not found")
             return
         }
@@ -225,7 +225,7 @@ class ApiHandler {
     // Body: {"name": "my-proc"}
     pub fn processorStateHandler(ResponseWriter w, Request r) {
         var body = readBody(r)
-        if body == null {
+        if (body == null) {
             writeError(w, 400, "failed to read body")
             return
         }
@@ -235,13 +235,13 @@ class ApiHandler {
             return
         }
         var name = strVal(req, "name")
-        if name == "" {
+        if (name == "") {
             writeError(w, 400, "name is required")
             return
         }
         var state = fab.getProcessorState(name)
         var stateStr = "DISABLED"
-        match state {
+        match (state) {
             case ENABLED { stateStr = "ENABLED" }
             case DRAINING { stateStr = "DRAINING" }
             case DISABLED { stateStr = "DISABLED" }
@@ -252,12 +252,12 @@ class ApiHandler {
     // POST /api/processors — add a processor
     // Body: {"name": "my-proc", "type": "add-attribute", "config": {"key": "env", "value": "prod"}}
     pub fn addProcessorHandler(ResponseWriter w, Request r) {
-        if r.Method != "POST" {
+        if (r.Method != "POST") {
             writeError(w, 405, "method not allowed")
             return
         }
         var body = readBody(r)
-        if body == null {
+        if (body == null) {
             writeError(w, 400, "failed to read body")
             return
         }
@@ -268,22 +268,22 @@ class ApiHandler {
         }
         var name = strVal(req, "name")
         var typeName = strVal(req, "type")
-        if name == "" || typeName == "" {
+        if (name == "" || typeName == "") {
             writeError(w, 400, "name and type are required")
             return
         }
         var config = Map<String, String>{}
-        if req.containsKey("config") {
+        if (req.containsKey("config")) {
             var rawConfig = Map<String, String>{}
             var configBytes = json.Marshal(req["config"]) or { byte[0] }
             json.Unmarshal(configBytes, rawConfig) or {}
             var keys = rawConfig.keys()
-            for k in keys {
+            for (k in keys) {
                 config[k] = rawConfig[k]
             }
         }
         var ok = fab.addProcessor(name, typeName, config)
-        if !ok {
+        if (!ok) {
             writeError(w, 409, "processor already exists or unknown type")
             return
         }
@@ -294,12 +294,12 @@ class ApiHandler {
     // DELETE /api/processors — remove a processor
     // Body: {"name": "my-proc"}
     pub fn removeProcessorHandler(ResponseWriter w, Request r) {
-        if r.Method != "DELETE" {
+        if (r.Method != "DELETE") {
             writeError(w, 405, "method not allowed")
             return
         }
         var body = readBody(r)
-        if body == null {
+        if (body == null) {
             writeError(w, 400, "failed to read body")
             return
         }
@@ -309,12 +309,12 @@ class ApiHandler {
             return
         }
         var name = strVal(req, "name")
-        if name == "" {
+        if (name == "") {
             writeError(w, 400, "name is required")
             return
         }
         var ok = fab.removeProcessor(name)
-        if !ok {
+        if (!ok) {
             writeError(w, 404, "processor not found")
             return
         }
@@ -331,7 +331,7 @@ class ApiHandler {
         var ctx = fab.getContext()
         var names = ctx.listProviders()
         var result = List<Map<String, Object>>[]
-        for name in names {
+        for (name in names) {
             var entry = Map<String, Object>{}
             entry["name"] = name
             var prov = ctx.getProvider(name) or {
@@ -341,7 +341,7 @@ class ApiHandler {
             }
             entry["type"] = prov.getType()
             var state = prov.getState()
-            match state {
+            match (state) {
                 case ENABLED { entry["state"] = "ENABLED" }
                 case DRAINING { entry["state"] = "DRAINING" }
                 case DISABLED { entry["state"] = "DISABLED" }
@@ -354,12 +354,12 @@ class ApiHandler {
     // POST /api/providers/enable — enable a provider
     // Body: {"name": "content"}
     pub fn enableProviderHandler(ResponseWriter w, Request r) {
-        if r.Method != "POST" {
+        if (r.Method != "POST") {
             writeError(w, 405, "method not allowed")
             return
         }
         var body = readBody(r)
-        if body == null {
+        if (body == null) {
             writeError(w, 400, "failed to read body")
             return
         }
@@ -369,12 +369,12 @@ class ApiHandler {
             return
         }
         var name = strVal(req, "name")
-        if name == "" {
+        if (name == "") {
             writeError(w, 400, "name is required")
             return
         }
         var ok = fab.enableProvider(name)
-        if !ok {
+        if (!ok) {
             writeError(w, 404, "provider not found")
             return
         }
@@ -384,12 +384,12 @@ class ApiHandler {
     // POST /api/providers/disable — disable a provider (cascades to dependent processors)
     // Body: {"name": "content"}
     pub fn disableProviderHandler(ResponseWriter w, Request r) {
-        if r.Method != "POST" {
+        if (r.Method != "POST") {
             writeError(w, 405, "method not allowed")
             return
         }
         var body = readBody(r)
-        if body == null {
+        if (body == null) {
             writeError(w, 400, "failed to read body")
             return
         }
@@ -399,13 +399,13 @@ class ApiHandler {
             return
         }
         var name = strVal(req, "name")
-        if name == "" {
+        if (name == "") {
             writeError(w, 400, "name is required")
             return
         }
         var drainSecs = 60
         var ok = fab.disableProvider(name, drainSecs)
-        if !ok {
+        if (!ok) {
             writeError(w, 404, "provider not found")
             return
         }
@@ -424,7 +424,7 @@ fn readBody(Request r): byte[] {
 
 // strVal extracts a string value from a map, returning "" if missing.
 fn strVal(Map<String, Object> m, String key): String {
-    if m.containsKey(key) {
+    if (m.containsKey(key)) {
         return str(m[key])
     }
     return ""

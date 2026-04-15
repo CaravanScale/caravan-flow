@@ -32,7 +32,7 @@ class RouteOnAttribute : ProcessorFn {
     }
 
     fn parseRoutes(String spec) {
-        if spec == "" {
+        if (spec == "") {
             return
         }
         // Split by ';' to get entries, then by ':' to separate name
@@ -41,21 +41,21 @@ class RouteOnAttribute : ProcessorFn {
         // than importing strings.Split because the trimmed-and-skip-
         // empty behavior has to match csharp byte-for-byte.
         var entries = splitAndTrim(spec, ";")
-        for entry in entries {
+        for (entry in entries) {
             var colonIdx = indexOfByte(entry, ":")
-            if colonIdx <= 0 {
+            if (colonIdx <= 0) {
                 continue
             }
             var name = trimSpace(entry[0:colonIdx])
             var conditionStr = trimSpace(entry[colonIdx+1:len(entry)])
             var parts = splitOnSpace(conditionStr, 3)
-            if len(parts) < 2 {
+            if (len(parts) < 2) {
                 continue
             }
             var attribute = parts[0]
             var op = upperCase(parts[1])
             var value = ""
-            if len(parts) >= 3 {
+            if (len(parts) >= 3) {
                 value = parts[2]
             }
             routes = append(routes, Route(name, attribute, op, value))
@@ -63,8 +63,8 @@ class RouteOnAttribute : ProcessorFn {
     }
 
     pub fn process(FlowFile ff): ProcessorResult {
-        for route in routes {
-            if evaluate(route, ff.attributes) {
+        for (route in routes) {
+            if (evaluate(route, ff.attributes)) {
                 return Routed(route.relationship, ff)
             }
         }
@@ -74,7 +74,7 @@ class RouteOnAttribute : ProcessorFn {
 
 pub fn RouteOnAttributeFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
     var spec = ""
-    if config.containsKey("routes") {
+    if (config.containsKey("routes")) {
         spec = config["routes"]
     }
     return RouteOnAttribute(spec)
@@ -83,32 +83,32 @@ pub fn RouteOnAttributeFactory(ScopedContext ctx, Map<String, String> config): P
 // --- predicate evaluation ---
 
 fn evaluate(Route r, Map<String, String> attrs): bool {
-    if r.op == "EXISTS" {
+    if (r.op == "EXISTS") {
         return attrs.containsKey(r.attribute)
     }
-    if !attrs.containsKey(r.attribute) {
+    if (!attrs.containsKey(r.attribute)) {
         return false
     }
     var actual = attrs[r.attribute]
-    if r.op == "EQ" {
+    if (r.op == "EQ") {
         return actual == r.value
     }
-    if r.op == "NEQ" {
+    if (r.op == "NEQ") {
         return actual != r.value
     }
-    if r.op == "CONTAINS" {
+    if (r.op == "CONTAINS") {
         return actual.contains(r.value)
     }
-    if r.op == "STARTSWITH" {
+    if (r.op == "STARTSWITH") {
         return actual.startsWith(r.value)
     }
-    if r.op == "ENDSWITH" {
+    if (r.op == "ENDSWITH") {
         return actual.endsWith(r.value)
     }
-    if r.op == "GT" {
+    if (r.op == "GT") {
         return actual > r.value
     }
-    if r.op == "LT" {
+    if (r.op == "LT") {
         return actual < r.value
     }
     return false
@@ -120,10 +120,10 @@ fn splitAndTrim(String s, String sep): List<String> {
     var out = List<String>[]
     var start = 0
     var i = 0
-    while i < len(s) {
-        if s[i:i+1] == sep {
+    while (i < len(s)) {
+        if (s[i:i+1] == sep) {
             var part = trimSpace(s[start:i])
-            if part != "" {
+            if (part != "") {
                 out = append(out, part)
             }
             start = i + 1
@@ -131,7 +131,7 @@ fn splitAndTrim(String s, String sep): List<String> {
         i = i + 1
     }
     var tail = trimSpace(s[start:len(s)])
-    if tail != "" {
+    if (tail != "") {
         out = append(out, tail)
     }
     return out
@@ -139,8 +139,8 @@ fn splitAndTrim(String s, String sep): List<String> {
 
 fn indexOfByte(String s, String b): int {
     var i = 0
-    while i < len(s) {
-        if s[i:i+1] == b {
+    while (i < len(s)) {
+        if (s[i:i+1] == b) {
             return i
         }
         i = i + 1
@@ -150,17 +150,17 @@ fn indexOfByte(String s, String b): int {
 
 fn trimSpace(String s): String {
     var start = 0
-    while start < len(s) {
+    while (start < len(s)) {
         var c = s[start:start+1]
-        if c != " " && c != "\t" {
+        if (c != " " && c != "\t") {
             break
         }
         start = start + 1
     }
     var stop = len(s)
-    while stop > start {
+    while (stop > start) {
         var c = s[stop-1:stop]
-        if c != " " && c != "\t" {
+        if (c != " " && c != "\t") {
             break
         }
         stop = stop - 1
@@ -172,14 +172,14 @@ fn splitOnSpace(String s, int maxParts): List<String> {
     var out = List<String>[]
     var start = 0
     var i = 0
-    while i < len(s) && len(out) < maxParts-1 {
+    while (i < len(s) && len(out) < maxParts-1) {
         var c = s[i:i+1]
-        if c == " " || c == "\t" {
-            if i > start {
+        if (c == " " || c == "\t") {
+            if (i > start) {
                 out = append(out, s[start:i])
             }
             // skip consecutive whitespace
-            while i < len(s) && (s[i:i+1] == " " || s[i:i+1] == "\t") {
+            while (i < len(s) && (s[i:i+1] == " " || s[i:i+1] == "\t")) {
                 i = i + 1
             }
             start = i
@@ -187,7 +187,7 @@ fn splitOnSpace(String s, int maxParts): List<String> {
         }
         i = i + 1
     }
-    if start < len(s) {
+    if (start < len(s)) {
         out = append(out, s[start:len(s)])
     }
     return out
@@ -196,9 +196,9 @@ fn splitOnSpace(String s, int maxParts): List<String> {
 fn upperCase(String s): String {
     var out = ""
     var i = 0
-    while i < len(s) {
+    while (i < len(s)) {
         var c = s[i:i+1]
-        if c >= "a" && c <= "z" {
+        if (c >= "a" && c <= "z") {
             // byte-level ASCII uppercase shift: 'a'(97) → 'A'(65), diff = -32
             var b = byte(s[i])
             out = out + string(byte(b - 32))

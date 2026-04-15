@@ -31,7 +31,7 @@ class LogAttribute : ProcessorFn {
         // of dynamically building a slice. Loggers like slog dedupe
         // adjacent lines via handlers.
         logging.info("flowfile", "processor", prefix, "id", ff.id)
-        for k in ff.attributes.keys() {
+        for (k in ff.attributes.keys()) {
             logging.info("flowfile.attr", "processor", prefix, "id", ff.id, "key", k, "value", ff.attributes[k])
         }
         return Single(ff)
@@ -40,7 +40,7 @@ class LogAttribute : ProcessorFn {
 
 pub fn LogAttributeFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
     var prefix = "flow"
-    if config.containsKey("prefix") && config["prefix"] != "" {
+    if (config.containsKey("prefix") && config["prefix"] != "") {
         prefix = config["prefix"]
     }
     return LogAttribute(prefix)

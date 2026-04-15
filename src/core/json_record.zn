@@ -17,18 +17,18 @@ class JsonRecordReader : RecordReader {
 
         // Schema-on-read: if schema has no fields, infer from first object
         var effectiveSchema = schema
-        if len(schema.fields) == 0 && len(rawList) > 0 {
+        if (len(schema.fields) == 0 && len(rawList) > 0) {
             effectiveSchema = inferSchema(schema.name, rawList[0])
         }
 
         // Convert each map to a GenericRecord using the schema
         var records = List<GenericRecord>[]
-        for raw in rawList {
+        for (raw in rawList) {
             var record = GenericRecord(effectiveSchema)
-            for f in effectiveSchema.fields {
-                if raw.containsKey(f.name) {
+            for (f in effectiveSchema.fields) {
+                if (raw.containsKey(f.name)) {
                     record.setField(f.name, raw[f.name])
-                } else if f.defaultValue != null {
+                } else if (f.defaultValue != null) {
                     record.setField(f.name, f.defaultValue)
                 }
             }
@@ -46,11 +46,11 @@ class JsonRecordWriter : RecordWriter {
     pub fn write(List<GenericRecord> records, Schema schema): byte[] {
         // Convert each record to a map
         var rawList = List<Map<String, Object>>[]
-        for record in records {
+        for (record in records) {
             var raw = Map<String, Object>{}
-            for f in schema.fields {
+            for (f in schema.fields) {
                 var val = record.getField(f.name)
-                if val != null {
+                if (val != null) {
                     raw[f.name] = val
                 }
             }
@@ -69,7 +69,7 @@ class JsonRecordWriter : RecordWriter {
 fn inferSchema(String name, Map<String, Object> sample): Schema {
     var fields = List<Field>[]
     var keys = sample.keys()
-    for key in keys {
+    for (key in keys) {
         var val = sample[key]
         var ft = inferFieldType(val)
         fields = append(fields, Field(key, ft, null))
@@ -80,10 +80,10 @@ fn inferSchema(String name, Map<String, Object> sample): Schema {
 // inferFieldType maps a Go runtime value to a FieldType.
 // json.Unmarshal produces: string, float64 (all numbers), bool, map, slice.
 fn inferFieldType(Object val): FieldType {
-    if val == null {
+    if (val == null) {
         return NULL
     }
-    match val {
+    match (val) {
         case String(_) { return STRING }
         case bool(_) { return BOOLEAN }
         case float64(_) { return DOUBLE }

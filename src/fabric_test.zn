@@ -47,7 +47,7 @@ class RouterProc : ProcessorFn {
     }
 
     pub fn process(FlowFile ff): ProcessorResult {
-        if ff.attributes.containsKey(attr) && ff.attributes[attr] == goodValue {
+        if (ff.attributes.containsKey(attr) && ff.attributes[attr] == goodValue) {
             return Routed("success", ff)
         }
         return Routed("failure", ff)
@@ -61,14 +61,14 @@ class SplitProc : ProcessorFn {
 
     pub fn process(FlowFile ff): ProcessorResult {
         var out = List<FlowFile>[]
-        match ff.content {
+        match (ff.content) {
             case Raw(bytes) {
                 var s = string(bytes)
                 var i = 0
-                while i < len(s) {
+                while (i < len(s)) {
                     var ch = s[i:i+1]
                     var attrs = Map<String, String>{}
-                    for k in ff.attributes.keys() {
+                    for (k in ff.attributes.keys()) {
                         attrs[k] = ff.attributes[k]
                     }
                     attrs["split.idx"] = str(i)

@@ -69,7 +69,7 @@ test "scenario: disable/enable processor — state transitions take effect" {
     fab.addProcessorInstance("sink", sink, List<String>[])
     fab.connect("tagger", "success", List<String>["sink"])
 
-    match fab.getProcessorState("tagger") {
+    match (fab.getProcessorState("tagger")) {
         case ENABLED { }
         case _ { t.Errorf("initially expected ENABLED") }
     }
@@ -79,7 +79,7 @@ test "scenario: disable/enable processor — state transitions take effect" {
     asserts.equalInt(t, sink.count(), 0)
 
     fab.enableProcessor("tagger")
-    match fab.getProcessorState("tagger") {
+    match (fab.getProcessorState("tagger")) {
         case ENABLED { }
         case _ { t.Errorf("after enableProcessor expected ENABLED") }
     }
@@ -143,7 +143,7 @@ test "scenario: provider disable cascades — dependent processors become DISABL
     var fab = Fabric(reg, globalCtx)
     fab.addProcessor("file-sink", "file-sink", Map<String, String>{"output_dir": "/tmp/test"})
 
-    match fab.getProcessorState("file-sink") {
+    match (fab.getProcessorState("file-sink")) {
         case ENABLED { }
         case _ { t.Errorf("initially expected ENABLED") }
     }
@@ -151,7 +151,7 @@ test "scenario: provider disable cascades — dependent processors become DISABL
     fab.disableProvider("content", 1)
     asserts.isFalse(t, cp.isEnabled(), "content provider disabled")
 
-    match fab.getProcessorState("file-sink") {
+    match (fab.getProcessorState("file-sink")) {
         case DISABLED { }
         case ENABLED { t.Errorf("sink should not be ENABLED after cascade") }
         case DRAINING {}

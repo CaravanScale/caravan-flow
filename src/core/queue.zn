@@ -41,10 +41,10 @@ class FlowQueue {
     pub fn offer(FlowFile ff): bool {
         var ffBytes = long(contentSize(ff.content))
         var accepted = false
-        lock mu {
+        lock (mu) {
             var visibleCount = len(items) - head
             var total = visibleCount + len(invisible)
-            if total < maxCount && (maxBytes == long(0) || (currentBytes + ffBytes) <= maxBytes) {
+            if (total < maxCount && (maxBytes == long(0) || (currentBytes + ffBytes) <= maxBytes)) {
                 idCounter = idCounter + 1
                 var entryId = name + "-" + str(idCounter)
                 var entry = QueueEntry(entryId, ff, long(0), 0, "")
@@ -60,10 +60,10 @@ class FlowQueue {
     pub fn offerWithSource(FlowFile ff, String sourceProc): bool {
         var ffBytes = long(contentSize(ff.content))
         var accepted = false
-        lock mu {
+        lock (mu) {
             var visibleCount = len(items) - head
             var total = visibleCount + len(invisible)
-            if total < maxCount && (maxBytes == long(0) || (currentBytes + ffBytes) <= maxBytes) {
+            if (total < maxCount && (maxBytes == long(0) || (currentBytes + ffBytes) <= maxBytes)) {
                 idCounter = idCounter + 1
                 var entryId = name + "-" + str(idCounter)
                 var entry = QueueEntry(entryId, ff, long(0), 0, sourceProc)
@@ -78,8 +78,8 @@ class FlowQueue {
     // claim takes the next visible item and makes it invisible.
     // Returns entry with empty id if queue is empty — check id == "".
     pub fn claim(): QueueEntry {
-        lock mu {
-            if head < len(items) {
+        lock (mu) {
+            if (head < len(items)) {
                 var entry = items[head]
                 head = head + 1
                 // Compact when wasted space exceeds live items (amortized O(1))
@@ -97,11 +97,11 @@ class FlowQueue {
 
     // ack confirms successful processing — permanently removes the entry.
     pub fn ack(String entryId) {
-        lock mu {
-            if invisible.containsKey(entryId) {
+        lock (mu) {
+            if (invisible.containsKey(entryId)) {
                 var entry = invisible[entryId]
                 currentBytes = currentBytes - long(contentSize(entry.flowFile.content))
-                if currentBytes < long(0) {
+                if (currentBytes < long(0)) {
                     currentBytes = long(0)
                 }
                 invisible.delete(entryId)
@@ -111,8 +111,8 @@ class FlowQueue {
 
     // nack returns a failed entry to the visible queue immediately.
     pub fn nack(String entryId) {
-        lock mu {
-            if invisible.containsKey(entryId) {
+        lock (mu) {
+            if (invisible.containsKey(entryId)) {
                 var entry = invisible[entryId]
                 invisible.delete(entryId)
                 var updated = QueueEntry(entry.id, entry.flowFile, long(0), entry.attemptCount + 1, entry.sourceProcessor)
@@ -124,7 +124,7 @@ class FlowQueue {
     // hasCapacity returns true if the queue can accept at least one more item.
     pub fn hasCapacity(): bool {
         var result = false
-        lock mu {
+        lock (mu) {
             var visibleCount = len(items) - head
             var total = visibleCount + len(invisible)
             var countOk = total < maxCount
@@ -137,7 +137,7 @@ class FlowQueue {
     // getBytes returns the current tracked byte size.
     pub fn getBytes(): long {
         var b = long(0)
-        lock mu {
+        lock (mu) {
             b = currentBytes
         }
         return b
@@ -146,7 +146,7 @@ class FlowQueue {
     // size returns total items (visible + invisible).
     pub fn size(): int {
         var total = 0
-        lock mu {
+        lock (mu) {
             total = (len(items) - head) + len(invisible)
         }
         return total
@@ -155,7 +155,7 @@ class FlowQueue {
     // visibleCount returns the number of items available to claim.
     pub fn visibleCount(): int {
         var count = 0
-        lock mu {
+        lock (mu) {
             count = len(items) - head
         }
         return count
@@ -164,7 +164,7 @@ class FlowQueue {
     // invisibleCount returns the number of items currently being processed.
     pub fn invisibleCount(): int {
         var count = 0
-        lock mu {
+        lock (mu) {
             count = len(invisible)
         }
         return count
@@ -175,10 +175,10 @@ class FlowQueue {
     // per N claims, where N is the number of elements.
     fn compact() {
         var live = len(items) - head
-        if head > 0 && head >= live {
+        if (head > 0 && head >= live) {
             var compacted = List<QueueEntry>[]
             var i = head
-            while i < len(items) {
+            while (i < len(items)) {
                 compacted = append(compacted, items[i])
                 i = i + 1
             }
@@ -190,18 +190,18 @@ class FlowQueue {
     // startReaper spawns a background goroutine that returns timed-out invisible items to visible.
     pub fn startReaper() {
         spawn {
-            while true {
+            while (true) {
                 time.Sleep(1 * time.Second)
-                lock mu {
-                    if len(invisible) > 0 {
+                lock (mu) {
+                    if (len(invisible) > 0) {
                         var now = long(time.Now().UnixNano())
                         var expired = List<String>[]
-                        for id, entry in invisible {
-                            if (now - entry.claimedAt) > visibilityTimeoutNanos {
+                        for (id, entry in invisible) {
+                            if ((now - entry.claimedAt) > visibilityTimeoutNanos) {
                                 expired = append(expired, id)
                             }
                         }
-                        for id in expired {
+                        for (id in expired) {
                             var entry = invisible[id]
                             invisible.delete(id)
                             var updated = QueueEntry(entry.id, entry.flowFile, long(0), entry.attemptCount + 1, entry.sourceProcessor)

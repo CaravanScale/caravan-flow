@@ -18,7 +18,7 @@ data DeliveryResult(
 // deliverJson sends a FlowFile as JSON to a processor endpoint via HTTP POST.
 pub fn deliverJson(String endpoint, FlowFile ff, ContentStore store): DeliveryResult {
     var resolved = resolve(store, ff.content)
-    if resolved.errorMsg != "" {
+    if (resolved.errorMsg != "") {
         return DeliveryResult(false, 0, byte[0], resolved.errorMsg)
     }
 
@@ -34,10 +34,10 @@ pub fn deliverJson(String endpoint, FlowFile ff, ContentStore store): DeliveryRe
     }
     resp.Body.Close()
 
-    if resp.StatusCode == 429 {
+    if (resp.StatusCode == 429) {
         return DeliveryResult(false, 429, byte[0], "backpressure")
     }
-    if resp.StatusCode >= 400 {
+    if (resp.StatusCode >= 400) {
         return DeliveryResult(false, resp.StatusCode, respBody, "http " + str(resp.StatusCode))
     }
 
@@ -47,7 +47,7 @@ pub fn deliverJson(String endpoint, FlowFile ff, ContentStore store): DeliveryRe
 // deliverV3 sends a FlowFile as NiFi FlowFile V3 binary to a processor endpoint.
 pub fn deliverV3(String endpoint, FlowFile ff, ContentStore store): DeliveryResult {
     var resolved = resolve(store, ff.content)
-    if resolved.errorMsg != "" {
+    if (resolved.errorMsg != "") {
         return DeliveryResult(false, 0, byte[0], resolved.errorMsg)
     }
 
@@ -62,10 +62,10 @@ pub fn deliverV3(String endpoint, FlowFile ff, ContentStore store): DeliveryResu
     }
     resp.Body.Close()
 
-    if resp.StatusCode == 429 {
+    if (resp.StatusCode == 429) {
         return DeliveryResult(false, 429, byte[0], "backpressure")
     }
-    if resp.StatusCode >= 400 {
+    if (resp.StatusCode >= 400) {
         return DeliveryResult(false, resp.StatusCode, respBody, "http " + str(resp.StatusCode))
     }
 
@@ -75,7 +75,7 @@ pub fn deliverV3(String endpoint, FlowFile ff, ContentStore store): DeliveryResu
 // deliverToAll delivers a FlowFile to multiple endpoints (fan-out).
 pub fn deliverToAll(List<String> endpoints, FlowFile ff, ContentStore store): List<DeliveryResult> {
     var results = List<DeliveryResult>[]
-    for endpoint in endpoints {
+    for (endpoint in endpoints) {
         var result = deliverV3(endpoint, ff, store)
         results = append(results, result)
     }

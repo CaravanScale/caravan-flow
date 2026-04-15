@@ -43,7 +43,7 @@ class Registry {
     pub fn list(): List<ProcessorInfo> {
         var result = List<ProcessorInfo>[]
         var names = info.keys()
-        for n in names {
+        for (n in names) {
             result = append(result, info[n])
         }
         return result

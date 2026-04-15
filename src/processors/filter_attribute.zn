@@ -25,17 +25,17 @@ class FilterAttribute : ProcessorFn {
         // ctors have no failure channel (use a factory returning T? for
         // that).
         this.removeMode = filterLowerAscii(mode) != "keep"
-        if attributesSpec != "" {
+        if (attributesSpec != "") {
             var start = 0
             var i = 0
-            while i < len(attributesSpec) {
-                if attributesSpec[i:i+1] == ";" {
+            while (i < len(attributesSpec)) {
+                if (attributesSpec[i:i+1] == ";") {
                     addName(attributesSpec[start:i])
                     start = i + 1
                 }
                 i = i + 1
             }
-            if start < len(attributesSpec) {
+            if (start < len(attributesSpec)) {
                 addName(attributesSpec[start:len(attributesSpec)])
             }
         }
@@ -43,19 +43,19 @@ class FilterAttribute : ProcessorFn {
 
     fn addName(String name) {
         var trimmed = trimFilterSpace(name)
-        if trimmed != "" {
+        if (trimmed != "") {
             attrSet[trimmed] = true
         }
     }
 
     pub fn process(FlowFile ff): ProcessorResult {
         var filtered = Map<String, String>{}
-        for k in ff.attributes.keys() {
+        for (k in ff.attributes.keys()) {
             var inSet = attrSet.containsKey(k)
-            if removeMode && !inSet {
+            if (removeMode && !inSet) {
                 filtered[k] = ff.attributes[k]
             }
-            if !removeMode && inSet {
+            if (!removeMode && inSet) {
                 filtered[k] = ff.attributes[k]
             }
         }
@@ -66,9 +66,9 @@ class FilterAttribute : ProcessorFn {
 
 pub fn FilterAttributeFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
     var mode = ""
-    if config.containsKey("mode") { mode = config["mode"] }
+    if (config.containsKey("mode")) { mode = config["mode"] }
     var attrs = ""
-    if config.containsKey("attributes") { attrs = config["attributes"] }
+    if (config.containsKey("attributes")) { attrs = config["attributes"] }
     return FilterAttribute(mode, attrs)
 }
 
@@ -78,9 +78,9 @@ pub fn FilterAttributeFactory(ScopedContext ctx, Map<String, String> config): Pr
 fn filterLowerAscii(String s): String {
     var out = ""
     var i = 0
-    while i < len(s) {
+    while (i < len(s)) {
         var c = s[i:i+1]
-        if c >= "A" && c <= "Z" {
+        if (c >= "A" && c <= "Z") {
             var b = byte(s[i])
             out = out + string(byte(b + 32))
         } else {
@@ -93,17 +93,17 @@ fn filterLowerAscii(String s): String {
 
 fn trimFilterSpace(String s): String {
     var start = 0
-    while start < len(s) {
+    while (start < len(s)) {
         var c = s[start:start+1]
-        if c != " " && c != "\t" {
+        if (c != " " && c != "\t") {
             break
         }
         start = start + 1
     }
     var stop = len(s)
-    while stop > start {
+    while (stop > start) {
         var c = s[stop-1:stop]
-        if c != " " && c != "\t" {
+        if (c != " " && c != "\t") {
             break
         }
         stop = stop - 1
