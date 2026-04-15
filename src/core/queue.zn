@@ -40,7 +40,6 @@ class FlowQueue {
     // offer adds a FlowFile to the queue. Returns false if at capacity (backpressure).
     pub bool offer(FlowFile ff) {
         var ffBytes = long(contentSize(ff.content))
-        var accepted = false
         lock (mu) {
             var visibleCount = len(items) - head
             var total = visibleCount + len(invisible)
@@ -50,16 +49,15 @@ class FlowQueue {
                 var entry = QueueEntry(entryId, ff, long(0), 0, "")
                 items = append(items, entry)
                 currentBytes = currentBytes + ffBytes
-                accepted = true
+                return true
             }
         }
-        return accepted
+        return false
     }
 
     // offerWithSource adds a FlowFile with source processor context.
     pub bool offerWithSource(FlowFile ff, String sourceProc) {
         var ffBytes = long(contentSize(ff.content))
-        var accepted = false
         lock (mu) {
             var visibleCount = len(items) - head
             var total = visibleCount + len(invisible)
@@ -69,10 +67,10 @@ class FlowQueue {
                 var entry = QueueEntry(entryId, ff, long(0), 0, sourceProc)
                 items = append(items, entry)
                 currentBytes = currentBytes + ffBytes
-                accepted = true
+                return true
             }
         }
-        return accepted
+        return false
     }
 
     // claim takes the next visible item and makes it invisible.
@@ -123,51 +121,41 @@ class FlowQueue {
 
     // hasCapacity returns true if the queue can accept at least one more item.
     pub bool hasCapacity() {
-        var result = false
         lock (mu) {
             var visibleCount = len(items) - head
             var total = visibleCount + len(invisible)
             var countOk = total < maxCount
             var bytesOk = maxBytes == long(0) || currentBytes < maxBytes
-            result = countOk && bytesOk
+            return countOk && bytesOk
         }
-        return result
     }
 
     // getBytes returns the current tracked byte size.
     pub long getBytes() {
-        var b = long(0)
         lock (mu) {
-            b = currentBytes
+            return currentBytes
         }
-        return b
     }
 
     // size returns total items (visible + invisible).
     pub int size() {
-        var total = 0
         lock (mu) {
-            total = (len(items) - head) + len(invisible)
+            return (len(items) - head) + len(invisible)
         }
-        return total
     }
 
     // visibleCount returns the number of items available to claim.
     pub int visibleCount() {
-        var count = 0
         lock (mu) {
-            count = len(items) - head
+            return len(items) - head
         }
-        return count
     }
 
     // invisibleCount returns the number of items currently being processed.
     pub int invisibleCount() {
-        var count = 0
         lock (mu) {
-            count = len(invisible)
+            return len(invisible)
         }
-        return count
     }
 
     // compact reclaims dead space when head has advanced past half the slice.

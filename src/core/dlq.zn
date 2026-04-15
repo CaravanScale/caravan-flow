@@ -41,13 +41,13 @@ class DLQ {
 
     // list returns all DLQ entries.
     pub List<DLQEntry> list() {
-        var result = List<DLQEntry>[]
         lock (mu) {
+            var result = List<DLQEntry>[]
             for (_, entry in entries) {
                 result = append(result, entry)
             }
+            return result
         }
-        return result
     }
 
     // remove discards a DLQ entry.
@@ -59,11 +59,9 @@ class DLQ {
 
     // count returns the number of entries in the DLQ.
     pub int count() {
-        var c = 0
         lock (mu) {
-            c = len(entries)
+            return len(entries)
         }
-        return c
     }
 
     // replay removes an entry and returns the FlowFile for re-injection.
@@ -81,13 +79,13 @@ class DLQ {
 
     // replayAll removes all entries and returns their FlowFiles.
     pub List<DLQEntry> replayAll() {
-        var result = List<DLQEntry>[]
         lock (mu) {
+            var result = List<DLQEntry>[]
             for (_, entry in entries) {
                 result = append(result, entry)
             }
             entries = Map<String, DLQEntry>{}
+            return result
         }
-        return result
     }
 }

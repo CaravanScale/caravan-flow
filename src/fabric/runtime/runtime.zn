@@ -73,11 +73,9 @@ class Fabric {
     // Caller walks the returned graph without holding the lock — graphs
     // are treated as immutable once published (mutations go via swapGraph).
     PipelineGraph snapshotGraph() {
-        var g = graph
         lock (mu) {
-            g = graph
+            return graph
         }
-        return g
     }
 
     // swapGraph replaces the active graph. Called under exclusive intent
