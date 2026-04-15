@@ -32,10 +32,12 @@ class FileContentStore : ContentStore {
 
     pub byte[] retrieve(String claimId) {
         var path = claimPath(claimId)
-        var data = ReadFile(path) or {
+        try {
+            var data = ReadFile(path)
+            return data
+        } catch (e) {
             return byte[0]
         }
-        return data
     }
 
     pub void delete(String claimId) {

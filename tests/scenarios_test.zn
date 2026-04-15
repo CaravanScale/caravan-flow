@@ -121,11 +121,12 @@ test "scenario: scoped provider isolation — only declared providers visible" {
     scoped["content"] = cp
     var ctx = ScopedContext(scoped)
 
-    var p = ctx.getProvider("content") or {
+    try {
+        var p = ctx.getProvider("content")
+        asserts.equalString(t, p.getType(), "content")
+    } catch (e) {
         t.Errorf("content provider should exist")
-        return
     }
-    asserts.equalString(t, p.getType(), "content")
     asserts.equalInt(t, len(ctx.listProviders()), 1)
 }
 

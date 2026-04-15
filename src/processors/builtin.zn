@@ -101,11 +101,13 @@ ProcessorFn AddAttributeFactory(ScopedContext ctx, Map<String, String> config) {
 }
 
 ProcessorFn FileSinkFactory(ScopedContext ctx, Map<String, String> config) {
-    var p = ctx.getProvider("content") or {
+    try {
+        var p = ctx.getProvider("content")
+        var cp = p as ContentProvider
+        return FileSink(config["output_dir"], cp.getStore())
+    } catch (e) {
         return FileSink(config["output_dir"], MemoryContentStore())
     }
-    var cp = p as ContentProvider
-    return FileSink(config["output_dir"], cp.getStore())
 }
 
 ProcessorFn LogProcessorFactory(ScopedContext ctx, Map<String, String> config) {
@@ -117,11 +119,13 @@ ProcessorFn JsonToRecordsFactory(ScopedContext ctx, Map<String, String> config) 
     if (schemaName == "") {
         schemaName = "default"
     }
-    var p = ctx.getProvider("content") or {
+    try {
+        var p = ctx.getProvider("content")
+        var cp = p as ContentProvider
+        return JsonToRecords(schemaName, cp.getStore())
+    } catch (e) {
         return JsonToRecords(schemaName, MemoryContentStore())
     }
-    var cp = p as ContentProvider
-    return JsonToRecords(schemaName, cp.getStore())
 }
 
 ProcessorFn RecordsToJsonFactory(ScopedContext ctx, Map<String, String> config) {

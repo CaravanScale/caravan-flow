@@ -2,6 +2,8 @@
 // Each processor only sees providers it declared as dependencies via `requires`.
 // This prevents ambient access to all infrastructure and enforces security boundaries.
 
+import stdlib.exceptions
+
 // ScopedContext wraps a subset of providers for a specific processor.
 class ScopedContext {
     Map<String, Provider> providers
@@ -10,14 +12,14 @@ class ScopedContext {
         this.providers = providers
     }
 
-    // getProvider returns a provider by name, or Error if not in scope or not enabled.
+    // getProvider returns a provider by name, or throws if not in scope or not enabled.
     pub Provider getProvider(String name) {
         if (!providers.containsKey(name)) {
-            return Error("provider '${name}' not in scope for this processor")
+            throw exceptions.ConfigException("provider '${name}' not in scope for this processor")
         }
         var p = providers[name]
         if (!p.isEnabled()) {
-            return Error("provider '${name}' is not enabled")
+            throw exceptions.IllegalStateException("provider '${name}' is not enabled")
         }
         return p
     }

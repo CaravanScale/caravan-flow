@@ -25,23 +25,27 @@ pub DeliveryResult deliverJson(String endpoint, FlowFile ff, ContentStore store)
     var jsonBody = '{"id":"' + ff.id + '","content_size":' + str(len(resolved.data)) + '}'
     var payload = jsonBody.toBytes()
 
-    var resp = Post(endpoint, "application/json", NewBuffer(payload)) or {
+    try {
+        var resp = Post(endpoint, "application/json", NewBuffer(payload))
+        var respBody = byte[0]
+        try {
+            respBody = ReadAll(resp.Body)
+        } catch (e) {
+            return DeliveryResult(false, resp.StatusCode, byte[0], "read error")
+        }
+        resp.Body.Close()
+
+        if (resp.StatusCode == 429) {
+            return DeliveryResult(false, 429, byte[0], "backpressure")
+        }
+        if (resp.StatusCode >= 400) {
+            return DeliveryResult(false, resp.StatusCode, respBody, "http " + str(resp.StatusCode))
+        }
+
+        return DeliveryResult(true, resp.StatusCode, respBody, "")
+    } catch (e) {
         return DeliveryResult(false, 0, byte[0], "http error")
     }
-
-    var respBody = ReadAll(resp.Body) or {
-        return DeliveryResult(false, resp.StatusCode, byte[0], "read error")
-    }
-    resp.Body.Close()
-
-    if (resp.StatusCode == 429) {
-        return DeliveryResult(false, 429, byte[0], "backpressure")
-    }
-    if (resp.StatusCode >= 400) {
-        return DeliveryResult(false, resp.StatusCode, respBody, "http " + str(resp.StatusCode))
-    }
-
-    return DeliveryResult(true, resp.StatusCode, respBody, "")
 }
 
 // deliverV3 sends a FlowFile as NiFi FlowFile V3 binary to a processor endpoint.
@@ -53,23 +57,27 @@ pub DeliveryResult deliverV3(String endpoint, FlowFile ff, ContentStore store) {
 
     var packed = packFlowFile(ff, resolved.data)
 
-    var resp = Post(endpoint, "application/octet-stream", NewBuffer(packed)) or {
+    try {
+        var resp = Post(endpoint, "application/octet-stream", NewBuffer(packed))
+        var respBody = byte[0]
+        try {
+            respBody = ReadAll(resp.Body)
+        } catch (e) {
+            return DeliveryResult(false, resp.StatusCode, byte[0], "read error")
+        }
+        resp.Body.Close()
+
+        if (resp.StatusCode == 429) {
+            return DeliveryResult(false, 429, byte[0], "backpressure")
+        }
+        if (resp.StatusCode >= 400) {
+            return DeliveryResult(false, resp.StatusCode, respBody, "http " + str(resp.StatusCode))
+        }
+
+        return DeliveryResult(true, resp.StatusCode, respBody, "")
+    } catch (e) {
         return DeliveryResult(false, 0, byte[0], "http error")
     }
-
-    var respBody = ReadAll(resp.Body) or {
-        return DeliveryResult(false, resp.StatusCode, byte[0], "read error")
-    }
-    resp.Body.Close()
-
-    if (resp.StatusCode == 429) {
-        return DeliveryResult(false, 429, byte[0], "backpressure")
-    }
-    if (resp.StatusCode >= 400) {
-        return DeliveryResult(false, resp.StatusCode, respBody, "http " + str(resp.StatusCode))
-    }
-
-    return DeliveryResult(true, resp.StatusCode, respBody, "")
 }
 
 // deliverToAll delivers a FlowFile to multiple endpoints (fan-out).

@@ -362,11 +362,12 @@ test "ScopedContext — provider lookup via declared scope" {
 
     asserts.equalInt(t, len(ctx.listProviders()), 1)
 
-    var p = ctx.getProvider("content") or {
+    try {
+        var p = ctx.getProvider("content")
+        asserts.equalString(t, p.getName(), "content")
+    } catch (e) {
         t.Errorf("content provider should exist")
-        return
     }
-    asserts.equalString(t, p.getName(), "content")
 }
 
 // --- Provider lifecycle ---

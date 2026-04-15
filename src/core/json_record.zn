@@ -11,7 +11,9 @@ class JsonRecordReader : RecordReader {
     pub List<GenericRecord> read(byte[] data, Schema schema) {
         // Parse JSON into list of maps
         var rawList = List<Map<String, Object>>[]
-        json.Unmarshal(data, rawList) or {
+        try {
+            json.Unmarshal(data, rawList)
+        } catch (e) {
             return List<GenericRecord>[]
         }
 
@@ -58,10 +60,12 @@ class JsonRecordWriter : RecordWriter {
         }
 
         // Serialize to JSON
-        var result = json.Marshal(rawList) or {
+        try {
+            var result = json.Marshal(rawList)
+            return result
+        } catch (e) {
             return byte[0]
         }
-        return result
     }
 }
 

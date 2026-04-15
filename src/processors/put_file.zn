@@ -102,11 +102,13 @@ pub ProcessorFn PutFileFactory(ScopedContext ctx, Map<String, String> config) {
     if (config.containsKey("format") && config["format"] != "") {
         format = config["format"]
     }
-    var p = ctx.getProvider("content") or {
+    try {
+        var p = ctx.getProvider("content")
+        var cp = p as ContentProvider
+        return PutFile(outputDir, namingAttr, prefix, suffix, format, cp.getStore())
+    } catch (e) {
         return PutFile(outputDir, namingAttr, prefix, suffix, format, MemoryContentStore())
     }
-    var cp = p as ContentProvider
-    return PutFile(outputDir, namingAttr, prefix, suffix, format, cp.getStore())
 }
 
 // basename returns the last path segment of s — strips any leading

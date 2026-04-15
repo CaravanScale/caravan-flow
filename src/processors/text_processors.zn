@@ -41,26 +41,26 @@ class ReplaceText : ProcessorFn {
         if (resolved.errorMsg != "") {
             return Failure(resolved.errorMsg, ff)
         }
-        var re = regexp.Compile(pattern) or {
+        try {
+            var re = regexp.Compile(pattern)
+            var text = string(resolved.data)
+            var out = text
+            if (replaceAll) {
+                out = re.ReplaceAllString(text, replacement)
+            } else {
+                // Replace only the first match by finding its index and
+                // splicing manually — regexp has no built-in "first-only"
+                // variant. Fallback to full replace if no match.
+                var loc = re.FindStringIndex(text)
+                if (loc != null) {
+                    out = text[0:loc[0]] + re.ReplaceAllString(text[loc[0]:loc[1]], replacement) + text[loc[1]:len(text)]
+                }
+            }
+            var updated = withContent(ff, Raw(out.toBytes()))
+            return Single(updated)
+        } catch (e) {
             return Failure("invalid regex: ${pattern}", ff)
         }
-
-        var text = string(resolved.data)
-        var out = text
-        if (replaceAll) {
-            out = re.ReplaceAllString(text, replacement)
-        } else {
-            // Replace only the first match by finding its index and
-            // splicing manually — regexp has no built-in "first-only"
-            // variant. Fallback to full replace if no match.
-            var loc = re.FindStringIndex(text)
-            if (loc != null) {
-                out = text[0:loc[0]] + re.ReplaceAllString(text[loc[0]:loc[1]], replacement) + text[loc[1]:len(text)]
-            }
-        }
-
-        var updated = withContent(ff, Raw(out.toBytes()))
-        return Single(updated)
     }
 }
 
@@ -104,41 +104,42 @@ class ExtractText : ProcessorFn {
         if (resolved.errorMsg != "") {
             return Failure(resolved.errorMsg, ff)
         }
-        var re = regexp.Compile(pattern) or {
+        try {
+            var re = regexp.Compile(pattern)
+            var text = string(resolved.data)
+            var matches = re.FindStringSubmatch(text)
+            if (matches == null || len(matches) == 0) {
+                return Single(ff)
+            }
+
+            var result = ff
+
+            // Named capture groups → attributes (skip the unnamed/empty
+            // entries that Go's regexp emits for positional groups).
+            var names = re.SubexpNames()
+            var i = 0
+            while (i < len(names) && i < len(matches)) {
+                var name = names[i]
+                if (name != "") {
+                    result = withAttribute(result, name, matches[i])
+                }
+                i = i + 1
+            }
+
+            // Positional groups → mapped via groupNames config.
+            // matches[0] is the full match; positional groups start at 1.
+            var j = 0
+            while (j < len(groupNames) && j+1 < len(matches)) {
+                if (groupNames[j] != "") {
+                    result = withAttribute(result, groupNames[j], matches[j+1])
+                }
+                j = j + 1
+            }
+
+            return Single(result)
+        } catch (e) {
             return Failure("invalid regex: ${pattern}", ff)
         }
-
-        var text = string(resolved.data)
-        var matches = re.FindStringSubmatch(text)
-        if (matches == null || len(matches) == 0) {
-            return Single(ff)
-        }
-
-        var result = ff
-
-        // Named capture groups → attributes (skip the unnamed/empty
-        // entries that Go's regexp emits for positional groups).
-        var names = re.SubexpNames()
-        var i = 0
-        while (i < len(names) && i < len(matches)) {
-            var name = names[i]
-            if (name != "") {
-                result = withAttribute(result, name, matches[i])
-            }
-            i = i + 1
-        }
-
-        // Positional groups → mapped via groupNames config.
-        // matches[0] is the full match; positional groups start at 1.
-        var j = 0
-        while (j < len(groupNames) && j+1 < len(matches)) {
-            if (groupNames[j] != "") {
-                result = withAttribute(result, groupNames[j], matches[j+1])
-            }
-            j = j + 1
-        }
-
-        return Single(result)
     }
 }
 
@@ -169,51 +170,52 @@ class SplitText : ProcessorFn {
         if (resolved.errorMsg != "") {
             return Failure(resolved.errorMsg, ff)
         }
-        var re = regexp.Compile(delimiter) or {
+        try {
+            var re = regexp.Compile(delimiter)
+            var text = string(resolved.data)
+
+            // If header_lines is set, peel them off first and prepend to
+            // each split — keeps CSV/TSV-style headers with their rows.
+            var header = ""
+            var body = text
+            if (headerLines > 0) {
+                var lines = strings.Split(text, "\n")
+                if (len(lines) > headerLines) {
+                    var headerLinesList = lines[0:headerLines]
+                    header = strings.Join(headerLinesList, "\n") + "\n"
+                    var remaining = lines[headerLines:len(lines)]
+                    body = strings.Join(remaining, "\n")
+                }
+            }
+
+            var parts = re.Split(body, -1)
+            if (len(parts) <= 1) {
+                return Single(ff)
+            }
+
+            var outFiles = List<FlowFile>[]
+            var i = 0
+            while (i < len(parts)) {
+                var part = parts[i]
+                if (strings.TrimSpace(part) == "") {
+                    i = i + 1
+                    continue
+                }
+                var body = header + part
+                var attrs = Map<String, String>{}
+                attrs["split.index"] = str(i)
+                attrs["split.count"] = str(len(parts))
+                outFiles = append(outFiles, createFlowFile(body.toBytes(), attrs))
+                i = i + 1
+            }
+
+            if (len(outFiles) == 0) {
+                return Single(ff)
+            }
+            return Multiple(outFiles)
+        } catch (e) {
             return Failure("invalid delimiter regex: ${delimiter}", ff)
         }
-
-        var text = string(resolved.data)
-
-        // If header_lines is set, peel them off first and prepend to
-        // each split — keeps CSV/TSV-style headers with their rows.
-        var header = ""
-        var body = text
-        if (headerLines > 0) {
-            var lines = strings.Split(text, "\n")
-            if (len(lines) > headerLines) {
-                var headerLinesList = lines[0:headerLines]
-                header = strings.Join(headerLinesList, "\n") + "\n"
-                var remaining = lines[headerLines:len(lines)]
-                body = strings.Join(remaining, "\n")
-            }
-        }
-
-        var parts = re.Split(body, -1)
-        if (len(parts) <= 1) {
-            return Single(ff)
-        }
-
-        var outFiles = List<FlowFile>[]
-        var i = 0
-        while (i < len(parts)) {
-            var part = parts[i]
-            if (strings.TrimSpace(part) == "") {
-                i = i + 1
-                continue
-            }
-            var body = header + part
-            var attrs = Map<String, String>{}
-            attrs["split.index"] = str(i)
-            attrs["split.count"] = str(len(parts))
-            outFiles = append(outFiles, createFlowFile(body.toBytes(), attrs))
-            i = i + 1
-        }
-
-        if (len(outFiles) == 0) {
-            return Single(ff)
-        }
-        return Multiple(outFiles)
     }
 }
 
@@ -233,11 +235,13 @@ pub ProcessorFn SplitTextFactory(ScopedContext ctx, Map<String, String> config) 
 // --- shared helpers ---
 
 ContentStore resolveStore(ScopedContext ctx) {
-    var p = ctx.getProvider("content") or {
+    try {
+        var p = ctx.getProvider("content")
+        var cp = p as ContentProvider
+        return cp.getStore()
+    } catch (e) {
         return MemoryContentStore()
     }
-    var cp = p as ContentProvider
-    return cp.getStore()
 }
 
 int textParseInt(String s, int fallback) {

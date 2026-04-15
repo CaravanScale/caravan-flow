@@ -491,13 +491,15 @@ class Fabric {
         }
         var requires = g.getRequires(name)
         for (provName in requires) {
-            var prov = globalCtx.getProvider(provName) or {
+            try {
+                var prov = globalCtx.getProvider(provName)
+                if (!prov.isEnabled()) {
+                    logging.warn("cannot enable — provider disabled",
+                        "processor", name, "provider", provName)
+                    return false
+                }
+            } catch (e) {
                 logging.warn("cannot enable — provider missing",
-                    "processor", name, "provider", provName)
-                return false
-            }
-            if (!prov.isEnabled()) {
-                logging.warn("cannot enable — provider disabled",
                     "processor", name, "provider", provName)
                 return false
             }
@@ -524,32 +526,36 @@ class Fabric {
     // --- Provider lifecycle ---
 
     pub bool enableProvider(String providerName) {
-        var prov = globalCtx.getProvider(providerName) or {
+        try {
+            var prov = globalCtx.getProvider(providerName)
+            prov.enable()
+            logging.info("provider enabled", "name", providerName)
+            return true
+        } catch (e) {
             return false
         }
-        prov.enable()
-        logging.info("provider enabled", "name", providerName)
-        return true
     }
 
     // disableProvider cascades to dependent processors before disabling
     // the provider itself. Prevents a processor from running against a
     // half-gone dependency.
     pub bool disableProvider(String providerName, int drainSecs) {
-        var prov = globalCtx.getProvider(providerName) or {
+        try {
+            var prov = globalCtx.getProvider(providerName)
+            var dependents = globalCtx.getDependents(providerName)
+            for (procName in dependents) {
+                match (getProcessorState(procName)) {
+                    case ENABLED { disableProcessor(procName, drainSecs) }
+                    case DRAINING {}
+                    case DISABLED {}
+                }
+            }
+            prov.disable(drainSecs)
+            logging.info("provider disabled", "name", providerName)
+            return true
+        } catch (e) {
             return false
         }
-        var dependents = globalCtx.getDependents(providerName)
-        for (procName in dependents) {
-            match (getProcessorState(procName)) {
-                case ENABLED { disableProcessor(procName, drainSecs) }
-                case DRAINING {}
-                case DISABLED {}
-            }
-        }
-        prov.disable(drainSecs)
-        logging.info("provider disabled", "name", providerName)
-        return true
     }
 
     // --- Dynamic processor management ---
@@ -672,17 +678,15 @@ class Fabric {
         if (len(requires) == 0) {
             var providerNames = globalCtx.listProviders()
             for (pn in providerNames) {
-                var prov = globalCtx.getProvider(pn) or {
-                    continue
-                }
-                scoped[pn] = prov
+                try {
+                    scoped[pn] = globalCtx.getProvider(pn)
+                } catch (e) {}
             }
         } else {
             for (pn in requires) {
-                var prov = globalCtx.getProvider(pn) or {
-                    continue
-                }
-                scoped[pn] = prov
+                try {
+                    scoped[pn] = globalCtx.getProvider(pn)
+                } catch (e) {}
             }
         }
         return ScopedContext(scoped)
