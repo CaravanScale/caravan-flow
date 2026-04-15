@@ -8,7 +8,7 @@ class JsonRecordReader : RecordReader {
 
     init() {}
 
-    pub fn read(byte[] data, Schema schema): List<GenericRecord> {
+    pub List<GenericRecord> read(byte[] data, Schema schema) {
         // Parse JSON into list of maps
         var rawList = List<Map<String, Object>>[]
         json.Unmarshal(data, rawList) or {
@@ -43,7 +43,7 @@ class JsonRecordWriter : RecordWriter {
 
     init() {}
 
-    pub fn write(List<GenericRecord> records, Schema schema): byte[] {
+    pub byte[] write(List<GenericRecord> records, Schema schema) {
         // Convert each record to a map
         var rawList = List<Map<String, Object>>[]
         for (record in records) {
@@ -66,7 +66,7 @@ class JsonRecordWriter : RecordWriter {
 }
 
 // inferSchema builds a Schema from a JSON object's keys and value types.
-fn inferSchema(String name, Map<String, Object> sample): Schema {
+Schema inferSchema(String name, Map<String, Object> sample) {
     var fields = List<Field>[]
     var keys = sample.keys()
     for (key in keys) {
@@ -79,7 +79,7 @@ fn inferSchema(String name, Map<String, Object> sample): Schema {
 
 // inferFieldType maps a Go runtime value to a FieldType.
 // json.Unmarshal produces: string, float64 (all numbers), bool, map, slice.
-fn inferFieldType(Object val): FieldType {
+FieldType inferFieldType(Object val) {
     if (val == null) {
         return NULL
     }

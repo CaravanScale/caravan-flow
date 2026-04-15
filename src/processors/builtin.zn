@@ -11,7 +11,7 @@ import os
 // the same processor on both binaries. The older kebab-case names
 // (add-attribute, file-sink, log, ...) stay registered for backward
 // compatibility with zinc-native configs.
-pub fn registerBuiltins(Registry reg) {
+pub void registerBuiltins(Registry reg) {
     // --- csharp-interop names: MVP pipeline ---
     reg.register(
         ProcessorInfo("UpdateAttribute", "Sets key=value attribute on FlowFiles", List<String>["key", "value"]),
@@ -96,11 +96,11 @@ pub fn registerBuiltins(Registry reg) {
     )
 }
 
-fn AddAttributeFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
+ProcessorFn AddAttributeFactory(ScopedContext ctx, Map<String, String> config) {
     return AddAttribute(config["key"], config["value"])
 }
 
-fn FileSinkFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
+ProcessorFn FileSinkFactory(ScopedContext ctx, Map<String, String> config) {
     var p = ctx.getProvider("content") or {
         return FileSink(config["output_dir"], MemoryContentStore())
     }
@@ -108,11 +108,11 @@ fn FileSinkFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
     return FileSink(config["output_dir"], cp.getStore())
 }
 
-fn LogProcessorFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
+ProcessorFn LogProcessorFactory(ScopedContext ctx, Map<String, String> config) {
     return LogProcessor(config["prefix"])
 }
 
-fn JsonToRecordsFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
+ProcessorFn JsonToRecordsFactory(ScopedContext ctx, Map<String, String> config) {
     var schemaName = config["schema_name"]
     if (schemaName == "") {
         schemaName = "default"
@@ -124,7 +124,7 @@ fn JsonToRecordsFactory(ScopedContext ctx, Map<String, String> config): Processo
     return JsonToRecords(schemaName, cp.getStore())
 }
 
-fn RecordsToJsonFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
+ProcessorFn RecordsToJsonFactory(ScopedContext ctx, Map<String, String> config) {
     return RecordsToJson()
 }
 
@@ -138,7 +138,7 @@ class AddAttribute : ProcessorFn {
         this.value = value
     }
 
-    pub fn process(FlowFile ff): ProcessorResult {
+    pub ProcessorResult process(FlowFile ff) {
         var tagged = withAttribute(ff, key, value)
         return Single(tagged)
     }
@@ -155,7 +155,7 @@ class FileSink : ProcessorFn {
         this.store = store
     }
 
-    pub fn process(FlowFile ff): ProcessorResult {
+    pub ProcessorResult process(FlowFile ff) {
         var path = outputDir + "/" + ff.id + ".out"
         var resolved = resolve(store, ff.content)
         if (resolved.errorMsg != "") {
@@ -174,7 +174,7 @@ class LogProcessor : ProcessorFn {
         this.prefix = prefix
     }
 
-    pub fn process(FlowFile ff): ProcessorResult {
+    pub ProcessorResult process(FlowFile ff) {
         logging.info("flowfile", "processor", prefix, "id", ff.id, "attributes", ff.attributes)
         return Single(ff)
     }
@@ -191,7 +191,7 @@ class JsonToRecords : ProcessorFn {
         this.store = store
     }
 
-    pub fn process(FlowFile ff): ProcessorResult {
+    pub ProcessorResult process(FlowFile ff) {
         match (ff.content) {
             case Raw(bytes) {
                 return parseJson(ff, bytes)
@@ -210,7 +210,7 @@ class JsonToRecords : ProcessorFn {
         }
     }
 
-    fn parseJson(FlowFile ff, byte[] data): ProcessorResult {
+    ProcessorResult parseJson(FlowFile ff, byte[] data) {
         // Infer schema from first JSON object (schema-on-read)
         var schema = schemaFromFields(schemaName, List<Field>[])
         var reader = JsonRecordReader()
@@ -229,7 +229,7 @@ class RecordsToJson : ProcessorFn {
 
     init() {}
 
-    pub fn process(FlowFile ff): ProcessorResult {
+    pub ProcessorResult process(FlowFile ff) {
         match (ff.content) {
             case Records(schema, records) {
                 var writer = JsonRecordWriter()

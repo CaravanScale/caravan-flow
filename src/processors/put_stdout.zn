@@ -28,7 +28,7 @@ class PutStdout : ProcessorFn {
         this.store = store
     }
 
-    pub fn process(FlowFile ff): ProcessorResult {
+    pub ProcessorResult process(FlowFile ff) {
         if (format == "attrs") {
             printAttrs(ff)
             return Single(ff)
@@ -60,7 +60,7 @@ class PutStdout : ProcessorFn {
         return Single(ff)
     }
 
-    fn printAttrs(FlowFile ff) {
+    void printAttrs(FlowFile ff) {
         var line = "[ff-" + ff.id + "]"
         for (k in ff.attributes.keys()) {
             line = line + " " + k + "=" + ff.attributes[k]
@@ -69,7 +69,7 @@ class PutStdout : ProcessorFn {
     }
 }
 
-pub fn PutStdoutFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
+pub ProcessorFn PutStdoutFactory(ScopedContext ctx, Map<String, String> config) {
     var format = "raw"
     if (config.containsKey("format") && config["format"] != "") {
         format = config["format"]

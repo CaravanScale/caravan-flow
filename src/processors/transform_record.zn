@@ -36,7 +36,7 @@ class TransformRecord : ProcessorFn {
         parseOperations(operationsSpec)
     }
 
-    fn parseOperations(String spec) {
+    void parseOperations(String spec) {
         if (spec == "") {
             return
         }
@@ -56,7 +56,7 @@ class TransformRecord : ProcessorFn {
         }
     }
 
-    fn addEntry(String entry) {
+    void addEntry(String entry) {
         var trimmed = trimOpSpace(entry)
         if (trimmed == "") {
             return
@@ -87,7 +87,7 @@ class TransformRecord : ProcessorFn {
         operations = append(operations, RecordOp(parts[0], arg1, arg2))
     }
 
-    pub fn process(FlowFile ff): ProcessorResult {
+    pub ProcessorResult process(FlowFile ff) {
         match (ff.content) {
             case Records(schema, records) {
                 if (len(records) == 0) {
@@ -112,7 +112,7 @@ class TransformRecord : ProcessorFn {
         }
     }
 
-    fn applyOps(GenericRecord record, Schema schema): GenericRecord {
+    GenericRecord applyOps(GenericRecord record, Schema schema) {
         // Copy the record's values into a fresh map we can mutate.
         var values = Map<String, Object>{}
         for (f in schema.fields) {
@@ -148,7 +148,7 @@ class TransformRecord : ProcessorFn {
         return out
     }
 
-    fn applyOne(Map<String, Object> values, RecordOp op) {
+    void applyOne(Map<String, Object> values, RecordOp op) {
         if (op.op == "rename") {
             if (values.containsKey(op.arg1)) {
                 values[op.arg2] = values[op.arg1]
@@ -200,7 +200,7 @@ class TransformRecord : ProcessorFn {
     }
 }
 
-pub fn TransformRecordFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
+pub ProcessorFn TransformRecordFactory(ScopedContext ctx, Map<String, String> config) {
     var spec = ""
     if (config.containsKey("operations")) {
         spec = config["operations"]
@@ -212,7 +212,7 @@ pub fn TransformRecordFactory(ScopedContext ctx, Map<String, String> config): Pr
 // preserving original FieldType where the field survives. Deliberately
 // standalone so the main processor class stays focused on the apply
 // loop.
-fn rebuildSchema(Schema orig, GenericRecord first): Schema {
+Schema rebuildSchema(Schema orig, GenericRecord first) {
     var origFields = Map<String, FieldType>{}
     for (f in orig.fields) {
         origFields[f.name] = f.fieldType
@@ -229,7 +229,7 @@ fn rebuildSchema(Schema orig, GenericRecord first): Schema {
     return Schema(orig.name, newFields)
 }
 
-fn trimOpSpace(String s): String {
+String trimOpSpace(String s) {
     var start = 0
     while (start < len(s)) {
         var c = s[start:start+1]
@@ -249,7 +249,7 @@ fn trimOpSpace(String s): String {
     return s[start:stop]
 }
 
-fn asciiUpper(String s): String {
+String asciiUpper(String s) {
     var out = ""
     var i = 0
     while (i < len(s)) {
@@ -265,7 +265,7 @@ fn asciiUpper(String s): String {
     return out
 }
 
-fn asciiLower(String s): String {
+String asciiLower(String s) {
     var out = ""
     var i = 0
     while (i < len(s)) {

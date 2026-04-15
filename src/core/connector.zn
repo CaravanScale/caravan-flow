@@ -20,14 +20,14 @@ import time
 type IngestFn = Fn<(FlowFile), bool>
 
 interface ConnectorSource {
-    fn getName(): String
-    fn getSourceType(): String
-    fn isRunning(): bool
-    fn start(IngestFn ingest)
-    fn stop()
+    String getName()
+    String getSourceType()
+    bool isRunning()
+    void start(IngestFn ingest)
+    void stop()
     // pollOnce runs one production cycle synchronously and returns the
     // produced FlowFiles without calling ingest. Lets tests and admin
     // tooling drive a source deterministically without standing up a
     // background timer (mirrors csharp PollingSource.PollOnce).
-    fn pollOnce(): List<FlowFile>
+    List<FlowFile> pollOnce()
 }

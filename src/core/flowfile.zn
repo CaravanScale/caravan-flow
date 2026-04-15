@@ -11,36 +11,36 @@ data FlowFile(
 )
 
 // Generate a unique FlowFile ID.
-pub fn flowFileId(): String {
+pub String flowFileId() {
     return "ff-${Now().UnixNano()}"
 }
 
 // Create a new FlowFile with raw byte content and current timestamp.
-pub fn createFlowFile(byte[] data, Map<String, String> attributes): FlowFile {
+pub FlowFile createFlowFile(byte[] data, Map<String, String> attributes) {
     var id = flowFileId()
     return FlowFile(id, attributes, Raw(data), int(Now().Unix()))
 }
 
 // Create a new FlowFile with Avro records as content.
-pub fn createRecordFlowFile(Schema schema, List<GenericRecord> rows, Map<String, String> attributes): FlowFile {
+pub FlowFile createRecordFlowFile(Schema schema, List<GenericRecord> rows, Map<String, String> attributes) {
     var id = flowFileId()
     return FlowFile(id, attributes, Records(schema, rows), int(Now().Unix()))
 }
 
 // Create a new FlowFile with pre-built Content (Raw, Records, or Claim).
-pub fn createFlowFileWithContent(Content content, Map<String, String> attributes): FlowFile {
+pub FlowFile createFlowFileWithContent(Content content, Map<String, String> attributes) {
     var id = flowFileId()
     return FlowFile(id, attributes, content, int(Now().Unix()))
 }
 
 // Create a copy with an additional attribute.
-pub fn withAttribute(FlowFile ff, String key, String value): FlowFile {
+pub FlowFile withAttribute(FlowFile ff, String key, String value) {
     var attrs = ff.attributes
     attrs[key] = value
     return FlowFile(ff.id, attrs, ff.content, ff.timestamp)
 }
 
 // Create a copy with new content.
-pub fn withContent(FlowFile ff, Content content): FlowFile {
+pub FlowFile withContent(FlowFile ff, Content content) {
     return FlowFile(ff.id, ff.attributes, content, ff.timestamp)
 }

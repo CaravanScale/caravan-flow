@@ -61,7 +61,7 @@ class GenerateFlowFile : ConnectorSource {
         }
     }
 
-    fn parseAttributes(String spec) {
+    void parseAttributes(String spec) {
         // `k1:v1;k2:v2` — same shape csharp uses, so a YAML config
         // written against one binary loads the same attrs on the other.
         var start = 0
@@ -78,7 +78,7 @@ class GenerateFlowFile : ConnectorSource {
         }
     }
 
-    fn addPair(String pair) {
+    void addPair(String pair) {
         var colonIdx = -1
         var j = 0
         while (j < len(pair)) {
@@ -98,13 +98,13 @@ class GenerateFlowFile : ConnectorSource {
         }
     }
 
-    pub fn getName(): String { return name }
-    pub fn getSourceType(): String { return "GenerateFlowFile" }
-    pub fn isRunning(): bool { return running }
+    pub String getName() { return name }
+    pub String getSourceType() { return "GenerateFlowFile" }
+    pub bool isRunning() { return running }
 
     // pollOnce emits one batch synchronously. This is the testing seam —
     // Poll the source, assert on the returned FlowFiles, no timer needed.
-    pub fn pollOnce(): List<FlowFile> {
+    pub List<FlowFile> pollOnce() {
         var batch = List<FlowFile>[]
         var i = 0
         while (i < batchSize) {
@@ -122,7 +122,7 @@ class GenerateFlowFile : ConnectorSource {
         return batch
     }
 
-    pub fn start(IngestFn ingest) {
+    pub void start(IngestFn ingest) {
         this.ingestFn = ingest
         running = true
         spawn {
@@ -141,7 +141,7 @@ class GenerateFlowFile : ConnectorSource {
         }
     }
 
-    pub fn stop() {
+    pub void stop() {
         running = false
     }
 }
@@ -150,7 +150,7 @@ class GenerateFlowFile : ConnectorSource {
 // Placed in this package rather than the processor registry because
 // sources are a distinct lifecycle in Fabric (they produce work;
 // processors transform it).
-pub fn GenerateFlowFileFactory(String name, Map<String, String> config): ConnectorSource {
+pub ConnectorSource GenerateFlowFileFactory(String name, Map<String, String> config) {
     var contentStr = ""
     if (config.containsKey("content")) {
         contentStr = config["content"]
@@ -178,7 +178,7 @@ pub fn GenerateFlowFileFactory(String name, Map<String, String> config): Connect
 // `content` key is present, constructs + registers the source. Shape
 // matches csharp's Program.cs block so the same YAML drives both
 // binaries.
-pub fn loadGenerateSource(config.Config cfg, Fabric fab) {
+pub void loadGenerateSource(config.Config cfg, Fabric fab) {
     if (!cfg.has("sources.generate.content")) {
         return
     }
@@ -202,7 +202,7 @@ pub fn loadGenerateSource(config.Config cfg, Fabric fab) {
 
 // atoi parses `s` as an int; returns `fallback` on any parse error.
 // Kept local — we avoid importing strconv just for this one callsite.
-fn atoi(String s, int fallback): int {
+int atoi(String s, int fallback) {
     if (s == "") {
         return fallback
     }

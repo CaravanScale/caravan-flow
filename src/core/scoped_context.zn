@@ -11,7 +11,7 @@ class ScopedContext {
     }
 
     // getProvider returns a provider by name, or Error if not in scope or not enabled.
-    pub fn getProvider(String name): Provider {
+    pub Provider getProvider(String name) {
         if (!providers.containsKey(name)) {
             return Error("provider '${name}' not in scope for this processor")
         }
@@ -23,7 +23,7 @@ class ScopedContext {
     }
 
     // listProviders returns the names of all providers in scope.
-    pub fn listProviders(): List<String> {
+    pub List<String> listProviders() {
         return providers.keys()
     }
 }

@@ -10,13 +10,13 @@ enum ComponentState {
 // connections, SSL contexts, logging. Processors look up what they
 // need by name.
 interface Provider {
-    fn getName(): String
-    fn getType(): String
-    fn getState(): ComponentState
-    fn enable()
-    fn disable(int drainTimeoutSeconds)
-    fn shutdown()
-    fn isEnabled(): bool
+    String getName()
+    String getType()
+    ComponentState getState()
+    void enable()
+    void disable(int drainTimeoutSeconds)
+    void shutdown()
+    bool isEnabled()
 }
 
 // ProcessorContext — the central context for zinc-flow.
@@ -29,11 +29,11 @@ class ProcessorContext {
 
     // --- Provider management ---
 
-    pub fn addProvider(Provider provider) {
+    pub void addProvider(Provider provider) {
         providers[provider.getName()] = provider
     }
 
-    pub fn removeProvider(String name) {
+    pub void removeProvider(String name) {
         if (providers.containsKey(name)) {
             var p = providers[name]
             if (p.isEnabled()) {
@@ -44,14 +44,14 @@ class ProcessorContext {
         }
     }
 
-    pub fn getProvider(String name): Provider {
+    pub Provider getProvider(String name) {
         if (!providers.containsKey(name)) {
             return Error("provider not found: ${name}")
         }
         return providers[name]
     }
 
-    pub fn getEnabledProvider(String name): Provider {
+    pub Provider getEnabledProvider(String name) {
         if (!providers.containsKey(name)) {
             return Error("provider not found: ${name}")
         }
@@ -62,20 +62,20 @@ class ProcessorContext {
         return p
     }
 
-    pub fn listProviders(): List<String> {
+    pub List<String> listProviders() {
         return providers.keys()
     }
 
     // --- Dependency tracking ---
 
-    pub fn registerDependent(String providerName, String processorName) {
+    pub void registerDependent(String providerName, String processorName) {
         if (!dependents.containsKey(providerName)) {
             dependents[providerName] = List<String>[]
         }
         dependents[providerName] = append(dependents[providerName], processorName)
     }
 
-    pub fn getDependents(String providerName): List<String> {
+    pub List<String> getDependents(String providerName) {
         if (dependents.containsKey(providerName)) {
             return dependents[providerName]
         }
@@ -84,7 +84,7 @@ class ProcessorContext {
 
     // --- Lifecycle ---
 
-    pub fn shutdownAll() {
+    pub void shutdownAll() {
         var names = providers.keys()
         for (name in names) {
             var p = providers[name]

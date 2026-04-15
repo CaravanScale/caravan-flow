@@ -318,7 +318,7 @@ test "GenerateFlowFile — malformed attributes spec tolerated, no panic" {
 
 // --- ExtractRecordField (Phase 3.1) ---
 
-fn buildRecordFlowFile(Map<String, Object> kv): FlowFile {
+FlowFile buildRecordFlowFile(Map<String, Object> kv) {
     var fields = List<Field>[]
     for (k in kv.keys()) {
         fields = append(fields, Field(k, STRING, null))
@@ -386,7 +386,7 @@ test "ExtractRecordField — malformed config skipped, empty extracts no attrs" 
 
 // --- TransformRecord (Phase 3.2) ---
 
-fn firstRecordFields(FlowFile ff): GenericRecord {
+GenericRecord firstRecordFields(FlowFile ff) {
     match (ff.content) {
         case Records(_, records) {
             return records[0]

@@ -11,5 +11,5 @@ sealed class ProcessorResult {
 
 // ProcessorFn — the interface every processor implements.
 interface ProcessorFn {
-    fn process(FlowFile ff): ProcessorResult
+    ProcessorResult process(FlowFile ff)
 }

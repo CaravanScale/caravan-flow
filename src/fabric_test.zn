@@ -24,12 +24,12 @@ class RecordSink : ProcessorFn {
 
     init(String label) { this.label = label }
 
-    pub fn process(FlowFile ff): ProcessorResult {
+    pub ProcessorResult process(FlowFile ff) {
         captured = append(captured, ff)
         return Dropped("recorded by ${label}")
     }
 
-    pub fn count(): int { return len(captured) }
+    pub int count() { return len(captured) }
 }
 
 // RouterProc returns Routed(rel, ff) based on a configured attribute.
@@ -46,7 +46,7 @@ class RouterProc : ProcessorFn {
         this.goodValue = goodValue
     }
 
-    pub fn process(FlowFile ff): ProcessorResult {
+    pub ProcessorResult process(FlowFile ff) {
         if (ff.attributes.containsKey(attr) && ff.attributes[attr] == goodValue) {
             return Routed("success", ff)
         }
@@ -59,7 +59,7 @@ class RouterProc : ProcessorFn {
 class SplitProc : ProcessorFn {
     init() {}
 
-    pub fn process(FlowFile ff): ProcessorResult {
+    pub ProcessorResult process(FlowFile ff) {
         var out = List<FlowFile>[]
         match (ff.content) {
             case Raw(bytes) {
@@ -91,7 +91,7 @@ class FailProc : ProcessorFn {
     String reason
     init(String reason) { this.reason = reason }
 
-    pub fn process(FlowFile ff): ProcessorResult {
+    pub ProcessorResult process(FlowFile ff) {
         return Failure(reason, ff)
     }
 }
@@ -100,27 +100,27 @@ class FailProc : ProcessorFn {
 // maxHops setting this verifies the hop guard.
 class LoopProc : ProcessorFn {
     init() {}
-    pub fn process(FlowFile ff): ProcessorResult {
+    pub ProcessorResult process(FlowFile ff) {
         return Single(ff)
     }
 }
 
 // --- Registry helpers for addProcessor-style tests ---
 
-fn recordSinkFactory(ScopedContext ctx, Map<String, String> cfg): ProcessorFn {
+ProcessorFn recordSinkFactory(ScopedContext ctx, Map<String, String> cfg) {
     return RecordSink(cfg["label"])
 }
-fn routerFactory(ScopedContext ctx, Map<String, String> cfg): ProcessorFn {
+ProcessorFn routerFactory(ScopedContext ctx, Map<String, String> cfg) {
     return RouterProc(cfg["attr"], cfg["good"])
 }
-fn failFactory(ScopedContext ctx, Map<String, String> cfg): ProcessorFn {
+ProcessorFn failFactory(ScopedContext ctx, Map<String, String> cfg) {
     return FailProc(cfg["reason"])
 }
-fn loopFactory(ScopedContext ctx, Map<String, String> cfg): ProcessorFn {
+ProcessorFn loopFactory(ScopedContext ctx, Map<String, String> cfg) {
     return LoopProc()
 }
 
-fn registerRecordingProcessors(Registry reg) {
+void registerRecordingProcessors(Registry reg) {
     reg.register(
         ProcessorInfo("record-sink", "Records every FlowFile", List<String>[]),
         recordSinkFactory

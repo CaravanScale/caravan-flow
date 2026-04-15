@@ -16,7 +16,7 @@ import syscall
 import time
 import net.http
 
-fn main() {
+void main() {
     // Load config
     var cfg = config.Config()
     cfg.setDefault("server.port", 9091)

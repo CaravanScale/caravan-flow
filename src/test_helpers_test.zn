@@ -6,7 +6,7 @@ import core
 
 // testContext builds a ProcessorContext backed by MemoryContentStore.
 // Used by any test that needs to exercise the content provider path.
-pub fn testContext(): ProcessorContext {
+pub ProcessorContext testContext() {
     var store = MemoryContentStore()
     var cp = ContentProvider("content", store)
     cp.enable()
@@ -17,7 +17,7 @@ pub fn testContext(): ProcessorContext {
 
 // testScopedContext builds a ScopedContext with a single content provider.
 // Mirrors what the fabric gives a processor at scope-construction time.
-pub fn testScopedContext(): ScopedContext {
+pub ScopedContext testScopedContext() {
     var store = MemoryContentStore()
     var cp = ContentProvider("content", store)
     cp.enable()
@@ -28,10 +28,10 @@ pub fn testScopedContext(): ScopedContext {
 
 // Canned JSON test data. Single-quoted strings are literal (no interpolation).
 
-pub fn testJsonArray(): byte[] {
+pub byte[] testJsonArray() {
     return '[{"name": "Alice", "amount": 42}]'.toBytes()
 }
 
-pub fn testJsonGeo(): byte[] {
+pub byte[] testJsonGeo() {
     return '[{"city": "Portland"}]'.toBytes()
 }

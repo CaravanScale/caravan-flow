@@ -42,23 +42,23 @@ class GenericRecord {
         this.recordSchema = recordSchema
     }
 
-    pub fn setField(String key, Object value) {
+    pub void setField(String key, Object value) {
         values[key] = value
     }
 
-    pub fn getField(String key): Object {
+    pub Object getField(String key) {
         if (values.containsKey(key)) {
             return values[key]
         }
         return null
     }
 
-    pub fn getSchema(): Schema {
+    pub Schema getSchema() {
         return recordSchema
     }
 }
 
 // schemaFromFields creates a Schema from a name and field list.
-pub fn schemaFromFields(String name, List<Field> fields): Schema {
+pub Schema schemaFromFields(String name, List<Field> fields) {
     return Schema(name, fields)
 }

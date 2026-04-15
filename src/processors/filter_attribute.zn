@@ -41,14 +41,14 @@ class FilterAttribute : ProcessorFn {
         }
     }
 
-    fn addName(String name) {
+    void addName(String name) {
         var trimmed = trimFilterSpace(name)
         if (trimmed != "") {
             attrSet[trimmed] = true
         }
     }
 
-    pub fn process(FlowFile ff): ProcessorResult {
+    pub ProcessorResult process(FlowFile ff) {
         var filtered = Map<String, String>{}
         for (k in ff.attributes.keys()) {
             var inSet = attrSet.containsKey(k)
@@ -64,7 +64,7 @@ class FilterAttribute : ProcessorFn {
     }
 }
 
-pub fn FilterAttributeFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
+pub ProcessorFn FilterAttributeFactory(ScopedContext ctx, Map<String, String> config) {
     var mode = ""
     if (config.containsKey("mode")) { mode = config["mode"] }
     var attrs = ""
@@ -75,7 +75,7 @@ pub fn FilterAttributeFactory(ScopedContext ctx, Map<String, String> config): Pr
 // Local helpers — kept out of a shared module so each processor stays
 // self-contained. Small duplication, big self-containment win.
 
-fn filterLowerAscii(String s): String {
+String filterLowerAscii(String s) {
     var out = ""
     var i = 0
     while (i < len(s)) {
@@ -91,7 +91,7 @@ fn filterLowerAscii(String s): String {
     return out
 }
 
-fn trimFilterSpace(String s): String {
+String trimFilterSpace(String s) {
     var start = 0
     while (start < len(s)) {
         var c = s[start:start+1]

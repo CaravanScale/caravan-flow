@@ -58,7 +58,7 @@ class PipelineGraph {
 
     // addProcessor registers a processor instance under `name`. Overwrites
     // any existing entry with the same name.
-    pub fn addProcessor(String name, ProcessorFn proc, List<String> requires) {
+    pub void addProcessor(String name, ProcessorFn proc, List<String> requires) {
         if (!processors.containsKey(name)) {
             processorNames = append(processorNames, name)
         }
@@ -72,7 +72,7 @@ class PipelineGraph {
 
     // addConnection wires `src[relationship] → targets`. Multiple calls
     // with the same (src, relationship) replace the previous target list.
-    pub fn addConnection(String src, String relationship, List<String> targets) {
+    pub void addConnection(String src, String relationship, List<String> targets) {
         if (!connections.containsKey(src)) {
             connections[src] = Map<String, List<String>>{}
         }
@@ -82,7 +82,7 @@ class PipelineGraph {
     // getTargets returns the downstream processors for (procName, relationship),
     // or an empty list if the relationship has no configured outgoing edges.
     // An empty result means "terminal for this output" — caller should drop.
-    pub fn getTargets(String procName, String relationship): List<String> {
+    pub List<String> getTargets(String procName, String relationship) {
         if (!connections.containsKey(procName)) {
             return List<String>[]
         }
@@ -94,30 +94,30 @@ class PipelineGraph {
     }
 
     // hasProcessor reports whether `name` is a registered processor.
-    pub fn hasProcessor(String name): bool {
+    pub bool hasProcessor(String name) {
         return processors.containsKey(name)
     }
 
     // getProcessor returns the processor instance, or panics if unknown.
     // Callers must check `hasProcessor` first for unknown-name recovery.
-    pub fn getProcessor(String name): ProcessorFn {
+    pub ProcessorFn getProcessor(String name) {
         return processors[name]
     }
 
     // getProcessorNames returns the ordered list of registered processor names.
-    pub fn getProcessorNames(): List<String> {
+    pub List<String> getProcessorNames() {
         return processorNames
     }
 
     // getConnections returns the adjacency map keyed by processor name, then
     // by relationship. Read-only view for introspection.
-    pub fn getConnections(): Map<String, Map<String, List<String>>> {
+    pub Map<String, Map<String, List<String>>> getConnections() {
         return connections
     }
 
     // getState returns the lifecycle state of `name`, or DISABLED if unknown
     // (safer default than ENABLED — an unrecognized processor shouldn't run).
-    pub fn getState(String name): ComponentState {
+    pub ComponentState getState(String name) {
         if (!processorStates.containsKey(name)) {
             return DISABLED
         }
@@ -129,7 +129,7 @@ class PipelineGraph {
     // is to only call for known processors).
     // Param is `newState` rather than `state` to avoid shadowing — see
     // comment in computeEntryPoints below.
-    pub fn setState(String name, ComponentState newState) {
+    pub void setState(String name, ComponentState newState) {
         if (processorStates.containsKey(name)) {
             processorStates[name] = newState
         }
@@ -138,7 +138,7 @@ class PipelineGraph {
     // computeEntryPoints walks the connection map and marks as entry points
     // any processor that appears as a source but never as a target.
     // Sources ingest FlowFiles to these.
-    pub fn computeEntryPoints() {
+    pub void computeEntryPoints() {
         var targetSet = Map<String, bool>{}
         for (name in processorNames) {
             if (connections.containsKey(name)) {
@@ -160,12 +160,12 @@ class PipelineGraph {
     }
 
     // getEntryPoints returns the list computed by computeEntryPoints.
-    pub fn getEntryPoints(): List<String> {
+    pub List<String> getEntryPoints() {
         return entryPoints
     }
 
     // getRequires returns the declared provider dependencies of `name`.
-    pub fn getRequires(String name): List<String> {
+    pub List<String> getRequires(String name) {
         if (!processorRequires.containsKey(name)) {
             return List<String>[]
         }

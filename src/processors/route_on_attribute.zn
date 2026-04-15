@@ -31,7 +31,7 @@ class RouteOnAttribute : ProcessorFn {
         parseRoutes(routesSpec)
     }
 
-    fn parseRoutes(String spec) {
+    void parseRoutes(String spec) {
         if (spec == "") {
             return
         }
@@ -62,7 +62,7 @@ class RouteOnAttribute : ProcessorFn {
         }
     }
 
-    pub fn process(FlowFile ff): ProcessorResult {
+    pub ProcessorResult process(FlowFile ff) {
         for (route in routes) {
             if (evaluate(route, ff.attributes)) {
                 return Routed(route.relationship, ff)
@@ -72,7 +72,7 @@ class RouteOnAttribute : ProcessorFn {
     }
 }
 
-pub fn RouteOnAttributeFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
+pub ProcessorFn RouteOnAttributeFactory(ScopedContext ctx, Map<String, String> config) {
     var spec = ""
     if (config.containsKey("routes")) {
         spec = config["routes"]
@@ -82,7 +82,7 @@ pub fn RouteOnAttributeFactory(ScopedContext ctx, Map<String, String> config): P
 
 // --- predicate evaluation ---
 
-fn evaluate(Route r, Map<String, String> attrs): bool {
+bool evaluate(Route r, Map<String, String> attrs) {
     if (r.op == "EXISTS") {
         return attrs.containsKey(r.attribute)
     }
@@ -116,7 +116,7 @@ fn evaluate(Route r, Map<String, String> attrs): bool {
 
 // --- string helpers (kept local so the processor has no stdlib deps) ---
 
-fn splitAndTrim(String s, String sep): List<String> {
+List<String> splitAndTrim(String s, String sep) {
     var out = List<String>[]
     var start = 0
     var i = 0
@@ -137,7 +137,7 @@ fn splitAndTrim(String s, String sep): List<String> {
     return out
 }
 
-fn indexOfByte(String s, String b): int {
+int indexOfByte(String s, String b) {
     var i = 0
     while (i < len(s)) {
         if (s[i:i+1] == b) {
@@ -148,7 +148,7 @@ fn indexOfByte(String s, String b): int {
     return -1
 }
 
-fn trimSpace(String s): String {
+String trimSpace(String s) {
     var start = 0
     while (start < len(s)) {
         var c = s[start:start+1]
@@ -168,7 +168,7 @@ fn trimSpace(String s): String {
     return s[start:stop]
 }
 
-fn splitOnSpace(String s, int maxParts): List<String> {
+List<String> splitOnSpace(String s, int maxParts) {
     var out = List<String>[]
     var start = 0
     var i = 0
@@ -193,7 +193,7 @@ fn splitOnSpace(String s, int maxParts): List<String> {
     return out
 }
 
-fn upperCase(String s): String {
+String upperCase(String s) {
     var out = ""
     var i = 0
     while (i < len(s)) {

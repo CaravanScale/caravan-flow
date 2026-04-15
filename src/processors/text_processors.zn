@@ -36,7 +36,7 @@ class ReplaceText : ProcessorFn {
         this.store = store
     }
 
-    pub fn process(FlowFile ff): ProcessorResult {
+    pub ProcessorResult process(FlowFile ff) {
         var resolved = resolve(store, ff.content)
         if (resolved.errorMsg != "") {
             return Failure(resolved.errorMsg, ff)
@@ -64,7 +64,7 @@ class ReplaceText : ProcessorFn {
     }
 }
 
-pub fn ReplaceTextFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
+pub ProcessorFn ReplaceTextFactory(ScopedContext ctx, Map<String, String> config) {
     var pattern = ""
     if (config.containsKey("pattern")) { pattern = config["pattern"] }
     var replacement = ""
@@ -99,7 +99,7 @@ class ExtractText : ProcessorFn {
         }
     }
 
-    pub fn process(FlowFile ff): ProcessorResult {
+    pub ProcessorResult process(FlowFile ff) {
         var resolved = resolve(store, ff.content)
         if (resolved.errorMsg != "") {
             return Failure(resolved.errorMsg, ff)
@@ -142,7 +142,7 @@ class ExtractText : ProcessorFn {
     }
 }
 
-pub fn ExtractTextFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
+pub ProcessorFn ExtractTextFactory(ScopedContext ctx, Map<String, String> config) {
     var pattern = ""
     if (config.containsKey("pattern")) { pattern = config["pattern"] }
     var groupNames = ""
@@ -164,7 +164,7 @@ class SplitText : ProcessorFn {
         this.store = store
     }
 
-    pub fn process(FlowFile ff): ProcessorResult {
+    pub ProcessorResult process(FlowFile ff) {
         var resolved = resolve(store, ff.content)
         if (resolved.errorMsg != "") {
             return Failure(resolved.errorMsg, ff)
@@ -217,7 +217,7 @@ class SplitText : ProcessorFn {
     }
 }
 
-pub fn SplitTextFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
+pub ProcessorFn SplitTextFactory(ScopedContext ctx, Map<String, String> config) {
     var delimiter = "\n"
     if (config.containsKey("delimiter") && config["delimiter"] != "") {
         delimiter = config["delimiter"]
@@ -232,7 +232,7 @@ pub fn SplitTextFactory(ScopedContext ctx, Map<String, String> config): Processo
 
 // --- shared helpers ---
 
-fn resolveStore(ScopedContext ctx): ContentStore {
+ContentStore resolveStore(ScopedContext ctx) {
     var p = ctx.getProvider("content") or {
         return MemoryContentStore()
     }
@@ -240,7 +240,7 @@ fn resolveStore(ScopedContext ctx): ContentStore {
     return cp.getStore()
 }
 
-fn textParseInt(String s, int fallback): int {
+int textParseInt(String s, int fallback) {
     if (s == "") { return fallback }
     var neg = false
     var start = 0

@@ -23,12 +23,12 @@ class UpdateAttribute : ProcessorFn {
         this.value = value
     }
 
-    pub fn process(FlowFile ff): ProcessorResult {
+    pub ProcessorResult process(FlowFile ff) {
         var updated = withAttribute(ff, key, value)
         return Single(updated)
     }
 }
 
-pub fn UpdateAttributeFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
+pub ProcessorFn UpdateAttributeFactory(ScopedContext ctx, Map<String, String> config) {
     return UpdateAttribute(config["key"], config["value"])
 }

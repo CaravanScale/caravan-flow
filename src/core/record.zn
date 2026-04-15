@@ -4,23 +4,23 @@
 
 // RecordReader parses byte content into Avro GenericRecords.
 interface RecordReader {
-    fn read(byte[] data, Schema schema): List<GenericRecord>
+    List<GenericRecord> read(byte[] data, Schema schema)
 }
 
 // RecordWriter serializes Avro GenericRecords back to bytes.
 interface RecordWriter {
-    fn write(List<GenericRecord> records, Schema schema): byte[]
+    byte[] write(List<GenericRecord> records, Schema schema)
 }
 
 // RecordProcessor operates on individual Avro records.
 // Processors that implement this get records passed directly —
 // no deserialize/serialize between chained record processors.
 interface RecordProcessor {
-    fn processRecord(GenericRecord record, Schema schema): GenericRecord
+    GenericRecord processRecord(GenericRecord record, Schema schema)
 }
 
 // newRecord creates a new GenericRecord from a schema and field values.
-pub fn newRecord(Schema schema, Map<String, Object> values): GenericRecord {
+pub GenericRecord newRecord(Schema schema, Map<String, Object> values) {
     var record = GenericRecord(schema)
     for (key, value in values) {
         record.setField(key, value)
@@ -29,7 +29,7 @@ pub fn newRecord(Schema schema, Map<String, Object> values): GenericRecord {
 }
 
 // getField safely retrieves a field value as a String.
-pub fn getField(GenericRecord record, String fieldName): String {
+pub String getField(GenericRecord record, String fieldName) {
     var val = record.getField(fieldName)
     if (val == null) {
         return ""
@@ -38,7 +38,7 @@ pub fn getField(GenericRecord record, String fieldName): String {
 }
 
 // withField returns a copy of the record with a field set.
-pub fn withField(GenericRecord record, String fieldName, Object value): GenericRecord {
+pub GenericRecord withField(GenericRecord record, String fieldName, Object value) {
     var schema = record.getSchema()
     var copy = GenericRecord(schema)
     for (f in schema.fields) {

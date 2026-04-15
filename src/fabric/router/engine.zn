@@ -11,21 +11,21 @@ class RulesEngine {
     init() {}
 
     // Add or replace an entire ruleset.
-    pub fn addOrReplaceRuleset(String name, List<RoutingRule> rules) {
+    pub void addOrReplaceRuleset(String name, List<RoutingRule> rules) {
         lock (mu) {
             rulesets[name] = rules
         }
     }
 
     // Remove a ruleset entirely.
-    pub fn removeRuleset(String name) {
+    pub void removeRuleset(String name) {
         lock (mu) {
             rulesets.remove(name)
         }
     }
 
     // Toggle a specific rule's enabled state.
-    pub fn toggleRule(String rulesetName, String ruleName) {
+    pub void toggleRule(String rulesetName, String ruleName) {
         lock (mu) {
             var rules = rulesets[rulesetName]
             var updated = List<RoutingRule>[]
@@ -41,12 +41,12 @@ class RulesEngine {
     }
 
     // Get all ruleset names.
-    pub fn getRulesetNames(): List<String> {
+    pub List<String> getRulesetNames() {
         return rulesets.keys()
     }
 
     // Get all rules across all rulesets.
-    pub fn getAllRules(): List<RoutingRule> {
+    pub List<RoutingRule> getAllRules() {
         var result = List<RoutingRule>[]
         var names = rulesets.keys()
         for (name in names) {
@@ -60,7 +60,7 @@ class RulesEngine {
 
     // Evaluate all rulesets against a set of attributes.
     // Returns all matching destinations (fan-out).
-    pub fn getDestinations(Map<String, String> attributes): List<Destination> {
+    pub List<Destination> getDestinations(Map<String, String> attributes) {
         var destinations = List<Destination>[]
         var names = rulesets.keys()
         for (name in names) {
@@ -76,7 +76,7 @@ class RulesEngine {
 }
 
 // evaluate — recursively evaluate a RuleType against attributes.
-fn evaluate(RuleType condition, Map<String, String> attributes): boolean {
+boolean evaluate(RuleType condition, Map<String, String> attributes) {
     match (condition) {
         case BaseRule(attribute, operator, value) {
             return evaluateBase(attribute, operator, value, attributes)
@@ -97,7 +97,7 @@ fn evaluate(RuleType condition, Map<String, String> attributes): boolean {
 }
 
 // evaluateBase — evaluate a single attribute predicate.
-fn evaluateBase(String attribute, Operator operator, String value, Map<String, String> attributes): boolean {
+boolean evaluateBase(String attribute, Operator operator, String value, Map<String, String> attributes) {
     match (operator) {
         case EXISTS {
             return attributes.containsKey(attribute)

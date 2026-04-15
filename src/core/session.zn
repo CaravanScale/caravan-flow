@@ -25,7 +25,7 @@ class ProcessSession {
     }
 
     // execute runs one claim/process/route/ack cycle. Returns true if work was done.
-    pub fn execute(): bool {
+    pub bool execute() {
         var entry = source.claim()
         if (entry.id == "") {
             return false
@@ -78,7 +78,7 @@ class ProcessSession {
 
     // routeResult evaluates IRS routing and delivers to destination queues.
     // Returns true if routing succeeded, false if backpressure (nacks source).
-    fn routeResult(FlowFile ff, QueueEntry entry): bool {
+    bool routeResult(FlowFile ff, QueueEntry entry) {
         var destinations = irs.getDestinations(ff.attributes)
 
         // No destinations — terminal processor, nothing to route

@@ -7,10 +7,10 @@ import time
 
 // ContentStore — store and retrieve content by claim ID.
 interface ContentStore {
-    fn store(byte[] data): String        // returns claim ID
-    fn retrieve(String claimId): byte[]  // returns content bytes
-    fn delete(String claimId)
-    fn exists(String claimId): bool
+    String store(byte[] data)        // returns claim ID
+    byte[] retrieve(String claimId)  // returns content bytes
+    void delete(String claimId)
+    bool exists(String claimId)
 }
 
 // FileContentStore — filesystem-backed content store.
@@ -23,14 +23,14 @@ class FileContentStore : ContentStore {
         MkdirAll(baseDir, 0o755)
     }
 
-    pub fn store(byte[] data): String {
+    pub String store(byte[] data) {
         var claimId = generateClaimId()
         var path = claimPath(claimId)
         WriteFile(path, data, 0o644)
         return claimId
     }
 
-    pub fn retrieve(String claimId): byte[] {
+    pub byte[] retrieve(String claimId) {
         var path = claimPath(claimId)
         var data = ReadFile(path) or {
             return byte[0]
@@ -38,25 +38,25 @@ class FileContentStore : ContentStore {
         return data
     }
 
-    pub fn delete(String claimId) {
+    pub void delete(String claimId) {
         var path = claimPath(claimId)
         Remove(path)
     }
 
-    pub fn exists(String claimId): bool {
+    pub bool exists(String claimId) {
         var path = claimPath(claimId)
         var _, err = Stat(path)
         return err == null
     }
 
-    fn claimPath(String claimId): String {
+    String claimPath(String claimId) {
         var prefix = claimId[0:2]
         var dir = baseDir + "/" + prefix
         MkdirAll(dir, 0755)
         return dir + "/" + claimId
     }
 
-    fn generateClaimId(): String {
+    String generateClaimId() {
         claimCounter = claimCounter + 1
         return "claim-${Now().UnixNano()}-${claimCounter}"
     }
@@ -70,31 +70,31 @@ class MemoryContentStore : ContentStore {
 
     init() {}
 
-    pub fn store(byte[] content): String {
+    pub String store(byte[] content) {
         counter = counter + 1
         var id = "mem-claim-" + str(counter)
         data[id] = content
         return id
     }
 
-    pub fn retrieve(String claimId): byte[] {
+    pub byte[] retrieve(String claimId) {
         if (data.containsKey(claimId)) {
             return data[claimId]
         }
         return byte[0]
     }
 
-    pub fn delete(String claimId) {
+    pub void delete(String claimId) {
         data.delete(claimId)
     }
 
-    pub fn exists(String claimId): bool {
+    pub bool exists(String claimId) {
         return data.containsKey(claimId)
     }
 }
 
 // maybeOffload checks content size and offloads to the store if needed.
-pub fn maybeOffload(ContentStore store, byte[] data): Content {
+pub Content maybeOffload(ContentStore store, byte[] data) {
     if (len(data) > CONTENT_CLAIM_THRESHOLD) {
         var claimId = store.store(data)
         return Claim(claimId, long(len(data)))
@@ -109,7 +109,7 @@ data ResolveResult(
 )
 
 // resolve retrieves the raw bytes for any Content variant.
-pub fn resolve(ContentStore store, Content c): ResolveResult {
+pub ResolveResult resolve(ContentStore store, Content c) {
     match (c) {
         case Raw(bytes) {
             return ResolveResult(bytes, "")

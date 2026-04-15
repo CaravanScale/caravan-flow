@@ -35,7 +35,7 @@ class ExtractRecordField : ProcessorFn {
         parseFields(fieldsSpec)
     }
 
-    fn parseFields(String spec) {
+    void parseFields(String spec) {
         if (spec == "") {
             return
         }
@@ -56,7 +56,7 @@ class ExtractRecordField : ProcessorFn {
         }
     }
 
-    fn addPair(String pair) {
+    void addPair(String pair) {
         var trimmed = trimPairSpace(pair)
         if (trimmed == "") {
             return
@@ -81,7 +81,7 @@ class ExtractRecordField : ProcessorFn {
         mappings = append(mappings, FieldMapping(fname, aname))
     }
 
-    pub fn process(FlowFile ff): ProcessorResult {
+    pub ProcessorResult process(FlowFile ff) {
         match (ff.content) {
             case Records(_, records) {
                 if (len(records) == 0 || recordIndex >= len(records)) {
@@ -107,7 +107,7 @@ class ExtractRecordField : ProcessorFn {
     }
 }
 
-pub fn ExtractRecordFieldFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
+pub ProcessorFn ExtractRecordFieldFactory(ScopedContext ctx, Map<String, String> config) {
     var fieldsSpec = ""
     if (config.containsKey("fields")) {
         fieldsSpec = config["fields"]
@@ -122,7 +122,7 @@ pub fn ExtractRecordFieldFactory(ScopedContext ctx, Map<String, String> config):
 // parseIntOr — tiny int parser, returns fallback on any garbage.
 // Duplicated from fabric/source/generate.zn's atoi rather than
 // exposed via stdlib to avoid leaking a subpackage-private helper.
-fn parseIntOr(String s, int fallback): int {
+int parseIntOr(String s, int fallback) {
     if (s == "") {
         return fallback
     }
@@ -148,7 +148,7 @@ fn parseIntOr(String s, int fallback): int {
     return n
 }
 
-fn trimPairSpace(String s): String {
+String trimPairSpace(String s) {
     var start = 0
     while (start < len(s)) {
         var c = s[start:start+1]

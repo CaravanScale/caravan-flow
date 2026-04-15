@@ -72,7 +72,7 @@ class Fabric {
     // snapshotGraph returns the current graph pointer under the lock.
     // Caller walks the returned graph without holding the lock — graphs
     // are treated as immutable once published (mutations go via swapGraph).
-    fn snapshotGraph(): PipelineGraph {
+    PipelineGraph snapshotGraph() {
         var g = graph
         lock (mu) {
             g = graph
@@ -82,7 +82,7 @@ class Fabric {
 
     // swapGraph replaces the active graph. Called under exclusive intent
     // (loadFlow, addProcessor, removeProcessor, reloadFlow).
-    fn swapGraph(PipelineGraph newGraph) {
+    void swapGraph(PipelineGraph newGraph) {
         lock (mu) {
             graph = newGraph
         }
@@ -93,7 +93,7 @@ class Fabric {
     // loadFlow parses `flow.processors.<name>.{type, config, requires, connections}`
     // from the given config object, instantiates each processor, wires the
     // DAG, and publishes the resulting graph. Overwrites any prior graph.
-    pub fn loadFlow(config.Config cfg) {
+    pub void loadFlow(config.Config cfg) {
         if (cfg.has("defaults.max_hops")) {
             maxHops = cfg.getInt("defaults.max_hops")
         }
@@ -162,7 +162,7 @@ class Fabric {
     // execute runs one FlowFile through the graph starting at `entryPoint`.
     // Synchronous; returns true when the walk completes (always true today —
     // backpressure will return false once the concurrency gate is added).
-    pub fn execute(FlowFile ff, String entryPoint): bool {
+    pub bool execute(FlowFile ff, String entryPoint) {
         var g = snapshotGraph()
         activeExecutions = activeExecutions + 1
         executeGraph(g, ff, entryPoint)
@@ -173,7 +173,7 @@ class Fabric {
     // ingestAndExecute is the source-side callback: fan the FlowFile to
     // every entry-point processor. Returns false when no entry points are
     // configured (the FlowFile has nowhere to go).
-    pub fn ingestAndExecute(FlowFile ff): bool {
+    pub bool ingestAndExecute(FlowFile ff) {
         var g = snapshotGraph()
         var entries = g.getEntryPoints()
         if (len(entries) == 0) {
@@ -196,7 +196,7 @@ class Fabric {
     // executeGraph is the iterative DFS loop. The graph is read-only for
     // the duration of the walk — any in-flight reload completes against
     // the snapshot we hold.
-    fn executeGraph(PipelineGraph g, FlowFile ff, String entryPoint) {
+    void executeGraph(PipelineGraph g, FlowFile ff, String entryPoint) {
         var work = List<WorkItem>[]
         work = append(work, WorkItem(ff, entryPoint, 0))
 
@@ -274,7 +274,7 @@ class Fabric {
     // subsequent targets get attribute-clones so that branch mutations
     // don't leak across siblings. Pushes in reverse order so the first
     // target is popped first (stable DFS order).
-    fn pushDownstream(List<WorkItem> work, PipelineGraph g, FlowFile ff, String fromProcessor, String relationship, int hops): List<WorkItem> {
+    List<WorkItem> pushDownstream(List<WorkItem> work, PipelineGraph g, FlowFile ff, String fromProcessor, String relationship, int hops) {
         var targets = g.getTargets(fromProcessor, relationship)
         if (len(targets) == 0) {
             return work
@@ -289,7 +289,7 @@ class Fabric {
     }
 
     // incProcCount bumps the success counter for `name`, lazily initializing.
-    fn incProcCount(String name) {
+    void incProcCount(String name) {
         if (processorCounts.containsKey(name)) {
             processorCounts[name] = processorCounts[name] + 1
         } else {
@@ -298,7 +298,7 @@ class Fabric {
     }
 
     // incProcError bumps the error counter for `name`, lazily initializing.
-    fn incProcError(String name) {
+    void incProcError(String name) {
         if (processorErrors.containsKey(name)) {
             processorErrors[name] = processorErrors[name] + 1
         } else {
@@ -311,7 +311,7 @@ class Fabric {
     // addSource registers a ConnectorSource. If the fabric is already
     // running, the source is started immediately; otherwise it waits
     // for startAsync.
-    pub fn addSource(ConnectorSource source) {
+    pub void addSource(ConnectorSource source) {
         sources[source.getName()] = source
         if (running) {
             source.start((FlowFile ff) -> ingestAndExecute(ff))
@@ -319,7 +319,7 @@ class Fabric {
         }
     }
 
-    pub fn startSource(String name): bool {
+    pub bool startSource(String name) {
         if (!sources.containsKey(name)) {
             return false
         }
@@ -331,7 +331,7 @@ class Fabric {
         return true
     }
 
-    pub fn stopSource(String name): bool {
+    pub bool stopSource(String name) {
         if (!sources.containsKey(name)) {
             return false
         }
@@ -342,7 +342,7 @@ class Fabric {
 
     // getSources returns (name, type, running) triples for every
     // registered source.
-    pub fn getSources(): List<Map<String, String>> {
+    pub List<Map<String, String>> getSources() {
         var result = List<Map<String, String>>[]
         for (name in sources.keys()) {
             var src = sources[name]
@@ -361,7 +361,7 @@ class Fabric {
 
     // --- Lifecycle ---
 
-    pub fn startAsync() {
+    pub void startAsync() {
         running = true
         // Start every registered source — they each kick off their own
         // loops and feed us via ingestAndExecute.
@@ -378,7 +378,7 @@ class Fabric {
             "sources", len(sources))
     }
 
-    pub fn stopAsync() {
+    pub void stopAsync() {
         running = false
         for (name in sources.keys()) {
             sources[name].stop()
@@ -387,14 +387,14 @@ class Fabric {
 
     // --- Source-side ingest (kept for back-compat with HTTP source). ---
     // `ingest` routes via ingestAndExecute. Returns false if no entry points.
-    pub fn ingest(FlowFile ff): bool {
+    pub bool ingest(FlowFile ff) {
         return ingestAndExecute(ff)
     }
 
     // replayAt re-injects a FlowFile at the named processor. Used by DLQ
     // replay: the DLQ records the source processor, replay resumes there
     // rather than going through the full entry-point fan-out.
-    pub fn replayAt(String processorName, FlowFile ff): bool {
+    pub bool replayAt(String processorName, FlowFile ff) {
         var g = snapshotGraph()
         if (!g.hasProcessor(processorName)) {
             return false
@@ -404,45 +404,45 @@ class Fabric {
 
     // --- Introspection ---
 
-    pub fn getContext(): ProcessorContext {
+    pub ProcessorContext getContext() {
         return globalCtx
     }
 
-    pub fn getRegistry(): Registry {
+    pub Registry getRegistry() {
         return reg
     }
 
-    pub fn getDLQ(): DLQ {
+    pub DLQ getDLQ() {
         return dlqStore
     }
 
-    pub fn getDlqCount(): int {
+    pub int getDlqCount() {
         return dlqStore.count()
     }
 
-    pub fn getProcessorNames(): List<String> {
+    pub List<String> getProcessorNames() {
         var g = snapshotGraph()
         return g.getProcessorNames()
     }
 
-    pub fn getEntryPoints(): List<String> {
+    pub List<String> getEntryPoints() {
         var g = snapshotGraph()
         return g.getEntryPoints()
     }
 
-    pub fn getConnections(): Map<String, Map<String, List<String>>> {
+    pub Map<String, Map<String, List<String>>> getConnections() {
         var g = snapshotGraph()
         return g.getConnections()
     }
 
-    pub fn getProcessorType(String name): String {
+    pub String getProcessorType(String name) {
         if (processorDefs.containsKey(name)) {
             return processorDefs[name].typeName
         }
         return "unknown"
     }
 
-    pub fn getStats(): Map<String, int> {
+    pub Map<String, int> getStats() {
         var stats = Map<String, int>{}
         stats["processed"] = totalProcessed
         stats["active"] = activeExecutions
@@ -451,7 +451,7 @@ class Fabric {
         return stats
     }
 
-    pub fn getProcessorStats(): Map<String, Map<String, int>> {
+    pub Map<String, Map<String, int>> getProcessorStats() {
         var stats = Map<String, Map<String, int>>{}
         for (name in graph.getProcessorNames()) {
             // Local is `ps` (not `s`) because Zinc→Go lowers the class
@@ -472,12 +472,12 @@ class Fabric {
         return stats
     }
 
-    pub fn getProcessorState(String name): ComponentState {
+    pub ComponentState getProcessorState(String name) {
         var g = snapshotGraph()
         return g.getState(name)
     }
 
-    pub fn getProcessorRequires(String name): List<String> {
+    pub List<String> getProcessorRequires(String name) {
         var g = snapshotGraph()
         return g.getRequires(name)
     }
@@ -486,7 +486,7 @@ class Fabric {
 
     // enableProcessor — flip state to ENABLED. Refuses if any required
     // provider is missing or disabled (mirrors csharp behavior).
-    pub fn enableProcessor(String name): bool {
+    pub bool enableProcessor(String name) {
         var g = snapshotGraph()
         if (!g.hasProcessor(name)) {
             return false
@@ -513,7 +513,7 @@ class Fabric {
     // executor is synchronous there's nothing to drain (no in-flight
     // queue behind this processor); the state change takes effect on the
     // next execute() that touches it.
-    pub fn disableProcessor(String name, int drainSecs): bool {
+    pub bool disableProcessor(String name, int drainSecs) {
         var g = snapshotGraph()
         if (!g.hasProcessor(name)) {
             return false
@@ -525,7 +525,7 @@ class Fabric {
 
     // --- Provider lifecycle ---
 
-    pub fn enableProvider(String providerName): bool {
+    pub bool enableProvider(String providerName) {
         var prov = globalCtx.getProvider(providerName) or {
             return false
         }
@@ -537,7 +537,7 @@ class Fabric {
     // disableProvider cascades to dependent processors before disabling
     // the provider itself. Prevents a processor from running against a
     // half-gone dependency.
-    pub fn disableProvider(String providerName, int drainSecs): bool {
+    pub bool disableProvider(String providerName, int drainSecs) {
         var prov = globalCtx.getProvider(providerName) or {
             return false
         }
@@ -558,24 +558,24 @@ class Fabric {
 
     // setMaxHops overrides the default hop limit. Primarily for tests —
     // production sets this via `defaults.max_hops` in config.
-    pub fn setMaxHops(int n) { maxHops = n }
+    pub void setMaxHops(int n) { maxHops = n }
 
     // connect wires `src[relationship] → targets`. Overwrites any prior
     // target list for the same (src, relationship) pair.
-    pub fn connect(String src, String relationship, List<String> targets) {
+    pub void connect(String src, String relationship, List<String> targets) {
         graph.addConnection(src, relationship, targets)
     }
 
     // computeEntryPoints recomputes the entry-point set after manual
     // wiring. loadFlow/addProcessor call this automatically; tests that
     // build graphs via connect() should call it once the topology is final.
-    pub fn computeEntryPoints() { graph.computeEntryPoints() }
+    pub void computeEntryPoints() { graph.computeEntryPoints() }
 
     // addProcessorInstance registers a pre-built ProcessorFn in the active
     // graph. Complementary to addProcessor: that variant uses the registry
     // to construct, this one accepts any instance (test-only scaffolding
     // plus any caller that wants to bypass the registry).
-    pub fn addProcessorInstance(String name, ProcessorFn proc, List<String> requires): bool {
+    pub bool addProcessorInstance(String name, ProcessorFn proc, List<String> requires) {
         var g = snapshotGraph()
         if (g.hasProcessor(name)) {
             logging.warn("processor already exists", "name", name)
@@ -595,7 +595,7 @@ class Fabric {
     // into the active graph. Returns false on duplicate name or unknown
     // type. Connections are empty by default; callers may follow up with
     // addConnection once that API is added.
-    pub fn addProcessor(String name, String typeName, Map<String, String> pconfig): bool {
+    pub bool addProcessor(String name, String typeName, Map<String, String> pconfig) {
         var g = snapshotGraph()
         if (g.hasProcessor(name)) {
             logging.warn("processor already exists", "name", name)
@@ -625,7 +625,7 @@ class Fabric {
 
     // removeProcessor marks the processor DISABLED and drops it from
     // the graph (rebuilds the processor list sans `name`).
-    pub fn removeProcessor(String name): bool {
+    pub bool removeProcessor(String name) {
         var g = snapshotGraph()
         if (!g.hasProcessor(name)) {
             return false
@@ -669,7 +669,7 @@ class Fabric {
 
     // buildScopedContextFor constructs a ScopedContext visible to the
     // processor. Empty requires → all providers (matches csharp).
-    fn buildScopedContextFor(List<String> requires): ScopedContext {
+    ScopedContext buildScopedContextFor(List<String> requires) {
         var scoped = Map<String, Provider>{}
         if (len(requires) == 0) {
             var providerNames = globalCtx.listProviders()
@@ -691,7 +691,7 @@ class Fabric {
     }
 
     // status prints the current fabric state.
-    pub fn status() {
+    pub void status() {
         logging.info("fabric status",
             "processors", len(graph.getProcessorNames()),
             "entry_points", len(graph.getEntryPoints()),
@@ -703,7 +703,7 @@ class Fabric {
 
 // cloneFlowFile — shallow-clone a FlowFile with a fresh attributes map so
 // fan-out siblings don't share mutation with each other.
-fn cloneFlowFile(FlowFile ff): FlowFile {
+FlowFile cloneFlowFile(FlowFile ff) {
     var attrs = Map<String, String>{}
     for (k in ff.attributes.keys()) {
         attrs[k] = ff.attributes[k]

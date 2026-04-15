@@ -17,19 +17,19 @@ class ApiHandler {
     }
 
     // GET /api/stats — aggregate processing statistics
-    pub fn statsHandler(ResponseWriter w, Request r) {
+    pub void statsHandler(ResponseWriter w, Request r) {
         var stats = fab.getStats()
         writeJson(w, stats)
     }
 
     // GET /api/processors — list active processor names
-    pub fn processorsHandler(ResponseWriter w, Request r) {
+    pub void processorsHandler(ResponseWriter w, Request r) {
         var names = fab.getProcessorNames()
         writeJson(w, names)
     }
 
     // GET /api/registry — list available processor types
-    pub fn registryHandler(ResponseWriter w, Request r) {
+    pub void registryHandler(ResponseWriter w, Request r) {
         var reg = fab.getRegistry()
         var infos = reg.list()
         var result = List<Map<String, Object>>[]
@@ -48,7 +48,7 @@ class ApiHandler {
     // routing lives on processor connections ("success"/"failure"/...),
     // not in a standalone rules engine. Attribute-predicate routing is
     // the RouteOnAttribute processor's responsibility (Phase 3).
-    pub fn flowHandler(ResponseWriter w, Request r) {
+    pub void flowHandler(ResponseWriter w, Request r) {
         var flow = Map<String, Object>{}
         flow["processors"] = fab.getProcessorNames()
         flow["entry_points"] = fab.getEntryPoints()
@@ -58,7 +58,7 @@ class ApiHandler {
     }
 
     // GET /api/dlq — DLQ entries
-    pub fn dlqHandler(ResponseWriter w, Request r) {
+    pub void dlqHandler(ResponseWriter w, Request r) {
         var dlq = fab.getDLQ()
         var entries = dlq.list()
         var result = List<Map<String, Object>>[]
@@ -78,7 +78,7 @@ class ApiHandler {
 
     // POST /api/dlq/replay — replay a DLQ entry
     // Body: {"id": "dlq-1"}
-    pub fn dlqReplayHandler(ResponseWriter w, Request r) {
+    pub void dlqReplayHandler(ResponseWriter w, Request r) {
         if (r.Method != "POST") {
             writeError(w, 405, "method not allowed")
             return
@@ -111,7 +111,7 @@ class ApiHandler {
     }
 
     // POST /api/dlq/replay-all — replay all DLQ entries to their source queues
-    pub fn dlqReplayAllHandler(ResponseWriter w, Request r) {
+    pub void dlqReplayAllHandler(ResponseWriter w, Request r) {
         if (r.Method != "POST") {
             writeError(w, 405, "method not allowed")
             return
@@ -128,7 +128,7 @@ class ApiHandler {
 
     // DELETE /api/dlq — remove a DLQ entry
     // Body: {"id": "dlq-1"}
-    pub fn dlqDeleteHandler(ResponseWriter w, Request r) {
+    pub void dlqDeleteHandler(ResponseWriter w, Request r) {
         if (r.Method != "DELETE") {
             writeError(w, 405, "method not allowed")
             return
@@ -156,13 +156,13 @@ class ApiHandler {
     // GET /api/stats/processors — per-processor processed/error counters.
     // Replaces the old /api/queues endpoint; direct-pipeline doesn't have
     // per-processor queues to report depth on.
-    pub fn processorStatsHandler(ResponseWriter w, Request r) {
+    pub void processorStatsHandler(ResponseWriter w, Request r) {
         writeJson(w, fab.getProcessorStats())
     }
 
     // POST /api/processors/enable — enable a processor
     // Body: {"name": "my-proc"}
-    pub fn enableProcessorHandler(ResponseWriter w, Request r) {
+    pub void enableProcessorHandler(ResponseWriter w, Request r) {
         if (r.Method != "POST") {
             writeError(w, 405, "method not allowed")
             return
@@ -192,7 +192,7 @@ class ApiHandler {
 
     // POST /api/processors/disable — disable a processor (drains first)
     // Body: {"name": "my-proc", "timeout": 60}
-    pub fn disableProcessorHandler(ResponseWriter w, Request r) {
+    pub void disableProcessorHandler(ResponseWriter w, Request r) {
         if (r.Method != "POST") {
             writeError(w, 405, "method not allowed")
             return
@@ -223,7 +223,7 @@ class ApiHandler {
 
     // POST /api/processors/state — get processor lifecycle state
     // Body: {"name": "my-proc"}
-    pub fn processorStateHandler(ResponseWriter w, Request r) {
+    pub void processorStateHandler(ResponseWriter w, Request r) {
         var body = readBody(r)
         if (body == null) {
             writeError(w, 400, "failed to read body")
@@ -251,7 +251,7 @@ class ApiHandler {
 
     // POST /api/processors — add a processor
     // Body: {"name": "my-proc", "type": "add-attribute", "config": {"key": "env", "value": "prod"}}
-    pub fn addProcessorHandler(ResponseWriter w, Request r) {
+    pub void addProcessorHandler(ResponseWriter w, Request r) {
         if (r.Method != "POST") {
             writeError(w, 405, "method not allowed")
             return
@@ -293,7 +293,7 @@ class ApiHandler {
 
     // DELETE /api/processors — remove a processor
     // Body: {"name": "my-proc"}
-    pub fn removeProcessorHandler(ResponseWriter w, Request r) {
+    pub void removeProcessorHandler(ResponseWriter w, Request r) {
         if (r.Method != "DELETE") {
             writeError(w, 405, "method not allowed")
             return
@@ -327,7 +327,7 @@ class ApiHandler {
     // predicate routing belongs to a RouteOnAttribute processor — Phase 3.)
 
     // GET /api/providers — list all providers and their states
-    pub fn providersHandler(ResponseWriter w, Request r) {
+    pub void providersHandler(ResponseWriter w, Request r) {
         var ctx = fab.getContext()
         var names = ctx.listProviders()
         var result = List<Map<String, Object>>[]
@@ -353,7 +353,7 @@ class ApiHandler {
 
     // POST /api/providers/enable — enable a provider
     // Body: {"name": "content"}
-    pub fn enableProviderHandler(ResponseWriter w, Request r) {
+    pub void enableProviderHandler(ResponseWriter w, Request r) {
         if (r.Method != "POST") {
             writeError(w, 405, "method not allowed")
             return
@@ -383,7 +383,7 @@ class ApiHandler {
 
     // POST /api/providers/disable — disable a provider (cascades to dependent processors)
     // Body: {"name": "content"}
-    pub fn disableProviderHandler(ResponseWriter w, Request r) {
+    pub void disableProviderHandler(ResponseWriter w, Request r) {
         if (r.Method != "POST") {
             writeError(w, 405, "method not allowed")
             return
@@ -414,7 +414,7 @@ class ApiHandler {
 }
 
 // readBody reads the full request body, returning null on failure.
-fn readBody(Request r): byte[] {
+byte[] readBody(Request r) {
     var body = ReadAll(r.Body) or {
         return null
     }
@@ -423,7 +423,7 @@ fn readBody(Request r): byte[] {
 }
 
 // strVal extracts a string value from a map, returning "" if missing.
-fn strVal(Map<String, Object> m, String key): String {
+String strVal(Map<String, Object> m, String key) {
     if (m.containsKey(key)) {
         return str(m[key])
     }
@@ -431,7 +431,7 @@ fn strVal(Map<String, Object> m, String key): String {
 }
 
 // writeError writes a JSON error response.
-fn writeError(ResponseWriter w, int status, String msg) {
+void writeError(ResponseWriter w, int status, String msg) {
     w.Header().Set("Content-Type", "application/json")
     w.WriteHeader(status)
     var result = Map<String, Object>{"error": msg}
@@ -440,7 +440,7 @@ fn writeError(ResponseWriter w, int status, String msg) {
 }
 
 // writeJson serializes data to JSON and writes it as the HTTP response.
-fn writeJson(ResponseWriter w, Object data) {
+void writeJson(ResponseWriter w, Object data) {
     var body = json.Marshal(data) or {
         w.WriteHeader(500)
         w.Write('{"error":"json marshal failed"}'.toBytes())

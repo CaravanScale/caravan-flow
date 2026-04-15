@@ -5,7 +5,7 @@
 import core
 
 // serializeResult converts a core ProcessorResult to a JSON string for HTTP response.
-pub fn serializeResult(ProcessorResult result): String {
+pub String serializeResult(ProcessorResult result) {
     match (result) {
         case Single(ff) {
             return '{"type":"single","id":"' + ff.id + '"}'

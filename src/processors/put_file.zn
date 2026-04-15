@@ -50,7 +50,7 @@ class PutFile : ProcessorFn {
         MkdirAll(outputDir, 0o755)
     }
 
-    pub fn process(FlowFile ff): ProcessorResult {
+    pub ProcessorResult process(FlowFile ff) {
         var resolved = resolve(store, ff.content)
         if (resolved.errorMsg != "") {
             return Failure(resolved.errorMsg, ff)
@@ -87,7 +87,7 @@ class PutFile : ProcessorFn {
     }
 }
 
-pub fn PutFileFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
+pub ProcessorFn PutFileFactory(ScopedContext ctx, Map<String, String> config) {
     var outputDir = ""
     if (config.containsKey("output_dir")) { outputDir = config["output_dir"] }
     var namingAttr = "filename"
@@ -112,7 +112,7 @@ pub fn PutFileFactory(ScopedContext ctx, Map<String, String> config): ProcessorF
 // basename returns the last path segment of s — strips any leading
 // directory components that an attacker (or accidental config) might
 // have baked into the naming attribute.
-fn basename(String s): String {
+String basename(String s) {
     var idx = -1
     var i = 0
     while (i < len(s)) {

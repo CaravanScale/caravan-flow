@@ -21,7 +21,7 @@ class LogAttribute : ProcessorFn {
         this.prefix = prefix
     }
 
-    pub fn process(FlowFile ff): ProcessorResult {
+    pub ProcessorResult process(FlowFile ff) {
         // Collect attributes into positional args. stdlib.logging takes
         // (msg, key, value, key, value, ...) via varargs; we build that
         // shape by concatenating into a slice of Objects.
@@ -38,7 +38,7 @@ class LogAttribute : ProcessorFn {
     }
 }
 
-pub fn LogAttributeFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
+pub ProcessorFn LogAttributeFactory(ScopedContext ctx, Map<String, String> config) {
     var prefix = "flow"
     if (config.containsKey("prefix") && config["prefix"] != "") {
         prefix = config["prefix"]

@@ -23,24 +23,24 @@ class Registry {
     init() {}
 
     // register adds a processor type to the registry.
-    pub fn register(ProcessorInfo pinfo, ProcessorFactory factory) {
+    pub void register(ProcessorInfo pinfo, ProcessorFactory factory) {
         factories[pinfo.name] = factory
         info[pinfo.name] = pinfo
     }
 
     // create instantiates a processor by name with the given scoped context and config.
-    pub fn create(String name, ScopedContext ctx, Map<String, String> config): ProcessorFn {
+    pub ProcessorFn create(String name, ScopedContext ctx, Map<String, String> config) {
         var factory = factories[name]
         return factory(ctx, config)
     }
 
     // has checks if a processor type is registered.
-    pub fn has(String name): boolean {
+    pub boolean has(String name) {
         return factories.containsKey(name)
     }
 
     // list returns all registered processor names.
-    pub fn list(): List<ProcessorInfo> {
+    pub List<ProcessorInfo> list() {
         var result = List<ProcessorInfo>[]
         var names = info.keys()
         for (n in names) {

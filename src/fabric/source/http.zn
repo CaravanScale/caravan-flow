@@ -21,7 +21,7 @@ class HttpSource {
     }
 
     // handler processes an incoming HTTP request as a FlowFile.
-    pub fn handler(ResponseWriter w, Request r) {
+    pub void handler(ResponseWriter w, Request r) {
         if (r.Method != "POST") {
             w.WriteHeader(405)
             w.Write('{"error":"method not allowed"}'.toBytes())
@@ -60,7 +60,7 @@ class HttpSource {
     }
 
     // handleV3 unpacks NiFi FlowFile V3 binary and processes each FlowFile.
-    fn handleV3(ResponseWriter w, byte[] body) {
+    void handleV3(ResponseWriter w, byte[] body) {
         var flowfiles = unpackAll(body)
         var accepted = 0
         for (ff in flowfiles) {
@@ -73,7 +73,7 @@ class HttpSource {
     }
 
     // extractAttributes builds FlowFile attributes from HTTP request metadata.
-    fn extractAttributes(Request r): Map<String, String> {
+    Map<String, String> extractAttributes(Request r) {
         var attrs = Map<String, String>{}
         attrs["http.method"] = r.Method
         attrs["http.uri"] = r.URL.Path
@@ -92,7 +92,7 @@ class HttpSource {
     }
 
     // healthHandler returns a health check response with DLQ status.
-    pub fn healthHandler(ResponseWriter w, Request r) {
+    pub void healthHandler(ResponseWriter w, Request r) {
         w.WriteHeader(200)
         w.Write(('{"status":"healthy","dlq":' + str(fab.getDlqCount()) + '}').toBytes())
     }

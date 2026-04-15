@@ -16,25 +16,25 @@ class ConfigProvider : Provider {
         this.cfg = cfg
     }
 
-    pub fn getName(): String { return providerName }
-    pub fn getType(): String { return "config" }
-    pub fn getState(): ComponentState { return state }
-    pub fn enable() { state = ENABLED }
-    pub fn disable(int drainTimeoutSeconds) { state = DISABLED }
-    pub fn shutdown() { state = DISABLED }
-    pub fn isEnabled(): bool { return state == ENABLED }
+    pub String getName() { return providerName }
+    pub String getType() { return "config" }
+    pub ComponentState getState() { return state }
+    pub void enable() { state = ENABLED }
+    pub void disable(int drainTimeoutSeconds) { state = DISABLED }
+    pub void shutdown() { state = DISABLED }
+    pub bool isEnabled() { return state == ENABLED }
 
     // Delegate to underlying Config
-    pub fn getString(String key): String { return cfg.getString(key) }
-    pub fn getInt(String key): int { return cfg.getInt(key) }
-    pub fn getBool(String key): bool { return cfg.getBool(key) }
-    pub fn has(String key): bool { return cfg.has(key) }
-    pub fn getStringMap(String key): Map<String, String> { return cfg.getStringMap(key) }
-    pub fn getStringSlice(String key): List<String> { return cfg.getStringSlice(key) }
-    pub fn getSubKeys(String key): List<String> { return cfg.getSubKeys(key) }
+    pub String getString(String key) { return cfg.getString(key) }
+    pub int getInt(String key) { return cfg.getInt(key) }
+    pub bool getBool(String key) { return cfg.getBool(key) }
+    pub bool has(String key) { return cfg.has(key) }
+    pub Map<String, String> getStringMap(String key) { return cfg.getStringMap(key) }
+    pub List<String> getStringSlice(String key) { return cfg.getStringSlice(key) }
+    pub List<String> getSubKeys(String key) { return cfg.getSubKeys(key) }
 
     // Processor-specific config by processor name
-    pub fn getProcessorConfig(String processorName): Map<String, String> {
+    pub Map<String, String> getProcessorConfig(String processorName) {
         return cfg.getStringMap("flow.processors.${processorName}.config")
     }
 }
@@ -51,15 +51,15 @@ class LoggingProvider : Provider {
         this.lm = lm
     }
 
-    pub fn getName(): String { return providerName }
-    pub fn getType(): String { return "logging" }
-    pub fn getState(): ComponentState { return state }
-    pub fn enable() { state = ENABLED }
-    pub fn disable(int drainTimeoutSeconds) { state = DISABLED }
-    pub fn shutdown() { state = DISABLED }
-    pub fn isEnabled(): bool { return state == ENABLED }
+    pub String getName() { return providerName }
+    pub String getType() { return "logging" }
+    pub ComponentState getState() { return state }
+    pub void enable() { state = ENABLED }
+    pub void disable(int drainTimeoutSeconds) { state = DISABLED }
+    pub void shutdown() { state = DISABLED }
+    pub bool isEnabled() { return state == ENABLED }
 
-    pub fn getLogManager(): logging.LogManager { return lm }
+    pub logging.LogManager getLogManager() { return lm }
 }
 
 // ContentProvider wraps ContentStore (FileContentStore or MemoryContentStore).
@@ -74,13 +74,13 @@ class ContentProvider : Provider {
         this.store = store
     }
 
-    pub fn getName(): String { return providerName }
-    pub fn getType(): String { return "content" }
-    pub fn getState(): ComponentState { return state }
-    pub fn enable() { state = ENABLED }
-    pub fn disable(int drainTimeoutSeconds) { state = DISABLED }
-    pub fn shutdown() { state = DISABLED }
-    pub fn isEnabled(): bool { return state == ENABLED }
+    pub String getName() { return providerName }
+    pub String getType() { return "content" }
+    pub ComponentState getState() { return state }
+    pub void enable() { state = ENABLED }
+    pub void disable(int drainTimeoutSeconds) { state = DISABLED }
+    pub void shutdown() { state = DISABLED }
+    pub bool isEnabled() { return state == ENABLED }
 
-    pub fn getStore(): ContentStore { return store }
+    pub ContentStore getStore() { return store }
 }

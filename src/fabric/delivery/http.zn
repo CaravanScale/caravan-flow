@@ -16,7 +16,7 @@ data DeliveryResult(
 )
 
 // deliverJson sends a FlowFile as JSON to a processor endpoint via HTTP POST.
-pub fn deliverJson(String endpoint, FlowFile ff, ContentStore store): DeliveryResult {
+pub DeliveryResult deliverJson(String endpoint, FlowFile ff, ContentStore store) {
     var resolved = resolve(store, ff.content)
     if (resolved.errorMsg != "") {
         return DeliveryResult(false, 0, byte[0], resolved.errorMsg)
@@ -45,7 +45,7 @@ pub fn deliverJson(String endpoint, FlowFile ff, ContentStore store): DeliveryRe
 }
 
 // deliverV3 sends a FlowFile as NiFi FlowFile V3 binary to a processor endpoint.
-pub fn deliverV3(String endpoint, FlowFile ff, ContentStore store): DeliveryResult {
+pub DeliveryResult deliverV3(String endpoint, FlowFile ff, ContentStore store) {
     var resolved = resolve(store, ff.content)
     if (resolved.errorMsg != "") {
         return DeliveryResult(false, 0, byte[0], resolved.errorMsg)
@@ -73,7 +73,7 @@ pub fn deliverV3(String endpoint, FlowFile ff, ContentStore store): DeliveryResu
 }
 
 // deliverToAll delivers a FlowFile to multiple endpoints (fan-out).
-pub fn deliverToAll(List<String> endpoints, FlowFile ff, ContentStore store): List<DeliveryResult> {
+pub List<DeliveryResult> deliverToAll(List<String> endpoints, FlowFile ff, ContentStore store) {
     var results = List<DeliveryResult>[]
     for (endpoint in endpoints) {
         var result = deliverV3(endpoint, ff, store)

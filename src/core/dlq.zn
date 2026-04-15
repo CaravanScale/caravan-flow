@@ -18,7 +18,7 @@ class DLQ {
     }
 
     // add stores a failed flowfile in the DLQ.
-    pub fn add(FlowFile ff, String sourceProc, String sourceQueue, int attempts, String error) {
+    pub void add(FlowFile ff, String sourceProc, String sourceQueue, int attempts, String error) {
         lock (mu) {
             idCounter = idCounter + 1
             var entryId = "dlq-" + str(idCounter)
@@ -29,7 +29,7 @@ class DLQ {
     }
 
     // get retrieves a specific DLQ entry.
-    pub fn get(String id): DLQEntry {
+    pub DLQEntry get(String id) {
         lock (mu) {
             if (entries.containsKey(id)) {
                 return entries[id]
@@ -40,7 +40,7 @@ class DLQ {
     }
 
     // list returns all DLQ entries.
-    pub fn list(): List<DLQEntry> {
+    pub List<DLQEntry> list() {
         var result = List<DLQEntry>[]
         lock (mu) {
             for (_, entry in entries) {
@@ -51,14 +51,14 @@ class DLQ {
     }
 
     // remove discards a DLQ entry.
-    pub fn remove(String id) {
+    pub void remove(String id) {
         lock (mu) {
             entries.delete(id)
         }
     }
 
     // count returns the number of entries in the DLQ.
-    pub fn count(): int {
+    pub int count() {
         var c = 0
         lock (mu) {
             c = len(entries)
@@ -67,7 +67,7 @@ class DLQ {
     }
 
     // replay removes an entry and returns the FlowFile for re-injection.
-    pub fn replay(String id): FlowFile {
+    pub FlowFile replay(String id) {
         lock (mu) {
             if (entries.containsKey(id)) {
                 var entry = entries[id]
@@ -80,7 +80,7 @@ class DLQ {
     }
 
     // replayAll removes all entries and returns their FlowFiles.
-    pub fn replayAll(): List<DLQEntry> {
+    pub List<DLQEntry> replayAll() {
         var result = List<DLQEntry>[]
         lock (mu) {
             for (_, entry in entries) {
