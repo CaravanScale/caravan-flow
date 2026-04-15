@@ -19,7 +19,7 @@ class FlowQueue {
     var items = List<QueueEntry>[]
     var head = 0
     var invisible = Map<String, QueueEntry>{}
-    var Mutex mu
+    Mutex mu
     long currentBytes
     long idCounter
 

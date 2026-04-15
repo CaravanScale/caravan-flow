@@ -10,7 +10,7 @@ data DLQEntry(String id, FlowFile flowFile, String sourceProcessor, String sourc
 // DLQ is a thread-safe store of failed flowfiles.
 class DLQ {
     var entries = Map<String, DLQEntry>{}
-    var Mutex mu
+    Mutex mu
     long idCounter
 
     init() {

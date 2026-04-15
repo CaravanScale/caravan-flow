@@ -37,7 +37,7 @@ class Fabric {
     Registry reg
     ProcessorContext globalCtx
     PipelineGraph graph
-    var Mutex mu
+    Mutex mu
     DLQ dlqStore
 
     // Per-processor metrics. Keyed by user-facing processor name.

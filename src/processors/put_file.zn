@@ -32,7 +32,7 @@ class PutFile : ProcessorFn {
     String suffix
     String format
     ContentStore store
-    var Mutex mu
+    Mutex mu
     long counter
 
     init(String outputDir, String namingAttr, String prefix, String suffix, String format, ContentStore store) {

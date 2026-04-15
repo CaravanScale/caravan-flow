@@ -6,7 +6,7 @@ import sync.Mutex
 // RulesEngine — holds rulesets and evaluates FlowFiles against them.
 class RulesEngine {
     var rulesets = Map<String, List<RoutingRule>>{}
-    var Mutex mu
+    Mutex mu
 
     init() {}
 

@@ -33,7 +33,7 @@ class GenerateFlowFile : ConnectorSource {
 
     // counter for `generate.index` — shared across all batches. Guarded
     // by mu for concurrent stop/start races (uncommon but cheap).
-    var Mutex mu
+    Mutex mu
     long counter
 
     var running = false
