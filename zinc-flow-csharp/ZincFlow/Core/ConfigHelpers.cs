@@ -86,4 +86,35 @@ public static class ConfigHelpers
             return n;
         throw new ConfigException($"{context}: not an integer: '{raw}'");
     }
+
+    /// <summary>
+    /// Parse a bool. Accepts "true"/"false" (case-insensitive) and
+    /// also "yes"/"no", "1"/"0" to match common YAML shapes. Empty /
+    /// null → <paramref name="fallback"/>. Anything else throws.
+    /// </summary>
+    public static bool ParseBool(string? raw, string key, bool fallback)
+    {
+        if (string.IsNullOrEmpty(raw)) return fallback;
+        switch (raw.Trim().ToLowerInvariant())
+        {
+            case "true": case "yes": case "1": return true;
+            case "false": case "no": case "0": return false;
+        }
+        throw new ConfigException($"config key '{key}' is not a bool: '{raw}'");
+    }
+
+    /// <summary>
+    /// Parse a single-character delimiter. Empty → fallback. Multi-
+    /// char → ConfigException (common YAML trap: <c>delimiter: ", "</c>
+    /// silently picked the comma before).
+    /// </summary>
+    public static char ParseSingleChar(string? raw, string key, char fallback)
+    {
+        if (string.IsNullOrEmpty(raw)) return fallback;
+        if (raw.Length == 1) return raw[0];
+        // Allow the common YAML-escape shapes: \t \n
+        if (raw == "\\t") return '\t';
+        if (raw == "\\n") return '\n';
+        throw new ConfigException($"config key '{key}' must be a single character: '{raw}'");
+    }
 }

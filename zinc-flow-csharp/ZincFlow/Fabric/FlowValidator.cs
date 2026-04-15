@@ -71,15 +71,33 @@ public static class FlowValidator
             {
                 _ = registry.Create(typeName, ctx, procConfig);
             }
-            catch (KeyNotFoundException ex)
+            catch (ConfigException ex)
             {
-                result.Issues.Add(new("error", $"flow.processors.{name}.config",
-                    $"missing required config key (constructor threw: {ex.Message})"));
+                result.Issues.Add(new("error", $"flow.processors.{name}.config", ex.Message));
             }
             catch (Exception ex)
             {
                 result.Issues.Add(new("error", $"flow.processors.{name}",
                     $"construction failed ({ex.GetType().Name}): {ex.Message}"));
+            }
+
+            // RouteOnAttribute emits to "unmatched" as a catch-all when no predicate
+            // matches. If the operator didn't wire an "unmatched" connection, those
+            // FlowFiles drop silently at runtime. Surface as a warning so unwired
+            // catch-alls get noticed pre-deploy, without blocking load (the NiFi
+            // convention is that unmatched-drops are sometimes intentional).
+            if (typeName == "RouteOnAttribute")
+            {
+                var connDict = Fabric.AsStringDict(def.GetValueOrDefault("connections"));
+                var hasUnmatched = false;
+                if (connDict is not null && connDict.TryGetValue("unmatched", out var unmatchedTargets))
+                {
+                    if (unmatchedTargets is System.Collections.IList list && list.Count > 0)
+                        hasUnmatched = true;
+                }
+                if (!hasUnmatched)
+                    result.Issues.Add(new("warning", $"flow.processors.{name}.connections",
+                        "RouteOnAttribute has no 'unmatched' connection — FlowFiles that match no rule will drop silently"));
             }
         }
 

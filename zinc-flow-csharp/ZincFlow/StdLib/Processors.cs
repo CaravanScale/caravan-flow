@@ -15,16 +15,20 @@ public sealed class RouteOnAttribute : IProcessor
     {
         _routes = new List<(string, RuleCondition)>();
         if (string.IsNullOrWhiteSpace(routes)) return;
-        foreach (var entry in routes.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+        var entries = routes.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        for (int i = 0; i < entries.Length; i++)
         {
+            var entry = entries[i];
             var colonIdx = entry.IndexOf(':');
-            if (colonIdx <= 0) continue;
+            if (colonIdx <= 0)
+                throw new ConfigException($"RouteOnAttribute: malformed route at index {i}: '{entry}' — expected 'name: attr OP value'");
             var routeName = entry[..colonIdx].Trim();
             var conditionStr = entry[(colonIdx + 1)..].Trim();
             var parts = conditionStr.Split(' ', 3, StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-            if (parts.Length < 2) continue;
+            if (parts.Length < 2)
+                throw new ConfigException($"RouteOnAttribute: route '{routeName}' has malformed condition: '{conditionStr}' — expected 'attr OP value'");
             var attribute = parts[0];
-            var op = ParseOperator(parts[1]);
+            var op = ParseOperator(parts[1], routeName);
             var value = parts.Length >= 3 ? parts[2] : "";
             _routes.Add((routeName, new BaseRule(attribute, op, value)));
         }
@@ -38,7 +42,7 @@ public sealed class RouteOnAttribute : IProcessor
         return RoutedResult.Rent("unmatched", ff);
     }
 
-    private static Operator ParseOperator(string op) => op.ToUpperInvariant() switch
+    private static Operator ParseOperator(string op, string routeName) => op.ToUpperInvariant() switch
     {
         "EQ" => Operator.Eq,
         "NEQ" => Operator.Neq,
@@ -48,7 +52,8 @@ public sealed class RouteOnAttribute : IProcessor
         "EXISTS" => Operator.Exists,
         "GT" => Operator.Gt,
         "LT" => Operator.Lt,
-        _ => Operator.Eq
+        _ => throw new ConfigException(
+            $"RouteOnAttribute: route '{routeName}' has unknown operator '{op}' — valid: EQ, NEQ, CONTAINS, STARTSWITH, ENDSWITH, EXISTS, GT, LT")
     };
 }
 

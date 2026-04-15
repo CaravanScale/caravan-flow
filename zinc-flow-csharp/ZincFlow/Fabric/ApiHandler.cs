@@ -245,8 +245,12 @@ public sealed class ApiHandler
         var prov = _fab.GetProvenance();
         if (prov is null) return Json(new Dictionary<string, object?> { ["error"] = "provenance provider not enabled" });
         var n = 50;
-        if (ctx.Request.Query.TryGetValue("n", out var nStr) && int.TryParse(nStr, out var parsed))
+        if (ctx.Request.Query.TryGetValue("n", out var nStr) && !string.IsNullOrEmpty(nStr))
+        {
+            if (!int.TryParse(nStr, out var parsed))
+                return Results.BadRequest(new Dictionary<string, object?> { ["error"] = $"query param 'n' is not an integer: '{nStr}'" });
             n = parsed;
+        }
         return Json(prov.GetRecent(n).Select(e => new Dictionary<string, object?>
         {
             ["flowfile"] = $"ff-{e.FlowFileId}",

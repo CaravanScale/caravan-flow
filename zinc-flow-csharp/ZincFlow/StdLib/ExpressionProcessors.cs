@@ -304,6 +304,14 @@ public sealed class TransformRecord : IProcessor
         return origNumeric && infNumeric;
     }
 
+    // Known op vocabulary. Unknown op names (typo like "uppper") silently
+    // fell through in ApplyOp before — now we reject at construction time.
+    // Keep in sync with the switch in ApplyOp.
+    private static readonly HashSet<string> _knownOps = new(StringComparer.Ordinal)
+    {
+        "rename", "remove", "add", "copy", "toUpper", "toLower", "default", "compute"
+    };
+
     private static List<(string, string, string)> ParseOperations(string ops)
     {
         var result = new List<(string, string, string)>();
@@ -311,8 +319,14 @@ public sealed class TransformRecord : IProcessor
         foreach (var directive in ops.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
         {
             var parts = directive.Split(':', 3);
-            if (parts.Length < 2) continue;
-            result.Add((parts[0], parts[1], parts.Length > 2 ? parts[2] : ""));
+            if (parts.Length < 2)
+                throw new ConfigException(
+                    $"TransformRecord: malformed directive '{directive}' — expected 'op:arg1' or 'op:arg1:arg2'");
+            var op = parts[0];
+            if (!_knownOps.Contains(op))
+                throw new ConfigException(
+                    $"TransformRecord: unknown op '{op}' in directive '{directive}' — valid: {string.Join(", ", _knownOps)}");
+            result.Add((op, parts[1], parts.Length > 2 ? parts[2] : ""));
         }
         return result;
     }

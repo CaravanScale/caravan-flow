@@ -106,17 +106,17 @@ public sealed class ConfigProvider : IProvider
     public int GetInt(string key, int defaultVal = 0)
     {
         var val = Navigate(key);
+        if (val is null) return defaultVal;
         if (val is int i) return i;
-        if (val is not null && int.TryParse(val.ToString(), out var parsed)) return parsed;
-        return defaultVal;
+        return ConfigHelpers.ParseIntRaw(val.ToString() ?? "", $"config key '{key}'");
     }
 
     public bool GetBool(string key, bool defaultVal = false)
     {
         var val = Navigate(key);
+        if (val is null) return defaultVal;
         if (val is bool b) return b;
-        if (val is not null && bool.TryParse(val.ToString(), out var parsed)) return parsed;
-        return defaultVal;
+        return ConfigHelpers.ParseBool(val.ToString(), key, defaultVal);
     }
 
     public bool Has(string key) => Navigate(key) is not null;

@@ -9,6 +9,7 @@ ProcessorTests.RunAll();
 CodecTests.RunAll();
 ExpressionTests.RunAll();
 ValidatorTests.RunAll();
+ConfigErrorTests.RunAll();
 EmbeddedSchemaRegistryTests.RunAll();
 FlowFileV3BoundaryTests.RunAll();
 PutHTTPTests.RunAll();

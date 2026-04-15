@@ -14,7 +14,7 @@ public static class BuiltinProcessors
             new ProcessorInfo("UpdateAttribute", "Sets key=value attribute on FlowFiles", ["key", "value"]),
             (ctx, config) => new UpdateAttribute(
                 ConfigHelpers.RequireString(config, "key"),
-                ConfigHelpers.GetString(config, "value")));
+                ConfigHelpers.RequireString(config, "value")));
 
         reg.Register(
             new ProcessorInfo("LogAttribute", "Logs FlowFile attributes and passes through", ["prefix"]),
@@ -56,7 +56,8 @@ public static class BuiltinProcessors
         reg.Register(
             new ProcessorInfo("PutStdout", "Write FlowFile content to stdout", ["format"]),
             (ctx, config) => new PutStdout(
-                config.GetValueOrDefault("format", "text"),
+                ConfigHelpers.RequireOneOf(config, "format", "text",
+                    new[] { "attrs", "raw", "text", "v3", "hex" }),
                 ctx.GetContentStoreOrDefault()));
 
         reg.Register(
@@ -150,15 +151,17 @@ public static class BuiltinProcessors
 
         reg.Register(
             new ProcessorInfo("ConvertRecordToOCF", "Encode records to Avro OCF (.avro file)", ["codec"]),
-            (ctx, config) => new ConvertRecordToOCF(config.GetValueOrDefault("codec", AvroOCF.CodecNull)));
+            (ctx, config) => new ConvertRecordToOCF(
+                ConfigHelpers.RequireOneOf(config, "codec", AvroOCF.CodecNull,
+                    new[] { AvroOCF.CodecNull, AvroOCF.CodecDeflate, AvroOCF.CodecZstandard })));
 
         reg.Register(
             new ProcessorInfo("ConvertCSVToRecord", "Parse CSV content into records",
                 ["delimiter", "has_header", "fields", "schema_name"]),
             (ctx, config) =>
             {
-                var delim = ParseSingleCharDelim(config, "delimiter", ',');
-                var hasHeader = ParseBool(config, "has_header", true);
+                var delim = ConfigHelpers.ParseSingleChar(config.GetValueOrDefault("delimiter"), "delimiter", ',');
+                var hasHeader = ConfigHelpers.ParseBool(config.GetValueOrDefault("has_header"), "has_header", true);
                 return new ConvertCSVToRecord(
                     ConfigHelpers.GetString(config, "schema_name", "default"),
                     delim,
@@ -172,8 +175,8 @@ public static class BuiltinProcessors
                 ["delimiter", "include_header"]),
             (ctx, config) =>
             {
-                var delim = ParseSingleCharDelim(config, "delimiter", ',');
-                var includeHeader = ParseBool(config, "include_header", true);
+                var delim = ConfigHelpers.ParseSingleChar(config.GetValueOrDefault("delimiter"), "delimiter", ',');
+                var includeHeader = ConfigHelpers.ParseBool(config.GetValueOrDefault("include_header"), "include_header", true);
                 return new ConvertRecordToCSV(delim, includeHeader);
             });
 
@@ -188,8 +191,10 @@ public static class BuiltinProcessors
                 foreach (var pair in raw.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
                 {
                     var eq = pair.IndexOf('=');
-                    if (eq > 0)
-                        exprs[pair[..eq]] = pair[(eq + 1)..];
+                    if (eq <= 0)
+                        throw new ConfigException(
+                            $"EvaluateExpression: malformed pair '{pair}' — expected 'attr=expression'");
+                    exprs[pair[..eq]] = pair[(eq + 1)..];
                 }
                 return new EvaluateExpression(exprs);
             });
@@ -223,31 +228,5 @@ public static class BuiltinProcessors
             (ctx, config) => new FilterAttribute(
                 config.GetValueOrDefault("mode", "remove"),
                 config.GetValueOrDefault("attributes", "")));
-    }
-
-    // ParseSingleCharDelim — delimiter keys are user-facing as strings in
-    // YAML but the CSV reader/writer wants a single char. The prior
-    // `delim.Length > 0 ? delim[0] : ','` fallback silently turned an
-    // empty or too-long value into a comma. Now: empty → fallback (key
-    // legitimately absent); non-empty but multi-char → ConfigException.
-    private static char ParseSingleCharDelim(IReadOnlyDictionary<string, string> config, string key, char fallback)
-    {
-        if (!config.TryGetValue(key, out var raw) || string.IsNullOrEmpty(raw))
-            return fallback;
-        if (raw.Length != 1)
-            throw new ConfigException($"config key '{key}' must be a single character; got: '{raw}'");
-        return raw[0];
-    }
-
-    // ParseBool — same rule as the other helpers: empty → fallback, typo
-    // → ConfigException. The prior `val != "false"` form silently treated
-    // any typo (incluing "faslse") as "true."
-    private static bool ParseBool(IReadOnlyDictionary<string, string> config, string key, bool fallback)
-    {
-        if (!config.TryGetValue(key, out var raw) || string.IsNullOrEmpty(raw))
-            return fallback;
-        if (string.Equals(raw, "true", StringComparison.OrdinalIgnoreCase)) return true;
-        if (string.Equals(raw, "false", StringComparison.OrdinalIgnoreCase)) return false;
-        throw new ConfigException($"config key '{key}' must be 'true' or 'false'; got: '{raw}'");
     }
 }

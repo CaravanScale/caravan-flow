@@ -58,8 +58,14 @@ public sealed class ConvertAvroToRecord : IProcessor
         foreach (var part in fieldDefs.Split(',', StringSplitOptions.TrimEntries))
         {
             var kv = part.Split(':', 2);
-            if (kv.Length != 2) continue;
-            var ft = kv[1].ToLowerInvariant() switch
+            if (kv.Length != 2 || string.IsNullOrEmpty(kv[0]) || string.IsNullOrEmpty(kv[1]))
+                throw new ConfigException(
+                    $"ConvertAvroToRecord: malformed field def '{part}' — expected 'name:type'");
+            var typeLower = kv[1].ToLowerInvariant();
+            // "string" is the default; other names map to typed variants. An
+            // unrecognized name silently became String before — that made typos
+            // (e.g. "stirng") silently lose type info. Now we reject.
+            var ft = typeLower switch
             {
                 "boolean" or "bool" => FieldType.Boolean,
                 "int" or "int32" => FieldType.Int,
@@ -67,7 +73,9 @@ public sealed class ConvertAvroToRecord : IProcessor
                 "float" or "float32" => FieldType.Float,
                 "double" or "float64" => FieldType.Double,
                 "bytes" => FieldType.Bytes,
-                _ => FieldType.String
+                "string" => FieldType.String,
+                _ => throw new ConfigException(
+                    $"ConvertAvroToRecord: unknown field type '{kv[1]}' in '{part}' — valid: boolean, int, long, float, double, bytes, string")
             };
             fields.Add(new Field(kv[0], ft));
         }
@@ -372,7 +380,9 @@ public sealed class ExtractRecordField : IProcessor
         foreach (var entry in fields.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
         {
             var parts = entry.Split(':', 2, StringSplitOptions.TrimEntries);
-            if (parts.Length != 2) continue;
+            if (parts.Length != 2 || string.IsNullOrEmpty(parts[0]) || string.IsNullOrEmpty(parts[1]))
+                throw new ConfigException(
+                    $"ExtractRecordField: malformed entry '{entry}' — expected 'fieldName:attrName'");
             _fields.Add((parts[0], parts[1]));
         }
     }
@@ -416,13 +426,13 @@ public sealed class QueryRecord : IProcessor
 
         // Parse "field operator value" — operator may be multi-char (>=, <=, !=, contains, startsWith, endsWith)
         var trimmed = where.Trim();
-        // Find field name (first token)
         var spaceIdx = trimmed.IndexOf(' ');
-        if (spaceIdx <= 0) { _field = trimmed; return; }
+        if (spaceIdx <= 0)
+            throw new ConfigException(
+                $"QueryRecord: malformed where clause '{where}' — expected 'field OP value' (e.g. 'age > 18')");
         _field = trimmed[..spaceIdx];
         var rest = trimmed[(spaceIdx + 1)..].TrimStart();
 
-        // Try multi-char operators first
         string[] multiOps = [">=", "<=", "!=", "contains", "startsWith", "endsWith"];
         foreach (var op in multiOps)
         {
@@ -434,26 +444,14 @@ public sealed class QueryRecord : IProcessor
                 return;
             }
         }
-        // Single-char operators: =, >, <
         if (rest.Length > 0 && (rest[0] == '=' || rest[0] == '>' || rest[0] == '<'))
         {
             _operator = rest[0].ToString();
             _value = rest.Length > 1 ? rest[1..].Trim() : "";
+            return;
         }
-        else
-        {
-            // Unknown — treat rest as operator + value
-            var opEnd = rest.IndexOf(' ');
-            if (opEnd > 0)
-            {
-                _operator = rest[..opEnd];
-                _value = rest[(opEnd + 1)..].Trim();
-            }
-            else
-            {
-                _operator = rest;
-            }
-        }
+        throw new ConfigException(
+            $"QueryRecord: unknown operator in '{where}' — valid: =, !=, >, <, >=, <=, contains, startsWith, endsWith");
     }
 
     public ProcessorResult Process(FlowFile ff)

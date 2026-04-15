@@ -306,3 +306,56 @@ and documented in A1).
 - **Execution order** starts localized (B) and ends with
   fine-grained policy (Q/R), so we can make incremental progress
   without the big ProcessorFactory refactor blocking small wins.
+
+---
+
+## csharp-side parallel cleanup (status)
+
+The groups above enumerate *Zinc-side* (`src/**/*.zn`) sites. The csharp
+reference has analogous sites that were cleaned up independently under
+the same design rule (every config error must surface at `LoadFlow` time
+through `ConfigException` → aggregated into `AggregateException`).
+Tracked here so the csharp side doesn't accumulate drift.
+
+Closed on csharp:
+- **B-analog (atoi sites):** `ConfigHelpers.ParseInt/ParseLong/ParseBool/
+  ParseSingleChar/RequireOneOf` replace silent `TryParse`-with-fallback.
+  `Providers.ConfigProvider.GetInt/GetBool` throw on unparseable values
+  instead of silent default. `ApiHandler` `/api/provenance?n=` returns
+  400 on bad int instead of silently defaulting to 50.
+- **C-analog (malformed-spec continues):** RouteOnAttribute, ExtractRecordField,
+  ConvertAvroToRecord.ParseFieldDefs, QueryRecord — all `continue`-on-malformed
+  loops replaced with `ConfigException` throws.
+- **D-analog (TransformRecord unknown op):** op vocabulary enforced at
+  construction time via `_knownOps` set; unknown op → ConfigException.
+- **E-analog (RouteOnAttribute unknown operator):** `ParseOperator` fallthrough
+  `_ => Eq` replaced with ConfigException listing valid operators.
+- **F-analog (required config keys):** UpdateAttribute now requires both
+  `key` AND `value` (previously `value` was optional with empty default).
+- **G-analog (unknown value in enum config):** PutStdout format →
+  `RequireOneOf {attrs, raw, text, v3, hex}`. ConvertRecordToOCF codec →
+  `RequireOneOf {null, deflate, zstandard}`.
+- **J-analog (unwired "unmatched"):** `FlowValidator` emits a warning
+  when RouteOnAttribute has no `unmatched:` connection wired.
+- **B7-analog (LoadFlow aggregation):** already in place from commit
+  `8d5835c`; tests now prove multiple broken entries surface in one
+  pass via `ConfigErrorTests.TestLoadFlowAggregatesAllErrors`.
+
+Deliberately left as-is on csharp (benign defaults, documented):
+- `CsvRecord.CoerceValue` string fallback (data preservation priority).
+- `PollingSource` non-positive interval → 1000ms floor (prevents spin).
+- `LogAttribute.prefix` default (descriptive only).
+- `ExpressionEngine.AsDouble/AsLong` (runtime coercion, not config).
+- `TransformRecord` compute expression — bad expression is swallowed
+  at construction time (existing `TestMalformedExpressionTolerated`
+  documents this; flip would require deliberate design change).
+
+Remaining on csharp:
+- **L-analog (runtime invariant):** `Fabric.ExecuteGraph`'s `if
+  (!g.hasProcessor)` guard could be demoted to `Debug.Assert` now that
+  `LoadFlow` guarantees the invariant. Low-priority — the runtime
+  defensive check is cheap.
+
+Coverage: 17 new assertions in `ZincFlow.Tests/ConfigErrorTests.cs`
+across all the above paths + a 4-error aggregation test proving
+`LoadFlow` reports every problem, not just the first.
