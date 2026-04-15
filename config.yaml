@@ -17,55 +17,39 @@ defaults:
     max_retries: 5
     drain_timeout: 60
 
-# Flow graph: defines active processor instances and routing rules
+# Flow graph: linear chain tag-env → tag-source → logger → sink.
+# Processor type names and per-processor `connections:` match the csharp /
+# Go runtime. See examples/mvp-pipeline.yaml for a GenerateFlowFile-driven
+# demo; this file stays source-less so an HTTP/file ingest can be wired
+# against the management API without a config change.
 flow:
   processors:
     tag-env:
-      type: add-attribute
+      type: UpdateAttribute
       config:
         key: env
         value: dev
+      connections:
+        success: [tag-source]
 
     tag-source:
-      type: add-attribute
+      type: UpdateAttribute
       config:
         key: source
         value: api
+      connections:
+        success: [logger]
 
     logger:
-      type: log
+      type: LogAttribute
       config:
         prefix: flow
+      connections:
+        success: [sink]
 
     sink:
-      type: file-sink
+      type: PutFile
       requires:
         - content
       config:
         output_dir: /tmp/zinc-flow/output
-
-  routes:
-    tag-all:
-      condition:
-        attribute: type
-        operator: EXISTS
-      destination: tag-env
-
-    after-tag-env:
-      condition:
-        attribute: env
-        operator: EQ
-        value: dev
-      destination: tag-source
-
-    after-tag-source:
-      condition:
-        attribute: source
-        operator: EXISTS
-      destination: logger
-
-    after-log:
-      condition:
-        attribute: source
-        operator: EXISTS
-      destination: sink
