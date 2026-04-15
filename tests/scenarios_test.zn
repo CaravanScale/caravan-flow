@@ -16,7 +16,7 @@ import stdlib.logging
 test "scenario: chain — add-attribute → record-sink via success" {
     var reg = Registry()
     registerBuiltins(reg)
-    var ctx = testContext()
+    var ctx = mkContext()
 
     var fab = Fabric(reg, ctx)
     fab.addProcessor("tagger", "add-attribute", Map<String, String>{"key": "env", "value": "dev"})
@@ -35,7 +35,7 @@ test "scenario: chain — add-attribute → record-sink via success" {
 test "scenario: graph fan-out — one source to three sinks" {
     var reg = Registry()
     registerBuiltins(reg)
-    var ctx = testContext()
+    var ctx = mkContext()
 
     var fab = Fabric(reg, ctx)
     fab.addProcessor("tagger", "add-attribute", Map<String, String>{"key": "env", "value": "prod"})
@@ -61,7 +61,7 @@ test "scenario: graph fan-out — one source to three sinks" {
 test "scenario: disable/enable processor — state transitions take effect" {
     var reg = Registry()
     registerBuiltins(reg)
-    var ctx = testContext()
+    var ctx = mkContext()
 
     var fab = Fabric(reg, ctx)
     fab.addProcessor("tagger", "add-attribute", Map<String, String>{"key": "env", "value": "test"})
@@ -90,7 +90,7 @@ test "scenario: disable/enable processor — state transitions take effect" {
 test "scenario: DLQ replay — resume at the recorded source processor" {
     var reg = Registry()
     registerBuiltins(reg)
-    var ctx = testContext()
+    var ctx = mkContext()
 
     var fab = Fabric(reg, ctx)
     var sink = RecordSink("resume")
@@ -183,7 +183,7 @@ test "scenario: enableProcessor — refuses when a required provider is disabled
 test "scenario: router → dual sinks — success and failure land in the right place" {
     var reg = Registry()
     registerBuiltins(reg)
-    var ctx = testContext()
+    var ctx = mkContext()
 
     var fab = Fabric(reg, ctx)
     var router = RouterProc("env", "prod")

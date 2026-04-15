@@ -20,7 +20,7 @@ import stdlib.asserts
 // took through the graph.
 class RecordSink : ProcessorFn {
     String label
-    var captured = List<FlowFile>[]
+    pub List<FlowFile> captured = List<FlowFile>[]
 
     init(String label) { this.label = label }
 
@@ -145,7 +145,7 @@ test "executor: Single result → follows 'success' connection" {
     var reg = Registry()
     registerBuiltins(reg)
     registerRecordingProcessors(reg)
-    var ctx = testContext()
+    var ctx = mkContext()
 
     var fab = Fabric(reg, ctx)
     fab.addProcessor("tagger", "add-attribute", Map<String, String>{"key": "tag", "value": "seen"})
@@ -164,7 +164,7 @@ test "executor: Multiple result → fans each output to 'success' targets" {
     var reg = Registry()
     registerBuiltins(reg)
     registerRecordingProcessors(reg)
-    var ctx = testContext()
+    var ctx = mkContext()
 
     var fab = Fabric(reg, ctx)
     var splitter = SplitProc()
@@ -182,7 +182,7 @@ test "executor: Routed result → follows the named relationship" {
     var reg = Registry()
     registerBuiltins(reg)
     registerRecordingProcessors(reg)
-    var ctx = testContext()
+    var ctx = mkContext()
 
     var fab = Fabric(reg, ctx)
     var router = RouterProc("env", "prod")
@@ -205,7 +205,7 @@ test "executor: Dropped result → terminal, no downstream delivery" {
     var reg = Registry()
     registerBuiltins(reg)
     registerRecordingProcessors(reg)
-    var ctx = testContext()
+    var ctx = mkContext()
 
     var fab = Fabric(reg, ctx)
     var dropper = RecordSink("drop-label")  // RecordSink returns Dropped
@@ -224,7 +224,7 @@ test "executor: Failure with 'failure' connection → routes there, no DLQ" {
     var reg = Registry()
     registerBuiltins(reg)
     registerRecordingProcessors(reg)
-    var ctx = testContext()
+    var ctx = mkContext()
 
     var fab = Fabric(reg, ctx)
     var failer = FailProc("boom")
@@ -242,7 +242,7 @@ test "executor: Failure without 'failure' connection → DLQ" {
     var reg = Registry()
     registerBuiltins(reg)
     registerRecordingProcessors(reg)
-    var ctx = testContext()
+    var ctx = mkContext()
 
     var fab = Fabric(reg, ctx)
     var failer = FailProc("unrouted")
@@ -260,7 +260,7 @@ test "executor: max hops → drops FlowFile, does not infinite loop" {
     var reg = Registry()
     registerBuiltins(reg)
     registerRecordingProcessors(reg)
-    var ctx = testContext()
+    var ctx = mkContext()
 
     var fab = Fabric(reg, ctx)
     fab.setMaxHops(5)
@@ -278,7 +278,7 @@ test "executor: disabled processor skipped, no downstream delivery" {
     var reg = Registry()
     registerBuiltins(reg)
     registerRecordingProcessors(reg)
-    var ctx = testContext()
+    var ctx = mkContext()
 
     var fab = Fabric(reg, ctx)
     var sink = RecordSink("post-disabled")
@@ -295,7 +295,7 @@ test "executor: ingestAndExecute fans to all entry points" {
     var reg = Registry()
     registerBuiltins(reg)
     registerRecordingProcessors(reg)
-    var ctx = testContext()
+    var ctx = mkContext()
 
     var fab = Fabric(reg, ctx)
     var a = RecordSink("A")
@@ -315,7 +315,7 @@ test "executor: ingestAndExecute fans to all entry points" {
 test "executor: ingestAndExecute with no entry points returns false" {
     var reg = Registry()
     registerBuiltins(reg)
-    var ctx = testContext()
+    var ctx = mkContext()
     var fab = Fabric(reg, ctx)
     asserts.isFalse(t, fab.ingestAndExecute(createFlowFile("x".toBytes(), Map<String, String>{})), "rejected with no entries")
 }

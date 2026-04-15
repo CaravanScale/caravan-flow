@@ -24,7 +24,7 @@ import stdlib.asserts
 
 test "MVP pipeline e2e — generate → update → route → sink" {
     // Wire fabric with MVP processors.
-    var ctx = testContext()
+    var ctx = mkContext()
     var reg = Registry()
     registerBuiltins(reg)
     var fab = Fabric(reg, ctx)
@@ -83,7 +83,7 @@ test "MVP pipeline e2e — generate → update → route → sink" {
 // YAML; any drift shows up there first.
 
 test "MVP pipeline e2e — prod traffic lands on prod branch, dev stays empty" {
-    var ctx = testContext()
+    var ctx = mkContext()
     var reg = Registry()
     registerBuiltins(reg)
     var fab = Fabric(reg, ctx)

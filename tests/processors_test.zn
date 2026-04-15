@@ -53,7 +53,7 @@ test "FileSink — writes to disk, returns Dropped" {
 test "JsonToRecords — parses JSON array into records" {
     var store = MemoryContentStore()
     var proc = JsonToRecords("order", store)
-    var ff = createFlowFile(testJsonArray(), Map<String, String>{})
+    var ff = createFlowFile(jsonArrayFixture(), Map<String, String>{})
     var result = proc.process(ff)
 
     match (result) {
