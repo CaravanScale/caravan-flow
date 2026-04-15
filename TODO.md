@@ -129,6 +129,69 @@ Phases:
 
 ---
 
+## Phase 2 — Zinc/Go port catch-up
+
+The C# port has shipped Phase 2a-2e; the Zinc/Go port is behind. Ten concrete gaps, mapped to Go libraries that replace code C# had to hand-roll. Binary-size target: 8-9 MB stripped (7.3 MB today).
+
+Zinc's direct-Go-import model (`import <pkg>`) means every pure-Go library is fair game. We don't get that in C# AOT without wrestling reflection/trimming.
+
+### Priority 1 — production blockers
+
+- [ ] **Avro OCF + schema registry** — use `github.com/hamba/avro/v2`.
+  C# hand-rolled 1050 lines across AvroBinary + AvroOCF + AvroSchema + SchemaResolver + EmbeddedSchemaRegistry. `hamba/avro` ships OCF (null/deflate/snappy/zstd), binary encoding, schema JSON parse/emit, logical types (timestamp/date/decimal/uuid), and schema resolution/evolution as a library. Land the 4 processors: `ConvertAvroToRecord`, `ConvertRecordToAvro`, `ConvertOCFToRecord`, `ConvertRecordToOCF`. **Est. 300-500 lines of Zinc (vs 1050 C#).**
+
+- [ ] **Expression engine** — use `github.com/expr-lang/expr`.
+  C# hand-rolled 740 lines (tokenizer + shunting-yard + stack VM + 30+ functions). `expr-lang/expr` gives us bytecode compilation, sandboxing, type checks for free; we register the NiFi-flavored function set (upper/lower/trim/coalesce/substring/…) as the eval env. Unblocks:
+  - `EvaluateExpression` processor (entirely missing)
+  - `TransformRecord.compute` op (currently silently skipped — see `src/processors/transform_record.zn:19`)
+  **Est. 150-200 lines of Zinc (vs 740 C#).**
+
+### Priority 2 — core processor gaps
+
+- [ ] **PutHTTP processor** — stdlib `net/http`. POST flowfiles, header forwarding, 429 backpressure, V3 content-type support. ~100 lines.
+- [ ] **GetFile source** — stdlib `filepath` + `github.com/fsnotify/fsnotify`. Watch a directory, ingest new files, move to `.processed/`. ~150 lines.
+- [ ] **PackageFlowFileV3 / UnpackageFlowFileV3 processors** — wrap the existing V3 serde (already in `core/binary.zn`) as processors. ~60 lines each.
+- [ ] **CSV codec + processors** — stdlib `encoding/csv` is sufficient. `ConvertCSVToRecord` / `ConvertRecordToCSV`. ~150 lines total.
+
+### Priority 3 — operational maturity
+
+- [ ] **Prometheus `/metrics` endpoint** — `github.com/prometheus/client_golang`. Per-processor counters, source status, uptime. Replaces C#'s 286-line `Fabric/Metrics.cs` with a few counter registrations + `promhttp.Handler()`. ~80 lines.
+- [ ] **`zinc-flow validate` subcommand** — pre-flight config check: parse YAML, build registry, construct every processor against a synthetic `ScopedContext`, run DAG validation. Exit 0 valid / 1 errors / 2 usage. ~130 lines.
+- [ ] **DAG cycle + unreachable-processor detection** — reuses the data the validator collects; flagged as separate deliverable since it can run at fabric startup too. ~60 lines on top of validate.
+
+### Priority 4 — nice to have
+
+- [ ] **QueryRecord processor** — SQL-like filter over records. Reuses the expr env from Priority 1. ~80 lines.
+- [ ] **Confluent Schema Registry REST client** — `github.com/twmb/franz-go/pkg/sr` (pure-Go subpackage). Defer until Kafka phase.
+
+---
+
+### Go libraries the C# port couldn't use
+
+zinc-flow-csharp had to hand-roll infrastructure that's a library in most ecosystems, because .NET AOT + trimming aggressively drops reflection-backed code and many popular .NET libs (Apache.Avro, Roslyn scripting, …) either don't support AOT or balloon the binary. Zinc/Go inherits Go's ecosystem directly:
+
+| Concern | C# approach | Go library | Lines saved |
+|---|---|---|---|
+| Avro + OCF + schema registry | AvroBinary + AvroOCF + AvroSchema + SchemaResolver (1050 lines, hand-rolled) | `hamba/avro/v2` | ~700 |
+| Expression engine | ExpressionEngine.cs (740 lines, hand-rolled VM) | `expr-lang/expr` | ~550 |
+| Prometheus metrics | Metrics.cs (286 lines) | `prometheus/client_golang` | ~200 |
+| Zstd + snappy codecs | ZstdSharp.Port + glue | `klauspost/compress` | ~200 |
+| File watching | custom poller | `fsnotify/fsnotify` | ~100 |
+| **Total savings** | | | **~1750** |
+
+The Zinc/Go port lands closer to parity with ~1000 lines of Zinc because the codec/VM/metrics primitives are in the libraries. Binary-size impact after strip: ~3-4 MB combined, keeping total under 9 MB — **roughly half the C# AOT size**.
+
+### Attack order
+
+1. **Avro** — unblocks 4 processors + schema registry. Biggest-impact single PR.
+2. **Expression engine** — unblocks `TransformRecord.compute` and `EvaluateExpression` in one go.
+3. **PutHTTP + GetFile** — connector parity; real pipelines work end-to-end.
+4. **V3 package/unpackage + CSV** — boundary-format completeness.
+5. **Metrics + validate** — ops maturity.
+6. **QueryRecord** — reuses #2, easy finish.
+
+---
+
 ## Phase 3 — Multi-Instance
 
 Connect multiple zinc-flow instances into a distributed flow graph.
