@@ -9,15 +9,18 @@ import zincflow.processors.ConvertRecordToAvro;
 import zincflow.processors.ConvertRecordToCSV;
 import zincflow.processors.ConvertRecordToJSON;
 import zincflow.processors.ConvertRecordToOCF;
+import zincflow.processors.EvaluateExpression;
 import zincflow.processors.ExtractRecordField;
 import zincflow.processors.FilterAttribute;
 import zincflow.processors.LogAttribute;
 import zincflow.processors.PutFile;
 import zincflow.processors.PutHTTP;
 import zincflow.processors.PutStdout;
+import zincflow.processors.QueryRecord;
 import zincflow.processors.ReplaceText;
 import zincflow.processors.RouteOnAttribute;
 import zincflow.processors.SplitText;
+import zincflow.processors.TransformRecord;
 import zincflow.processors.UpdateAttribute;
 
 import java.time.Duration;
@@ -112,6 +115,37 @@ public final class Registry {
         register("ConvertRecordToOCF", cfg -> new ConvertRecordToOCF(
                 required(cfg, "ConvertRecordToOCF", "schema"),
                 cfg.getOrDefault("codec", "null")));
+        // --- Expression / query (JEXL + JsonPath) ---
+        register("EvaluateExpression", cfg -> new EvaluateExpression(
+                required(cfg, "EvaluateExpression", "expression"),
+                required(cfg, "EvaluateExpression", "targetAttribute")));
+        register("TransformRecord", cfg -> new TransformRecord(
+                parseTransforms(required(cfg, "TransformRecord", "transforms"))));
+        register("QueryRecord", cfg -> new QueryRecord(
+                required(cfg, "QueryRecord", "query")));
+    }
+
+    /// Parse a compact transforms spec like
+    /// {@code "field1=expr1;field2=expr2"} into a map. Used by the
+    /// TransformRecord factory so config.yaml can set multiple field
+    /// transforms in a single string value (config map is {@code Map<String,String>},
+    /// so we can't nest directly).
+    private static java.util.Map<String, String> parseTransforms(String spec) {
+        java.util.Map<String, String> out = new java.util.LinkedHashMap<>();
+        for (String entry : spec.split(";")) {
+            String trimmed = entry.trim();
+            if (trimmed.isEmpty()) continue;
+            int eq = trimmed.indexOf('=');
+            if (eq <= 0) {
+                throw new IllegalArgumentException(
+                        "TransformRecord: malformed transform '" + trimmed + "' — expected 'field=expression'");
+            }
+            out.put(trimmed.substring(0, eq).trim(), trimmed.substring(eq + 1).trim());
+        }
+        if (out.isEmpty()) {
+            throw new IllegalArgumentException("TransformRecord: transforms spec produced no entries");
+        }
+        return out;
     }
 
     private static List<String> splitCSVColumns(String spec) {

@@ -29,6 +29,13 @@ lazy val root = (project in file("."))
       "com.fasterxml.jackson.dataformat" % "jackson-dataformat-csv" % "2.18.0",
       // Avro — apache.avro for schema, binary, and OCF (Object Container File).
       "org.apache.avro" % "avro" % "1.12.0",
+      // Expression language — Apache Commons JEXL 3 (variables, arithmetic,
+      // string ops, function namespaces). Used by EvaluateExpression and
+      // TransformRecord — no hand-rolled parser.
+      "org.apache.commons" % "commons-jexl3" % "3.4.0",
+      // Record querying — Jayway JsonPath (RFC 9535 adjacent). Used by
+      // QueryRecord to filter records with JsonPath predicates.
+      "com.jayway.jsonpath" % "json-path" % "2.9.0",
       // YAML — SnakeYAML for config.yaml parsing.
       "org.yaml" % "snakeyaml" % "2.3",
       // Logging — slf4j API + Logback backend.
