@@ -6,6 +6,7 @@ import zincflow.core.ProcessorContext;
 import zincflow.core.ProcessorPlugin;
 import zincflow.core.Provider;
 import zincflow.core.ProviderPlugin;
+import zincflow.core.SourcePlugin;
 
 import java.io.IOException;
 import java.net.MalformedURLException;
@@ -51,30 +52,39 @@ public final class PluginLoader {
     public record Summary(
             List<String> processorTypes,
             List<String> providerNames,
+            List<String> sourceTypes,
             Path directory,
             List<Path> jars) {
         public Summary {
             processorTypes = List.copyOf(processorTypes);
             providerNames = List.copyOf(providerNames);
+            sourceTypes = List.copyOf(sourceTypes);
             jars = List.copyOf(jars);
         }
 
         public static Summary empty() {
-            return new Summary(List.of(), List.of(), null, List.of());
+            return new Summary(List.of(), List.of(), List.of(), null, List.of());
         }
 
         public int totalLoaded() {
-            return processorTypes.size() + providerNames.size();
+            return processorTypes.size() + providerNames.size() + sourceTypes.size();
         }
     }
 
     /// Discover plugins on the given classloader and register them.
-    /// Providers first, then processors — so processor plugins that
-    /// require a provider get it via the context at create-time.
+    /// Providers first (processors may require them at create-time),
+    /// then processors, then sources (sources are independent but their
+    /// factories may look up providers via the context at start-time).
     public static Summary load(ClassLoader cl, Registry registry, ProcessorContext context) {
+        return load(cl, registry, context, null);
+    }
+
+    public static Summary load(ClassLoader cl, Registry registry, ProcessorContext context,
+                               SourceRegistry sourceRegistry) {
         List<String> providers = loadProviders(cl, context);
         List<String> processors = loadProcessors(cl, registry);
-        return new Summary(processors, providers, null, List.of());
+        List<String> sources = sourceRegistry == null ? List.of() : loadSources(cl, sourceRegistry);
+        return new Summary(processors, providers, sources, null, List.of());
     }
 
     /// Scan {@code dir} for {@code *.jar} files, stitch them into a
@@ -82,8 +92,13 @@ public final class PluginLoader {
     /// and register every plugin service they expose. Missing or empty
     /// directories are not an error — they yield an empty summary.
     public static Summary loadFromDirectory(Path dir, Registry registry, ProcessorContext context) {
+        return loadFromDirectory(dir, registry, context, null);
+    }
+
+    public static Summary loadFromDirectory(Path dir, Registry registry, ProcessorContext context,
+                                            SourceRegistry sourceRegistry) {
         if (dir == null || !Files.isDirectory(dir)) {
-            return new Summary(List.of(), List.of(), dir, List.of());
+            return new Summary(List.of(), List.of(), List.of(), dir, List.of());
         }
         List<Path> jars = new ArrayList<>();
         try (Stream<Path> entries = Files.list(dir)) {
@@ -92,10 +107,10 @@ public final class PluginLoader {
                    .forEach(jars::add);
         } catch (IOException ex) {
             log.warn("plugin directory scan failed: {} — {}", dir, ex.toString());
-            return new Summary(List.of(), List.of(), dir, List.of());
+            return new Summary(List.of(), List.of(), List.of(), dir, List.of());
         }
         if (jars.isEmpty()) {
-            return new Summary(List.of(), List.of(), dir, List.of());
+            return new Summary(List.of(), List.of(), List.of(), dir, List.of());
         }
         URL[] urls = new URL[jars.size()];
         for (int i = 0; i < jars.size(); i++) {
@@ -111,9 +126,10 @@ public final class PluginLoader {
         URLClassLoader cl = new URLClassLoader(stripNulls(urls), PluginLoader.class.getClassLoader());
         List<String> providers = loadProviders(cl, context);
         List<String> processors = loadProcessors(cl, registry);
-        log.info("loaded {} plugin(s) from {} — providers: {}, processors: {}",
-                providers.size() + processors.size(), dir, providers, processors);
-        return new Summary(processors, providers, dir, jars);
+        List<String> sources = sourceRegistry == null ? List.of() : loadSources(cl, sourceRegistry);
+        log.info("loaded {} plugin(s) from {} — providers: {}, processors: {}, sources: {}",
+                providers.size() + processors.size() + sources.size(), dir, providers, processors, sources);
+        return new Summary(processors, providers, sources, dir, jars);
     }
 
     private static List<String> loadProviders(ClassLoader cl, ProcessorContext context) {
@@ -145,7 +161,7 @@ public final class PluginLoader {
                 continue;
             }
             String version = plugin.version() == null || plugin.version().isEmpty()
-                    ? Registry.DEFAULT_VERSION : plugin.version();
+                    ? TypeRefs.DEFAULT_VERSION : plugin.version();
             Registry.TypeInfo info = new Registry.TypeInfo(
                     type, version,
                     plugin.description() == null ? "" : plugin.description(),
@@ -154,6 +170,34 @@ public final class PluginLoader {
             registry.register(info, plugin::create);
             types.add(type + "@" + version);
             log.info("plugin processor registered: {}@{} ({})",
+                    type, version, plugin.getClass().getName());
+        }
+        Collections.sort(types);
+        return types;
+    }
+
+    /// Scan {@code cl} for {@link SourcePlugin} services and register
+    /// them with {@code registry}. Exposed for the Main bootstrap so
+    /// the built-in sources (shipped as ServiceLoader entries in the
+    /// main jar) populate the registry through the same path as
+    /// plugin-jar sources.
+    public static List<String> loadSources(ClassLoader cl, SourceRegistry registry) {
+        List<String> types = new ArrayList<>();
+        for (SourcePlugin plugin : ServiceLoader.load(SourcePlugin.class, cl)) {
+            String type = plugin.sourceType();
+            if (type == null || type.isEmpty()) {
+                log.warn("SourcePlugin {} reported blank sourceType() — skipping", plugin.getClass().getName());
+                continue;
+            }
+            String version = plugin.version() == null || plugin.version().isEmpty()
+                    ? TypeRefs.DEFAULT_VERSION : plugin.version();
+            SourceRegistry.TypeInfo info = new SourceRegistry.TypeInfo(
+                    type, version,
+                    plugin.description() == null ? "" : plugin.description(),
+                    plugin.configKeys() == null ? List.of() : plugin.configKeys());
+            registry.register(info, plugin::create);
+            types.add(type + "@" + version);
+            log.info("plugin source registered: {}@{} ({})",
                     type, version, plugin.getClass().getName());
         }
         Collections.sort(types);
@@ -177,6 +221,7 @@ public final class PluginLoader {
         out.put("jars", s.jars().stream().map(Path::toString).toList());
         out.put("processorTypes", s.processorTypes());
         out.put("providerNames", s.providerNames());
+        out.put("sourceTypes", s.sourceTypes());
         out.put("totalLoaded", s.totalLoaded());
         return out;
     }

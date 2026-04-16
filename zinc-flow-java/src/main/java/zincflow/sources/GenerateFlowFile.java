@@ -2,6 +2,8 @@ package zincflow.sources;
 
 import zincflow.core.FlowFile;
 import zincflow.core.PollingSource;
+import zincflow.core.Source;
+import zincflow.core.SourcePlugin;
 
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -63,6 +65,35 @@ public final class GenerateFlowFile extends PollingSource {
             out.add(FlowFile.create(content, attrs));
         }
         return out;
+    }
+
+    /// SPI entry for ServiceLoader discovery. Both the built-in
+    /// bootstrap and any plugin jar pick up the source through this
+    /// class, so there's one discovery path across all source sources.
+    public static final class Plugin implements SourcePlugin {
+        @Override public String sourceType() { return TYPE; }
+        @Override public String description() { return "Timer-driven FlowFile generator for heartbeats and load tests."; }
+        @Override public List<String> configKeys() {
+            return List.of("content", "content_type", "attributes", "batch_size", "poll_interval_ms");
+        }
+        @Override public Source create(String name, Map<String, Object> config) {
+            String content = str(config.get("content"));
+            if (content.isEmpty()) return null; // disabled when content is absent
+            return new GenerateFlowFile(name,
+                    longOr(config.get("poll_interval_ms"), 1000),
+                    content,
+                    str(config.get("content_type")),
+                    str(config.get("attributes")),
+                    (int) longOr(config.get("batch_size"), 1));
+        }
+
+        private static String str(Object o) { return o == null ? "" : String.valueOf(o); }
+        private static long longOr(Object o, long fallback) {
+            if (o == null) return fallback;
+            if (o instanceof Number n) return n.longValue();
+            try { return Long.parseLong(o.toString().trim()); }
+            catch (NumberFormatException ex) { return fallback; }
+        }
     }
 
     private static Map<String, String> buildAttributes(String name, String contentType, String spec) {

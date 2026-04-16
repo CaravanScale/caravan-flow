@@ -55,7 +55,9 @@ import java.util.concurrent.ConcurrentHashMap;
 /// Stateless; one instance shared by the Fabric.
 public final class Registry {
 
-    public static final String DEFAULT_VERSION = "1.0.0";
+    /** @deprecated use {@link TypeRefs#DEFAULT_VERSION}. */
+    @Deprecated
+    public static final String DEFAULT_VERSION = TypeRefs.DEFAULT_VERSION;
 
     /// A factory for a processor given its config map and the surrounding
     /// processor context. The context is never null — callers that don't
@@ -107,7 +109,7 @@ public final class Registry {
         versioned.put(key, factory);
         metadata.put(key, info);
         latestVersion.merge(info.name(), info.version(),
-                (oldV, newV) -> compareVersions(oldV, newV) >= 0 ? oldV : newV);
+                (oldV, newV) -> TypeRefs.compareVersions(oldV, newV) >= 0 ? oldV : newV);
     }
 
     public boolean has(String type) {
@@ -127,25 +129,10 @@ public final class Registry {
         return type + "@" + latest;
     }
 
-    /// Compare two dotted version strings; a trailing ".0" difference
-    /// (e.g. "1.2" vs "1.2.0") sorts as equal. Non-numeric segments
-    /// compare lexicographically.
-    static int compareVersions(String a, String b) {
-        String[] as = a.split("\\.");
-        String[] bs = b.split("\\.");
-        int len = Math.max(as.length, bs.length);
-        for (int i = 0; i < len; i++) {
-            String ap = i < as.length ? as[i] : "0";
-            String bp = i < bs.length ? bs[i] : "0";
-            try {
-                int cmp = Integer.compare(Integer.parseInt(ap), Integer.parseInt(bp));
-                if (cmp != 0) return cmp;
-            } catch (NumberFormatException ex) {
-                int cmp = ap.compareTo(bp);
-                if (cmp != 0) return cmp;
-            }
-        }
-        return 0;
+    /** @deprecated use {@link TypeRefs#compareVersions(String, String)}. */
+    @Deprecated
+    public static int compareVersions(String a, String b) {
+        return TypeRefs.compareVersions(a, b);
     }
 
     /// Context-free convenience — callers that don't have a
@@ -176,7 +163,7 @@ public final class Registry {
     public List<TypeInfo> listAll() {
         List<TypeInfo> out = new ArrayList<>(metadata.values());
         out.sort(Comparator.comparing(TypeInfo::name).thenComparing(
-                TypeInfo::version, Registry::compareVersions));
+                TypeInfo::version, TypeRefs::compareVersions));
         return out;
     }
 
@@ -187,7 +174,7 @@ public final class Registry {
         for (TypeInfo info : metadata.values()) {
             if (info.name().equals(type)) out.add(info);
         }
-        out.sort(Comparator.comparing(TypeInfo::version, Registry::compareVersions));
+        out.sort(Comparator.comparing(TypeInfo::version, TypeRefs::compareVersions));
         return out;
     }
 
@@ -198,18 +185,10 @@ public final class Registry {
         return metadata.get(type + "@" + latest);
     }
 
-    /// Parse a config "type" string into its (name, version) parts.
-    /// Version is null when the config omits the {@code @x.y.z}
-    /// suffix, which means "use latest at registry lookup time".
-    public static record TypeRef(String name, String version) {
-        public String raw() { return version == null ? name : name + "@" + version; }
-
-        public static TypeRef parse(String raw) {
-            if (raw == null) return new TypeRef("", null);
-            int at = raw.indexOf('@');
-            if (at < 0) return new TypeRef(raw, null);
-            return new TypeRef(raw.substring(0, at), raw.substring(at + 1));
-        }
+    /** @deprecated use {@link TypeRefs.TypeRef}. */
+    @Deprecated
+    public static TypeRefs.TypeRef parseTypeRef(String raw) {
+        return TypeRefs.TypeRef.parse(raw);
     }
 
     /// Return the content store exposed by the {@code "content"}

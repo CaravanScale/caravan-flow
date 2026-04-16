@@ -80,10 +80,10 @@ final class RegistryVersioningTest {
 
     @Test
     void typeRefParses() {
-        assertEquals(new Registry.TypeRef("Foo", null), Registry.TypeRef.parse("Foo"));
-        assertEquals(new Registry.TypeRef("Foo", "1.2.3"), Registry.TypeRef.parse("Foo@1.2.3"));
-        assertEquals("Foo@1.2.3", new Registry.TypeRef("Foo", "1.2.3").raw());
-        assertEquals("Foo", new Registry.TypeRef("Foo", null).raw());
+        assertEquals(new TypeRefs.TypeRef("Foo", null), TypeRefs.TypeRef.parse("Foo"));
+        assertEquals(new TypeRefs.TypeRef("Foo", "1.2.3"), TypeRefs.TypeRef.parse("Foo@1.2.3"));
+        assertEquals("Foo@1.2.3", new TypeRefs.TypeRef("Foo", "1.2.3").raw());
+        assertEquals("Foo", new TypeRefs.TypeRef("Foo", null).raw());
     }
 
     @Test

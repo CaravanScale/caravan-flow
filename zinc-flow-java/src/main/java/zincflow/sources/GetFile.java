@@ -4,6 +4,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import zincflow.core.FlowFile;
 import zincflow.core.PollingSource;
+import zincflow.core.Source;
+import zincflow.core.SourcePlugin;
 import zincflow.fabric.FlowFileV3;
 
 import java.io.IOException;
@@ -185,5 +187,36 @@ public final class GetFile extends PollingSource {
     private void ensureDirs() {
         try { Files.createDirectories(inputDir); }
         catch (IOException ex) { /* tolerate — poll will surface issues */ }
+    }
+
+    /// SPI entry for ServiceLoader discovery.
+    public static final class Plugin implements SourcePlugin {
+        @Override public String sourceType() { return TYPE; }
+        @Override public String description() { return "Polls a directory; emits one FlowFile per file (V3 bundles are unpacked)."; }
+        @Override public List<String> configKeys() {
+            return List.of("input_dir", "pattern", "poll_interval_ms", "unpack_v3");
+        }
+        @Override public Source create(String name, Map<String, Object> config) {
+            String inputDir = str(config.get("input_dir"));
+            if (inputDir.isEmpty()) return null; // disabled when input_dir is absent
+            return new GetFile(name,
+                    Path.of(inputDir),
+                    str(config.getOrDefault("pattern", "*")),
+                    longOr(config.get("poll_interval_ms"), 1000),
+                    boolOr(config.get("unpack_v3"), true));
+        }
+
+        private static String str(Object o) { return o == null ? "" : String.valueOf(o); }
+        private static long longOr(Object o, long fallback) {
+            if (o == null) return fallback;
+            if (o instanceof Number n) return n.longValue();
+            try { return Long.parseLong(o.toString().trim()); }
+            catch (NumberFormatException ex) { return fallback; }
+        }
+        private static boolean boolOr(Object o, boolean fallback) {
+            if (o == null) return fallback;
+            if (o instanceof Boolean b) return b;
+            return "true".equalsIgnoreCase(o.toString().trim());
+        }
     }
 }

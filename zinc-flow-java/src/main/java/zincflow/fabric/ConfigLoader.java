@@ -6,8 +6,6 @@ import org.yaml.snakeyaml.Yaml;
 import zincflow.core.Processor;
 import zincflow.core.ProcessorContext;
 import zincflow.core.Source;
-import zincflow.sources.GenerateFlowFile;
-import zincflow.sources.GetFile;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -55,6 +53,7 @@ public final class ConfigLoader {
     }
 
     private final Registry registry;
+    private final SourceRegistry sourceRegistry;
     private final ProcessorContext context;
     private Map<String, ProcessorSpec> lastSpecs = Map.of();
     private Map<String, Processor> lastProcessors = Map.of();
@@ -62,12 +61,17 @@ public final class ConfigLoader {
     private List<Source> lastSources = List.of();
 
     public ConfigLoader(Registry registry) {
-        this(registry, new ProcessorContext());
+        this(registry, new ProcessorContext(), null);
     }
 
     public ConfigLoader(Registry registry, ProcessorContext context) {
+        this(registry, context, null);
+    }
+
+    public ConfigLoader(Registry registry, ProcessorContext context, SourceRegistry sourceRegistry) {
         this.registry = registry;
         this.context = context == null ? new ProcessorContext() : context;
+        this.sourceRegistry = sourceRegistry;
     }
 
     public ProcessorContext context() { return context; }
@@ -210,63 +214,58 @@ public final class ConfigLoader {
         return new PipelineGraph(processors, connections, entryPoints);
     }
 
-    private static List<Source> buildSources(Object sourcesRaw) {
-        if (!(sourcesRaw instanceof Map<?, ?> m)) return List.of();
-        List<Source> out = new ArrayList<>();
-        Object file = m.get("file");
-        if (file instanceof Map<?, ?> fileMap) {
-            Source s = buildFileSource(stringKeyed(fileMap));
-            if (s != null) out.add(s);
+    /// Build every source declared under {@code sources:}. Each entry
+    /// is a named block with {@code type:} (optionally versioned via
+    /// {@code @x.y.z}) and {@code config:}. Dispatch goes through the
+    /// {@link SourceRegistry}, so third-party sources in plugin jars
+    /// become usable with zero changes here.
+    ///
+    /// <pre>
+    /// sources:
+    ///   infile:
+    ///     type: GetFile@1.0.0
+    ///     config:
+    ///       input_dir: /var/spool/zincflow
+    ///       pattern: "*.json"
+    ///   heartbeat:
+    ///     type: GenerateFlowFile
+    ///     config:
+    ///       content: "ping"
+    /// </pre>
+    ///
+    /// A null source returned by a factory (e.g. GetFile without
+    /// input_dir) is treated as "disabled" — logged, not thrown.
+    private List<Source> buildSources(Object sourcesRaw) {
+        if (sourcesRaw == null) return List.of();
+        if (!(sourcesRaw instanceof Map<?, ?> m)) {
+            throw new IllegalArgumentException("config: 'sources' must be a map of name → {type, config}");
         }
-        Object generate = m.get("generate");
-        if (generate instanceof Map<?, ?> genMap) {
-            Source s = buildGenerateSource(stringKeyed(genMap));
-            if (s != null) out.add(s);
+        if (sourceRegistry == null) {
+            log.warn("sources block present but no SourceRegistry wired — sources ignored");
+            return List.of();
+        }
+        List<Source> out = new ArrayList<>();
+        for (var entry : m.entrySet()) {
+            String name = String.valueOf(entry.getKey());
+            if (!(entry.getValue() instanceof Map<?, ?> def)) {
+                throw new IllegalArgumentException(
+                        "config: source '" + name + "' must be a map with 'type' + 'config'");
+            }
+            Object typeRaw = def.get("type");
+            if (typeRaw == null) {
+                throw new IllegalArgumentException("config: source '" + name + "' missing 'type'");
+            }
+            Map<String, Object> sourceConfig = def.get("config") instanceof Map<?, ?> c
+                    ? stringKeyed(c)
+                    : Map.of();
+            Source source = sourceRegistry.create(String.valueOf(typeRaw), name, sourceConfig);
+            if (source == null) {
+                log.info("source '{}' ({}): factory returned null — disabled", name, typeRaw);
+                continue;
+            }
+            out.add(source);
         }
         return List.copyOf(out);
-    }
-
-    private static Source buildFileSource(Map<String, Object> cfg) {
-        String inputDir = str(cfg.get("input_dir"));
-        if (inputDir.isEmpty()) {
-            log.info("sources.file: input_dir missing — GetFile source disabled");
-            return null;
-        }
-        String pattern = str(cfg.getOrDefault("pattern", "*"));
-        long pollMs = longOr(cfg.get("poll_interval_ms"), 1000);
-        boolean unpackV3 = boolOr(cfg.get("unpack_v3"), true);
-        return new GetFile("file", Path.of(inputDir), pattern, pollMs, unpackV3);
-    }
-
-    private static Source buildGenerateSource(Map<String, Object> cfg) {
-        String content = str(cfg.get("content"));
-        // Matches C# behaviour: empty content disables the generator.
-        // Keeps the config hospitable — you can leave the block
-        // present (for env-overlay shape) without emitting anything.
-        if (content.isEmpty()) {
-            log.info("sources.generate: content empty — GenerateFlowFile disabled");
-            return null;
-        }
-        String contentType = str(cfg.get("content_type"));
-        String attributes = str(cfg.get("attributes"));
-        int batchSize = (int) longOr(cfg.get("batch_size"), 1);
-        long pollMs = longOr(cfg.get("poll_interval_ms"), 1000);
-        return new GenerateFlowFile("generate", pollMs, content, contentType, attributes, batchSize);
-    }
-
-    private static String str(Object o) { return o == null ? "" : String.valueOf(o); }
-
-    private static long longOr(Object o, long fallback) {
-        if (o == null) return fallback;
-        if (o instanceof Number n) return n.longValue();
-        try { return Long.parseLong(o.toString().trim()); }
-        catch (NumberFormatException ex) { return fallback; }
-    }
-
-    private static boolean boolOr(Object o, boolean fallback) {
-        if (o == null) return fallback;
-        if (o instanceof Boolean b) return b;
-        return "true".equalsIgnoreCase(o.toString().trim());
     }
 
     private static Map<String, Object> stringKeyed(Map<?, ?> raw) {

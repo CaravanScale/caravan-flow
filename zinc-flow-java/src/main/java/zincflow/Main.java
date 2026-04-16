@@ -13,6 +13,7 @@ import zincflow.fabric.Pipeline;
 import zincflow.fabric.PipelineGraph;
 import zincflow.fabric.PluginLoader;
 import zincflow.fabric.Registry;
+import zincflow.fabric.SourceRegistry;
 import zincflow.processors.LogAttribute;
 import zincflow.processors.RouteOnAttribute;
 import zincflow.processors.UpdateAttribute;
@@ -40,6 +41,13 @@ public final class Main {
     public static void main(String[] args) throws IOException {
         Path configPath = resolveConfigPath(args);
         Registry registry = new Registry();
+        SourceRegistry sourceRegistry = new SourceRegistry();
+        // Built-in sources register via the system classloader's
+        // META-INF/services/zincflow.core.SourcePlugin so they come in
+        // through the same ServiceLoader path that plugin jars use.
+        // A plugin jar with the same type name + higher version wins
+        // at latest-version lookup.
+        PluginLoader.loadSources(Main.class.getClassLoader(), sourceRegistry);
 
         // Wire the Phase 3e provider set — config, logging, provenance,
         // and an in-memory content store. All start ENABLED so the
@@ -66,13 +74,14 @@ public final class Main {
         // for third-party processor/provider jars before loading the flow,
         // so config.yaml can reference plugin-provided types.
         Path pluginsDir = resolvePluginsDir();
-        PluginLoader.Summary plugins = PluginLoader.loadFromDirectory(pluginsDir, registry, context);
+        PluginLoader.Summary plugins = PluginLoader.loadFromDirectory(pluginsDir, registry, context, sourceRegistry);
         if (plugins.totalLoaded() > 0) {
-            log.info("loaded {} plugin(s) from {} — providers: {}, processors: {}",
-                    plugins.totalLoaded(), pluginsDir, plugins.providerNames(), plugins.processorTypes());
+            log.info("loaded {} plugin(s) from {} — providers: {}, processors: {}, sources: {}",
+                    plugins.totalLoaded(), pluginsDir, plugins.providerNames(),
+                    plugins.processorTypes(), plugins.sourceTypes());
         }
 
-        ConfigLoader loader = new ConfigLoader(registry, context);
+        ConfigLoader loader = new ConfigLoader(registry, context, sourceRegistry);
         PipelineGraph graph;
         if (configPath != null && Files.isRegularFile(configPath)) {
             log.info("loading pipeline from {}", configPath.toAbsolutePath());
