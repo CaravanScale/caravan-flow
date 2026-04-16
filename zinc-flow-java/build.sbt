@@ -1,0 +1,40 @@
+ThisBuild / version := "0.1.0-SNAPSHOT"
+ThisBuild / javacOptions ++= Seq("--release", "25")
+
+lazy val root = (project in file("."))
+  .settings(
+    name := "zinc-flow-java",
+    // Java-only project — drop Scala path suffixes and don't pull the
+    // Scala library into the app.
+    crossPaths := false,
+    autoScalaLibrary := false,
+    Compile / mainClass := Some("zincflow.Main"),
+    assembly / mainClass := Some("zincflow.Main"),
+    assembly / assemblyJarName := "zinc-flow.jar",
+    // Jetty, Jackson, SnakeYAML, slf4j, kotlin-stdlib all ship their
+    // own module-info.class — discard duplicates in the fat jar.
+    assembly / assemblyMergeStrategy := {
+      case PathList("META-INF", "versions", _, "module-info.class") => MergeStrategy.discard
+      case PathList("module-info.class") => MergeStrategy.discard
+      case other =>
+        val defaultStrategy = (assembly / assemblyMergeStrategy).value
+        defaultStrategy(other)
+    },
+    libraryDependencies ++= Seq(
+      // HTTP — Javalin 6 (minimal-API style, Jetty 12 underneath).
+      "io.javalin" % "javalin" % "6.3.0",
+      // JSON — Jackson databind + JDK8/Java time module for records/Instant.
+      "com.fasterxml.jackson.core" % "jackson-databind" % "2.18.0",
+      "com.fasterxml.jackson.datatype" % "jackson-datatype-jsr310" % "2.18.0",
+      // YAML — SnakeYAML for config.yaml parsing.
+      "org.yaml" % "snakeyaml" % "2.3",
+      // Logging — slf4j API + Logback backend.
+      "org.slf4j" % "slf4j-api" % "2.0.16",
+      "ch.qos.logback" % "logback-classic" % "1.5.12",
+      // JUnit 6 — official sbt-jupiter-interface starter shape.
+      "com.github.sbt.junit" % "jupiter-interface" % JupiterKeys.jupiterVersion.value % Test,
+      "org.junit.jupiter" % "junit-jupiter" % "6.0.3" % Test,
+      "org.junit.platform" % "junit-platform-launcher" % "6.0.3" % Test
+    ),
+    testOptions += Tests.Argument(jupiterTestFramework, "--display-mode=tree")
+  )

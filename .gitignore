@@ -1,20 +1,14 @@
 out/
-.mill/
 .zinc/
 *.class
-*.jar
 .idea/
 .vscode/
-# Generated Java files (from zinc transpiler)
-src/**/*.java
 
-# Build artifacts
-dist/
-zincflow
-*.so
+# sbt build artifacts
+target/
 
-# GraalVM native-image config output
-native-image-config/
-zinc-flow
+# zinc-java / sbt assembly artifacts
 zinc-out/
-zinc
+
+# OS
+.DS_Store
