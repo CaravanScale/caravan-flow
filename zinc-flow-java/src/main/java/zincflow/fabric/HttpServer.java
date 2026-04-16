@@ -11,6 +11,7 @@ import zincflow.core.ProcessorContext;
 import zincflow.core.Provider;
 import zincflow.core.Source;
 import zincflow.providers.ProvenanceProvider;
+import zincflow.providers.SchemaRegistryProvider;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -96,6 +97,18 @@ public final class HttpServer {
                 .post("/api/sources/stop",             this::handleStopSource)
                 .get("/api/plugins",                   this::handlePlugins)
                 .post("/api/plugins/reload",           this::handleReloadPlugins);
+
+        // Confluent-shape schema registry — mounted only when a
+        // SchemaRegistryProvider is wired into the context. Skipping the
+        // mount when absent keeps the route surface honest: tooling that
+        // probes /api/schema-registry/subjects gets a clean 404 instead
+        // of an endpoint that always returns an error.
+        SchemaRegistryProvider schemaRegistry = pipeline.context()
+                .getProviderAs("schema_registry", SchemaRegistryProvider.class);
+        if (schemaRegistry != null) {
+            new SchemaRegistryHandler(schemaRegistry).mapRoutes(app);
+        }
+
         app.start(port);
         boundPort = app.port();
         log.info("zinc-flow HTTP server listening on http://localhost:{}", boundPort);

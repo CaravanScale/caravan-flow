@@ -3,40 +3,58 @@ package zincflow.providers;
 import zincflow.core.ComponentState;
 import zincflow.core.Provider;
 
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /// Embedded, airgapped schema registry behind the {@link Provider}
-/// interface. Processors that need registry-backed schemas — OCF
-/// readers configured with a {@code reader_schema_subject}, record
-/// codecs that auto-register new subjects — declare
-/// {@code requires=["schema_registry"]} and pull the provider from
-/// the {@link zincflow.core.ProcessorContext}.
+/// interface. Matches Confluent semantics closely enough that the
+/// {@link zincflow.fabric.SchemaRegistryHandler} can expose a
+/// drop-in-compatible REST surface.
 ///
-/// Schemas live in memory and are keyed by {@code subject}; each
-/// {@link #register register} call bumps the version for that subject,
-/// so callers can pin to a specific version or ask for the latest.
-/// Mirror of zinc-flow-csharp's SchemaRegistryProvider, minus the
-/// remote-registry option which we've explicitly left out — the whole
-/// point of this provider is "no cross-service dependency at runtime".
+/// <h2>ID model</h2>
+/// Every unique schema definition is assigned a single global integer
+/// id on first registration. Registering the same definition under a
+/// different subject reuses the existing id. This matches Confluent's
+/// "one id per schema" model — tooling that resolves schemas by id
+/// (most Avro-serializer clients) works verbatim.
+///
+/// Per-subject version numbers are sequential starting at 1. Deleting
+/// a version doesn't renumber later ones: if you delete v2 after
+/// having v1, v2, v3, the remaining versions stay v1 + v3.
 public final class SchemaRegistryProvider implements Provider {
 
-    /// One schema entry: immutable record of what was registered.
-    public record Schema(String subject, int version, String definition) {
+    /// Immutable record of a registered schema.
+    public record Schema(int id, String subject, int version, String definition) {
         public Schema {
             if (subject == null || subject.isEmpty())
                 throw new IllegalArgumentException("schema subject must not be blank");
             if (version < 1)
                 throw new IllegalArgumentException("schema version must be >= 1");
+            if (id < 1)
+                throw new IllegalArgumentException("schema id must be >= 1");
             if (definition == null)
                 throw new IllegalArgumentException("schema definition must not be null");
         }
     }
 
+    /// Map from subject → ordered list of {@link Schema}. Concurrent
+    /// access uses a per-subject monitor (the {@link List} itself) so
+    /// registrations under different subjects don't contend.
     private final ConcurrentHashMap<String, List<Schema>> bySubject = new ConcurrentHashMap<>();
-    private final AtomicInteger idGenerator = new AtomicInteger();
+    /// Definition text → global id. Lets us dedupe schemas across
+    /// subjects and give back stable ids.
+    private final ConcurrentHashMap<String, Integer> idByDefinition = new ConcurrentHashMap<>();
+    /// Global id → one representative Schema record (for id-based
+    /// lookup). The record's subject/version reflect the first
+    /// subject that registered the definition.
+    private final ConcurrentHashMap<Integer, Schema> byId = new ConcurrentHashMap<>();
+    private final AtomicInteger nextId = new AtomicInteger();
     private volatile ComponentState state = ComponentState.DISABLED;
 
     @Override public String name() { return "schema_registry"; }
@@ -44,56 +62,118 @@ public final class SchemaRegistryProvider implements Provider {
     @Override public ComponentState state() { return state; }
     @Override public void enable() { state = ComponentState.ENABLED; }
     @Override public void disable(int drainTimeoutSeconds) { state = ComponentState.DISABLED; }
-    @Override public void shutdown() { state = ComponentState.DISABLED; bySubject.clear(); }
-
-    /// Register a new schema version under {@code subject}. Version
-    /// numbers start at 1 and increment per subject — the first call
-    /// for {@code "order"} yields v1, the second v2, and so on.
-    public Schema register(String subject, String definition) {
-        List<Schema> versions = bySubject.computeIfAbsent(subject, _ -> java.util.Collections.synchronizedList(new java.util.ArrayList<>()));
-        synchronized (versions) {
-            int nextVersion = versions.size() + 1;
-            Schema s = new Schema(subject, nextVersion, definition);
-            versions.add(s);
-            idGenerator.incrementAndGet();
-            return s;
-        }
+    @Override public void shutdown() {
+        state = ComponentState.DISABLED;
+        bySubject.clear();
+        idByDefinition.clear();
+        byId.clear();
     }
 
-    /// Fetch a specific version. Returns null if the subject or
-    /// version is unknown.
-    public Schema get(String subject, int version) {
+    /// Register a new schema version under {@code subject}. When the
+    /// definition is already known (under this or any other subject)
+    /// the existing global id is reused; the subject still gets a new
+    /// per-subject version entry so its history is preserved.
+    public Schema register(String subject, String definition) {
+        if (subject == null || subject.isEmpty())
+            throw new IllegalArgumentException("subject must not be blank");
+        if (definition == null)
+            throw new IllegalArgumentException("definition must not be null");
+
+        // Short-circuit: same definition already present under the same
+        // subject → return the existing entry rather than bumping to
+        // a new version. Matches Confluent's idempotent register behavior.
+        Schema existing = findBySubjectAndDefinition(subject, definition);
+        if (existing != null) return existing;
+
+        int id = idByDefinition.computeIfAbsent(definition, _ -> nextId.incrementAndGet());
+        List<Schema> versions = bySubject.computeIfAbsent(subject, _ -> Collections.synchronizedList(new ArrayList<>()));
+        Schema registered;
+        synchronized (versions) {
+            int nextVersion = versions.isEmpty() ? 1 : versions.get(versions.size() - 1).version() + 1;
+            registered = new Schema(id, subject, nextVersion, definition);
+            versions.add(registered);
+        }
+        byId.putIfAbsent(id, registered);
+        return registered;
+    }
+
+    private Schema findBySubjectAndDefinition(String subject, String definition) {
         List<Schema> versions = bySubject.get(subject);
         if (versions == null) return null;
         synchronized (versions) {
-            for (Schema s : versions) if (s.version() == version) return s;
+            for (Schema s : versions) {
+                if (s.definition().equals(definition)) return s;
+            }
         }
         return null;
     }
 
-    /// Latest version for a subject, or null if the subject has no
-    /// registered schemas.
-    public Schema latest(String subject) {
+    public Optional<Schema> getById(int id) {
+        return Optional.ofNullable(byId.get(id));
+    }
+
+    public Optional<Schema> getEntry(String subject, int version) {
         List<Schema> versions = bySubject.get(subject);
-        if (versions == null) return null;
+        if (versions == null) return Optional.empty();
         synchronized (versions) {
-            return versions.isEmpty() ? null : versions.get(versions.size() - 1);
+            for (Schema s : versions) if (s.version() == version) return Optional.of(s);
+        }
+        return Optional.empty();
+    }
+
+    public Optional<Schema> latest(String subject) {
+        List<Schema> versions = bySubject.get(subject);
+        if (versions == null) return Optional.empty();
+        synchronized (versions) {
+            return versions.isEmpty() ? Optional.empty() : Optional.of(versions.get(versions.size() - 1));
         }
     }
 
-    public List<String> subjects() {
-        return List.copyOf(bySubject.keySet());
+    public List<String> listSubjects() {
+        List<String> out = new ArrayList<>(bySubject.keySet());
+        Collections.sort(out);
+        return out;
     }
 
-    public List<Schema> versions(String subject) {
+    public List<Integer> listVersions(String subject) {
         List<Schema> versions = bySubject.get(subject);
         if (versions == null) return List.of();
         synchronized (versions) {
-            return List.copyOf(versions);
+            List<Integer> out = new ArrayList<>(versions.size());
+            for (Schema s : versions) out.add(s.version());
+            return out;
         }
     }
 
-    public int size() {
-        return idGenerator.get();
+    /// Delete every version under {@code subject} and return the
+    /// version numbers that were removed (so the HTTP layer can echo
+    /// them back the way Confluent does). Returns empty when the
+    /// subject is unknown.
+    public List<Integer> deleteSubject(String subject) {
+        List<Schema> versions = bySubject.remove(subject);
+        if (versions == null) return List.of();
+        synchronized (versions) {
+            List<Integer> removed = new ArrayList<>(versions.size());
+            for (Schema s : versions) removed.add(s.version());
+            return removed;
+        }
     }
+
+    public boolean deleteVersion(String subject, int version) {
+        List<Schema> versions = bySubject.get(subject);
+        if (versions == null) return false;
+        synchronized (versions) {
+            return versions.removeIf(s -> s.version() == version);
+        }
+    }
+
+    /// Snapshot for diagnostics — returns a subject → versions map
+    /// that's safe to iterate without holding the per-subject lock.
+    public Map<String, List<Integer>> snapshot() {
+        Map<String, List<Integer>> out = new LinkedHashMap<>();
+        for (String subject : listSubjects()) out.put(subject, listVersions(subject));
+        return out;
+    }
+
+    public int size() { return nextId.get(); }
 }

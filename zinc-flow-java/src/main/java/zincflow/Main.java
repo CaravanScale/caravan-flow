@@ -19,6 +19,7 @@ import zincflow.providers.ConfigProvider;
 import zincflow.providers.ContentProvider;
 import zincflow.providers.LoggingProvider;
 import zincflow.providers.ProvenanceProvider;
+import zincflow.providers.SchemaRegistryProvider;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -54,6 +55,9 @@ public final class Main {
         ContentProvider content = new ContentProvider(new MemoryContentStore());
         content.enable();
         context.addProvider(content);
+        SchemaRegistryProvider schemaRegistry = new SchemaRegistryProvider();
+        schemaRegistry.enable();
+        context.addProvider(schemaRegistry);
 
         // Plugin discovery — scan $ZINCFLOW_PLUGINS_DIR (default ./plugins)
         // for third-party processor/provider jars before loading the flow,
