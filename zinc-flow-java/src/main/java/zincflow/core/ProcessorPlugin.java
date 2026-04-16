@@ -35,10 +35,11 @@ public interface ProcessorPlugin {
     default java.util.List<String> configKeys() { return java.util.List.of(); }
 
     /// Result relationships this processor may produce
-    /// (e.g. "success", "failure", "matched"). Used by the UI
-    /// connection editor to show the outbound ports.
+    /// (e.g. {@link Relationships#SUCCESS}, {@link Relationships#FAILURE},
+    /// {@link Relationships#MATCHED}). Used by the UI connection editor
+    /// to show the outbound ports.
     default java.util.List<String> relationships() {
-        return java.util.List.of("success", "failure");
+        return java.util.List.of(Relationships.SUCCESS, Relationships.FAILURE);
     }
 
     Processor create(Map<String, String> config, ProcessorContext context);

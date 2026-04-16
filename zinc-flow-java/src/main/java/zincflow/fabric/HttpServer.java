@@ -170,6 +170,10 @@ public final class HttpServer {
             app = null;
             boundPort = -1;
         }
+        // Release plugin classloaders (both the reload-replaced current
+        // one and the startup-supplied one). Safe if either is null.
+        if (currentPlugins != null) { currentPlugins.close(); currentPlugins = null; }
+        plugins.close();
     }
 
     // --- Handlers ---
@@ -817,7 +821,12 @@ public final class HttpServer {
             writeError(ctx, 501, "pipeline has no registry wired — plugin reload unavailable");
             return;
         }
+        // Release the previous URLClassLoader before replacing it — if
+        // we leak these, repeated reloads pin every plugin jar open
+        // and exhaust file handles over time.
+        PluginLoader.Summary prior = currentPlugins;
         currentPlugins = PluginLoader.loadFromDirectory(pluginsDir, pipeline.registry(), pipeline.context());
+        if (prior != null) prior.close();
         log.info("reloaded plugins from {} — {} loaded", pluginsDir, currentPlugins.totalLoaded());
         ctx.contentType("application/json")
            .result(json.writeValueAsBytes(PluginLoader.toJson(currentPlugins)));

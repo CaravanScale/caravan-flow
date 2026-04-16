@@ -49,12 +49,18 @@ public final class PluginLoader {
 
     private PluginLoader() {}
 
+    /// {@code classLoader} is the {@link URLClassLoader} spawned for the
+    /// plugin jars — retained on the summary so the owner (typically
+    /// {@link HttpServer}) can close it before replacing it on the next
+    /// {@code POST /api/plugins/reload}. Null when no classloader was
+    /// created (empty directory, classpath-only scan).
     public record Summary(
             List<String> processorTypes,
             List<String> providerNames,
             List<String> sourceTypes,
             Path directory,
-            List<Path> jars) {
+            List<Path> jars,
+            java.net.URLClassLoader classLoader) implements AutoCloseable {
         public Summary {
             processorTypes = List.copyOf(processorTypes);
             providerNames = List.copyOf(providerNames);
@@ -63,11 +69,22 @@ public final class PluginLoader {
         }
 
         public static Summary empty() {
-            return new Summary(List.of(), List.of(), List.of(), null, List.of());
+            return new Summary(List.of(), List.of(), List.of(), null, List.of(), null);
         }
 
         public int totalLoaded() {
             return processorTypes.size() + providerNames.size() + sourceTypes.size();
+        }
+
+        /// Release the {@link URLClassLoader} — best effort. Safe to call
+        /// on an {@link #empty()} summary.
+        @Override
+        public void close() {
+            if (classLoader == null) return;
+            try { classLoader.close(); }
+            catch (IOException ex) {
+                log.warn("failed to close plugin classloader: {}", ex.toString());
+            }
         }
     }
 
@@ -84,7 +101,7 @@ public final class PluginLoader {
         List<String> providers = loadProvidersLegacy(cl, context);
         List<String> processors = loadProcessors(cl, registry);
         List<String> sources = sourceRegistry == null ? List.of() : loadSources(cl, sourceRegistry);
-        return new Summary(processors, providers, sources, null, List.of());
+        return new Summary(processors, providers, sources, null, List.of(), null);
     }
 
     /// Scan {@code dir} for {@code *.jar} files, stitch them into a
@@ -98,7 +115,7 @@ public final class PluginLoader {
     public static Summary loadFromDirectory(Path dir, Registry registry, ProcessorContext context,
                                             SourceRegistry sourceRegistry) {
         if (dir == null || !Files.isDirectory(dir)) {
-            return new Summary(List.of(), List.of(), List.of(), dir, List.of());
+            return new Summary(List.of(), List.of(), List.of(), dir, List.of(), null);
         }
         List<Path> jars = new ArrayList<>();
         try (Stream<Path> entries = Files.list(dir)) {
@@ -107,10 +124,10 @@ public final class PluginLoader {
                    .forEach(jars::add);
         } catch (IOException ex) {
             log.warn("plugin directory scan failed: {} — {}", dir, ex.toString());
-            return new Summary(List.of(), List.of(), List.of(), dir, List.of());
+            return new Summary(List.of(), List.of(), List.of(), dir, List.of(), null);
         }
         if (jars.isEmpty()) {
-            return new Summary(List.of(), List.of(), List.of(), dir, List.of());
+            return new Summary(List.of(), List.of(), List.of(), dir, List.of(), null);
         }
         URL[] urls = new URL[jars.size()];
         for (int i = 0; i < jars.size(); i++) {
@@ -129,7 +146,7 @@ public final class PluginLoader {
         List<String> sources = sourceRegistry == null ? List.of() : loadSources(cl, sourceRegistry);
         log.info("loaded {} plugin(s) from {} — providers: {}, processors: {}, sources: {}",
                 providers.size() + processors.size() + sources.size(), dir, providers, processors, sources);
-        return new Summary(processors, providers, sources, dir, jars);
+        return new Summary(processors, providers, sources, dir, jars, cl);
     }
 
     /// Scan {@code cl} for {@link ProviderPlugin} services and register

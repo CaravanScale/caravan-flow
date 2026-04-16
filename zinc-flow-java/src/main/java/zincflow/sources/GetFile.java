@@ -3,6 +3,7 @@ package zincflow.sources;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import zincflow.core.FlowFile;
+import zincflow.core.FlowFileAttributes;
 import zincflow.core.PollingSource;
 import zincflow.core.Source;
 import zincflow.core.SourcePlugin;
@@ -125,14 +126,14 @@ public final class GetFile extends PollingSource {
     private FlowFile addAttrs(FlowFile base, Path file, long rawSize,
                               boolean v3, int frameIndex, int frameCount) {
         Map<String, String> attrs = new LinkedHashMap<>(base.attributes());
-        attrs.put("filename", file.getFileName().toString());
-        attrs.put("path", file.toAbsolutePath().toString());
-        attrs.put("source", name());
+        attrs.put(FlowFileAttributes.FILENAME, file.getFileName().toString());
+        attrs.put(FlowFileAttributes.PATH, file.toAbsolutePath().toString());
+        attrs.put(FlowFileAttributes.SOURCE, name());
         if (v3) {
-            attrs.put("v3.frame.index", Integer.toString(frameIndex));
-            attrs.put("v3.frame.count", Integer.toString(frameCount));
+            attrs.put(FlowFileAttributes.V3_FRAME_INDEX, Integer.toString(frameIndex));
+            attrs.put(FlowFileAttributes.V3_FRAME_COUNT, Integer.toString(frameCount));
         } else {
-            attrs.put("size", Long.toString(rawSize));
+            attrs.put(FlowFileAttributes.SIZE, Long.toString(rawSize));
         }
         return new FlowFile(base.id(), attrs, base.content(), base.timestampMillis(), base.hopCount());
     }

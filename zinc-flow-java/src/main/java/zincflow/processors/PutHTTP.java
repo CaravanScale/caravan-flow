@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 import zincflow.core.ContentResolver;
 import zincflow.core.ContentStore;
 import zincflow.core.FlowFile;
+import zincflow.core.FlowFileAttributes;
 import zincflow.core.Processor;
 import zincflow.core.ProcessorResult;
 import zincflow.fabric.FlowFileV3;
@@ -84,8 +85,8 @@ public final class PutHTTP implements Processor {
             HttpResponse<byte[]> response = client.send(request, BodyHandlers.ofByteArray());
             int status = response.statusCode();
             FlowFile withMeta = ff
-                    .withAttribute("puthttp.status", String.valueOf(status))
-                    .withAttribute("puthttp.response.size", String.valueOf(response.body().length));
+                    .withAttribute(FlowFileAttributes.PUTHTTP_STATUS, String.valueOf(status))
+                    .withAttribute(FlowFileAttributes.PUTHTTP_RESPONSE_SIZE, String.valueOf(response.body().length));
             if (status >= 200 && status < 300) {
                 return ProcessorResult.single(withMeta);
             }

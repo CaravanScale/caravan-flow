@@ -7,6 +7,7 @@ import zincflow.core.FlowFile;
 import zincflow.core.Processor;
 import zincflow.core.ProcessorContext;
 import zincflow.core.ProcessorResult;
+import zincflow.core.Relationships;
 import zincflow.core.Source;
 import zincflow.providers.ProvenanceProvider;
 
@@ -86,6 +87,16 @@ public final class Pipeline {
 
     public ProvenanceProvider provenance() {
         return context.getProviderAs(ProvenanceProvider.NAME, ProvenanceProvider.class);
+    }
+
+    /// Non-null provenance for the drain hot path — falls back to the
+    /// shared disabled singleton when no provenance is wired, so the
+    /// inner loop can call {@code record(...)} unconditionally without
+    /// a per-event null check. {@code record} itself early-returns when
+    /// the provider is disabled.
+    private ProvenanceProvider provenanceOrNoop() {
+        ProvenanceProvider p = provenance();
+        return p != null ? p : ProvenanceProvider.DISABLED;
     }
 
     /// Record how a processor was constructed. Called by the Fabric
@@ -458,7 +469,7 @@ public final class Pipeline {
     }
 
     private void drain(PipelineGraph g, Deque<WorkItem> stack) {
-        ProvenanceProvider prov = provenance();
+        ProvenanceProvider prov = provenanceOrNoop();
         while (!stack.isEmpty()) {
             WorkItem item = stack.pop();
             FlowFile input = item.flowFile;
@@ -467,7 +478,7 @@ public final class Pipeline {
                 log.error("maxHops={} exceeded at processor={}, dropping {}",
                         maxHops, item.processor, input.stringId());
                 stats.recordFailed(item.processor);
-                if (prov != null) prov.record(input.id(), ProvenanceProvider.EventType.FAILED,
+                prov.record(input.id(), ProvenanceProvider.EventType.FAILED,
                         item.processor, "maxHops exceeded");
                 continue;
             }
@@ -476,14 +487,14 @@ public final class Pipeline {
                 log.error("unknown processor '{}' referenced by graph — dropping {}",
                         item.processor, input.stringId());
                 stats.recordFailed(item.processor);
-                if (prov != null) prov.record(input.id(), ProvenanceProvider.EventType.FAILED,
+                prov.record(input.id(), ProvenanceProvider.EventType.FAILED,
                         item.processor, "unknown processor");
                 continue;
             }
 
             // Skip disabled processors — drop the FlowFile silently.
             if (processorStates.getOrDefault(item.processor, ComponentState.ENABLED) != ComponentState.ENABLED) {
-                if (prov != null) prov.record(input.id(), ProvenanceProvider.EventType.DROPPED,
+                prov.record(input.id(), ProvenanceProvider.EventType.DROPPED,
                         item.processor, "processor disabled");
                 stats.recordDropped();
                 continue;
@@ -496,13 +507,13 @@ public final class Pipeline {
                 log.error("processor '{}' threw while handling {}: {}",
                         item.processor, input.stringId(), ex.toString(), ex);
                 stats.recordFailed(item.processor);
-                if (prov != null) prov.record(input.id(), ProvenanceProvider.EventType.FAILED,
+                prov.record(input.id(), ProvenanceProvider.EventType.FAILED,
                         item.processor, ex.getMessage());
                 dispatchFailure(g, stack, item.processor, input, ex.getMessage());
                 continue;
             }
             stats.recordProcessed(item.processor);
-            if (prov != null) prov.record(input.id(), ProvenanceProvider.EventType.PROCESSED,
+            prov.record(input.id(), ProvenanceProvider.EventType.PROCESSED,
                     item.processor, "");
             dispatch(g, stack, item.processor, result);
         }
@@ -512,10 +523,10 @@ public final class Pipeline {
                           String from, ProcessorResult result) {
         switch (result) {
             case ProcessorResult.Single(var ff) ->
-                fanOut(g, stack, from, "success", List.of(ff.bumpHop()));
+                fanOut(g, stack, from, Relationships.SUCCESS, List.of(ff.bumpHop()));
             case ProcessorResult.Multiple(var ffs) -> {
                 for (FlowFile out : ffs) {
-                    fanOut(g, stack, from, "success", List.of(out.bumpHop()));
+                    fanOut(g, stack, from, Relationships.SUCCESS, List.of(out.bumpHop()));
                 }
             }
             case ProcessorResult.Routed(var route, var ff) ->
@@ -528,14 +539,14 @@ public final class Pipeline {
 
     private void dispatchFailure(PipelineGraph g, Deque<WorkItem> stack,
                                  String from, FlowFile ff, String reason) {
-        List<String> failureTargets = g.next(from, "failure");
+        List<String> failureTargets = g.next(from, Relationships.FAILURE);
         if (failureTargets.isEmpty()) {
             log.warn("failure at '{}' with no 'failure' connections — dropping {} (reason: {})",
                     from, ff.stringId(), reason);
             stats.recordDropped();
             return;
         }
-        fanOut(g, stack, from, "failure", List.of(ff.bumpHop()));
+        fanOut(g, stack, from, Relationships.FAILURE, List.of(ff.bumpHop()));
     }
 
     private void fanOut(PipelineGraph g, Deque<WorkItem> stack,

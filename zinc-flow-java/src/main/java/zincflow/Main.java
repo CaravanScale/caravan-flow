@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 import zincflow.core.MemoryContentStore;
 import zincflow.core.Processor;
 import zincflow.core.ProcessorContext;
+import zincflow.core.Relationships;
 import zincflow.fabric.ConfigLoader;
 import zincflow.fabric.HttpServer;
 import zincflow.fabric.Metrics;
@@ -37,6 +38,22 @@ import java.util.Map;
 public final class Main {
 
     private static final Logger log = LoggerFactory.getLogger(Main.class);
+
+    // --- Config key paths (relative to the effective layered map) -------
+    private static final String CFG_UI           = "ui";
+    private static final String CFG_UI_REGISTER  = "register_to";
+    private static final String CFG_VC           = "vc";
+    private static final String CFG_VC_ENABLED   = "enabled";
+    private static final String CFG_VC_REPO      = "repo";
+    private static final String CFG_VC_GIT       = "git";
+    private static final String CFG_VC_REMOTE    = "remote";
+    private static final String CFG_VC_BRANCH    = "branch";
+
+    // --- Runtime env / system properties --------------------------------
+    private static final String ENV_PLUGINS_DIR  = "ZINCFLOW_PLUGINS_DIR";
+    private static final String PROP_PLUGINS_DIR = "zincflow.pluginsDir";
+    private static final String PROP_PORT        = "zincflow.port";
+    private static final String DEFAULT_PORT     = "9092";
 
     public static void main(String[] args) throws IOException {
         Path configPath = resolveConfigPath(args);
@@ -104,7 +121,7 @@ public final class Main {
         String uiTarget = registerTarget(effective);
         if (uiTarget != null) {
             UIRegistrationProvider reg = new UIRegistrationProvider(uiTarget,
-                    () -> identity.toMap(Integer.parseInt(System.getProperty("zincflow.port", "9092"))));
+                    () -> identity.toMap(resolvePort()));
             context.addProvider(reg);
             reg.enable();
             log.info("self-registering with UI at {}", uiTarget);
@@ -129,40 +146,64 @@ public final class Main {
             log.info("source {} ({}) started", source.name(), source.sourceType());
         }
 
-        int port = Integer.parseInt(System.getProperty("zincflow.port", "9092"));
+        int port = resolvePort();
         HttpServer server = new HttpServer(pipeline, loader, configPath, plugins, pluginsDir, identity).start(port);
         log.info("zinc-flow-java up — node {} at http://localhost:{} (hostname {})",
                 identity.nodeId(), server.port(), identity.hostname());
         log.info("dashboard: GET http://localhost:{}/dashboard    metrics: /metrics", server.port());
+
+        registerShutdownHook(server, pipeline, context);
+    }
+
+    /// Stop sources, drop the HTTP socket, and quiesce providers on
+    /// SIGTERM. Runs on a dedicated platform thread — {@code shutdown()}
+    /// implementations must be fast and non-blocking (they already are).
+    private static void registerShutdownHook(HttpServer server, Pipeline pipeline, ProcessorContext context) {
+        Runtime.getRuntime().addShutdownHook(Thread.ofPlatform().name("zinc-flow-shutdown").unstarted(() -> {
+            log.info("shutdown signal received — stopping worker");
+            for (var source : pipeline.sources().values()) {
+                try { source.stop(); }
+                catch (RuntimeException ex) { log.warn("source {} stop failed: {}", source.name(), ex.toString()); }
+            }
+            try { server.stop(); }
+            catch (RuntimeException ex) { log.warn("server stop failed: {}", ex.toString()); }
+            try { context.shutdownAll(); }
+            catch (RuntimeException ex) { log.warn("provider shutdown failed: {}", ex.toString()); }
+            log.info("worker stopped cleanly");
+        }));
     }
 
     @SuppressWarnings("unchecked")
     private static String registerTarget(Map<String, Object> effective) {
-        Object ui = effective.get("ui");
+        Object ui = effective.get(CFG_UI);
         if (!(ui instanceof Map<?, ?> uiMap)) return null;
-        Object target = ((Map<String, Object>) uiMap).get("register_to");
+        Object target = ((Map<String, Object>) uiMap).get(CFG_UI_REGISTER);
         return target == null ? null : target.toString();
     }
 
     @SuppressWarnings("unchecked")
     private static boolean isVcEnabled(Map<String, Object> effective) {
-        Object vc = effective.get("vc");
+        Object vc = effective.get(CFG_VC);
         if (!(vc instanceof Map<?, ?> vcMap)) return false;
-        Object enabled = ((Map<String, Object>) vcMap).get("enabled");
+        Object enabled = ((Map<String, Object>) vcMap).get(CFG_VC_ENABLED);
         return enabled instanceof Boolean b ? b : "true".equalsIgnoreCase(String.valueOf(enabled));
     }
 
     @SuppressWarnings("unchecked")
     private static VersionControlProvider buildVcProvider(Map<String, Object> effective, Path configPath) {
-        Object vc = effective.get("vc");
+        Object vc = effective.get(CFG_VC);
         Map<String, Object> vcMap = vc instanceof Map<?, ?> m ? (Map<String, Object>) m : Map.of();
-        Path repo = vcMap.containsKey("repo")
-                ? Path.of(String.valueOf(vcMap.get("repo")))
+        Path repo = vcMap.containsKey(CFG_VC_REPO)
+                ? Path.of(String.valueOf(vcMap.get(CFG_VC_REPO)))
                 : (configPath == null ? Path.of(".") : configPath.toAbsolutePath().getParent());
-        String gitBinary = vcMap.containsKey("git") ? String.valueOf(vcMap.get("git")) : "git";
-        String remote = vcMap.containsKey("remote") ? String.valueOf(vcMap.get("remote")) : "origin";
-        String branch = vcMap.containsKey("branch") ? String.valueOf(vcMap.get("branch")) : "main";
+        String gitBinary = vcMap.containsKey(CFG_VC_GIT) ? String.valueOf(vcMap.get(CFG_VC_GIT)) : "git";
+        String remote = vcMap.containsKey(CFG_VC_REMOTE) ? String.valueOf(vcMap.get(CFG_VC_REMOTE)) : "origin";
+        String branch = vcMap.containsKey(CFG_VC_BRANCH) ? String.valueOf(vcMap.get(CFG_VC_BRANCH)) : "main";
         return new VersionControlProvider(repo, gitBinary, remote, branch);
+    }
+
+    private static int resolvePort() {
+        return Integer.parseInt(System.getProperty(PROP_PORT, DEFAULT_PORT));
     }
 
     private static Path resolveConfigPath(String[] args) {
@@ -177,9 +218,9 @@ public final class Main {
     /// in that case so the CLI path doesn't hard-fail on a fresh
     /// checkout that hasn't shipped plugins yet.
     private static Path resolvePluginsDir() {
-        String envDir = System.getenv("ZINCFLOW_PLUGINS_DIR");
+        String envDir = System.getenv(ENV_PLUGINS_DIR);
         if (envDir != null && !envDir.isEmpty()) return Path.of(envDir);
-        String propDir = System.getProperty("zincflow.pluginsDir");
+        String propDir = System.getProperty(PROP_PLUGINS_DIR);
         if (propDir != null && !propDir.isEmpty()) return Path.of(propDir);
         return Path.of("plugins");
     }
@@ -198,12 +239,12 @@ public final class Main {
                 "elevate", elevate,
                 "tail",    tail);
         Map<String, Map<String, List<String>>> connections = Map.of(
-                "ingress", Map.of("success",   List.of("router")),
+                "ingress", Map.of(Relationships.SUCCESS,   List.of("router")),
                 "router",  Map.of(
-                        "high",      List.of("elevate"),
-                        "low",       List.of("tail"),
-                        "unmatched", List.of("tail")),
-                "elevate", Map.of("success",   List.of("tail")));
+                        "high",                   List.of("elevate"),
+                        "low",                    List.of("tail"),
+                        Relationships.UNMATCHED,  List.of("tail")),
+                "elevate", Map.of(Relationships.SUCCESS,   List.of("tail")));
         return new PipelineGraph(processors, connections, List.of("ingress"));
     }
 }

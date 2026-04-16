@@ -3,6 +3,7 @@ package zincflow.processors;
 import zincflow.core.FlowFile;
 import zincflow.core.Processor;
 import zincflow.core.ProcessorResult;
+import zincflow.core.Relationships;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -40,7 +41,7 @@ public final class RouteOnAttribute implements Processor {
                 return ProcessorResult.routed(rule.name(), ff);
             }
         }
-        return ProcessorResult.routed("unmatched", ff);
+        return ProcessorResult.routed(Relationships.UNMATCHED, ff);
     }
 
     public List<Rule> rules() { return rules; }

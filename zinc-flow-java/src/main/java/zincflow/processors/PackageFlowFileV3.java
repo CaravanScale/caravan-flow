@@ -3,6 +3,7 @@ package zincflow.processors;
 import zincflow.core.ContentResolver;
 import zincflow.core.ContentStore;
 import zincflow.core.FlowFile;
+import zincflow.core.FlowFileAttributes;
 import zincflow.core.Processor;
 import zincflow.core.ProcessorResult;
 import zincflow.core.RawContent;
@@ -37,7 +38,7 @@ public final class PackageFlowFileV3 implements Processor {
         }
         byte[] packed = FlowFileV3.pack(ff, resolved.bytes());
         FlowFile out = ff.withContent(new RawContent(packed))
-                .withAttribute("http.content.type", "application/flowfile-v3")
+                .withAttribute(FlowFileAttributes.HTTP_CONTENT_TYPE, "application/flowfile-v3")
                 .withAttribute("v3.packaged", "true");
         return ProcessorResult.single(out);
     }

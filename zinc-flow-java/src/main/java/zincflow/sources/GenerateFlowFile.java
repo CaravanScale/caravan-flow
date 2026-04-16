@@ -1,6 +1,7 @@
 package zincflow.sources;
 
 import zincflow.core.FlowFile;
+import zincflow.core.FlowFileAttributes;
 import zincflow.core.PollingSource;
 import zincflow.core.Source;
 import zincflow.core.SourcePlugin;
@@ -62,7 +63,7 @@ public final class GenerateFlowFile extends PollingSource {
         List<FlowFile> out = new ArrayList<>(batchSize);
         for (int i = 0; i < batchSize; i++) {
             Map<String, String> attrs = new LinkedHashMap<>(baseAttributes);
-            attrs.put("generate.index", Long.toString(index.incrementAndGet()));
+            attrs.put(FlowFileAttributes.GENERATE_INDEX, Long.toString(index.incrementAndGet()));
             out.add(FlowFile.create(content, attrs));
         }
         return out;
@@ -99,9 +100,9 @@ public final class GenerateFlowFile extends PollingSource {
 
     private static Map<String, String> buildAttributes(String name, String contentType, String spec) {
         Map<String, String> out = new LinkedHashMap<>();
-        out.put("source", name);
+        out.put(FlowFileAttributes.SOURCE, name);
         if (contentType != null && !contentType.isEmpty()) {
-            out.put("http.content.type", contentType);
+            out.put(FlowFileAttributes.HTTP_CONTENT_TYPE, contentType);
         }
         if (spec == null || spec.isBlank()) return out;
         // "key:value;key:value" — permissive: ignore entries without a

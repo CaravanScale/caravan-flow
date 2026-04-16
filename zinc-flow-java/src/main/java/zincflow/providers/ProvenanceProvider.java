@@ -20,6 +20,12 @@ public final class ProvenanceProvider implements Provider {
     /// Default buffer size — matches the C# default.
     public static final int DEFAULT_CAPACITY = 100_000;
 
+    /// Shared no-op instance — {@code record(...)} early-returns because
+    /// the provider stays DISABLED. Useful as a null-object for callers
+    /// that want to call {@code record} unconditionally when no
+    /// provenance provider is wired.
+    public static final ProvenanceProvider DISABLED = new ProvenanceProvider(1);
+
     public enum EventType { CREATED, PROCESSED, ROUTED, DROPPED, FAILED }
 
     public record Event(

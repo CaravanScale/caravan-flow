@@ -8,6 +8,7 @@ import zincflow.core.FlowFile;
 import zincflow.core.Processor;
 import zincflow.core.ProcessorResult;
 import zincflow.core.RecordContent;
+import zincflow.core.Relationships;
 
 import java.util.List;
 import java.util.Map;
@@ -54,13 +55,13 @@ public final class QueryRecord implements Processor {
             Object result = compiled.read(rc.records(), CONFIG);
             List<Map<String, Object>> matches = normalise(result);
             if (matches.isEmpty()) {
-                return ProcessorResult.routed("unmatched", ff);
+                return ProcessorResult.routed(Relationships.UNMATCHED, ff);
             }
-            return ProcessorResult.routed("matched", ff.withContent(new RecordContent(matches)));
+            return ProcessorResult.routed(Relationships.MATCHED, ff.withContent(new RecordContent(matches)));
         } catch (PathNotFoundException ex) {
             // With SUPPRESS_EXCEPTIONS this usually becomes an empty result,
             // but some malformed paths still throw — treat as no match.
-            return ProcessorResult.routed("unmatched", ff);
+            return ProcessorResult.routed(Relationships.UNMATCHED, ff);
         } catch (RuntimeException ex) {
             return ProcessorResult.failure("QueryRecord: query failed — " + ex.getMessage(), ff);
         }

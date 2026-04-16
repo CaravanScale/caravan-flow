@@ -135,12 +135,17 @@ public final class VersionControlProvider implements Provider {
         Thread outReader = streamInto(proc.getInputStream(), out);
         Thread errReader = streamInto(proc.getErrorStream(), err);
         boolean done = proc.waitFor(15, TimeUnit.SECONDS);
+        if (!done) proc.destroyForcibly();
+        // Once the process exits (or is destroyed) the OS closes its
+        // stdout/stderr, so the drain threads see EOF and terminate
+        // promptly. Joining without a timeout guarantees both buffers
+        // are fully populated before we read them — a short timeout
+        // would risk returning truncated output under load.
+        outReader.join();
+        errReader.join();
         if (!done) {
-            proc.destroyForcibly();
             return new CommandResult(false, -1, out.toString(), "timeout");
         }
-        outReader.join(1000);
-        errReader.join(1000);
         int exit = proc.exitValue();
         boolean ok = exit == 0;
         if (!ok) log.warn("git {} failed (exit {}): {}", command, exit, err.toString().trim());

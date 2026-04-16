@@ -6,6 +6,7 @@ import zincflow.core.ClaimContent;
 import zincflow.core.ContentResolver;
 import zincflow.core.ContentStore;
 import zincflow.core.FlowFile;
+import zincflow.core.FlowFileAttributes;
 import zincflow.core.Processor;
 import zincflow.core.ProcessorResult;
 import zincflow.core.RawContent;
@@ -51,7 +52,7 @@ public final class PutFile implements Processor {
 
     @Override
     public ProcessorResult process(FlowFile ff) {
-        String name = ff.attributes().getOrDefault("filename", ff.stringId());
+        String name = ff.attributes().getOrDefault(FlowFileAttributes.FILENAME, ff.stringId());
         Path target = directory.resolve(name);
         try {
             Files.createDirectories(directory);
