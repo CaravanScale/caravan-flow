@@ -10,6 +10,9 @@ import java.util.Map;
 /// {@code getString/getInt/getBool} helpers; null-safe on missing keys.
 public final class ConfigProvider implements Provider {
 
+    public static final String NAME = "config";
+    public static final String TYPE = "ConfigProvider";
+
     private final Map<String, Object> config;
     private volatile ComponentState state = ComponentState.DISABLED;
 
@@ -17,8 +20,8 @@ public final class ConfigProvider implements Provider {
         this.config = config == null ? Map.of() : Map.copyOf(config);
     }
 
-    @Override public String name() { return "config"; }
-    @Override public String providerType() { return "config"; }
+    @Override public String name() { return NAME; }
+    @Override public String providerType() { return TYPE; }
     @Override public ComponentState state() { return state; }
     @Override public void enable() { state = ComponentState.ENABLED; }
     @Override public void disable(int drainTimeoutSeconds) { state = ComponentState.DISABLED; }
@@ -55,5 +58,11 @@ public final class ConfigProvider implements Provider {
         if (v instanceof Boolean b) return b;
         if (v == null) return defaultValue;
         return Boolean.parseBoolean(String.valueOf(v));
+    }
+
+    public static final class Plugin implements zincflow.core.ProviderPlugin {
+        @Override public String providerType() { return TYPE; }
+        @Override public String description() { return "Dot-path accessor over the layered config map."; }
+        @Override public Provider create(Map<String, Object> config) { return new ConfigProvider(config); }
     }
 }

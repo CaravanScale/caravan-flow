@@ -148,7 +148,7 @@ public final class HttpServer {
         // probes /api/schema-registry/subjects gets a clean 404 instead
         // of an endpoint that always returns an error.
         SchemaRegistryProvider schemaRegistry = pipeline.context()
-                .getProviderAs("schema_registry", SchemaRegistryProvider.class);
+                .getProviderAs(SchemaRegistryProvider.NAME, SchemaRegistryProvider.class);
         if (schemaRegistry != null) {
             new SchemaRegistryHandler(schemaRegistry).mapRoutes(app);
         }
@@ -223,7 +223,7 @@ public final class HttpServer {
             String name = entry.getKey();
             Map<String, Object> info = new LinkedHashMap<>();
             info.put("name", name);
-            info.put("type", pipeline.processorType(name));
+            info.put(ConfigLoader.TYPE_KEY, pipeline.processorType(name));
             info.put("state", pipeline.processorState(name).name());
             info.put("stats", perProcStats.getOrDefault(name, Map.of()));
             info.put("connections", graph.connections().getOrDefault(name, Map.of()));
@@ -394,10 +394,10 @@ public final class HttpServer {
         Map<String, Object> body = readJsonBody(ctx);
         if (body == null) { writeError(ctx, 400, "invalid json body"); return; }
         String name = str(body.get("name"));
-        String type = str(body.get("type"));
+        String type = str(body.get(ConfigLoader.TYPE_KEY));
         if (name.isEmpty() || type.isEmpty()) { writeError(ctx, 400, "name and type required"); return; }
 
-        Map<String, String> config = asStringMap(body.get("config"));
+        Map<String, String> config = asStringMap(body.get(ConfigLoader.CONFIG_KEY));
         List<String> requires = asStringList(body.get("requires"));
         Map<String, List<String>> connections = asConnections(body.get("connections"));
 
@@ -622,8 +622,8 @@ public final class HttpServer {
         String name = ctx.pathParam("name");
         Map<String, Object> body = readJsonBody(ctx);
         if (body == null) { writeError(ctx, 400, "invalid json body"); return; }
-        String type = body.get("type") == null ? null : str(body.get("type"));
-        Map<String, String> config = asStringMap(body.get("config"));
+        String type = body.get(ConfigLoader.TYPE_KEY) == null ? null : str(body.get(ConfigLoader.TYPE_KEY));
+        Map<String, String> config = asStringMap(body.get(ConfigLoader.CONFIG_KEY));
 
         Pipeline.EditResult r = pipeline.updateProcessorConfig(name, type, config);
         writeEditResult(ctx, r, Map.of("status", "updated", "name", name));

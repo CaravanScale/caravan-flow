@@ -197,12 +197,12 @@ public final class Registry {
     /// processors that also accept {@link zincflow.core.ClaimContent}
     /// do — they use it to resolve claims back to bytes.
     private static ContentStore storeFrom(ProcessorContext ctx) {
-        ContentProvider cp = ctx.getProviderAs(ContentProvider.DEFAULT_NAME, ContentProvider.class);
+        ContentProvider cp = ctx.getProviderAs(ContentProvider.NAME, ContentProvider.class);
         return cp == null ? null : cp.store();
     }
 
     private static LoggingProvider loggerFrom(ProcessorContext ctx) {
-        return ctx.getProviderAs("logging", LoggingProvider.class);
+        return ctx.getProviderAs(LoggingProvider.NAME, LoggingProvider.class);
     }
 
     private void registerBuiltins() {

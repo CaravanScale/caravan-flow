@@ -37,6 +37,8 @@ public final class UIRegistrationProvider implements Provider {
 
     private static final Logger log = LoggerFactory.getLogger(UIRegistrationProvider.class);
 
+    public static final String NAME = "ui_registration";
+    public static final String TYPE = "UIRegistrationProvider";
     public static final long DEFAULT_HEARTBEAT_SECONDS = 30;
 
     private final String targetUrl;
@@ -72,8 +74,8 @@ public final class UIRegistrationProvider implements Provider {
         this.http = http;
     }
 
-    @Override public String name() { return "ui_registration"; }
-    @Override public String providerType() { return "ui_registration"; }
+    @Override public String name() { return NAME; }
+    @Override public String providerType() { return TYPE; }
     @Override public ComponentState state() { return state; }
 
     @Override

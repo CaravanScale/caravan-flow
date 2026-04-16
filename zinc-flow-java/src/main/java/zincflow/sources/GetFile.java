@@ -46,6 +46,7 @@ public final class GetFile extends PollingSource {
 
     private static final Logger log = LoggerFactory.getLogger(GetFile.class);
 
+    public static final String NAME = "file";
     public static final String TYPE = "GetFile";
     public static final String PROCESSED_DIR = ".processed";
 

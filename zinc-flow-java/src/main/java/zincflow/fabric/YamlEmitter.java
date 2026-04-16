@@ -35,11 +35,11 @@ public final class YamlEmitter {
         for (String name : graph.processors().keySet()) {
             ConfigLoader.ProcessorSpec spec = specs.get(name);
             Map<String, Object> entry = new LinkedHashMap<>();
-            entry.put("type", spec == null
+            entry.put(ConfigLoader.TYPE_KEY, spec == null
                     ? graph.processors().get(name).getClass().getSimpleName()
                     : spec.type());
             if (spec != null && !spec.config().isEmpty()) {
-                entry.put("config", new LinkedHashMap<>(spec.config()));
+                entry.put(ConfigLoader.CONFIG_KEY, new LinkedHashMap<>(spec.config()));
             }
             procs.put(name, entry);
         }

@@ -13,6 +13,9 @@ import java.util.Map;
 /// matches zinc-flow-csharp's "turn off chatty logging in prod" model.
 public final class LoggingProvider implements Provider {
 
+    public static final String NAME = "logging";
+    public static final String TYPE = "LoggingProvider";
+
     private final Logger rootLogger;
     private volatile ComponentState state = ComponentState.DISABLED;
 
@@ -30,8 +33,8 @@ public final class LoggingProvider implements Provider {
         return p;
     }
 
-    @Override public String name() { return "logging"; }
-    @Override public String providerType() { return "logging"; }
+    @Override public String name() { return NAME; }
+    @Override public String providerType() { return TYPE; }
     @Override public ComponentState state() { return state; }
     @Override public void enable() { state = ComponentState.ENABLED; }
     @Override public void disable(int drainTimeoutSeconds) { state = ComponentState.DISABLED; }
@@ -56,5 +59,11 @@ public final class LoggingProvider implements Provider {
     public void error(String processor, String msg, Throwable cause) {
         if (!isEnabled()) return;
         rootLogger.error("proc={} msg={}", processor, msg, cause);
+    }
+
+    public static final class Plugin implements zincflow.core.ProviderPlugin {
+        @Override public String providerType() { return TYPE; }
+        @Override public String description() { return "Structured logging facade over slf4j."; }
+        @Override public Provider create(Map<String, Object> config) { return new LoggingProvider(); }
     }
 }

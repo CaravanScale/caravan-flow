@@ -40,6 +40,7 @@ public final class VersionControlProvider implements Provider {
     private static final Logger log = LoggerFactory.getLogger(VersionControlProvider.class);
 
     public static final String NAME = "version_control";
+    public static final String TYPE = "VersionControlProvider";
 
     public record CommandResult(boolean ok, int exitCode, String stdout, String stderr) {
         public CommandResult {
@@ -65,7 +66,7 @@ public final class VersionControlProvider implements Provider {
     }
 
     @Override public String name() { return NAME; }
-    @Override public String providerType() { return "version_control"; }
+    @Override public String providerType() { return TYPE; }
     @Override public ComponentState state() { return state; }
     @Override public void enable() { state = ComponentState.ENABLED; }
     @Override public void disable(int drainTimeoutSeconds) { state = ComponentState.DISABLED; }

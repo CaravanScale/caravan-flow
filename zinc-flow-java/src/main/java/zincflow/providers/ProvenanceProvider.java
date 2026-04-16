@@ -15,6 +15,8 @@ import java.util.List;
 /// Mirrors zinc-flow-csharp's ProvenanceProvider (Core/Providers.cs).
 public final class ProvenanceProvider implements Provider {
 
+    public static final String NAME = "provenance";
+    public static final String TYPE = "ProvenanceProvider";
     /// Default buffer size — matches the C# default.
     public static final int DEFAULT_CAPACITY = 100_000;
 
@@ -46,8 +48,8 @@ public final class ProvenanceProvider implements Provider {
         this.buffer = new Event[capacity];
     }
 
-    @Override public String name() { return "provenance"; }
-    @Override public String providerType() { return "provenance"; }
+    @Override public String name() { return NAME; }
+    @Override public String providerType() { return TYPE; }
     @Override public ComponentState state() { return state; }
     @Override public void enable() { state = ComponentState.ENABLED; }
     @Override public void disable(int drainTimeoutSeconds) { state = ComponentState.DISABLED; }
@@ -109,5 +111,16 @@ public final class ProvenanceProvider implements Provider {
             }
         }
         return out;
+    }
+
+    public static final class Plugin implements zincflow.core.ProviderPlugin {
+        @Override public String providerType() { return TYPE; }
+        @Override public String description() { return "Bounded ring buffer of FlowFile lifecycle events."; }
+        @Override public java.util.List<String> configKeys() { return java.util.List.of("buffer"); }
+        @Override public Provider create(java.util.Map<String, Object> config) {
+            Object buf = config.get("buffer");
+            int capacity = buf instanceof Number n ? n.intValue() : DEFAULT_CAPACITY;
+            return new ProvenanceProvider(capacity);
+        }
     }
 }

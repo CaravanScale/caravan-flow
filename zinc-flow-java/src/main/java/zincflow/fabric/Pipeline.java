@@ -85,7 +85,7 @@ public final class Pipeline {
     public Registry registry() { return registry; }
 
     public ProvenanceProvider provenance() {
-        return context.getProviderAs("provenance", ProvenanceProvider.class);
+        return context.getProviderAs(ProvenanceProvider.NAME, ProvenanceProvider.class);
     }
 
     /// Record how a processor was constructed. Called by the Fabric

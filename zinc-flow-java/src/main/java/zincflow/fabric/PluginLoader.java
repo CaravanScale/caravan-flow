@@ -81,7 +81,7 @@ public final class PluginLoader {
 
     public static Summary load(ClassLoader cl, Registry registry, ProcessorContext context,
                                SourceRegistry sourceRegistry) {
-        List<String> providers = loadProviders(cl, context);
+        List<String> providers = loadProvidersLegacy(cl, context);
         List<String> processors = loadProcessors(cl, registry);
         List<String> sources = sourceRegistry == null ? List.of() : loadSources(cl, sourceRegistry);
         return new Summary(processors, providers, sources, null, List.of());
@@ -124,7 +124,7 @@ public final class PluginLoader {
             }
         }
         URLClassLoader cl = new URLClassLoader(stripNulls(urls), PluginLoader.class.getClassLoader());
-        List<String> providers = loadProviders(cl, context);
+        List<String> providers = loadProvidersLegacy(cl, context);
         List<String> processors = loadProcessors(cl, registry);
         List<String> sources = sourceRegistry == null ? List.of() : loadSources(cl, sourceRegistry);
         log.info("loaded {} plugin(s) from {} — providers: {}, processors: {}, sources: {}",
@@ -132,18 +132,53 @@ public final class PluginLoader {
         return new Summary(processors, providers, sources, dir, jars);
     }
 
-    private static List<String> loadProviders(ClassLoader cl, ProcessorContext context) {
+    /// Scan {@code cl} for {@link ProviderPlugin} services and register
+    /// their factories with {@code registry}. Actual provider
+    /// instantiation is deferred to config loading — the registry maps
+    /// {@code type: LoggingProvider@1.0.0} to a factory the same way
+    /// processors and sources do.
+    public static List<String> loadProviders(ClassLoader cl, ProviderRegistry registry) {
+        List<String> types = new ArrayList<>();
+        for (ProviderPlugin plugin : ServiceLoader.load(ProviderPlugin.class, cl)) {
+            String type = plugin.providerType();
+            if (type == null || type.isEmpty()) {
+                log.warn("ProviderPlugin {} reported blank providerType() — skipping", plugin.getClass().getName());
+                continue;
+            }
+            String version = plugin.version() == null || plugin.version().isEmpty()
+                    ? TypeRefs.DEFAULT_VERSION : plugin.version();
+            ProviderRegistry.TypeInfo info = new ProviderRegistry.TypeInfo(
+                    type, version,
+                    plugin.description() == null ? "" : plugin.description(),
+                    plugin.configKeys() == null ? List.of() : plugin.configKeys());
+            registry.register(info, plugin::create);
+            types.add(type + "@" + version);
+            log.info("plugin provider registered: {}@{} ({})",
+                    type, version, plugin.getClass().getName());
+        }
+        Collections.sort(types);
+        return types;
+    }
+
+    /// Legacy path — drop a plugin directly into a {@link ProcessorContext}
+    /// without going through a registry. Used when config.yaml has no
+    /// {@code providers:} block and the caller wants everything pulled
+    /// in with default config.
+    private static List<String> loadProvidersLegacy(ClassLoader cl, ProcessorContext context) {
         List<String> names = new ArrayList<>();
         for (ProviderPlugin plugin : ServiceLoader.load(ProviderPlugin.class, cl)) {
             try {
-                Provider p = plugin.create();
-                if (p == null) {
-                    log.warn("ProviderPlugin {} returned null from create()", plugin.getClass().getName());
-                    continue;
-                }
+                Provider p = plugin.create(Map.of());
+                if (p == null) continue;
+                // Skip if the bootstrap already wired a provider under
+                // this name — Main instantiates a default set before
+                // scanning plugins, and we don't want a built-in
+                // ServiceLoader entry (from the main jar itself) to
+                // overwrite the instance that's already enabled.
+                if (context.getProvider(p.name()) != null) continue;
                 context.addProvider(p);
+                p.enable();
                 names.add(p.name());
-                log.info("plugin provider registered: {} ({})", p.name(), plugin.getClass().getName());
             } catch (RuntimeException ex) {
                 log.warn("ProviderPlugin {} threw on create: {}", plugin.getClass().getName(), ex.toString());
             }

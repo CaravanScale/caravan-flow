@@ -29,6 +29,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 /// having v1, v2, v3, the remaining versions stay v1 + v3.
 public final class SchemaRegistryProvider implements Provider {
 
+    public static final String NAME = "schema_registry";
+    public static final String TYPE = "SchemaRegistryProvider";
+
     /// Immutable record of a registered schema.
     public record Schema(int id, String subject, int version, String definition) {
         public Schema {
@@ -57,8 +60,8 @@ public final class SchemaRegistryProvider implements Provider {
     private final AtomicInteger nextId = new AtomicInteger();
     private volatile ComponentState state = ComponentState.DISABLED;
 
-    @Override public String name() { return "schema_registry"; }
-    @Override public String providerType() { return "schema_registry"; }
+    @Override public String name() { return NAME; }
+    @Override public String providerType() { return TYPE; }
     @Override public ComponentState state() { return state; }
     @Override public void enable() { state = ComponentState.ENABLED; }
     @Override public void disable(int drainTimeoutSeconds) { state = ComponentState.DISABLED; }
@@ -176,4 +179,10 @@ public final class SchemaRegistryProvider implements Provider {
     }
 
     public int size() { return nextId.get(); }
+
+    public static final class Plugin implements zincflow.core.ProviderPlugin {
+        @Override public String providerType() { return TYPE; }
+        @Override public String description() { return "Embedded Confluent-shape schema registry."; }
+        @Override public Provider create(Map<String, Object> config) { return new SchemaRegistryProvider(); }
+    }
 }

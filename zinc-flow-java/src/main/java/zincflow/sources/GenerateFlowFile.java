@@ -38,6 +38,7 @@ import java.util.concurrent.atomic.AtomicLong;
 /// Mirrors zinc-flow-csharp's GenerateFlowFile.
 public final class GenerateFlowFile extends PollingSource {
 
+    public static final String NAME = "generate";
     public static final String TYPE = "GenerateFlowFile";
 
     private final byte[] content;

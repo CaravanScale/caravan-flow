@@ -128,7 +128,8 @@ final class PluginLoaderTest {
     }
 
     public static final class FixtureProviderPlugin implements ProviderPlugin {
-        @Override public Provider create() { return new FixtureProvider(); }
+        @Override public String providerType() { return "fixture"; }
+        @Override public Provider create(Map<String, Object> config) { return new FixtureProvider(); }
     }
 
     public static final class DropInProcessor implements Processor {
@@ -153,7 +154,8 @@ final class PluginLoaderTest {
     }
 
     public static final class DropInProviderPlugin implements ProviderPlugin {
-        @Override public Provider create() { return new DropInProvider(); }
+        @Override public String providerType() { return "dropin"; }
+        @Override public Provider create(Map<String, Object> config) { return new DropInProvider(); }
     }
 
     /// Build a minimal jar at {@code jarPath} containing only the given

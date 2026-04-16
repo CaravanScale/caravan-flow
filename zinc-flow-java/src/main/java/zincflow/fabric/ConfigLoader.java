@@ -43,6 +43,12 @@ public final class ConfigLoader {
 
     private static final Logger log = LoggerFactory.getLogger(ConfigLoader.class);
 
+    /// Shared YAML keys for {@code {type, config}} blocks (processors,
+    /// sources, and — soon — providers). Also used by the admin HTTP
+    /// surface when it echoes the same shape back.
+    public static final String TYPE_KEY = "type";
+    public static final String CONFIG_KEY = "config";
+
     /// Recorded shape of a processor definition (type + config) from the
     /// last successful load. Keyed by processor name; consulted on the
     /// next load to decide which instances can be reused.
@@ -130,11 +136,11 @@ public final class ConfigLoader {
             if (!(entry.getValue() instanceof Map<?, ?> def)) {
                 throw new IllegalArgumentException("config: processor '" + name + "' must be a map");
             }
-            Object type = def.get("type");
+            Object type = def.get(TYPE_KEY);
             if (type == null) {
                 throw new IllegalArgumentException("config: processor '" + name + "' missing 'type'");
             }
-            Map<String, String> config = stringMap(def.get("config"));
+            Map<String, String> config = stringMap(def.get(CONFIG_KEY));
             ProcessorSpec spec = new ProcessorSpec(String.valueOf(type), config);
 
             // Reuse the prior processor instance when the spec is
@@ -251,11 +257,11 @@ public final class ConfigLoader {
                 throw new IllegalArgumentException(
                         "config: source '" + name + "' must be a map with 'type' + 'config'");
             }
-            Object typeRaw = def.get("type");
+            Object typeRaw = def.get(TYPE_KEY);
             if (typeRaw == null) {
                 throw new IllegalArgumentException("config: source '" + name + "' missing 'type'");
             }
-            Map<String, Object> sourceConfig = def.get("config") instanceof Map<?, ?> c
+            Map<String, Object> sourceConfig = def.get(CONFIG_KEY) instanceof Map<?, ?> c
                     ? stringKeyed(c)
                     : Map.of();
             Source source = sourceRegistry.create(String.valueOf(typeRaw), name, sourceConfig);
