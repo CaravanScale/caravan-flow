@@ -79,13 +79,16 @@ public final class UIRegistrationProvider implements Provider {
     @Override
     public synchronized void enable() {
         if (state == ComponentState.ENABLED) return;
-        scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread t = new Thread(r, "zinc-flow-ui-registration");
-            t.setDaemon(true);
-            return t;
-        });
-        // Fire once immediately, then every heartbeatSeconds.
-        heartbeat = scheduler.scheduleAtFixedRate(this::postOnce, 0, heartbeatSeconds, TimeUnit.SECONDS);
+        // Scheduler itself stays on a single platform daemon thread —
+        // ScheduledThreadPoolExecutor's timing relies on park/unpark and
+        // isn't virtual-thread friendly. Each tick's body runs on a
+        // fresh virtual thread, so an unresponsive UI (5s timeout) can't
+        // delay the next heartbeat.
+        scheduler = Executors.newSingleThreadScheduledExecutor(
+                Thread.ofPlatform().daemon().name("zinc-flow-ui-registration").factory());
+        heartbeat = scheduler.scheduleAtFixedRate(
+                () -> Thread.startVirtualThread(this::postOnce),
+                0, heartbeatSeconds, TimeUnit.SECONDS);
         state = ComponentState.ENABLED;
         log.info("ui registration enabled — target {}, heartbeat {}s", targetUrl, heartbeatSeconds);
     }

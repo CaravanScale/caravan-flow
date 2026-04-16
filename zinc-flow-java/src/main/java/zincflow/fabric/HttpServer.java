@@ -3,6 +3,7 @@ package zincflow.fabric;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.javalin.Javalin;
 import io.javalin.http.Context;
+import org.eclipse.jetty.util.thread.QueuedThreadPool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import zincflow.core.FlowFile;
@@ -21,6 +22,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Executors;
 
 /// HTTP surface for zinc-flow-java. Phase 3 adds:
 ///   * POST /             — ingest a FlowFile
@@ -44,7 +46,7 @@ public final class HttpServer {
     private final NodeIdentity identity;
     private final ObjectMapper json = new ObjectMapper();
     private Javalin app;
-    private int boundPort = -1;
+    private volatile int boundPort = -1;
 
     public HttpServer(Pipeline pipeline) {
         this(pipeline, null, null, null, null, null);
@@ -74,7 +76,20 @@ public final class HttpServer {
     }
 
     public HttpServer start(int port) {
-        app = Javalin.create(cfg -> { /* default config — no DI, no plugins */ })
+        app = Javalin.create(cfg -> {
+                    // Virtual-thread handoff for HTTP requests. Jetty's
+                    // QueuedThreadPool keeps a small platform-thread pool
+                    // for accept/select; actual handler work runs on
+                    // virtual threads, so blocking I/O inside a processor
+                    // (HTTP calls, disk, DB) no longer ties up an OS
+                    // thread. Lets a single worker pod fan out to
+                    // thousands of concurrent ingests. K8s still scales
+                    // pods horizontally; virtual threads scale within.
+                    QueuedThreadPool qtp = new QueuedThreadPool();
+                    qtp.setName("zinc-flow-jetty");
+                    qtp.setVirtualThreadsExecutor(Executors.newVirtualThreadPerTaskExecutor());
+                    cfg.jetty.threadPool = qtp;
+                })
                 // GET / serves the dashboard when the static file is on the
                 // classpath. POST / is ingest. Distinguishing by method is a
                 // zincflow-isms since the original C# service followed the
@@ -777,7 +792,7 @@ public final class HttpServer {
 
     // --- Plugins ---
 
-    private PluginLoader.Summary currentPlugins = null;
+    private volatile PluginLoader.Summary currentPlugins = null;
 
     private PluginLoader.Summary pluginSummary() {
         return currentPlugins != null ? currentPlugins : plugins;

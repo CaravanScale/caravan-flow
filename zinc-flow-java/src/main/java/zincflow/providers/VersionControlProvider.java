@@ -147,15 +147,16 @@ public final class VersionControlProvider implements Provider {
     }
 
     private static Thread streamInto(java.io.InputStream in, StringBuilder sink) {
-        Thread t = new Thread(() -> {
+        // Virtual thread — drains an external process's stdout/stderr.
+        // Blocking reads are a textbook fit for Loom and this pattern
+        // fires twice per git invocation, so avoiding platform-thread
+        // overhead matters under churn.
+        return Thread.ofVirtual().name("zinc-flow-git-stream").start(() -> {
             try (var reader = new java.io.BufferedReader(new java.io.InputStreamReader(in))) {
                 String line;
                 while ((line = reader.readLine()) != null) sink.append(line).append('\n');
             } catch (IOException ignored) { /* best effort */ }
         });
-        t.setDaemon(true);
-        t.start();
-        return t;
     }
 
     public Map<String, Object> statusJson() {

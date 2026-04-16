@@ -87,21 +87,26 @@ public final class ContentStoreCleanup {
     /// cancelled first.
     public void startPeriodicSweep(long period, TimeUnit unit, ClaimEnumerator enumerator) {
         stopPeriodicSweep();
-        scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
-            Thread t = new Thread(r, "zinc-flow-content-cleanup");
-            t.setDaemon(true);
-            return t;
-        });
-        running = scheduler.scheduleAtFixedRate(() -> {
-            try {
-                int deleted = sweep(enumerator.enumerate());
-                if (deleted > 0) {
-                    log.info("content-cleanup: swept {} orphaned claim(s)", deleted);
-                }
-            } catch (RuntimeException ex) {
-                log.warn("content-cleanup: sweep failed — {}", ex.toString());
+        // Scheduler thread stays platform (STPE timing relies on
+        // park/unpark). The sweep body runs on a virtual thread so a
+        // slow enumerator or a disk hiccup on delete can't stall the
+        // next tick.
+        scheduler = Executors.newSingleThreadScheduledExecutor(
+                Thread.ofPlatform().daemon().name("zinc-flow-content-cleanup").factory());
+        running = scheduler.scheduleAtFixedRate(
+                () -> Thread.startVirtualThread(() -> runSweep(enumerator)),
+                period, period, unit);
+    }
+
+    private void runSweep(ClaimEnumerator enumerator) {
+        try {
+            int deleted = sweep(enumerator.enumerate());
+            if (deleted > 0) {
+                log.info("content-cleanup: swept {} orphaned claim(s)", deleted);
             }
-        }, period, period, unit);
+        } catch (RuntimeException ex) {
+            log.warn("content-cleanup: sweep failed — {}", ex.toString());
+        }
     }
 
     public void stopPeriodicSweep() {
