@@ -58,13 +58,11 @@ final class UiMainTest {
     }
 
     @Test
-    void flowPageRendersIdentity() throws Exception {
+    void flowPageServesHtml() throws Exception {
         bootWithFakeWorker();
         var resp = get("/flow");
         assertEquals(200, resp.statusCode());
-        String html = resp.body();
-        assertTrue(html.contains("node-test"), "rendered HTML must include the identity's nodeId");
-        assertTrue(html.contains("<code>" + worker.url() + "</code>"),
+        assertTrue(resp.body().contains("<code>" + worker.url() + "</code>"),
                 "rendered HTML must include the worker URL");
         assertTrue(resp.headers().firstValue("content-type").orElse("").startsWith("text/html"));
     }

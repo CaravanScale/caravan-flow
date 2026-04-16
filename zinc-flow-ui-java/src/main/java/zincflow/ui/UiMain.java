@@ -4,12 +4,11 @@ import io.javalin.Javalin;
 import io.javalin.http.Context;
 import io.pebbletemplates.pebble.PebbleEngine;
 import io.pebbletemplates.pebble.loader.ClasspathLoader;
-import io.pebbletemplates.pebble.template.PebbleTemplate;
 import org.eclipse.jetty.util.thread.QueuedThreadPool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import zincflow.ui.views.FlowController;
 
-import java.io.StringWriter;
 import java.net.URI;
 import java.util.LinkedHashMap;
 import java.util.Map;
@@ -64,6 +63,7 @@ public final class UiMain {
     }
 
     public UiMain start(int port) {
+        FlowController flow = new FlowController(fleet, pebble);
         app = Javalin.create(javalin -> {
                     QueuedThreadPool qtp = new QueuedThreadPool();
                     qtp.setName("zinc-flow-ui-jetty");
@@ -71,9 +71,10 @@ public final class UiMain {
                     javalin.jetty.threadPool = qtp;
                     javalin.staticFiles.add(cfg -> { cfg.hostedPath = "/static"; cfg.directory = "/static"; });
                 })
-                .get(UiRoutes.ROOT,   ctx -> ctx.redirect(UiRoutes.FLOW))
-                .get(UiRoutes.HEALTH, this::handleHealth)
-                .get(UiRoutes.FLOW,   this::handleFlowPlaceholder)
+                .get(UiRoutes.ROOT,       ctx -> ctx.redirect(UiRoutes.FLOW))
+                .get(UiRoutes.HEALTH,     this::handleHealth)
+                .get(UiRoutes.FLOW,       flow::handleFlow)
+                .get(UiRoutes.FLOW_CARDS, flow::handleFlowCards)
                 .start(port);
         boundPort = app.port();
         return this;
@@ -104,23 +105,6 @@ public final class UiMain {
         ctx.json(out);
     }
 
-    /// Phase 1 placeholder for the /flow view — the real implementation
-    /// lands in slice 2. Kept here so /flow → 200 instead of 404 while
-    /// slice 1's shell is in place.
-    private void handleFlowPlaceholder(Context ctx) throws Exception {
-        Map<String, Object> model = new LinkedHashMap<>();
-        model.put("workerUrl", fleet.workerBaseUrl().toString());
-        try { model.put("identity", fleet.identity()); }
-        catch (RuntimeException ex) { model.put("identityError", ex.getMessage()); }
-        ctx.contentType("text/html; charset=utf-8").result(render("flow.peb", model));
-    }
-
-    private String render(String template, Map<String, Object> model) throws Exception {
-        PebbleTemplate t = pebble.getTemplate("templates/" + template);
-        StringWriter sw = new StringWriter();
-        t.evaluate(sw, model);
-        return sw.toString();
-    }
 
     /// Resolved UI config. Exposed as a record so tests can build one
     /// without round-tripping through argv parsing.

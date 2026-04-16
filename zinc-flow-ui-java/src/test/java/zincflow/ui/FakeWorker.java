@@ -28,6 +28,12 @@ final class FakeWorker {
         return this;
     }
 
+    FakeWorker withFlow(Map<String, Object> body) {
+        app.get("/api/flow", ctx ->
+                ctx.contentType("application/json").result(JSON.writeValueAsBytes(body)));
+        return this;
+    }
+
     FakeWorker start() {
         app.start(0);
         boundPort = app.port();
@@ -49,5 +55,24 @@ final class FakeWorker {
         out.put("uptimeMillis", 123L);
         out.put("bootMillis", 1000L);
         return out;
+    }
+
+    static Map<String, Object> sampleFlow() {
+        Map<String, Object> flow = new LinkedHashMap<>();
+        flow.put("entryPoints", java.util.List.of("ingress"));
+        flow.put("processors", java.util.List.of(
+                Map.of("name", "ingress", "type", "LogAttribute", "state", "ENABLED",
+                        "stats", Map.of("processed", 3L),
+                        "connections", Map.of("success", java.util.List.of("tail"))),
+                Map.of("name", "tail", "type", "LogAttribute", "state", "ENABLED",
+                        "stats", Map.of("processed", 3L),
+                        "connections", Map.of())));
+        flow.put("connections", Map.of(
+                "ingress", Map.of("success", java.util.List.of("tail"))));
+        flow.put("providers", java.util.List.of(
+                Map.of("name", "logging", "type", "LoggingProvider", "state", "ENABLED")));
+        flow.put("sources", java.util.List.of());
+        flow.put("stats", Map.of("processed", 3L));
+        return flow;
     }
 }

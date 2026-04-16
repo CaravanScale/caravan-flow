@@ -77,6 +77,21 @@ final class DtoRoundTripTest {
     }
 
     @Test
+    void flowSnapshotStatsAcceptsNestedObjects() throws Exception {
+        // The worker's /api/flow emits Map<String, Object> stats where
+        // some entries are numbers and others are nested maps
+        // (e.g. processorCounts). Long-typed stats would break on the
+        // nested entry — keeping it Object.
+        FlowSnapshot snap = JSON.readValue("""
+                {"entryPoints":[],"processors":[],"connections":{},
+                 "providers":[],"sources":[],
+                 "stats":{"processed":10,"processorCounts":{"a":5}}}""",
+                FlowSnapshot.class);
+        assertEquals(10, ((Number) snap.stats().get("processed")).intValue());
+        assertTrue(snap.stats().get("processorCounts") instanceof Map);
+    }
+
+    @Test
     void flowSnapshotEmptyBuilder() {
         FlowSnapshot empty = FlowSnapshot.empty();
         assertTrue(empty.entryPoints().isEmpty());

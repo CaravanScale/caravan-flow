@@ -1,8 +1,62 @@
-/* zinc-flow UI styles — slice 1 placeholder; slice 2 grows the workflow layout. */
+/* zinc-flow UI — workflow-style flow view. */
 
+body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: #222; background: #fafbfc; margin: 0; }
+main.container { max-width: 90rem; margin: 0 auto; padding: 1rem 1.5rem 3rem; }
+header.container { max-width: 90rem; margin: 0 auto; padding: 0.5rem 1.5rem; border-bottom: 1px solid #e0e4e8; background: #fff; }
+
+nav { display: flex; align-items: center; gap: 1rem; }
 nav ul { list-style: none; padding: 0; display: flex; gap: 1rem; margin: 0; }
 nav ul:first-child { margin-right: auto; }
-article.error { border: 1px solid #c33; background: #fee; padding: 1rem; }
-article.error pre { white-space: pre-wrap; word-break: break-word; }
-dl { display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 1rem; }
-dt { font-weight: 600; color: #555; }
+nav a { text-decoration: none; color: #345; }
+nav a:hover { color: #00f; }
+
+h1 { margin: 0.5rem 0 1rem; font-weight: 600; }
+p.meta { color: #667; font-size: 0.9rem; margin-bottom: 1.5rem; }
+
+article.error { border: 1px solid #d33; background: #fee; padding: 1rem; border-radius: 6px; }
+article.error pre { white-space: pre-wrap; word-break: break-word; margin: 0.5rem 0 0; }
+
+section.stats {
+    background: #f0f4fa; border: 1px solid #d0d8e3; border-radius: 6px;
+    padding: 0.75rem 1rem; margin-bottom: 1.25rem;
+    display: flex; gap: 1.25rem; flex-wrap: wrap; align-items: center;
+}
+section.stats .stat em { color: #667; font-style: normal; margin-right: 0.25rem; font-size: 0.85rem; }
+
+.columns { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(18rem, 1fr); gap: 1.5rem; overflow-x: auto; padding-bottom: 1rem; }
+.column { min-width: 16rem; display: flex; flex-direction: column; gap: 0.75rem; }
+.column-index { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #889; margin-bottom: 0.25rem; }
+
+article.card {
+    background: #fff; border: 1px solid #d8dde3; border-radius: 8px;
+    padding: 0.75rem 1rem; box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+    display: flex; flex-direction: column; gap: 0.5rem;
+}
+article.card header { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; }
+article.card header strong { font-size: 1rem; }
+article.card .type { font-size: 0.8rem; color: #678; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+article.card .counters { display: flex; gap: 0.75rem; flex-wrap: wrap; font-size: 0.85rem; color: #345; }
+article.card .counters em { color: #789; font-style: normal; margin-right: 0.25rem; }
+article.card footer.edges { font-size: 0.8rem; color: #455; border-top: 1px dashed #e0e4e8; padding-top: 0.5rem; }
+article.card footer.edges strong { color: #678; font-weight: 600; font-family: ui-monospace, monospace; }
+
+.state { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }
+.state.enabled  { background: #def7e4; color: #1a6b34; }
+.state.disabled { background: #fde1e1; color: #8b1c1c; }
+.state.unknown  { background: #eef1f5; color: #556; }
+
+article.card.card-disabled { opacity: 0.65; }
+
+section.unreachable {
+    margin-top: 1.5rem; padding: 0.75rem 1rem;
+    border: 1px dashed #d0a800; background: #fff8dc; border-radius: 6px;
+}
+section.unreachable h3 { margin: 0 0 0.5rem; font-size: 1rem; color: #8a6d00; }
+section.unreachable ul { margin: 0; padding-left: 1.2rem; }
+
+section.infra { margin-top: 1.5rem; display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem; }
+section.infra h4 { margin: 0 0 0.5rem; color: #556; font-size: 0.9rem; letter-spacing: 0.02em; text-transform: uppercase; }
+section.infra ul { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.25rem; }
+section.infra li { font-size: 0.9rem; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+
+code { background: #f0f4fa; padding: 0 0.25rem; border-radius: 3px; font-size: 0.9em; }

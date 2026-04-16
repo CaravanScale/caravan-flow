@@ -16,7 +16,7 @@ public record FlowSnapshot(
         Map<String, Map<String, List<String>>> connections,
         List<ProviderView> providers,
         List<SourceView> sources,
-        Map<String, Long> stats) {
+        Map<String, Object> stats) {
 
     public static FlowSnapshot empty() {
         return new FlowSnapshot(List.of(), List.of(), Map.of(), List.of(), List.of(), Map.of());

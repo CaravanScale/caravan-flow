@@ -3,6 +3,7 @@ package zincflow.ui;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import zincflow.shared.FlowSnapshot;
 import zincflow.shared.Identity;
 import zincflow.shared.RouteNames;
 
@@ -36,6 +37,7 @@ public final class FleetService {
     private final Duration requestTimeout;
 
     private final AtomicReference<Cached<Identity>> identityCache = new AtomicReference<>();
+    private final AtomicReference<Cached<FlowSnapshot>> flowCache = new AtomicReference<>();
 
     public FleetService(URI workerBaseUrl) {
         this(workerBaseUrl, Duration.ofSeconds(5));
@@ -56,6 +58,10 @@ public final class FleetService {
 
     public Identity identity() {
         return readCached(identityCache, RouteNames.API_IDENTITY, Identity.class);
+    }
+
+    public FlowSnapshot flow() {
+        return readCached(flowCache, RouteNames.API_FLOW, FlowSnapshot.class);
     }
 
     /// Probe the worker — returns {@code true} when {@code /api/identity}
