@@ -1,0 +1,8 @@
+/* Pico.css placeholder — slice 2 vendors the real one. Minimal classless reset here
+   so slice 1 tests can exercise the static-files mount and layout template without
+   pulling in a 10kb dep yet. */
+:root { font-family: system-ui, -apple-system, sans-serif; }
+body { margin: 0; padding: 0; }
+.container { max-width: 70rem; margin: 0 auto; padding: 1rem; }
+header.container { border-bottom: 1px solid #ddd; }
+nav { display: flex; align-items: center; }

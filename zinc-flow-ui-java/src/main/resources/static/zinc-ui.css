@@ -1,0 +1,8 @@
+/* zinc-flow UI styles — slice 1 placeholder; slice 2 grows the workflow layout. */
+
+nav ul { list-style: none; padding: 0; display: flex; gap: 1rem; margin: 0; }
+nav ul:first-child { margin-right: auto; }
+article.error { border: 1px solid #c33; background: #fee; padding: 1rem; }
+article.error pre { white-space: pre-wrap; word-break: break-word; }
+dl { display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 1rem; }
+dt { font-weight: 600; color: #555; }
