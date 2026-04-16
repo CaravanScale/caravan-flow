@@ -144,9 +144,17 @@ public final class PluginLoader {
                 log.warn("ProcessorPlugin {} reported blank type() — skipping", plugin.getClass().getName());
                 continue;
             }
-            registry.register(type, plugin::create);
-            types.add(type);
-            log.info("plugin processor registered: {} ({})", type, plugin.getClass().getName());
+            String version = plugin.version() == null || plugin.version().isEmpty()
+                    ? Registry.DEFAULT_VERSION : plugin.version();
+            Registry.TypeInfo info = new Registry.TypeInfo(
+                    type, version,
+                    plugin.description() == null ? "" : plugin.description(),
+                    plugin.configKeys() == null ? List.of() : plugin.configKeys(),
+                    plugin.relationships() == null ? List.of() : plugin.relationships());
+            registry.register(info, plugin::create);
+            types.add(type + "@" + version);
+            log.info("plugin processor registered: {}@{} ({})",
+                    type, version, plugin.getClass().getName());
         }
         Collections.sort(types);
         return types;

@@ -34,8 +34,8 @@ final class PluginLoaderTest {
         var ctx = new ProcessorContext();
         var summary = PluginLoader.load(getClass().getClassLoader(), registry, ctx);
 
-        assertTrue(summary.processorTypes().contains("FixtureProcessor"),
-                "expected FixtureProcessor in " + summary.processorTypes());
+        assertTrue(summary.processorTypes().contains("FixtureProcessor@1.0.0"),
+                "expected FixtureProcessor@1.0.0 in " + summary.processorTypes());
         assertTrue(summary.providerNames().contains("fixture"),
                 "expected fixture provider in " + summary.providerNames());
         assertNotNull(registry.create("FixtureProcessor", Map.of(), ctx));
@@ -65,7 +65,7 @@ final class PluginLoaderTest {
 
         assertEquals(1, summary.jars().size());
         assertEquals(jarPath, summary.jars().get(0));
-        assertTrue(summary.processorTypes().contains("DropIn"));
+        assertTrue(summary.processorTypes().contains("DropIn@1.0.0"));
         assertTrue(summary.providerNames().contains("dropin"));
         assertNotNull(ctx.getProvider("dropin"));
 
@@ -100,7 +100,7 @@ final class PluginLoaderTest {
         // actually classloader-scoped.
         var emptyLoader = new URLClassLoader(new java.net.URL[0], null);
         var summary = PluginLoader.load(emptyLoader, registry, ctx);
-        assertFalse(summary.processorTypes().contains("FixtureProcessor"));
+        assertFalse(summary.processorTypes().contains("FixtureProcessor@1.0.0"));
         assertFalse(summary.providerNames().contains("fixture"));
     }
 

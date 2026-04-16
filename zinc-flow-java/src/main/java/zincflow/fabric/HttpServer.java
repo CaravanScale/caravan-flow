@@ -12,6 +12,7 @@ import zincflow.core.Provider;
 import zincflow.core.Source;
 import zincflow.providers.ProvenanceProvider;
 import zincflow.providers.SchemaRegistryProvider;
+import zincflow.providers.VersionControlProvider;
 
 import java.io.IOException;
 import java.nio.file.Path;
@@ -40,28 +41,36 @@ public final class HttpServer {
     private final Path configPath;
     private final PluginLoader.Summary plugins;
     private final Path pluginsDir;
+    private final NodeIdentity identity;
     private final ObjectMapper json = new ObjectMapper();
     private Javalin app;
     private int boundPort = -1;
 
     public HttpServer(Pipeline pipeline) {
-        this(pipeline, null, null, null, null);
+        this(pipeline, null, null, null, null, null);
     }
 
     /// Constructor for the config-driven path — enables {@code /api/reload}.
     public HttpServer(Pipeline pipeline, ConfigLoader loader, Path configPath) {
-        this(pipeline, loader, configPath, null, null);
+        this(pipeline, loader, configPath, null, null, null);
     }
 
-    /// Full constructor — wires in the plugin summary so {@code /api/plugins}
-    /// can report what was discovered at startup.
     public HttpServer(Pipeline pipeline, ConfigLoader loader, Path configPath,
                       PluginLoader.Summary plugins, Path pluginsDir) {
+        this(pipeline, loader, configPath, plugins, pluginsDir, null);
+    }
+
+    /// Full constructor — wires in the plugin summary and node identity
+    /// so {@code /api/plugins} and {@code /api/identity} can answer.
+    public HttpServer(Pipeline pipeline, ConfigLoader loader, Path configPath,
+                      PluginLoader.Summary plugins, Path pluginsDir,
+                      NodeIdentity identity) {
         this.pipeline = pipeline;
         this.loader = loader;
         this.configPath = configPath;
         this.plugins = plugins == null ? PluginLoader.Summary.empty() : plugins;
         this.pluginsDir = pluginsDir;
+        this.identity = identity;
     }
 
     public HttpServer start(int port) {
@@ -85,7 +94,12 @@ public final class HttpServer {
                 .get("/api/providers",                 this::handleProviders)
                 .post("/api/providers/enable",         this::handleEnableProvider)
                 .post("/api/providers/disable",        this::handleDisableProvider)
+                // Order matters — specific paths register before the
+                // {id} wildcard or Javalin binds /api/provenance/failures
+                // to handleProvenanceById with id="failures" and 400s.
                 .get("/api/provenance",                this::handleProvenanceRecent)
+                .get("/api/provenance/failures",       this::handleProvenanceFailures)
+                .get("/api/provenance/lineage/{id}",   this::handleProvenanceLineage)
                 .get("/api/provenance/{id}",           this::handleProvenanceById)
                 .post("/api/processors/add",           this::handleAddProcessor)
                 .delete("/api/processors/remove",      this::handleRemoveProcessor)
@@ -100,7 +114,18 @@ public final class HttpServer {
                 .post("/api/connections",              this::handleAddConnection)
                 .delete("/api/connections",            this::handleRemoveConnection)
                 .put("/api/connections/{from}",        this::handleSetConnections)
-                .put("/api/entrypoints",               this::handleSetEntryPoints);
+                .put("/api/entrypoints",               this::handleSetEntryPoints)
+                .get("/api/overlays",                  this::handleOverlays)
+                .put("/api/overlays/secrets",          this::handleWriteSecrets)
+                .get("/api/processor-types",           this::handleProcessorTypes)
+                .get("/api/processor-types/{name}",    this::handleProcessorType)
+                .post("/api/flow/save",                this::handleFlowSave)
+                .get("/api/identity",                  this::handleIdentity)
+                .put("/api/processors/{name}/config",      this::handleUpdateProcessorConfig)
+                .put("/api/processors/{name}/connections", this::handleSetProcessorConnections)
+                .get("/api/vc/status",                     this::handleVcStatus)
+                .post("/api/vc/commit",                    this::handleVcCommit)
+                .post("/api/vc/push",                      this::handleVcPush);
 
         // Confluent-shape schema registry — mounted only when a
         // SchemaRegistryProvider is wired into the context. Skipping the
@@ -480,15 +505,274 @@ public final class HttpServer {
         if (result.ok()) {
             ctx.status(200).contentType("application/json").result(json.writeValueAsBytes(okBody));
         } else {
-            // 409 when the state is inconsistent (duplicate edge, missing target),
-            // 400 for blank-input kinds of errors. Pipeline.EditResult only
-            // distinguishes a single 'reason' string so we route by content —
-            // "not found" / "already exists" / "must be blank" all come through
-            // here.
-            int status = result.reason().contains("not found") || result.reason().contains("already exists")
-                    ? 409 : 400;
-            writeError(ctx, status, result.reason());
+            // 409 when the state is inconsistent (duplicate edge, missing
+            // target, unknown type), 400 for blank-input kinds of errors.
+            // Pipeline.EditResult only distinguishes a single 'reason'
+            // string so we route by content.
+            String reason = result.reason();
+            int status = (reason.contains("not found")
+                    || reason.contains("already exists")
+                    || reason.contains("unknown")) ? 409 : 400;
+            writeError(ctx, status, reason);
         }
+    }
+
+    // --- Version control (opt-in git provider) ---
+
+    private VersionControlProvider vc() {
+        return pipeline.context().getProviderAs(VersionControlProvider.NAME, VersionControlProvider.class);
+    }
+
+    private void handleVcStatus(Context ctx) throws Exception {
+        VersionControlProvider v = vc();
+        if (v == null || !v.isEnabled()) {
+            ctx.contentType("application/json").result(json.writeValueAsBytes(
+                    Map.of("enabled", false)));
+            return;
+        }
+        ctx.contentType("application/json").result(json.writeValueAsBytes(v.statusJson()));
+    }
+
+    private void handleVcCommit(Context ctx) throws Exception {
+        VersionControlProvider v = vc();
+        if (v == null || !v.isEnabled()) { writeError(ctx, 503, "version control provider not enabled"); return; }
+        Map<String, Object> body = readJsonBody(ctx);
+        if (body == null) { writeError(ctx, 400, "invalid json body"); return; }
+        String message = str(body.get("message"));
+        if (message.isEmpty()) { writeError(ctx, 400, "commit message must not be blank"); return; }
+        String path = body.get("path") == null ? null : str(body.get("path"));
+
+        VersionControlProvider.CommandResult r = v.commit(path, message);
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("ok", r.ok());
+        out.put("exitCode", r.exitCode());
+        out.put("stdout", r.stdout());
+        out.put("stderr", r.stderr());
+        ctx.status(r.ok() ? 200 : 500).contentType("application/json")
+                .result(json.writeValueAsBytes(out));
+    }
+
+    private void handleVcPush(Context ctx) throws Exception {
+        VersionControlProvider v = vc();
+        if (v == null || !v.isEnabled()) { writeError(ctx, 503, "version control provider not enabled"); return; }
+        VersionControlProvider.CommandResult r = v.push();
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("ok", r.ok());
+        out.put("exitCode", r.exitCode());
+        out.put("stdout", r.stdout());
+        out.put("stderr", r.stderr());
+        ctx.status(r.ok() ? 200 : 500).contentType("application/json")
+                .result(json.writeValueAsBytes(out));
+    }
+
+    // --- Provenance failures + lineage (design-doc URL shape) ---
+
+    private void handleProvenanceFailures(Context ctx) throws Exception {
+        ProvenanceProvider prov = pipeline.provenance();
+        if (prov == null) { writeError(ctx, 503, "provenance provider not enabled"); return; }
+        int n = 50;
+        String nStr = ctx.queryParam("n");
+        if (nStr != null && !nStr.isEmpty()) {
+            try { n = Integer.parseInt(nStr); }
+            catch (NumberFormatException e) {
+                writeError(ctx, 400, "query param 'n' is not an integer: '" + nStr + "'");
+                return;
+            }
+        }
+        // Over-fetch to give the filter a real chance of returning n
+        // failures even when non-failure events dominate the ring buffer.
+        int window = Math.max(n * 20, 500);
+        List<ProvenanceProvider.Event> recent = prov.getRecent(window);
+        List<ProvenanceProvider.Event> failures = new ArrayList<>();
+        for (ProvenanceProvider.Event e : recent) {
+            if (e.type() == ProvenanceProvider.EventType.FAILED) failures.add(e);
+            if (failures.size() >= n) break;
+        }
+        ctx.contentType("application/json").result(json.writeValueAsBytes(shape(failures)));
+    }
+
+    private void handleProvenanceLineage(Context ctx) throws Exception {
+        ProvenanceProvider prov = pipeline.provenance();
+        if (prov == null) { writeError(ctx, 503, "provenance provider not enabled"); return; }
+        long id;
+        try { id = Long.parseLong(ctx.pathParam("id")); }
+        catch (NumberFormatException e) { writeError(ctx, 400, "path param 'id' is not a long"); return; }
+        ctx.contentType("application/json").result(json.writeValueAsBytes(shape(prov.getEvents(id))));
+    }
+
+    // --- Processor config / connection updates ---
+
+    @SuppressWarnings("unchecked")
+    private void handleUpdateProcessorConfig(Context ctx) throws Exception {
+        String name = ctx.pathParam("name");
+        Map<String, Object> body = readJsonBody(ctx);
+        if (body == null) { writeError(ctx, 400, "invalid json body"); return; }
+        String type = body.get("type") == null ? null : str(body.get("type"));
+        Map<String, String> config = asStringMap(body.get("config"));
+
+        Pipeline.EditResult r = pipeline.updateProcessorConfig(name, type, config);
+        writeEditResult(ctx, r, Map.of("status", "updated", "name", name));
+    }
+
+    @SuppressWarnings("unchecked")
+    private void handleSetProcessorConnections(Context ctx) throws Exception {
+        String name = ctx.pathParam("name");
+        Map<String, Object> body = readJsonBody(ctx);
+        if (body == null) { writeError(ctx, 400, "invalid json body"); return; }
+        Map<String, List<String>> rels = new LinkedHashMap<>();
+        for (var entry : body.entrySet()) {
+            if (entry.getValue() instanceof List<?> list) {
+                List<String> targets = new ArrayList<>(list.size());
+                for (Object o : list) targets.add(str(o));
+                rels.put(entry.getKey(), targets);
+            } else {
+                writeError(ctx, 400, "relationship '" + entry.getKey() + "' must map to a list of target names");
+                return;
+            }
+        }
+        Pipeline.EditResult r = pipeline.setConnections(name, rels);
+        writeEditResult(ctx, r, Map.of("status", "replaced", "from", name, "relationships", rels));
+    }
+
+    // --- Identity ---
+
+    private void handleIdentity(Context ctx) throws Exception {
+        if (identity == null) {
+            writeError(ctx, 503, "identity not wired — server started without a NodeIdentity");
+            return;
+        }
+        ctx.contentType("application/json").result(json.writeValueAsBytes(identity.toMap(port())));
+    }
+
+    // --- Flow save ---
+
+    private void handleFlowSave(Context ctx) throws Exception {
+        if (loader == null || configPath == null) {
+            writeError(ctx, 501, "flow save unavailable — server started without a config path");
+            return;
+        }
+        String yaml = YamlEmitter.emit(pipeline.graph(), loader.lastSpecs());
+        try {
+            java.nio.file.Files.writeString(configPath, yaml);
+        } catch (java.io.IOException ex) {
+            writeError(ctx, 500, "flow save failed: " + ex.getMessage());
+            return;
+        }
+        log.info("flow saved to {}", configPath);
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("status", "saved");
+        body.put("path", configPath.toString());
+        body.put("bytes", yaml.length());
+        ctx.status(200).contentType("application/json").result(json.writeValueAsBytes(body));
+    }
+
+    // --- Processor types (versioned registry) ---
+
+    private void handleProcessorTypes(Context ctx) throws Exception {
+        Registry r = pipeline.registry();
+        List<Map<String, Object>> out = new ArrayList<>();
+        if (r != null) {
+            for (Registry.TypeInfo info : r.listAll()) {
+                out.add(typeInfoToJson(info));
+            }
+        }
+        ctx.contentType("application/json").result(json.writeValueAsBytes(out));
+    }
+
+    private void handleProcessorType(Context ctx) throws Exception {
+        Registry r = pipeline.registry();
+        if (r == null) {
+            writeError(ctx, 503, "registry not wired — processor types unavailable");
+            return;
+        }
+        String name = ctx.pathParam("name");
+        List<Registry.TypeInfo> versions = r.listVersions(name);
+        if (versions.isEmpty()) {
+            writeError(ctx, 404, "processor type '" + name + "' not found");
+            return;
+        }
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("name", name);
+        body.put("latest", r.latest(name) == null ? null : r.latest(name).version());
+        List<Map<String, Object>> vs = new ArrayList<>();
+        for (Registry.TypeInfo info : versions) vs.add(typeInfoToJson(info));
+        body.put("versions", vs);
+        ctx.contentType("application/json").result(json.writeValueAsBytes(body));
+    }
+
+    private static Map<String, Object> typeInfoToJson(Registry.TypeInfo info) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("name", info.name());
+        out.put("version", info.version());
+        out.put("description", info.description());
+        out.put("configKeys", info.configKeys());
+        out.put("relationships", info.relationships());
+        return out;
+    }
+
+    // --- Overlays ---
+
+    private void handleOverlays(Context ctx) throws Exception {
+        ConfigOverlay.Resolved resolved = loader == null ? null : loader.lastOverlay();
+        if (resolved == null) {
+            writeError(ctx, 503, "overlay info unavailable — server started without a config loader");
+            return;
+        }
+        List<Map<String, Object>> layers = new ArrayList<>();
+        for (ConfigOverlay.Layer layer : resolved.layers()) {
+            Map<String, Object> info = new LinkedHashMap<>();
+            info.put("role", layer.role());
+            info.put("path", layer.path() == null ? null : layer.path().toString());
+            info.put("present", layer.present());
+            info.put("size", layer.content().size());
+            layers.add(info);
+        }
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("base", resolved.basePath() == null ? null : resolved.basePath().toString());
+        body.put("layers", layers);
+        body.put("effective", resolved.effective());
+        body.put("provenance", resolved.provenance());
+        ctx.contentType("application/json").result(json.writeValueAsBytes(body));
+    }
+
+    @SuppressWarnings("unchecked")
+    private void handleWriteSecrets(Context ctx) throws Exception {
+        if (loader == null || loader.lastOverlay() == null) {
+            writeError(ctx, 503, "overlay info unavailable — server started without a config loader");
+            return;
+        }
+        Object parsed;
+        try {
+            parsed = json.readValue(ctx.bodyAsBytes(), Object.class);
+        } catch (Exception ex) {
+            writeError(ctx, 400, "invalid json body: " + ex.getMessage());
+            return;
+        }
+        if (!(parsed instanceof Map<?, ?> rawMap)) {
+            writeError(ctx, 400, "request body must be a JSON object");
+            return;
+        }
+        Map<String, Object> secrets = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : rawMap.entrySet()) {
+            secrets.put(String.valueOf(entry.getKey()), entry.getValue());
+        }
+        Path secretsPath = loader.lastOverlay().layers().stream()
+                .filter(l -> "secrets".equals(l.role()))
+                .map(ConfigOverlay.Layer::path)
+                .findFirst()
+                .orElse(null);
+        if (secretsPath == null) {
+            writeError(ctx, 503, "no secrets path resolved");
+            return;
+        }
+        try {
+            ConfigOverlay.writeSecrets(secretsPath, secrets);
+        } catch (IOException ex) {
+            writeError(ctx, 500, "failed to write secrets overlay: " + ex.getMessage());
+            return;
+        }
+        ctx.status(200).contentType("application/json").result(json.writeValueAsBytes(
+                Map.of("status", "written", "path", secretsPath.toString(), "keys", secrets.size())));
     }
 
     // --- Plugins ---
@@ -602,6 +886,14 @@ public final class HttpServer {
                 "GET /api/sources", "POST /api/sources/start", "POST /api/sources/stop",
                 "GET /api/plugins", "POST /api/plugins/reload",
                 "POST /api/connections", "DELETE /api/connections",
-                "PUT /api/connections/{from}", "PUT /api/entrypoints");
+                "PUT /api/connections/{from}", "PUT /api/entrypoints",
+                "GET /api/overlays", "PUT /api/overlays/secrets",
+                "GET /api/processor-types", "GET /api/processor-types/{name}",
+                "POST /api/flow/save", "GET /api/identity",
+                "PUT /api/processors/{name}/config",
+                "PUT /api/processors/{name}/connections",
+                "GET /api/provenance/failures",
+                "GET /api/provenance/lineage/{id}",
+                "GET /api/vc/status", "POST /api/vc/commit", "POST /api/vc/push");
     }
 }

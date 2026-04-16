@@ -8,6 +8,7 @@ import zincflow.core.ProcessorContext;
 import zincflow.fabric.ConfigLoader;
 import zincflow.fabric.HttpServer;
 import zincflow.fabric.Metrics;
+import zincflow.fabric.NodeIdentity;
 import zincflow.fabric.Pipeline;
 import zincflow.fabric.PipelineGraph;
 import zincflow.fabric.PluginLoader;
@@ -20,6 +21,8 @@ import zincflow.providers.ContentProvider;
 import zincflow.providers.LoggingProvider;
 import zincflow.providers.ProvenanceProvider;
 import zincflow.providers.SchemaRegistryProvider;
+import zincflow.providers.UIRegistrationProvider;
+import zincflow.providers.VersionControlProvider;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -80,10 +83,67 @@ public final class Main {
         }
         Metrics metrics = new Metrics();
         Pipeline pipeline = new Pipeline(graph, Pipeline.DEFAULT_MAX_HOPS, metrics, context, registry);
+
+        // Node identity — read ui.nodeId from the effective layered
+        // config if set, else use/create the persisted UUID file.
+        Map<String, Object> effective = loader.lastOverlay() == null ? Map.of()
+                : loader.lastOverlay().effective();
+        NodeIdentity identity = NodeIdentity.resolve(effective,
+                Path.of(NodeIdentity.NODE_ID_FILE), Main.class.getPackage().getImplementationVersion());
+
+        // Optional UI self-registration — only if ui.register_to is set.
+        String uiTarget = registerTarget(effective);
+        if (uiTarget != null) {
+            UIRegistrationProvider reg = new UIRegistrationProvider(uiTarget,
+                    () -> identity.toMap(Integer.parseInt(System.getProperty("zincflow.port", "9092"))));
+            context.addProvider(reg);
+            reg.enable();
+            log.info("self-registering with UI at {}", uiTarget);
+        }
+
+        // Optional Git version-control provider — only if vc.enabled: true.
+        if (isVcEnabled(effective)) {
+            VersionControlProvider vc = buildVcProvider(effective, configPath);
+            context.addProvider(vc);
+            vc.enable();
+            log.info("version control enabled — repo={} branch={} remote={}",
+                    vc.repo(), vc.branch(), vc.remote());
+        }
+
         int port = Integer.parseInt(System.getProperty("zincflow.port", "9092"));
-        HttpServer server = new HttpServer(pipeline, loader, configPath, plugins, pluginsDir).start(port);
-        log.info("zinc-flow-java up — POST to http://localhost:{}/ to ingest", server.port());
+        HttpServer server = new HttpServer(pipeline, loader, configPath, plugins, pluginsDir, identity).start(port);
+        log.info("zinc-flow-java up — node {} at http://localhost:{} (hostname {})",
+                identity.nodeId(), server.port(), identity.hostname());
         log.info("dashboard: GET http://localhost:{}/dashboard    metrics: /metrics", server.port());
+    }
+
+    @SuppressWarnings("unchecked")
+    private static String registerTarget(Map<String, Object> effective) {
+        Object ui = effective.get("ui");
+        if (!(ui instanceof Map<?, ?> uiMap)) return null;
+        Object target = ((Map<String, Object>) uiMap).get("register_to");
+        return target == null ? null : target.toString();
+    }
+
+    @SuppressWarnings("unchecked")
+    private static boolean isVcEnabled(Map<String, Object> effective) {
+        Object vc = effective.get("vc");
+        if (!(vc instanceof Map<?, ?> vcMap)) return false;
+        Object enabled = ((Map<String, Object>) vcMap).get("enabled");
+        return enabled instanceof Boolean b ? b : "true".equalsIgnoreCase(String.valueOf(enabled));
+    }
+
+    @SuppressWarnings("unchecked")
+    private static VersionControlProvider buildVcProvider(Map<String, Object> effective, Path configPath) {
+        Object vc = effective.get("vc");
+        Map<String, Object> vcMap = vc instanceof Map<?, ?> m ? (Map<String, Object>) m : Map.of();
+        Path repo = vcMap.containsKey("repo")
+                ? Path.of(String.valueOf(vcMap.get("repo")))
+                : (configPath == null ? Path.of(".") : configPath.toAbsolutePath().getParent());
+        String gitBinary = vcMap.containsKey("git") ? String.valueOf(vcMap.get("git")) : "git";
+        String remote = vcMap.containsKey("remote") ? String.valueOf(vcMap.get("remote")) : "origin";
+        String branch = vcMap.containsKey("branch") ? String.valueOf(vcMap.get("branch")) : "main";
+        return new VersionControlProvider(repo, gitBinary, remote, branch);
     }
 
     private static Path resolveConfigPath(String[] args) {

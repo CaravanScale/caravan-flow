@@ -55,6 +55,7 @@ public final class ConfigLoader {
     private final ProcessorContext context;
     private Map<String, ProcessorSpec> lastSpecs = Map.of();
     private Map<String, Processor> lastProcessors = Map.of();
+    private ConfigOverlay.Resolved lastOverlay;
 
     public ConfigLoader(Registry registry) {
         this(registry, new ProcessorContext());
@@ -72,18 +73,33 @@ public final class ConfigLoader {
     /// running — see {@link Pipeline#applyReload}.
     public Map<String, ProcessorSpec> lastSpecs() { return lastSpecs; }
 
+    /// The most recently loaded overlay stack — base + local + secrets,
+    /// the merged map, and per-key provenance. Used by
+    /// {@code GET /api/overlays}.
+    public ConfigOverlay.Resolved lastOverlay() { return lastOverlay; }
+
     public PipelineGraph loadFromFile(Path path) throws IOException {
-        String yaml = Files.readString(path);
-        return load(yaml);
+        ConfigOverlay.Resolved resolved = ConfigOverlay.load(path);
+        return loadFromOverlay(resolved);
     }
 
-    @SuppressWarnings("unchecked")
+    public PipelineGraph loadFromOverlay(ConfigOverlay.Resolved resolved) {
+        lastOverlay = resolved;
+        return load(resolved.effective());
+    }
+
     public PipelineGraph load(String yamlSource) {
         Object parsed = new Yaml().load(yamlSource);
         if (!(parsed instanceof Map<?, ?> topRaw)) {
             throw new IllegalArgumentException("config: top-level must be a map");
         }
-        Object flowRaw = topRaw.get("flow");
+        return load(normalizeTop(topRaw));
+    }
+
+    @SuppressWarnings("unchecked")
+    private PipelineGraph load(Map<String, Object> effective) {
+        Map<String, Object> top = effective;
+        Object flowRaw = top.get("flow");
         if (!(flowRaw instanceof Map<?, ?> flow)) {
             throw new IllegalArgumentException("config: missing 'flow' section");
         }
@@ -176,8 +192,10 @@ public final class ConfigLoader {
         // Commit the parsed spec + processor instances so the next
         // load can diff against them. Only happens after validation
         // succeeds — a partial load never corrupts the reload baseline.
-        lastSpecs = Map.copyOf(specs);
-        lastProcessors = Map.copyOf(processors);
+        // Use an ordered unmodifiable view so spec iteration follows
+        // declaration order (YAML round-trip relies on this).
+        lastSpecs = java.util.Collections.unmodifiableMap(new LinkedHashMap<>(specs));
+        lastProcessors = java.util.Collections.unmodifiableMap(new LinkedHashMap<>(processors));
         return new PipelineGraph(processors, connections, entryPoints);
     }
 
@@ -202,6 +220,18 @@ public final class ConfigLoader {
         }
         List<String> out = new ArrayList<>(list.size());
         for (Object o : list) out.add(String.valueOf(o));
+        return out;
+    }
+
+    /// Normalises top-level keys to String. SnakeYAML default loader
+    /// can yield {@code Map<Object, Object>}; downstream code expects
+    /// {@code Map<String, Object>}.
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> normalizeTop(Map<?, ?> raw) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (Map.Entry<?, ?> entry : raw.entrySet()) {
+            out.put(String.valueOf(entry.getKey()), entry.getValue());
+        }
         return out;
     }
 }

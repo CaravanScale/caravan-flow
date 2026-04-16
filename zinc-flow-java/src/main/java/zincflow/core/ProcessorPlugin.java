@@ -17,9 +17,29 @@ public interface ProcessorPlugin {
 
     /// Stable identifier used in {@code config.yaml} and
     /// {@code /api/processors/add}. Must be unique across all registered
-    /// processors — a second plugin with the same type overwrites the
-    /// first (last loader wins).
+    /// (type, version) pairs — a second plugin with the same type + version
+    /// overwrites the first (last loader wins).
     String type();
+
+    /// Semver version for this processor. Exposed via
+    /// {@code GET /api/processor-types} so config authors can pin via
+    /// {@code type: MyProc@1.2.0}. Default {@code "1.0.0"} keeps
+    /// pre-versioning plugins compiling without changes.
+    default String version() { return "1.0.0"; }
+
+    /// Short description shown in the UI when browsing processor types.
+    default String description() { return ""; }
+
+    /// Config keys the processor accepts — surfaced to the UI so it
+    /// can render an "add processor" form.
+    default java.util.List<String> configKeys() { return java.util.List.of(); }
+
+    /// Result relationships this processor may produce
+    /// (e.g. "success", "failure", "matched"). Used by the UI
+    /// connection editor to show the outbound ports.
+    default java.util.List<String> relationships() {
+        return java.util.List.of("success", "failure");
+    }
 
     Processor create(Map<String, String> config, ProcessorContext context);
 }

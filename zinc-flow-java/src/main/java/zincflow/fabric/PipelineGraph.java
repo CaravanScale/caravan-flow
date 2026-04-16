@@ -2,6 +2,8 @@ package zincflow.fabric;
 
 import zincflow.core.Processor;
 
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -21,9 +23,19 @@ public record PipelineGraph(
         List<String> entryPoints) {
 
     public PipelineGraph {
-        processors = Map.copyOf(processors);
-        // Deep-copy connections to make the map truly immutable.
-        connections = Map.copyOf(connections);
+        // Preserve insertion order — Map.copyOf uses an internal
+        // randomized hash, which would scramble processor declaration
+        // order and break YAML round-trips through YamlEmitter.
+        processors = Collections.unmodifiableMap(new LinkedHashMap<>(processors));
+        Map<String, Map<String, List<String>>> conns = new LinkedHashMap<>();
+        for (var entry : connections.entrySet()) {
+            Map<String, List<String>> rels = new LinkedHashMap<>();
+            for (var rel : entry.getValue().entrySet()) {
+                rels.put(rel.getKey(), List.copyOf(rel.getValue()));
+            }
+            conns.put(entry.getKey(), Collections.unmodifiableMap(rels));
+        }
+        connections = Collections.unmodifiableMap(conns);
         entryPoints = List.copyOf(entryPoints);
     }
 

@@ -31,6 +31,9 @@ import zincflow.processors.UnpackageFlowFileV3;
 import zincflow.processors.UpdateAttribute;
 
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
 
 import java.util.Map;
@@ -42,8 +45,17 @@ import java.util.concurrent.ConcurrentHashMap;
 /// (content store, logger) pull it from the context; factories that
 /// don't simply ignore the ctx argument.
 ///
+/// <h2>Versioning</h2>
+/// Every factory is registered with both a {@code name} and a
+/// {@code version}. Config can pin a specific version via
+/// {@code type: Foo@1.2.0}; omitting the version picks the latest
+/// registered version for that name. Default version is
+/// {@value #DEFAULT_VERSION}.
+///
 /// Stateless; one instance shared by the Fabric.
 public final class Registry {
+
+    public static final String DEFAULT_VERSION = "1.0.0";
 
     /// A factory for a processor given its config map and the surrounding
     /// processor context. The context is never null — callers that don't
@@ -54,18 +66,86 @@ public final class Registry {
         Processor create(Map<String, String> config, ProcessorContext ctx);
     }
 
-    private final ConcurrentHashMap<String, Factory> factories = new ConcurrentHashMap<>();
+    /// Metadata about a registered processor type. The UI renders
+    /// {@code configKeys} + {@code relationships} in the "add
+    /// processor" form.
+    public record TypeInfo(String name, String version, String description,
+                           List<String> configKeys, List<String> relationships) {
+        public TypeInfo {
+            configKeys = List.copyOf(configKeys);
+            relationships = List.copyOf(relationships);
+        }
+        public String qualifiedName() { return name + "@" + version; }
+    }
+
+    /// Keyed by "name@version" for pinned lookup.
+    private final ConcurrentHashMap<String, Factory> versioned = new ConcurrentHashMap<>();
+    /// Keyed by "name" → latest version string; lets unqualified
+    /// lookups resolve to the most recent release.
+    private final ConcurrentHashMap<String, String> latestVersion = new ConcurrentHashMap<>();
+    /// Metadata mirror of {@link #versioned}, keyed the same way.
+    private final ConcurrentHashMap<String, TypeInfo> metadata = new ConcurrentHashMap<>();
 
     public Registry() {
         registerBuiltins();
     }
 
+    /// Unversioned register — convenience for third-party plugins
+    /// that don't care about versioning. Defaults to
+    /// {@value #DEFAULT_VERSION}.
     public void register(String type, Factory factory) {
-        factories.put(type, factory);
+        register(type, DEFAULT_VERSION, factory);
+    }
+
+    public void register(String type, String version, Factory factory) {
+        register(new TypeInfo(type, version, "", List.of(), List.of()), factory);
+    }
+
+    /// Full register — caller supplies the metadata the UI needs.
+    public void register(TypeInfo info, Factory factory) {
+        String key = info.qualifiedName();
+        versioned.put(key, factory);
+        metadata.put(key, info);
+        latestVersion.merge(info.name(), info.version(),
+                (oldV, newV) -> compareVersions(oldV, newV) >= 0 ? oldV : newV);
     }
 
     public boolean has(String type) {
-        return factories.containsKey(type);
+        return resolveKey(type) != null;
+    }
+
+    /// Resolve a user-facing type string (either {@code "Foo"} or
+    /// {@code "Foo@1.2.3"}) to the internal map key, or null when
+    /// the type is unknown.
+    private String resolveKey(String type) {
+        if (type == null || type.isEmpty()) return null;
+        if (type.contains("@")) {
+            return versioned.containsKey(type) ? type : null;
+        }
+        String latest = latestVersion.get(type);
+        if (latest == null) return null;
+        return type + "@" + latest;
+    }
+
+    /// Compare two dotted version strings; a trailing ".0" difference
+    /// (e.g. "1.2" vs "1.2.0") sorts as equal. Non-numeric segments
+    /// compare lexicographically.
+    static int compareVersions(String a, String b) {
+        String[] as = a.split("\\.");
+        String[] bs = b.split("\\.");
+        int len = Math.max(as.length, bs.length);
+        for (int i = 0; i < len; i++) {
+            String ap = i < as.length ? as[i] : "0";
+            String bp = i < bs.length ? bs[i] : "0";
+            try {
+                int cmp = Integer.compare(Integer.parseInt(ap), Integer.parseInt(bp));
+                if (cmp != 0) return cmp;
+            } catch (NumberFormatException ex) {
+                int cmp = ap.compareTo(bp);
+                if (cmp != 0) return cmp;
+            }
+        }
+        return 0;
     }
 
     /// Context-free convenience — callers that don't have a
@@ -77,15 +157,59 @@ public final class Registry {
     }
 
     public Processor create(String type, Map<String, String> config, ProcessorContext ctx) {
-        Factory f = factories.get(type);
-        if (f == null) {
+        String key = resolveKey(type);
+        if (key == null) {
             throw new IllegalArgumentException("Registry: unknown processor type '" + type + "'");
         }
+        Factory f = versioned.get(key);
         return f.create(config == null ? Map.of() : config, ctx == null ? new ProcessorContext() : ctx);
     }
 
+    /// All registered unqualified type names (latest only per name).
     public java.util.Set<String> types() {
-        return Map.copyOf(factories).keySet();
+        return java.util.Set.copyOf(latestVersion.keySet());
+    }
+
+    /// Every registered (type, version) pair, sorted by name then
+    /// ascending version, with metadata. Used by
+    /// {@code GET /api/processor-types}.
+    public List<TypeInfo> listAll() {
+        List<TypeInfo> out = new ArrayList<>(metadata.values());
+        out.sort(Comparator.comparing(TypeInfo::name).thenComparing(
+                TypeInfo::version, Registry::compareVersions));
+        return out;
+    }
+
+    /// Every version registered under a given unqualified name, or
+    /// empty when the name is unknown.
+    public List<TypeInfo> listVersions(String type) {
+        List<TypeInfo> out = new ArrayList<>();
+        for (TypeInfo info : metadata.values()) {
+            if (info.name().equals(type)) out.add(info);
+        }
+        out.sort(Comparator.comparing(TypeInfo::version, Registry::compareVersions));
+        return out;
+    }
+
+    /// Latest {@link TypeInfo} for a name, null if unknown.
+    public TypeInfo latest(String type) {
+        String latest = latestVersion.get(type);
+        if (latest == null) return null;
+        return metadata.get(type + "@" + latest);
+    }
+
+    /// Parse a config "type" string into its (name, version) parts.
+    /// Version is null when the config omits the {@code @x.y.z}
+    /// suffix, which means "use latest at registry lookup time".
+    public static record TypeRef(String name, String version) {
+        public String raw() { return version == null ? name : name + "@" + version; }
+
+        public static TypeRef parse(String raw) {
+            if (raw == null) return new TypeRef("", null);
+            int at = raw.indexOf('@');
+            if (at < 0) return new TypeRef(raw, null);
+            return new TypeRef(raw.substring(0, at), raw.substring(at + 1));
+        }
     }
 
     /// Return the content store exposed by the {@code "content"}

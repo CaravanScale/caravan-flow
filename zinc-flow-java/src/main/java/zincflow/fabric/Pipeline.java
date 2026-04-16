@@ -150,6 +150,38 @@ public final class Pipeline {
         return true;
     }
 
+    /// Rebuild a running processor with a new config. Keeps its
+    /// connections + name + lifecycle state; replaces the instance
+    /// atomically. Rejects unknown processor names and unknown types.
+    /// Type override is optional — when null, the current type from
+    /// {@link #processorDefs} (or the config loader) is reused.
+    public EditResult updateProcessorConfig(String name, String type, Map<String, String> config) {
+        if (registry == null) return EditResult.fail("no registry wired");
+        if (name == null || name.isEmpty()) return EditResult.fail("name must not be blank");
+        PipelineGraph g = graph;
+        if (!g.processors().containsKey(name)) return EditResult.fail("processor '" + name + "' not found");
+
+        String effectiveType = type == null || type.isEmpty() ? processorType(name) : type;
+        if (effectiveType == null || "unknown".equals(effectiveType)) {
+            return EditResult.fail("cannot determine type for '" + name + "' — pass 'type' explicitly");
+        }
+        if (!registry.has(effectiveType)) {
+            return EditResult.fail("unknown processor type '" + effectiveType + "'");
+        }
+
+        Map<String, String> cfg = config == null ? Map.of() : Map.copyOf(config);
+        Processor rebuilt = registry.create(effectiveType, cfg, context);
+
+        Map<String, Processor> newProcessors = new LinkedHashMap<>(g.processors());
+        newProcessors.put(name, rebuilt);
+        graph = new PipelineGraph(newProcessors, g.connections(), g.entryPoints());
+
+        ProcessorDef prior = processorDefs.get(name);
+        List<String> requires = prior == null ? List.of() : prior.requires();
+        recordProcessorDef(name, effectiveType, cfg, requires);
+        return EditResult.success();
+    }
+
     // --- Connection-edge mutations ---
 
     /// Result of a single graph-edit call. {@code ok == false} means
