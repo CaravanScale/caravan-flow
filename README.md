@@ -1,6 +1,6 @@
 # Zinc Flow
 
-Lightweight, cloud-native data flow engine inspired by Apache NiFi and Apache Camel. Built in [Zinc](https://github.com/ZincScale/zinc) to dogfood the zinc-go transpiler.
+Lightweight, cloud-native data flow engine inspired by Apache NiFi and Apache Camel. Built in [Zinc](https://github.com/ZincScale/zinc) and compiled via [zinc-csharp](https://github.com/ZincScale/zinc/tree/master/zinc-csharp) to a .NET 10 AOT binary.
 
 ## What is it?
 
@@ -13,12 +13,12 @@ NiFi's processor model with Camel's direct pipeline execution and Zinc's simplic
 - **Lifecycle management** — enable/disable processors and providers at runtime
 - **Backpressure** — semaphore-gated concurrent executions, sources get 503 when full
 - **Hot reload** — atomic pipeline graph swap on config change, zero downtime
-- **Three runtimes:** Go (goroutines, 11MB), C# .NET 10 (AOT, 16MB, 2M+ ff/s), Python 3.14t (14MB)
+- **C# .NET 10 AOT runtime** — 16MB stripped binary, 2M+ ff/s throughput
 
 ## Quick Start
 
 ```bash
-# Build and run
+cd zinc-flow-csharp
 zinc build .
 ./zinc-out/zinc-flow
 
@@ -38,43 +38,13 @@ curl http://localhost:9091/api/providers
 
 ```
 zinc-flow/
-├── src/
-│   ├── core/
-│   │   ├── flowfile.zn        — FlowFile data model
-│   │   ├── result.zn          — ProcessorResult sealed type + ProcessorFn interface
-│   │   ├── content.zn         — Content sealed type (Raw, Records, Claim)
-│   │   ├── contentstore.zn    — ContentStore + FileContentStore + MemoryContentStore
-│   │   ├── context.zn         — Provider interface, ComponentState, ProcessorContext
-│   │   ├── providers.zn       — ConfigProvider, LoggingProvider, ContentProvider
-│   │   ├── scoped_context.zn  — ScopedContext (per-processor provider isolation)
-│   │   ├── avro.zn            — Avro schema, GenericRecord
-│   │   ├── record.zn          — RecordReader/RecordWriter interfaces
-│   │   ├── json_record.zn     — JSON record serde
-│   │   └── binary.zn          — V3 binary encoding helpers
-│   ├── fabric/
-│   │   ├── runtime/runtime.zn — Fabric engine (pipeline graph, direct execution)
-│   │   ├── api/handlers.zn    — REST API (processors, connections, providers)
-│   │   ├── registry/registry.zn — Processor registry + factory pattern
-│   │   ├── router/             — Predicate routing engine (for RouteOnAttribute)
-│   │   ├── source/http.zn     — HTTP ingest source
-│   │   ├── delivery/http.zn   — HTTP delivery adapter
-│   │   └── model/             — V3 serde + result JSON
-│   ├── processors/builtin.zn  — 5 built-in processors
-│   ├── main.zn                — Bootstrap + HTTP server
-│   ├── test_helpers_test.zn   — Shared test fixtures (testContext, JSON data)
-│   ├── core_test.zn           — FlowFile / Content / V3 serde tests (8)
-│   ├── processors_test.zn     — Processor tests (7)
-│   ├── routing_test.zn        — Predicate routing tests (7)
-│   ├── fabric_test.zn         — Fabric + FlowQueue + DLQ tests (9)
-│   └── scenarios_test.zn      — End-to-end flow scenarios (10)
 ├── zinc-flow-csharp/          — C# .NET 10 runtime (17 processors, 395 tests)
-├── zinc-flow-python/          — Python 3.14t runtime
+├── processors/                — additional processor packages
 ├── config.yaml                — Flow definition (processors, connections)
 ├── zinc.toml                  — Project config
+├── docs/                      — Design and reference docs
 └── TODO.md                    — Roadmap
 ```
-
-Tests use `test "name" { body }` blocks via the `zinc test` command (integrates with `go test` tooling: `-v`, `-run pattern`, `-race`, coverage). Assertions come from `stdlib.asserts`. Run everything with `zinc test .` — 41 tests.
 
 ## Architecture
 
@@ -119,23 +89,17 @@ Sink processors (no outgoing connections) — terminal
 | POST | /api/providers/enable | Enable a provider |
 | POST | /api/providers/disable | Disable with cascade to dependent processors |
 
-## Runtimes
-
-| Runtime | Binary | Throughput | Best for |
-|---|---|---|---|
-| **Go** (zinc-go transpiled) | 11MB static | 599K ff/s | Edge, embedded, performance-critical |
-| **C# .NET 10** (zinc-csharp AOT) | 16MB stripped | 2M+ ff/s | Maximum throughput, .NET ecosystems |
-| **Python 3.14t** (free-threaded) | 14MB native | 95K ff/s | ML/pandas integration, Python orgs |
-
 ## Status
 
-**Phase 2 — Useful Standalone** — complete for C# runtime. Direct pipeline executor, 17 processors, hot reload, Prometheus metrics, 438 tests. See [TODO.md](TODO.md) for the roadmap.
+**Phase 2 — Useful Standalone** — direct pipeline executor, 17 processors, hot reload, Prometheus metrics, 438 tests. See [TODO.md](TODO.md) for the roadmap.
 
 ## Design
 
 - [docs/architecture.md](docs/architecture.md) — canonical architecture document (execution model, types, pipeline graph, providers, deployment)
+- [docs/csharpism-audit.md](docs/csharpism-audit.md) — zinc/C# idiom alignment audit
 - [docs/data-engine-comparison.md](docs/data-engine-comparison.md) — comparison with NiFi, DeltaFi, Flink, Spark, Beam
 - [docs/nifi-component-analysis.md](docs/nifi-component-analysis.md) — NiFi processor catalog (reference for future StdLib expansion)
+- [docs/product-research-2026-04.md](docs/product-research-2026-04.md) — product research notes
 
 ## Related
 
