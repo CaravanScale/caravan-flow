@@ -3,22 +3,52 @@ package zincflow.processors;
 import org.junit.jupiter.api.Test;
 import zincflow.core.FlowFile;
 import zincflow.core.ProcessorResult;
+import zincflow.core.RawContent;
 
+import java.util.List;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
 final class ProcessorsTest {
 
+    private static FlowFile singleOut(ProcessorResult r) {
+        return switch (r) {
+            case ProcessorResult.Single(FlowFile ff) -> ff;
+            default -> {
+                fail("expected Single, got " + r);
+                yield null;
+            }
+        };
+    }
+
+    private static String routeOf(ProcessorResult r) {
+        return switch (r) {
+            case ProcessorResult.Routed(String name, FlowFile ignored) -> name;
+            default -> {
+                fail("expected Routed, got " + r);
+                yield "";
+            }
+        };
+    }
+
+    private static List<FlowFile> multiOut(ProcessorResult r) {
+        return switch (r) {
+            case ProcessorResult.Multiple(List<FlowFile> ffs) -> ffs;
+            default -> {
+                fail("expected Multiple, got " + r);
+                yield List.of();
+            }
+        };
+    }
+
     // --- UpdateAttribute ---
 
     @Test
     void updateAttributeSetsKeyAndWrapsInSingle() {
         var ff = FlowFile.create(new byte[0], Map.of());
-        var result = new UpdateAttribute("priority", "high").process(ff);
-        assertInstanceOf(ProcessorResult.Single.class, result);
-        var single = (ProcessorResult.Single) result;
-        assertEquals("high", single.flowFile().attributes().get("priority"));
+        var out = singleOut(new UpdateAttribute("priority", "high").process(ff));
+        assertEquals("high", out.attributes().get("priority"));
     }
 
     @Test
@@ -32,10 +62,8 @@ final class ProcessorsTest {
     @Test
     void logAttributePassesThroughUnchanged() {
         var ff = FlowFile.create(new byte[]{1, 2, 3}, Map.of("k", "v"));
-        var result = new LogAttribute("[t]").process(ff);
-        assertInstanceOf(ProcessorResult.Single.class, result);
-        assertSame(ff, ((ProcessorResult.Single) result).flowFile(),
-                "LogAttribute must be a pass-through — same FlowFile reference");
+        var out = singleOut(new LogAttribute("[t]").process(ff));
+        assertSame(ff, out, "LogAttribute must be a pass-through — same FlowFile reference");
     }
 
     // --- RouteOnAttribute ---
@@ -44,25 +72,21 @@ final class ProcessorsTest {
     void routeOnAttributeMatchesFirstRule() {
         var proc = new RouteOnAttribute("high: priority == urgent; low: priority == normal");
         var ff = FlowFile.create(new byte[0], Map.of("priority", "urgent"));
-        var result = proc.process(ff);
-        assertInstanceOf(ProcessorResult.Routed.class, result);
-        assertEquals("high", ((ProcessorResult.Routed) result).route());
+        assertEquals("high", routeOf(proc.process(ff)));
     }
 
     @Test
     void routeOnAttributeMatchesSecondRule() {
         var proc = new RouteOnAttribute("high: priority == urgent; low: priority == normal");
         var ff = FlowFile.create(new byte[0], Map.of("priority", "normal"));
-        var result = proc.process(ff);
-        assertEquals("low", ((ProcessorResult.Routed) result).route());
+        assertEquals("low", routeOf(proc.process(ff)));
     }
 
     @Test
     void routeOnAttributeFallsBackToUnmatched() {
         var proc = new RouteOnAttribute("high: priority == urgent");
         var ff = FlowFile.create(new byte[0], Map.of("priority", "bogus"));
-        var result = proc.process(ff);
-        assertEquals("unmatched", ((ProcessorResult.Routed) result).route());
+        assertEquals("unmatched", routeOf(proc.process(ff)));
     }
 
     @Test
@@ -70,15 +94,15 @@ final class ProcessorsTest {
         var proc = new RouteOnAttribute("errors: status != ok");
         var okFf = FlowFile.create(new byte[0], Map.of("status", "ok"));
         var badFf = FlowFile.create(new byte[0], Map.of("status", "fail"));
-        assertEquals("unmatched", ((ProcessorResult.Routed) proc.process(okFf)).route());
-        assertEquals("errors", ((ProcessorResult.Routed) proc.process(badFf)).route());
+        assertEquals("unmatched", routeOf(proc.process(okFf)));
+        assertEquals("errors", routeOf(proc.process(badFf)));
     }
 
     @Test
     void routeOnAttributeBlankSpecYieldsUnmatched() {
         var proc = new RouteOnAttribute("");
         var ff = FlowFile.create(new byte[0], Map.of("x", "y"));
-        assertEquals("unmatched", ((ProcessorResult.Routed) proc.process(ff)).route());
+        assertEquals("unmatched", routeOf(proc.process(ff)));
     }
 
     @Test
@@ -122,19 +146,24 @@ final class ProcessorsTest {
     void replaceTextRewritesPayload() {
         var proc = new ReplaceText("world", "Java");
         var ff = FlowFile.create("hello world".getBytes(), Map.of());
-        var result = proc.process(ff);
-        var out = (ProcessorResult.Single) result;
-        var content = (zincflow.core.RawContent) out.flowFile().content();
-        assertEquals("hello Java", new String(content.bytes()));
+        var out = singleOut(proc.process(ff));
+        if (out.content() instanceof RawContent(byte[] bytes)) {
+            assertEquals("hello Java", new String(bytes));
+        } else {
+            fail("expected RawContent, got " + out.content());
+        }
     }
 
     @Test
     void replaceTextSupportsRegexBackRefs() {
         var proc = new ReplaceText("(\\w+)@(\\w+)", "$2<-$1");
         var ff = FlowFile.create("alice@example".getBytes(), Map.of());
-        var out = (ProcessorResult.Single) proc.process(ff);
-        var content = (zincflow.core.RawContent) out.flowFile().content();
-        assertEquals("example<-alice", new String(content.bytes()));
+        var out = singleOut(proc.process(ff));
+        if (out.content() instanceof RawContent(byte[] bytes)) {
+            assertEquals("example<-alice", new String(bytes));
+        } else {
+            fail("expected RawContent, got " + out.content());
+        }
     }
 
     // --- SplitText ---
@@ -143,11 +172,14 @@ final class ProcessorsTest {
     void splitTextFansOutMultiple() {
         var proc = new SplitText(",");
         var ff = FlowFile.create("a,b,c".getBytes(), Map.of());
-        var multi = (ProcessorResult.Multiple) proc.process(ff);
-        assertEquals(3, multi.flowFiles().size());
-        var bytes = new String(((zincflow.core.RawContent) multi.flowFiles().get(1).content()).bytes());
-        assertEquals("b", bytes);
-        assertEquals("1", multi.flowFiles().get(1).attributes().get("split.index"));
-        assertEquals(ff.stringId(), multi.flowFiles().get(1).attributes().get("split.parent"));
+        var ffs = multiOut(proc.process(ff));
+        assertEquals(3, ffs.size());
+        if (ffs.get(1).content() instanceof RawContent(byte[] bytes)) {
+            assertEquals("b", new String(bytes));
+        } else {
+            fail("expected RawContent at index 1");
+        }
+        assertEquals("1", ffs.get(1).attributes().get("split.index"));
+        assertEquals(ff.stringId(), ffs.get(1).attributes().get("split.parent"));
     }
 }

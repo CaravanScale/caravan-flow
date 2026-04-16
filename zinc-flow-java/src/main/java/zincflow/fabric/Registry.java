@@ -18,6 +18,7 @@ import zincflow.processors.ExtractRecordField;
 import zincflow.processors.ExtractText;
 import zincflow.processors.FilterAttribute;
 import zincflow.processors.LogAttribute;
+import zincflow.processors.PackageFlowFileV3;
 import zincflow.processors.PutFile;
 import zincflow.processors.PutHTTP;
 import zincflow.processors.PutStdout;
@@ -26,6 +27,7 @@ import zincflow.processors.ReplaceText;
 import zincflow.processors.RouteOnAttribute;
 import zincflow.processors.SplitText;
 import zincflow.processors.TransformRecord;
+import zincflow.processors.UnpackageFlowFileV3;
 import zincflow.processors.UpdateAttribute;
 
 import java.time.Duration;
@@ -110,10 +112,15 @@ public final class Registry {
                 required(cfg, "FilterAttribute", "key"),
                 cfg.getOrDefault("value", ""),
                 !"false".equalsIgnoreCase(cfg.getOrDefault("dropOnMatch", "true"))));
-        register("PutStdout",        (cfg, ctx) -> new PutStdout(cfg.getOrDefault("prefix", "")));
+        register("PutStdout",        (cfg, ctx) -> new PutStdout(
+                cfg.getOrDefault("prefix", ""),
+                cfg.getOrDefault("format", "raw"),
+                storeFrom(ctx)));
         register("PutFile",          (cfg, ctx) -> new PutFile(
                 required(cfg, "PutFile", "directory"),
-                "true".equalsIgnoreCase(cfg.getOrDefault("append", "false"))));
+                "true".equalsIgnoreCase(cfg.getOrDefault("append", "false")),
+                cfg.getOrDefault("format", "raw"),
+                storeFrom(ctx)));
         register("ReplaceText",      (cfg, ctx) -> new ReplaceText(
                 required(cfg, "ReplaceText", "regex"),
                 cfg.getOrDefault("replacement", "")));
@@ -134,7 +141,11 @@ public final class Registry {
                 required(cfg, "PutHTTP", "endpoint"),
                 cfg.getOrDefault("method", "POST"),
                 Duration.ofSeconds(Long.parseLong(cfg.getOrDefault("timeoutSeconds", "30"))),
-                cfg.getOrDefault("contentType", "application/octet-stream")));
+                cfg.getOrDefault("contentType", "application/octet-stream"),
+                cfg.getOrDefault("format", "raw"),
+                storeFrom(ctx)));
+        register("PackageFlowFileV3",   (cfg, ctx) -> new PackageFlowFileV3(storeFrom(ctx)));
+        register("UnpackageFlowFileV3", (cfg, ctx) -> new UnpackageFlowFileV3(storeFrom(ctx)));
         // --- CSV ---
         register("ConvertCSVToRecord", (cfg, ctx) -> new ConvertCSVToRecord(
                 cfg.getOrDefault("delimiter", ",").charAt(0),

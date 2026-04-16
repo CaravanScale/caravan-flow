@@ -2,11 +2,12 @@ package zincflow.processors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import zincflow.core.Content;
+import zincflow.core.ContentResolver;
+import zincflow.core.ContentStore;
 import zincflow.core.FlowFile;
 import zincflow.core.Processor;
 import zincflow.core.ProcessorResult;
-import zincflow.core.RawContent;
+import zincflow.fabric.FlowFileV3;
 
 import java.net.URI;
 import java.net.http.HttpClient;
@@ -16,14 +17,15 @@ import java.net.http.HttpResponse;
 import java.net.http.HttpResponse.BodyHandlers;
 import java.time.Duration;
 
-/// Sink-style processor that POSTs (or PUTs) the FlowFile's RawContent
-/// to a URL using the JDK's standard HttpClient. Returns the FlowFile
-/// on "success" when the response is 2xx, with the status code and
-/// response size added as attributes. Non-2xx or transport errors
-/// route to "failure."
+/// Sink-style processor that POSTs / PUTs / PATCHes the FlowFile's
+/// content to a URL via the JDK's {@link HttpClient}. 2xx → success;
+/// non-2xx or transport error → failure.
 ///
-/// Uses only java.net.http — no transitive dependencies, HTTP/2 capable
-/// by default.
+/// {@code format=v3} wraps the body with NiFi FlowFile V3 framing and
+/// sets {@code application/flowfile-v3} as the Content-Type so the
+/// downstream receiver can round-trip the original attributes.
+/// Claim-backed content resolves through the supplied
+/// {@link ContentStore}.
 public final class PutHTTP implements Processor {
 
     private static final Logger log = LoggerFactory.getLogger(PutHTTP.class);
@@ -32,11 +34,20 @@ public final class PutHTTP implements Processor {
     private final String method;
     private final Duration timeout;
     private final String contentType;
+    private final boolean v3;
+    private final ContentStore store;
     private final HttpClient client;
 
-    public PutHTTP(String endpoint) { this(endpoint, "POST", Duration.ofSeconds(30), "application/octet-stream"); }
+    public PutHTTP(String endpoint) {
+        this(endpoint, "POST", Duration.ofSeconds(30), "application/octet-stream", "raw", null);
+    }
 
     public PutHTTP(String endpoint, String method, Duration timeout, String contentType) {
+        this(endpoint, method, timeout, contentType, "raw", null);
+    }
+
+    public PutHTTP(String endpoint, String method, Duration timeout, String contentType,
+                   String format, ContentStore store) {
         if (endpoint == null || endpoint.isEmpty()) {
             throw new IllegalArgumentException("PutHTTP: endpoint must not be blank");
         }
@@ -46,7 +57,10 @@ public final class PutHTTP implements Processor {
             default -> throw new IllegalArgumentException("PutHTTP: method must be POST/PUT/PATCH, got " + method);
         };
         this.timeout = timeout == null ? Duration.ofSeconds(30) : timeout;
-        this.contentType = contentType == null ? "application/octet-stream" : contentType;
+        this.v3 = "v3".equalsIgnoreCase(format);
+        this.contentType = this.v3 ? "application/flowfile-v3"
+                : (contentType == null ? "application/octet-stream" : contentType);
+        this.store = store;
         this.client = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .version(HttpClient.Version.HTTP_2)
@@ -55,16 +69,16 @@ public final class PutHTTP implements Processor {
 
     @Override
     public ProcessorResult process(FlowFile ff) {
-        Content content = ff.content();
-        if (!(content instanceof RawContent raw)) {
-            return ProcessorResult.failure(
-                    "PutHTTP: expected RawContent, got " + content.getClass().getSimpleName(), ff);
+        ContentResolver.Resolution resolved = ContentResolver.resolve(ff.content(), store);
+        if (!resolved.ok()) {
+            return ProcessorResult.failure("PutHTTP: " + resolved.error(), ff);
         }
+        byte[] body = v3 ? FlowFileV3.pack(ff, resolved.bytes()) : resolved.bytes();
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(endpoint)
                 .timeout(timeout)
                 .header("Content-Type", contentType)
-                .method(method, BodyPublishers.ofByteArray(raw.bytes()))
+                .method(method, BodyPublishers.ofByteArray(body))
                 .build();
         try {
             HttpResponse<byte[]> response = client.send(request, BodyHandlers.ofByteArray());

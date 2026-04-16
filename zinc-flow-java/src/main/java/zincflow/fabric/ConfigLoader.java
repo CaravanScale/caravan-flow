@@ -1,5 +1,7 @@
 package zincflow.fabric;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.yaml.snakeyaml.Yaml;
 import zincflow.core.Processor;
 import zincflow.core.ProcessorContext;
@@ -37,6 +39,8 @@ import java.util.Map;
 ///       unmatched: [sink]
 /// </pre>
 public final class ConfigLoader {
+
+    private static final Logger log = LoggerFactory.getLogger(ConfigLoader.class);
 
     private final Registry registry;
     private final ProcessorContext context;
@@ -113,8 +117,6 @@ public final class ConfigLoader {
         if (entryPoints.isEmpty()) {
             throw new IllegalArgumentException("config: 'flow.entryPoints' must be a non-empty list");
         }
-        // Validate that all referenced processors exist — catches typos at load
-        // time rather than at first ingest.
         for (String ep : entryPoints) {
             if (!processors.containsKey(ep)) {
                 throw new IllegalArgumentException("config: entryPoint '" + ep + "' is not defined in processors");
@@ -125,14 +127,20 @@ public final class ConfigLoader {
             if (!processors.containsKey(from)) {
                 throw new IllegalArgumentException("config: connection source '" + from + "' is not defined");
             }
-            for (List<String> targets : connEntry.getValue().values()) {
-                for (String t : targets) {
-                    if (!processors.containsKey(t)) {
-                        throw new IllegalArgumentException(
-                                "config: connection target '" + t + "' (from '" + from + "') is not defined");
-                    }
-                }
-            }
+        }
+
+        // Full DAG check — accumulates every unknown-target error plus
+        // cycle / unreachable warnings into one report. Errors trip a
+        // single aggregate throw so the operator sees every issue at
+        // once; warnings surface through the logger.
+        FlowValidator.Result validation = FlowValidator.validate(processors.keySet(), connections);
+        if (!validation.errors().isEmpty()) {
+            throw new IllegalArgumentException(
+                    "config: flow validation failed with " + validation.errors().size() + " error(s):\n"
+                            + String.join("\n", validation.errors()));
+        }
+        for (String warn : validation.warnings()) {
+            log.warn("flow warning: {}", warn);
         }
 
         return new PipelineGraph(processors, connections, entryPoints);

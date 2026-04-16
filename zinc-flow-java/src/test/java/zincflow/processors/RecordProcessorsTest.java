@@ -55,12 +55,18 @@ final class RecordProcessorsTest {
                 Map.of("id", 1, "name", "a"),
                 Map.of("id", 2, "name", "b"));
         var ff = FlowFile.create(new RecordContent(records), Map.of());
-        var out = (ProcessorResult.Single) new ConvertRecordToJSON().process(ff);
-        var raw = (RawContent) out.flowFile().content();
+        if (!(new ConvertRecordToJSON().process(ff) instanceof ProcessorResult.Single(FlowFile out))
+                || !(out.content() instanceof RawContent(byte[] jsonBytes))) {
+            fail("ConvertRecordToJSON should emit Single(RawContent)");
+            return;
+        }
         // Round-trip through ConvertJSONToRecord to avoid map-ordering flakes.
-        var roundTrip = new ConvertJSONToRecord().process(
-                FlowFile.create(raw.bytes(), Map.of()));
-        var decoded = (RecordContent) ((ProcessorResult.Single) roundTrip).flowFile().content();
+        if (!(new ConvertJSONToRecord().process(FlowFile.create(jsonBytes, Map.of()))
+                instanceof ProcessorResult.Single(FlowFile roundTrip))
+                || !(roundTrip.content() instanceof RecordContent decoded)) {
+            fail("ConvertJSONToRecord should produce Single(RecordContent)");
+            return;
+        }
         assertEquals(2, decoded.records().size());
     }
 
