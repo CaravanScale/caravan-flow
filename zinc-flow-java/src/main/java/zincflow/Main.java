@@ -10,6 +10,7 @@ import zincflow.fabric.HttpServer;
 import zincflow.fabric.Metrics;
 import zincflow.fabric.Pipeline;
 import zincflow.fabric.PipelineGraph;
+import zincflow.fabric.PluginLoader;
 import zincflow.fabric.Registry;
 import zincflow.processors.LogAttribute;
 import zincflow.processors.RouteOnAttribute;
@@ -54,6 +55,16 @@ public final class Main {
         content.enable();
         context.addProvider(content);
 
+        // Plugin discovery — scan $ZINCFLOW_PLUGINS_DIR (default ./plugins)
+        // for third-party processor/provider jars before loading the flow,
+        // so config.yaml can reference plugin-provided types.
+        Path pluginsDir = resolvePluginsDir();
+        PluginLoader.Summary plugins = PluginLoader.loadFromDirectory(pluginsDir, registry, context);
+        if (plugins.totalLoaded() > 0) {
+            log.info("loaded {} plugin(s) from {} — providers: {}, processors: {}",
+                    plugins.totalLoaded(), pluginsDir, plugins.providerNames(), plugins.processorTypes());
+        }
+
         ConfigLoader loader = new ConfigLoader(registry, context);
         PipelineGraph graph;
         if (configPath != null && Files.isRegularFile(configPath)) {
@@ -66,7 +77,7 @@ public final class Main {
         Metrics metrics = new Metrics();
         Pipeline pipeline = new Pipeline(graph, Pipeline.DEFAULT_MAX_HOPS, metrics, context, registry);
         int port = Integer.parseInt(System.getProperty("zincflow.port", "9092"));
-        HttpServer server = new HttpServer(pipeline, loader, configPath).start(port);
+        HttpServer server = new HttpServer(pipeline, loader, configPath, plugins, pluginsDir).start(port);
         log.info("zinc-flow-java up — POST to http://localhost:{}/ to ingest", server.port());
         log.info("dashboard: GET http://localhost:{}/dashboard    metrics: /metrics", server.port());
     }
@@ -75,6 +86,19 @@ public final class Main {
         if (args.length > 0) return Path.of(args[0]);
         Path defaultPath = Path.of("config.yaml");
         return Files.isRegularFile(defaultPath) ? defaultPath : null;
+    }
+
+    /// Pick the plugins directory — {@code $ZINCFLOW_PLUGINS_DIR} when
+    /// set, otherwise {@code ./plugins}. Non-existent paths are fine;
+    /// {@link PluginLoader#loadFromDirectory} returns an empty summary
+    /// in that case so the CLI path doesn't hard-fail on a fresh
+    /// checkout that hasn't shipped plugins yet.
+    private static Path resolvePluginsDir() {
+        String envDir = System.getenv("ZINCFLOW_PLUGINS_DIR");
+        if (envDir != null && !envDir.isEmpty()) return Path.of(envDir);
+        String propDir = System.getProperty("zincflow.pluginsDir");
+        if (propDir != null && !propDir.isEmpty()) return Path.of(propDir);
+        return Path.of("plugins");
     }
 
     /// Built-in demo pipeline used when no config.yaml is provided.

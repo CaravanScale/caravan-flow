@@ -37,19 +37,30 @@ public final class HttpServer {
     private final Pipeline pipeline;
     private final ConfigLoader loader;
     private final Path configPath;
+    private final PluginLoader.Summary plugins;
+    private final Path pluginsDir;
     private final ObjectMapper json = new ObjectMapper();
     private Javalin app;
     private int boundPort = -1;
 
     public HttpServer(Pipeline pipeline) {
-        this(pipeline, null, null);
+        this(pipeline, null, null, null, null);
     }
 
     /// Constructor for the config-driven path — enables {@code /api/reload}.
     public HttpServer(Pipeline pipeline, ConfigLoader loader, Path configPath) {
+        this(pipeline, loader, configPath, null, null);
+    }
+
+    /// Full constructor — wires in the plugin summary so {@code /api/plugins}
+    /// can report what was discovered at startup.
+    public HttpServer(Pipeline pipeline, ConfigLoader loader, Path configPath,
+                      PluginLoader.Summary plugins, Path pluginsDir) {
         this.pipeline = pipeline;
         this.loader = loader;
         this.configPath = configPath;
+        this.plugins = plugins == null ? PluginLoader.Summary.empty() : plugins;
+        this.pluginsDir = pluginsDir;
     }
 
     public HttpServer start(int port) {
@@ -82,7 +93,9 @@ public final class HttpServer {
                 .post("/api/processors/state",         this::handleProcessorState)
                 .get("/api/sources",                   this::handleSources)
                 .post("/api/sources/start",            this::handleStartSource)
-                .post("/api/sources/stop",             this::handleStopSource);
+                .post("/api/sources/stop",             this::handleStopSource)
+                .get("/api/plugins",                   this::handlePlugins)
+                .post("/api/plugins/reload",           this::handleReloadPlugins);
         app.start(port);
         boundPort = app.port();
         log.info("zinc-flow HTTP server listening on http://localhost:{}", boundPort);
@@ -381,6 +394,39 @@ public final class HttpServer {
         writeStatus(ctx, ok, name, "stopped", "source not found");
     }
 
+    // --- Plugins ---
+
+    private PluginLoader.Summary currentPlugins = null;
+
+    private PluginLoader.Summary pluginSummary() {
+        return currentPlugins != null ? currentPlugins : plugins;
+    }
+
+    private void handlePlugins(Context ctx) throws Exception {
+        ctx.contentType("application/json")
+           .result(json.writeValueAsBytes(PluginLoader.toJson(pluginSummary())));
+    }
+
+    /// Re-scan the plugins directory and register any new jars that
+    /// appeared since startup. Existing entries are overwritten (last
+    /// loader wins) — convenient for dev, relies on the operator to
+    /// avoid removing a processor type that's still referenced in the
+    /// running flow.
+    private void handleReloadPlugins(Context ctx) throws Exception {
+        if (pluginsDir == null) {
+            writeError(ctx, 501, "plugins directory was not configured at startup");
+            return;
+        }
+        if (pipeline.registry() == null) {
+            writeError(ctx, 501, "pipeline has no registry wired — plugin reload unavailable");
+            return;
+        }
+        currentPlugins = PluginLoader.loadFromDirectory(pluginsDir, pipeline.registry(), pipeline.context());
+        log.info("reloaded plugins from {} — {} loaded", pluginsDir, currentPlugins.totalLoaded());
+        ctx.contentType("application/json")
+           .result(json.writeValueAsBytes(PluginLoader.toJson(currentPlugins)));
+    }
+
     // --- Body + response helpers ---
 
     @SuppressWarnings("unchecked")
@@ -456,6 +502,7 @@ public final class HttpServer {
                 "POST /api/processors/add", "DELETE /api/processors/remove",
                 "POST /api/processors/enable", "POST /api/processors/disable",
                 "POST /api/processors/state",
-                "GET /api/sources", "POST /api/sources/start", "POST /api/sources/stop");
+                "GET /api/sources", "POST /api/sources/start", "POST /api/sources/stop",
+                "GET /api/plugins", "POST /api/plugins/reload");
     }
 }
