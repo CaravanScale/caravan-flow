@@ -158,7 +158,7 @@ final class ProviderWiringTest {
         @Override public String name() { return name; }
         @Override public String sourceType() { return type; }
         @Override public boolean isRunning() { return running; }
-        @Override public void start() { running = true; }
+        @Override public void start(java.util.function.Predicate<zincflow.core.FlowFile> ingest) { running = true; }
         @Override public void stop() { running = false; }
     }
 }

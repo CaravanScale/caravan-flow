@@ -1,10 +1,13 @@
 package zincflow.core;
 
-/// Pull/push source that feeds FlowFiles into a pipeline. Sources are a
-/// forward-compatible surface — zinc-flow-java doesn't ship built-in
-/// sources yet, so the management API reports an empty list out of the
-/// box. External code can register concrete sources through
-/// {@link zincflow.fabric.Pipeline#addSource(Source)}.
+import java.util.function.Predicate;
+
+/// Pull/push source that feeds FlowFiles into a pipeline. Concrete
+/// sources (see {@link zincflow.core.PollingSource}) hand off to the
+/// pipeline through the {@code ingest} callback supplied at start —
+/// the callback returns {@code true} on acceptance so the source can
+/// mark the underlying item consumed (e.g. {@code GetFile} moves the
+/// file to {@code .processed/}).
 ///
 /// Mirrors zinc-flow-csharp's IConnectorSource.
 public interface Source {
@@ -15,7 +18,11 @@ public interface Source {
 
     boolean isRunning();
 
-    void start();
+    /// Begin emitting. {@code ingest} is called once per FlowFile; it
+    /// returns whether the pipeline accepted the submission. Sources
+    /// must be idempotent w.r.t. {@code start} — calling twice with the
+    /// source already running is a no-op.
+    void start(Predicate<FlowFile> ingest);
 
     void stop();
 }

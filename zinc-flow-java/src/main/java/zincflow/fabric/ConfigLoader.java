@@ -5,6 +5,9 @@ import org.slf4j.LoggerFactory;
 import org.yaml.snakeyaml.Yaml;
 import zincflow.core.Processor;
 import zincflow.core.ProcessorContext;
+import zincflow.core.Source;
+import zincflow.sources.GenerateFlowFile;
+import zincflow.sources.GetFile;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -56,6 +59,7 @@ public final class ConfigLoader {
     private Map<String, ProcessorSpec> lastSpecs = Map.of();
     private Map<String, Processor> lastProcessors = Map.of();
     private ConfigOverlay.Resolved lastOverlay;
+    private List<Source> lastSources = List.of();
 
     public ConfigLoader(Registry registry) {
         this(registry, new ProcessorContext());
@@ -77,6 +81,12 @@ public final class ConfigLoader {
     /// the merged map, and per-key provenance. Used by
     /// {@code GET /api/overlays}.
     public ConfigOverlay.Resolved lastOverlay() { return lastOverlay; }
+
+    /// Sources constructed from the {@code sources:} block on the most
+    /// recent load. Callers wire these into the pipeline via
+    /// {@link Pipeline#addSource(Source)}; the loader does not start
+    /// them — that's {@link Pipeline#startSource(String)}'s job.
+    public List<Source> lastSources() { return lastSources; }
 
     public PipelineGraph loadFromFile(Path path) throws IOException {
         ConfigOverlay.Resolved resolved = ConfigOverlay.load(path);
@@ -196,7 +206,73 @@ public final class ConfigLoader {
         // declaration order (YAML round-trip relies on this).
         lastSpecs = java.util.Collections.unmodifiableMap(new LinkedHashMap<>(specs));
         lastProcessors = java.util.Collections.unmodifiableMap(new LinkedHashMap<>(processors));
+        lastSources = buildSources(top.get("sources"));
         return new PipelineGraph(processors, connections, entryPoints);
+    }
+
+    private static List<Source> buildSources(Object sourcesRaw) {
+        if (!(sourcesRaw instanceof Map<?, ?> m)) return List.of();
+        List<Source> out = new ArrayList<>();
+        Object file = m.get("file");
+        if (file instanceof Map<?, ?> fileMap) {
+            Source s = buildFileSource(stringKeyed(fileMap));
+            if (s != null) out.add(s);
+        }
+        Object generate = m.get("generate");
+        if (generate instanceof Map<?, ?> genMap) {
+            Source s = buildGenerateSource(stringKeyed(genMap));
+            if (s != null) out.add(s);
+        }
+        return List.copyOf(out);
+    }
+
+    private static Source buildFileSource(Map<String, Object> cfg) {
+        String inputDir = str(cfg.get("input_dir"));
+        if (inputDir.isEmpty()) {
+            log.info("sources.file: input_dir missing — GetFile source disabled");
+            return null;
+        }
+        String pattern = str(cfg.getOrDefault("pattern", "*"));
+        long pollMs = longOr(cfg.get("poll_interval_ms"), 1000);
+        boolean unpackV3 = boolOr(cfg.get("unpack_v3"), true);
+        return new GetFile("file", Path.of(inputDir), pattern, pollMs, unpackV3);
+    }
+
+    private static Source buildGenerateSource(Map<String, Object> cfg) {
+        String content = str(cfg.get("content"));
+        // Matches C# behaviour: empty content disables the generator.
+        // Keeps the config hospitable — you can leave the block
+        // present (for env-overlay shape) without emitting anything.
+        if (content.isEmpty()) {
+            log.info("sources.generate: content empty — GenerateFlowFile disabled");
+            return null;
+        }
+        String contentType = str(cfg.get("content_type"));
+        String attributes = str(cfg.get("attributes"));
+        int batchSize = (int) longOr(cfg.get("batch_size"), 1);
+        long pollMs = longOr(cfg.get("poll_interval_ms"), 1000);
+        return new GenerateFlowFile("generate", pollMs, content, contentType, attributes, batchSize);
+    }
+
+    private static String str(Object o) { return o == null ? "" : String.valueOf(o); }
+
+    private static long longOr(Object o, long fallback) {
+        if (o == null) return fallback;
+        if (o instanceof Number n) return n.longValue();
+        try { return Long.parseLong(o.toString().trim()); }
+        catch (NumberFormatException ex) { return fallback; }
+    }
+
+    private static boolean boolOr(Object o, boolean fallback) {
+        if (o == null) return fallback;
+        if (o instanceof Boolean b) return b;
+        return "true".equalsIgnoreCase(o.toString().trim());
+    }
+
+    private static Map<String, Object> stringKeyed(Map<?, ?> raw) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        for (var e : raw.entrySet()) out.put(String.valueOf(e.getKey()), e.getValue());
+        return out;
     }
 
     @SuppressWarnings("unchecked")

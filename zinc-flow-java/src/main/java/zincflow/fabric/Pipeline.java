@@ -347,8 +347,19 @@ public final class Pipeline {
     public boolean startSource(String name) {
         Source s = sources.get(name);
         if (s == null) return false;
-        if (!s.isRunning()) s.start();
+        if (!s.isRunning()) s.start(this::ingestFromSource);
         return true;
+    }
+
+    /// Source-side ingress. Returns {@code true} on pipeline acceptance,
+    /// {@code false} on failure — sources use the return value to
+    /// decide whether to mark the upstream item consumed.
+    private boolean ingestFromSource(FlowFile ff) {
+        try { ingest(ff); return true; }
+        catch (RuntimeException ex) {
+            log.warn("source ingest failed for {}: {}", ff.stringId(), ex.toString());
+            return false;
+        }
     }
 
     public boolean stopSource(String name) {

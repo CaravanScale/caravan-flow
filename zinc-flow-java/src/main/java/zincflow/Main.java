@@ -110,6 +110,16 @@ public final class Main {
                     vc.repo(), vc.branch(), vc.remote());
         }
 
+        // Register + auto-start every source configured under
+        // sources:. Sources emit FlowFiles into pipeline.ingest() the
+        // same way HTTP POST / does, so the graph's entryPoints see
+        // them indistinguishably.
+        for (var source : loader.lastSources()) {
+            pipeline.addSource(source);
+            pipeline.startSource(source.name());
+            log.info("source {} ({}) started", source.name(), source.sourceType());
+        }
+
         int port = Integer.parseInt(System.getProperty("zincflow.port", "9092"));
         HttpServer server = new HttpServer(pipeline, loader, configPath, plugins, pluginsDir, identity).start(port);
         log.info("zinc-flow-java up — node {} at http://localhost:{} (hostname {})",
