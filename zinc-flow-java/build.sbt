@@ -23,9 +23,12 @@ lazy val root = (project in file("."))
     libraryDependencies ++= Seq(
       // HTTP — Javalin 6 (minimal-API style, Jetty 12 underneath).
       "io.javalin" % "javalin" % "6.3.0",
-      // JSON — Jackson databind + JDK8/Java time module for records/Instant.
+      // JSON + CSV + YAML — Jackson everywhere, consistent codec shapes.
       "com.fasterxml.jackson.core" % "jackson-databind" % "2.18.0",
       "com.fasterxml.jackson.datatype" % "jackson-datatype-jsr310" % "2.18.0",
+      "com.fasterxml.jackson.dataformat" % "jackson-dataformat-csv" % "2.18.0",
+      // Avro — apache.avro for schema, binary, and OCF (Object Container File).
+      "org.apache.avro" % "avro" % "1.12.0",
       // YAML — SnakeYAML for config.yaml parsing.
       "org.yaml" % "snakeyaml" % "2.3",
       // Logging — slf4j API + Logback backend.

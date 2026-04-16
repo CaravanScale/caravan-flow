@@ -1,8 +1,14 @@
 package zincflow.fabric;
 
 import zincflow.core.Processor;
+import zincflow.processors.ConvertAvroToRecord;
+import zincflow.processors.ConvertCSVToRecord;
 import zincflow.processors.ConvertJSONToRecord;
+import zincflow.processors.ConvertOCFToRecord;
+import zincflow.processors.ConvertRecordToAvro;
+import zincflow.processors.ConvertRecordToCSV;
 import zincflow.processors.ConvertRecordToJSON;
+import zincflow.processors.ConvertRecordToOCF;
 import zincflow.processors.ExtractRecordField;
 import zincflow.processors.FilterAttribute;
 import zincflow.processors.LogAttribute;
@@ -15,6 +21,7 @@ import zincflow.processors.SplitText;
 import zincflow.processors.UpdateAttribute;
 
 import java.time.Duration;
+import java.util.List;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -86,6 +93,36 @@ public final class Registry {
                 cfg.getOrDefault("method", "POST"),
                 Duration.ofSeconds(Long.parseLong(cfg.getOrDefault("timeoutSeconds", "30"))),
                 cfg.getOrDefault("contentType", "application/octet-stream")));
+        // --- CSV ---
+        register("ConvertCSVToRecord", cfg -> new ConvertCSVToRecord(
+                cfg.getOrDefault("delimiter", ",").charAt(0),
+                !"false".equalsIgnoreCase(cfg.getOrDefault("firstRowHeader", "true")),
+                splitCSVColumns(cfg.get("columns"))));
+        register("ConvertRecordToCSV", cfg -> new ConvertRecordToCSV(
+                cfg.getOrDefault("delimiter", ",").charAt(0),
+                !"false".equalsIgnoreCase(cfg.getOrDefault("writeHeader", "true")),
+                splitCSVColumns(cfg.get("columns"))));
+        // --- Avro binary (no container framing) ---
+        register("ConvertAvroToRecord", cfg -> new ConvertAvroToRecord(
+                required(cfg, "ConvertAvroToRecord", "schema")));
+        register("ConvertRecordToAvro", cfg -> new ConvertRecordToAvro(
+                required(cfg, "ConvertRecordToAvro", "schema")));
+        // --- Avro OCF (Object Container File) ---
+        register("ConvertOCFToRecord", cfg -> new ConvertOCFToRecord());
+        register("ConvertRecordToOCF", cfg -> new ConvertRecordToOCF(
+                required(cfg, "ConvertRecordToOCF", "schema"),
+                cfg.getOrDefault("codec", "null")));
+    }
+
+    private static List<String> splitCSVColumns(String spec) {
+        if (spec == null || spec.isBlank()) return List.of();
+        String[] parts = spec.split(",");
+        List<String> out = new java.util.ArrayList<>(parts.length);
+        for (String p : parts) {
+            String trimmed = p.trim();
+            if (!trimmed.isEmpty()) out.add(trimmed);
+        }
+        return List.copyOf(out);
     }
 
     private static String required(Map<String, String> cfg, String processor, String key) {
