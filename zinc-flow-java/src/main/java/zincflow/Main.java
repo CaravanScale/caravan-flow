@@ -2,9 +2,9 @@ package zincflow;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import zincflow.core.MemoryContentStore;
 import zincflow.core.Processor;
 import zincflow.core.ProcessorContext;
+import zincflow.core.Provider;
 import zincflow.core.Relationships;
 import zincflow.fabric.ConfigLoader;
 import zincflow.fabric.HttpServer;
@@ -13,16 +13,13 @@ import zincflow.fabric.NodeIdentity;
 import zincflow.fabric.Pipeline;
 import zincflow.fabric.PipelineGraph;
 import zincflow.fabric.PluginLoader;
+import zincflow.fabric.ProviderRegistry;
 import zincflow.fabric.Registry;
 import zincflow.fabric.SourceRegistry;
+import zincflow.fabric.TypeRefs;
 import zincflow.processors.LogAttribute;
 import zincflow.processors.RouteOnAttribute;
 import zincflow.processors.UpdateAttribute;
-import zincflow.providers.ConfigProvider;
-import zincflow.providers.ContentProvider;
-import zincflow.providers.LoggingProvider;
-import zincflow.providers.ProvenanceProvider;
-import zincflow.providers.SchemaRegistryProvider;
 import zincflow.providers.UIRegistrationProvider;
 import zincflow.providers.VersionControlProvider;
 
@@ -59,46 +56,35 @@ public final class Main {
         Path configPath = resolveConfigPath(args);
         Registry registry = new Registry();
         SourceRegistry sourceRegistry = new SourceRegistry();
-        // Built-in sources register via the system classloader's
-        // META-INF/services/zincflow.core.SourcePlugin so they come in
-        // through the same ServiceLoader path that plugin jars use.
-        // A plugin jar with the same type name + higher version wins
-        // at latest-version lookup.
-        PluginLoader.loadSources(Main.class.getClassLoader(), sourceRegistry);
-
-        // Wire the Phase 3e provider set — config, logging, provenance,
-        // and an in-memory content store. All start ENABLED so the
-        // pipeline is useful out of the box; operators disable individual
-        // providers at runtime via POST /api/providers/disable.
+        ProviderRegistry providerRegistry = new ProviderRegistry();
         ProcessorContext context = new ProcessorContext();
-        LoggingProvider logging = new LoggingProvider();
-        logging.enable();
-        context.addProvider(logging);
-        ConfigProvider cfg = new ConfigProvider(Map.of());
-        cfg.enable();
-        context.addProvider(cfg);
-        ProvenanceProvider provenance = new ProvenanceProvider();
-        provenance.enable();
-        context.addProvider(provenance);
-        ContentProvider content = new ContentProvider(new MemoryContentStore());
-        content.enable();
-        context.addProvider(content);
-        SchemaRegistryProvider schemaRegistry = new SchemaRegistryProvider();
-        schemaRegistry.enable();
-        context.addProvider(schemaRegistry);
+
+        // Populate registries via ServiceLoader — same path plugin jars
+        // use, so built-ins and plugins are discovered uniformly.
+        PluginLoader.loadSources(Main.class.getClassLoader(), sourceRegistry);
+        PluginLoader.loadProviders(Main.class.getClassLoader(), providerRegistry);
+
+        // Register the two bootstrap-dependent providers (identity
+        // supplier, resolved repo path) as registry factories that
+        // close over Main-local state. An AtomicReference lets the
+        // UIReg factory run before identity is resolved — the supplier
+        // is called lazily at heartbeat time, not construct time.
+        var identityRef = new java.util.concurrent.atomic.AtomicReference<NodeIdentity>();
+        registerBootstrapProviders(providerRegistry, identityRef, configPath);
 
         // Plugin discovery — scan $ZINCFLOW_PLUGINS_DIR (default ./plugins)
         // for third-party processor/provider jars before loading the flow,
         // so config.yaml can reference plugin-provided types.
         Path pluginsDir = resolvePluginsDir();
-        PluginLoader.Summary plugins = PluginLoader.loadFromDirectory(pluginsDir, registry, context, sourceRegistry);
+        PluginLoader.Summary plugins = PluginLoader.loadFromDirectory(
+                pluginsDir, registry, context, sourceRegistry);
         if (plugins.totalLoaded() > 0) {
             log.info("loaded {} plugin(s) from {} — providers: {}, processors: {}, sources: {}",
                     plugins.totalLoaded(), pluginsDir, plugins.providerNames(),
                     plugins.processorTypes(), plugins.sourceTypes());
         }
 
-        ConfigLoader loader = new ConfigLoader(registry, context, sourceRegistry);
+        ConfigLoader loader = new ConfigLoader(registry, context, sourceRegistry, providerRegistry);
         PipelineGraph graph;
         if (configPath != null && Files.isRegularFile(configPath)) {
             log.info("loading pipeline from {}", configPath.toAbsolutePath());
@@ -110,30 +96,28 @@ public final class Main {
         Metrics metrics = new Metrics();
         Pipeline pipeline = new Pipeline(graph, Pipeline.DEFAULT_MAX_HOPS, metrics, context, registry);
 
-        // Node identity — read ui.nodeId from the effective layered
-        // config if set, else use/create the persisted UUID file.
+        // Resolve node identity from the effective layered config (or
+        // the persisted UUID file), then populate the atomic so the
+        // UIReg factory's lazy identity supplier can see it.
         Map<String, Object> effective = loader.lastOverlay() == null ? Map.of()
                 : loader.lastOverlay().effective();
         NodeIdentity identity = NodeIdentity.resolve(effective,
                 Path.of(NodeIdentity.NODE_ID_FILE), Main.class.getPackage().getImplementationVersion());
+        identityRef.set(identity);
 
-        // Optional UI self-registration — only if ui.register_to is set.
-        String uiTarget = registerTarget(effective);
-        if (uiTarget != null) {
-            UIRegistrationProvider reg = new UIRegistrationProvider(uiTarget,
-                    () -> identity.toMap(resolvePort()));
-            context.addProvider(reg);
-            reg.enable();
-            log.info("self-registering with UI at {}", uiTarget);
-        }
-
-        // Optional Git version-control provider — only if vc.enabled: true.
-        if (isVcEnabled(effective)) {
-            VersionControlProvider vc = buildVcProvider(effective, configPath);
-            context.addProvider(vc);
-            vc.enable();
-            log.info("version control enabled — repo={} branch={} remote={}",
-                    vc.repo(), vc.branch(), vc.remote());
+        // Wire providers. The providers: block in config — if present —
+        // takes precedence. Otherwise we instantiate every registered
+        // type with its config map drawn from the effective overlay,
+        // which preserves the default set (logging, config, provenance,
+        // content, schema_registry) plus conditional ones (UIReg when
+        // ui.register_to is set, VC when vc.enabled is true).
+        List<Provider> providersToWire = loader.lastProviders().isEmpty()
+                ? defaultProviders(providerRegistry, effective)
+                : loader.lastProviders();
+        for (Provider p : providersToWire) {
+            context.addProvider(p);
+            p.enable();
+            log.info("provider {} ({}) enabled", p.name(), p.providerType());
         }
 
         // Register + auto-start every source configured under
@@ -173,37 +157,73 @@ public final class Main {
         }));
     }
 
-    @SuppressWarnings("unchecked")
-    private static String registerTarget(Map<String, Object> effective) {
-        Object ui = effective.get(CFG_UI);
-        if (!(ui instanceof Map<?, ?> uiMap)) return null;
-        Object target = ((Map<String, Object>) uiMap).get(CFG_UI_REGISTER);
-        return target == null ? null : target.toString();
-    }
-
-    @SuppressWarnings("unchecked")
-    private static boolean isVcEnabled(Map<String, Object> effective) {
-        Object vc = effective.get(CFG_VC);
-        if (!(vc instanceof Map<?, ?> vcMap)) return false;
-        Object enabled = ((Map<String, Object>) vcMap).get(CFG_VC_ENABLED);
-        return enabled instanceof Boolean b ? b : "true".equalsIgnoreCase(String.valueOf(enabled));
-    }
-
-    @SuppressWarnings("unchecked")
-    private static VersionControlProvider buildVcProvider(Map<String, Object> effective, Path configPath) {
-        Object vc = effective.get(CFG_VC);
-        Map<String, Object> vcMap = vc instanceof Map<?, ?> m ? (Map<String, Object>) m : Map.of();
-        Path repo = vcMap.containsKey(CFG_VC_REPO)
-                ? Path.of(String.valueOf(vcMap.get(CFG_VC_REPO)))
-                : (configPath == null ? Path.of(".") : configPath.toAbsolutePath().getParent());
-        String gitBinary = vcMap.containsKey(CFG_VC_GIT) ? String.valueOf(vcMap.get(CFG_VC_GIT)) : "git";
-        String remote = vcMap.containsKey(CFG_VC_REMOTE) ? String.valueOf(vcMap.get(CFG_VC_REMOTE)) : "origin";
-        String branch = vcMap.containsKey(CFG_VC_BRANCH) ? String.valueOf(vcMap.get(CFG_VC_BRANCH)) : "main";
-        return new VersionControlProvider(repo, gitBinary, remote, branch);
-    }
-
     private static int resolvePort() {
         return Integer.parseInt(System.getProperty(PROP_PORT, DEFAULT_PORT));
+    }
+
+    /// Register the two providers whose construction depends on
+    /// Main-local state (node identity, config file location) as
+    /// closures over that state. Done before config load so the
+    /// {@code providers:} block can reference them.
+    private static void registerBootstrapProviders(
+            ProviderRegistry providerRegistry,
+            java.util.concurrent.atomic.AtomicReference<NodeIdentity> identityRef,
+            Path configPath) {
+        providerRegistry.register(
+                new ProviderRegistry.TypeInfo(
+                        UIRegistrationProvider.TYPE, TypeRefs.DEFAULT_VERSION,
+                        "Self-registers this worker with a central UI via periodic heartbeat.",
+                        List.of(CFG_UI_REGISTER)),
+                cfg -> {
+                    Object target = cfg.get(CFG_UI_REGISTER);
+                    if (target == null || target.toString().isEmpty()) return null;
+                    return new UIRegistrationProvider(target.toString(),
+                            () -> identityRef.get().toMap(resolvePort()));
+                });
+
+        providerRegistry.register(
+                new ProviderRegistry.TypeInfo(
+                        VersionControlProvider.TYPE, TypeRefs.DEFAULT_VERSION,
+                        "Shells out to system git for flow-config commit + push.",
+                        List.of(CFG_VC_ENABLED, CFG_VC_REPO, CFG_VC_GIT, CFG_VC_REMOTE, CFG_VC_BRANCH)),
+                cfg -> {
+                    Object enabled = cfg.get(CFG_VC_ENABLED);
+                    boolean on = enabled instanceof Boolean b ? b
+                            : "true".equalsIgnoreCase(String.valueOf(enabled));
+                    if (!on) return null;
+                    Path repo = cfg.containsKey(CFG_VC_REPO)
+                            ? Path.of(String.valueOf(cfg.get(CFG_VC_REPO)))
+                            : (configPath == null ? Path.of(".") : configPath.toAbsolutePath().getParent());
+                    return new VersionControlProvider(
+                            repo,
+                            String.valueOf(cfg.getOrDefault(CFG_VC_GIT,    "git")),
+                            String.valueOf(cfg.getOrDefault(CFG_VC_REMOTE, "origin")),
+                            String.valueOf(cfg.getOrDefault(CFG_VC_BRANCH, "main")));
+                });
+    }
+
+    /// Build the default provider set when {@code providers:} is absent
+    /// from config. For every registered provider type we call its
+    /// factory with whatever matches the conventional config key
+    /// (e.g. the {@code ui} / {@code vc} sub-maps for UIReg / VC) or
+    /// an empty map for the stateless built-ins. Null factory returns
+    /// mean "disabled" and are filtered out.
+    @SuppressWarnings("unchecked")
+    private static List<Provider> defaultProviders(
+            ProviderRegistry providerRegistry, Map<String, Object> effective) {
+        List<Provider> out = new java.util.ArrayList<>();
+        for (ProviderRegistry.TypeInfo info : providerRegistry.listAll()) {
+            Map<String, Object> cfg = switch (info.name()) {
+                case UIRegistrationProvider.TYPE -> effective.get(CFG_UI) instanceof Map<?, ?> m
+                        ? (Map<String, Object>) m : Map.of();
+                case VersionControlProvider.TYPE -> effective.get(CFG_VC) instanceof Map<?, ?> m
+                        ? (Map<String, Object>) m : Map.of();
+                default -> Map.of();
+            };
+            Provider p = providerRegistry.create(info.qualifiedName(), cfg);
+            if (p != null) out.add(p);
+        }
+        return out;
     }
 
     private static Path resolveConfigPath(String[] args) {

@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 import org.yaml.snakeyaml.Yaml;
 import zincflow.core.Processor;
 import zincflow.core.ProcessorContext;
+import zincflow.core.Provider;
 import zincflow.core.Source;
 
 import java.io.IOException;
@@ -60,24 +61,32 @@ public final class ConfigLoader {
 
     private final Registry registry;
     private final SourceRegistry sourceRegistry;
+    private final ProviderRegistry providerRegistry;
     private final ProcessorContext context;
     private Map<String, ProcessorSpec> lastSpecs = Map.of();
     private Map<String, Processor> lastProcessors = Map.of();
     private ConfigOverlay.Resolved lastOverlay;
     private List<Source> lastSources = List.of();
+    private List<Provider> lastProviders = List.of();
 
     public ConfigLoader(Registry registry) {
-        this(registry, new ProcessorContext(), null);
+        this(registry, new ProcessorContext(), null, null);
     }
 
     public ConfigLoader(Registry registry, ProcessorContext context) {
-        this(registry, context, null);
+        this(registry, context, null, null);
     }
 
     public ConfigLoader(Registry registry, ProcessorContext context, SourceRegistry sourceRegistry) {
+        this(registry, context, sourceRegistry, null);
+    }
+
+    public ConfigLoader(Registry registry, ProcessorContext context,
+                        SourceRegistry sourceRegistry, ProviderRegistry providerRegistry) {
         this.registry = registry;
         this.context = context == null ? new ProcessorContext() : context;
         this.sourceRegistry = sourceRegistry;
+        this.providerRegistry = providerRegistry;
     }
 
     public ProcessorContext context() { return context; }
@@ -97,6 +106,11 @@ public final class ConfigLoader {
     /// {@link Pipeline#addSource(Source)}; the loader does not start
     /// them — that's {@link Pipeline#startSource(String)}'s job.
     public List<Source> lastSources() { return lastSources; }
+
+    /// Providers constructed from the {@code providers:} block on the
+    /// most recent load. Empty when no block was present — in that
+    /// case the caller keeps the default provider set it bootstrapped.
+    public List<Provider> lastProviders() { return lastProviders; }
 
     public PipelineGraph loadFromFile(Path path) throws IOException {
         ConfigOverlay.Resolved resolved = ConfigOverlay.load(path);
@@ -217,7 +231,54 @@ public final class ConfigLoader {
         lastSpecs = java.util.Collections.unmodifiableMap(new LinkedHashMap<>(specs));
         lastProcessors = java.util.Collections.unmodifiableMap(new LinkedHashMap<>(processors));
         lastSources = buildSources(top.get("sources"));
+        lastProviders = buildProviders(top.get("providers"));
         return new PipelineGraph(processors, connections, entryPoints);
+    }
+
+    /// Build every provider declared under {@code providers:}. Same
+    /// {@code {type, config}} shape as processors and sources:
+    /// <pre>
+    /// providers:
+    ///   logging:
+    ///     type: LoggingProvider
+    ///   prov:
+    ///     type: ProvenanceProvider
+    ///     config: {buffer: 10000}
+    /// </pre>
+    /// Missing block → empty list, and the caller keeps whatever
+    /// provider set it bootstrapped. Factories returning null are
+    /// treated as "disabled for this config" — logged, not thrown.
+    private List<Provider> buildProviders(Object providersRaw) {
+        if (providersRaw == null) return List.of();
+        if (!(providersRaw instanceof Map<?, ?> m)) {
+            throw new IllegalArgumentException("config: 'providers' must be a map of name → {type, config}");
+        }
+        if (providerRegistry == null) {
+            log.warn("providers block present but no ProviderRegistry wired — providers ignored");
+            return List.of();
+        }
+        List<Provider> out = new ArrayList<>();
+        for (var entry : m.entrySet()) {
+            String name = String.valueOf(entry.getKey());
+            if (!(entry.getValue() instanceof Map<?, ?> def)) {
+                throw new IllegalArgumentException(
+                        "config: provider '" + name + "' must be a map with 'type' + 'config'");
+            }
+            Object typeRaw = def.get(TYPE_KEY);
+            if (typeRaw == null) {
+                throw new IllegalArgumentException("config: provider '" + name + "' missing 'type'");
+            }
+            Map<String, Object> providerConfig = def.get(CONFIG_KEY) instanceof Map<?, ?> c
+                    ? stringKeyed(c)
+                    : Map.of();
+            Provider provider = providerRegistry.create(String.valueOf(typeRaw), providerConfig);
+            if (provider == null) {
+                log.info("provider '{}' ({}): factory returned null — disabled", name, typeRaw);
+                continue;
+            }
+            out.add(provider);
+        }
+        return List.copyOf(out);
     }
 
     /// Build every source declared under {@code sources:}. Each entry
