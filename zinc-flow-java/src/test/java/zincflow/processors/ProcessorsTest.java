@@ -90,4 +90,64 @@ final class ProcessorsTest {
         assertThrows(IllegalArgumentException.class,
                 () -> new RouteOnAttribute("r: attr BADOP value"));
     }
+
+    // --- FilterAttribute ---
+
+    @Test
+    void filterAttributeDropsOnMatch() {
+        var proc = new FilterAttribute("drop", "yes");
+        var ff = FlowFile.create(new byte[0], Map.of("drop", "yes"));
+        assertSame(ProcessorResult.Dropped.INSTANCE, proc.process(ff));
+    }
+
+    @Test
+    void filterAttributePassesWhenNoMatch() {
+        var proc = new FilterAttribute("drop", "yes");
+        var ff = FlowFile.create(new byte[0], Map.of("drop", "no"));
+        assertInstanceOf(ProcessorResult.Single.class, proc.process(ff));
+    }
+
+    @Test
+    void filterAttributeInvertedKeepsOnMatch() {
+        var proc = new FilterAttribute("keep", "me", false); // drop when NOT matching
+        var keep = FlowFile.create(new byte[0], Map.of("keep", "me"));
+        var drop = FlowFile.create(new byte[0], Map.of("keep", "other"));
+        assertInstanceOf(ProcessorResult.Single.class, proc.process(keep));
+        assertSame(ProcessorResult.Dropped.INSTANCE, proc.process(drop));
+    }
+
+    // --- ReplaceText ---
+
+    @Test
+    void replaceTextRewritesPayload() {
+        var proc = new ReplaceText("world", "Java");
+        var ff = FlowFile.create("hello world".getBytes(), Map.of());
+        var result = proc.process(ff);
+        var out = (ProcessorResult.Single) result;
+        var content = (zincflow.core.RawContent) out.flowFile().content();
+        assertEquals("hello Java", new String(content.bytes()));
+    }
+
+    @Test
+    void replaceTextSupportsRegexBackRefs() {
+        var proc = new ReplaceText("(\\w+)@(\\w+)", "$2<-$1");
+        var ff = FlowFile.create("alice@example".getBytes(), Map.of());
+        var out = (ProcessorResult.Single) proc.process(ff);
+        var content = (zincflow.core.RawContent) out.flowFile().content();
+        assertEquals("example<-alice", new String(content.bytes()));
+    }
+
+    // --- SplitText ---
+
+    @Test
+    void splitTextFansOutMultiple() {
+        var proc = new SplitText(",");
+        var ff = FlowFile.create("a,b,c".getBytes(), Map.of());
+        var multi = (ProcessorResult.Multiple) proc.process(ff);
+        assertEquals(3, multi.flowFiles().size());
+        var bytes = new String(((zincflow.core.RawContent) multi.flowFiles().get(1).content()).bytes());
+        assertEquals("b", bytes);
+        assertEquals("1", multi.flowFiles().get(1).attributes().get("split.index"));
+        assertEquals(ff.stringId(), multi.flowFiles().get(1).attributes().get("split.parent"));
+    }
 }

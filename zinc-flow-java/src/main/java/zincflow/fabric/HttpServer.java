@@ -6,37 +6,56 @@ import io.javalin.http.Context;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import zincflow.core.FlowFile;
+import zincflow.core.Processor;
 
+import java.io.IOException;
+import java.nio.file.Path;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
-/// Minimal HTTP surface — one ingest endpoint + one stats endpoint.
-/// Full API parity (processor list, connections, flow graph, providers,
-/// provenance, metrics, enable/disable, hot reload) lands in Phase 3.
+/// HTTP surface for zinc-flow-java. Phase 3 adds:
+///   * POST /             — ingest a FlowFile
+///   * GET  /health       — liveness probe
+///   * GET  /api/stats    — running counters
+///   * GET  /api/processors — list active processors + their type
+///   * GET  /api/connections — full connection map
+///   * GET  /api/flow     — full graph snapshot (processors + connections + stats)
+///   * POST /api/reload   — hot-swap the graph from config.yaml on disk
 ///
-/// Uses Javalin 6 (Jetty 12 underneath) — lightweight, non-DI, minimal
-/// configuration surface.
+/// Javalin 6 with Jetty 12 underneath — non-DI, minimal surface.
 public final class HttpServer {
 
     private static final Logger log = LoggerFactory.getLogger(HttpServer.class);
 
     private final Pipeline pipeline;
+    private final ConfigLoader loader;
+    private final Path configPath;
     private final ObjectMapper json = new ObjectMapper();
     private Javalin app;
     private int boundPort = -1;
 
     public HttpServer(Pipeline pipeline) {
-        this.pipeline = pipeline;
+        this(pipeline, null, null);
     }
 
-    /// Starts the server on {@code port}. Pass {@code 0} to let the OS
-    /// pick a free port (handy in tests). Returns {@code this} so calls
-    /// can chain.
+    /// Constructor for the config-driven path — enables {@code /api/reload}.
+    public HttpServer(Pipeline pipeline, ConfigLoader loader, Path configPath) {
+        this.pipeline = pipeline;
+        this.loader = loader;
+        this.configPath = configPath;
+    }
+
     public HttpServer start(int port) {
         app = Javalin.create(cfg -> { /* default config — no DI, no plugins */ })
-                .post("/", this::handleIngest)
-                .get("/api/stats", this::handleStats)
-                .get("/health", ctx -> ctx.result("ok"));
+                .post("/",                 this::handleIngest)
+                .get("/health",            ctx -> ctx.result("ok"))
+                .get("/api/stats",         this::handleStats)
+                .get("/api/processors",    this::handleProcessors)
+                .get("/api/connections",   this::handleConnections)
+                .get("/api/flow",          this::handleFlow)
+                .post("/api/reload",       this::handleReload);
         app.start(port);
         boundPort = app.port();
         log.info("zinc-flow HTTP server listening on http://localhost:{}", boundPort);
@@ -44,9 +63,7 @@ public final class HttpServer {
     }
 
     public int port() {
-        if (boundPort < 0) {
-            throw new IllegalStateException("server not started");
-        }
+        if (boundPort < 0) throw new IllegalStateException("server not started");
         return boundPort;
     }
 
@@ -58,16 +75,16 @@ public final class HttpServer {
         }
     }
 
+    // --- Handlers ---
+
     private void handleIngest(Context ctx) {
         byte[] body = ctx.bodyAsBytes();
         Map<String, String> attributes = new HashMap<>();
-        // Map every X-Flow-* header (except X-Flow-Type which is normalised to "type") into attributes.
         ctx.headerMap().forEach((k, v) -> {
             if (k == null) return;
             String lower = k.toLowerCase();
             if (lower.startsWith("x-flow-")) {
-                String attrKey = lower.substring("x-flow-".length());
-                attributes.put(attrKey, v);
+                attributes.put(lower.substring("x-flow-".length()), v);
             }
         });
         FlowFile ff = FlowFile.create(body, attributes);
@@ -82,5 +99,56 @@ public final class HttpServer {
 
     private void handleStats(Context ctx) throws Exception {
         ctx.contentType("application/json").result(json.writeValueAsBytes(pipeline.stats().snapshot()));
+    }
+
+    private void handleProcessors(Context ctx) throws Exception {
+        PipelineGraph graph = pipeline.graph();
+        Map<String, String> out = new LinkedHashMap<>();
+        for (var entry : graph.processors().entrySet()) {
+            Processor p = entry.getValue();
+            out.put(entry.getKey(), p.getClass().getSimpleName());
+        }
+        ctx.contentType("application/json").result(json.writeValueAsBytes(out));
+    }
+
+    private void handleConnections(Context ctx) throws Exception {
+        ctx.contentType("application/json").result(json.writeValueAsBytes(pipeline.graph().connections()));
+    }
+
+    private void handleFlow(Context ctx) throws Exception {
+        PipelineGraph graph = pipeline.graph();
+        Map<String, String> procTypes = new LinkedHashMap<>();
+        for (var entry : graph.processors().entrySet()) {
+            procTypes.put(entry.getKey(), entry.getValue().getClass().getSimpleName());
+        }
+        Map<String, Object> out = Map.of(
+                "entryPoints", graph.entryPoints(),
+                "processors",  procTypes,
+                "connections", graph.connections(),
+                "stats",       pipeline.stats().snapshot());
+        ctx.contentType("application/json").result(json.writeValueAsBytes(out));
+    }
+
+    private void handleReload(Context ctx) {
+        if (loader == null || configPath == null) {
+            ctx.status(501).result("reload not supported: server started without a config loader");
+            return;
+        }
+        try {
+            PipelineGraph fresh = loader.loadFromFile(configPath);
+            pipeline.swapGraph(fresh);
+            log.info("reloaded pipeline from {} — {} processors, entry points: {}",
+                    configPath, fresh.processors().size(), fresh.entryPoints());
+            ctx.status(200).result("reloaded");
+        } catch (IOException | RuntimeException ex) {
+            log.error("reload failed: {}", ex.toString(), ex);
+            ctx.status(400).result("reload failed: " + ex.getMessage());
+        }
+    }
+
+    // Exposed for tests/inspection.
+    public List<String> routes() {
+        return List.of("POST /", "GET /health", "GET /api/stats", "GET /api/processors",
+                "GET /api/connections", "GET /api/flow", "POST /api/reload");
     }
 }
