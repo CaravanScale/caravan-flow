@@ -49,8 +49,15 @@ public final class HttpServer {
 
     public HttpServer start(int port) {
         app = Javalin.create(cfg -> { /* default config — no DI, no plugins */ })
+                // GET / serves the dashboard when the static file is on the
+                // classpath. POST / is ingest. Distinguishing by method is a
+                // zincflow-isms since the original C# service followed the
+                // same convention.
+                .get("/",                  this::handleDashboard)
                 .post("/",                 this::handleIngest)
+                .get("/dashboard",         this::handleDashboard)
                 .get("/health",            ctx -> ctx.result("ok"))
+                .get("/metrics",           this::handleMetrics)
                 .get("/api/stats",         this::handleStats)
                 .get("/api/processors",    this::handleProcessors)
                 .get("/api/connections",   this::handleConnections)
@@ -129,6 +136,27 @@ public final class HttpServer {
         ctx.contentType("application/json").result(json.writeValueAsBytes(out));
     }
 
+    private void handleMetrics(Context ctx) {
+        if (pipeline.metrics() == null) {
+            ctx.status(501).result("metrics not enabled — construct Pipeline with a Metrics instance");
+            return;
+        }
+        ctx.contentType("text/plain; version=0.0.4; charset=utf-8")
+           .result(pipeline.metrics().scrape());
+    }
+
+    private void handleDashboard(Context ctx) {
+        try (var in = HttpServer.class.getClassLoader().getResourceAsStream("dashboard.html")) {
+            if (in == null) {
+                ctx.status(404).result("dashboard.html not on classpath");
+                return;
+            }
+            ctx.contentType("text/html; charset=utf-8").result(in.readAllBytes());
+        } catch (java.io.IOException ex) {
+            ctx.status(500).result("dashboard read failed: " + ex.getMessage());
+        }
+    }
+
     private void handleReload(Context ctx) {
         if (loader == null || configPath == null) {
             ctx.status(501).result("reload not supported: server started without a config loader");
@@ -148,7 +176,8 @@ public final class HttpServer {
 
     // Exposed for tests/inspection.
     public List<String> routes() {
-        return List.of("POST /", "GET /health", "GET /api/stats", "GET /api/processors",
-                "GET /api/connections", "GET /api/flow", "POST /api/reload");
+        return List.of("GET /", "POST /", "GET /dashboard", "GET /health", "GET /metrics",
+                "GET /api/stats", "GET /api/processors", "GET /api/connections",
+                "GET /api/flow", "POST /api/reload");
     }
 }

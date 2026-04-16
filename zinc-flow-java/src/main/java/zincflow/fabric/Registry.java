@@ -1,14 +1,20 @@
 package zincflow.fabric;
 
 import zincflow.core.Processor;
+import zincflow.processors.ConvertJSONToRecord;
+import zincflow.processors.ConvertRecordToJSON;
+import zincflow.processors.ExtractRecordField;
 import zincflow.processors.FilterAttribute;
 import zincflow.processors.LogAttribute;
 import zincflow.processors.PutFile;
+import zincflow.processors.PutHTTP;
 import zincflow.processors.PutStdout;
 import zincflow.processors.ReplaceText;
 import zincflow.processors.RouteOnAttribute;
 import zincflow.processors.SplitText;
 import zincflow.processors.UpdateAttribute;
+
+import java.time.Duration;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -69,6 +75,17 @@ public final class Registry {
         register("SplitText",        cfg -> new SplitText(
                 required(cfg, "SplitText", "delimiter"),
                 "true".equalsIgnoreCase(cfg.getOrDefault("regex", "false"))));
+        register("ConvertJSONToRecord", cfg -> new ConvertJSONToRecord());
+        register("ConvertRecordToJSON", cfg -> new ConvertRecordToJSON(
+                "true".equalsIgnoreCase(cfg.getOrDefault("singleObject", "false"))));
+        register("ExtractRecordField",  cfg -> new ExtractRecordField(
+                required(cfg, "ExtractRecordField", "fieldPath"),
+                required(cfg, "ExtractRecordField", "attributeName")));
+        register("PutHTTP", cfg -> new PutHTTP(
+                required(cfg, "PutHTTP", "endpoint"),
+                cfg.getOrDefault("method", "POST"),
+                Duration.ofSeconds(Long.parseLong(cfg.getOrDefault("timeoutSeconds", "30"))),
+                cfg.getOrDefault("contentType", "application/octet-stream")));
     }
 
     private static String required(Map<String, String> cfg, String processor, String key) {

@@ -29,16 +29,26 @@ public final class Pipeline {
 
     private volatile PipelineGraph graph;
     private final Stats stats;
+    private final Metrics metrics;
     private final int maxHops;
 
     public Pipeline(PipelineGraph graph) {
-        this(graph, DEFAULT_MAX_HOPS);
+        this(graph, DEFAULT_MAX_HOPS, null);
     }
 
     public Pipeline(PipelineGraph graph, int maxHops) {
+        this(graph, maxHops, null);
+    }
+
+    public Pipeline(PipelineGraph graph, int maxHops, Metrics metrics) {
         this.graph = Objects.requireNonNull(graph);
         this.maxHops = maxHops;
-        this.stats = new Stats();
+        this.metrics = metrics;
+        this.stats = new Stats(metrics);
+    }
+
+    public Metrics metrics() {
+        return metrics;
     }
 
     /// Swap the graph atomically. In-flight ingest calls complete against

@@ -31,6 +31,9 @@ lazy val root = (project in file("."))
       // Logging — slf4j API + Logback backend.
       "org.slf4j" % "slf4j-api" % "2.0.16",
       "ch.qos.logback" % "logback-classic" % "1.5.12",
+      // Metrics — Micrometer core + Prometheus registry.
+      "io.micrometer" % "micrometer-core" % "1.14.2",
+      "io.micrometer" % "micrometer-registry-prometheus" % "1.14.2",
       // JUnit 6 — official sbt-jupiter-interface starter shape.
       "com.github.sbt.junit" % "jupiter-interface" % JupiterKeys.jupiterVersion.value % Test,
       "org.junit.jupiter" % "junit-jupiter" % "6.0.3" % Test,

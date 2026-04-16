@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 import zincflow.core.Processor;
 import zincflow.fabric.ConfigLoader;
 import zincflow.fabric.HttpServer;
+import zincflow.fabric.Metrics;
 import zincflow.fabric.Pipeline;
 import zincflow.fabric.PipelineGraph;
 import zincflow.fabric.Registry;
@@ -37,10 +38,12 @@ public final class Main {
             log.info("no config.yaml found — using built-in demo pipeline");
             graph = demoGraph();
         }
-        Pipeline pipeline = new Pipeline(graph);
+        Metrics metrics = new Metrics();
+        Pipeline pipeline = new Pipeline(graph, Pipeline.DEFAULT_MAX_HOPS, metrics);
         int port = Integer.parseInt(System.getProperty("zincflow.port", "9092"));
         HttpServer server = new HttpServer(pipeline, loader, configPath).start(port);
         log.info("zinc-flow-java up — POST to http://localhost:{}/ to ingest", server.port());
+        log.info("dashboard: GET http://localhost:{}/dashboard    metrics: /metrics", server.port());
     }
 
     private static Path resolveConfigPath(String[] args) {
