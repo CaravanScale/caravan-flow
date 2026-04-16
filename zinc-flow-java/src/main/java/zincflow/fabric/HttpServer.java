@@ -96,7 +96,11 @@ public final class HttpServer {
                 .post("/api/sources/start",            this::handleStartSource)
                 .post("/api/sources/stop",             this::handleStopSource)
                 .get("/api/plugins",                   this::handlePlugins)
-                .post("/api/plugins/reload",           this::handleReloadPlugins);
+                .post("/api/plugins/reload",           this::handleReloadPlugins)
+                .post("/api/connections",              this::handleAddConnection)
+                .delete("/api/connections",            this::handleRemoveConnection)
+                .put("/api/connections/{from}",        this::handleSetConnections)
+                .put("/api/entrypoints",               this::handleSetEntryPoints);
 
         // Confluent-shape schema registry — mounted only when a
         // SchemaRegistryProvider is wired into the context. Skipping the
@@ -415,6 +419,78 @@ public final class HttpServer {
         writeStatus(ctx, ok, name, "stopped", "source not found");
     }
 
+    // --- Graph mutation (connections + entry points) ---
+
+    private void handleAddConnection(Context ctx) throws Exception {
+        Map<String, Object> body = readJsonBody(ctx);
+        if (body == null) { writeError(ctx, 400, "invalid json body"); return; }
+        String from = str(body.get("from"));
+        String rel  = str(body.get("relationship"));
+        String to   = str(body.get("to"));
+        writeEditResult(ctx, pipeline.addConnection(from, rel, to),
+                Map.of("status", "added", "from", from, "relationship", rel, "to", to));
+    }
+
+    private void handleRemoveConnection(Context ctx) throws Exception {
+        Map<String, Object> body = readJsonBody(ctx);
+        if (body == null) { writeError(ctx, 400, "invalid json body"); return; }
+        String from = str(body.get("from"));
+        String rel  = str(body.get("relationship"));
+        String to   = str(body.get("to"));
+        writeEditResult(ctx, pipeline.removeConnection(from, rel, to),
+                Map.of("status", "removed", "from", from, "relationship", rel, "to", to));
+    }
+
+    @SuppressWarnings("unchecked")
+    private void handleSetConnections(Context ctx) throws Exception {
+        String from = ctx.pathParam("from");
+        Map<String, Object> body = readJsonBody(ctx);
+        if (body == null) { writeError(ctx, 400, "invalid json body"); return; }
+        Map<String, List<String>> rels = new LinkedHashMap<>();
+        for (var entry : body.entrySet()) {
+            if (entry.getValue() instanceof List<?> list) {
+                List<String> targets = new ArrayList<>(list.size());
+                for (Object o : list) targets.add(str(o));
+                rels.put(entry.getKey(), targets);
+            } else {
+                writeError(ctx, 400, "relationship '" + entry.getKey() + "' must map to a list of target names");
+                return;
+            }
+        }
+        writeEditResult(ctx, pipeline.setConnections(from, rels),
+                Map.of("status", "replaced", "from", from, "relationships", rels));
+    }
+
+    @SuppressWarnings("unchecked")
+    private void handleSetEntryPoints(Context ctx) throws Exception {
+        Map<String, Object> body = readJsonBody(ctx);
+        if (body == null) { writeError(ctx, 400, "invalid json body"); return; }
+        Object namesObj = body.get("names");
+        if (!(namesObj instanceof List<?> raw)) {
+            writeError(ctx, 400, "body must include a 'names' array");
+            return;
+        }
+        List<String> names = new ArrayList<>(raw.size());
+        for (Object o : raw) names.add(str(o));
+        writeEditResult(ctx, pipeline.setEntryPoints(names),
+                Map.of("status", "replaced", "names", names));
+    }
+
+    private void writeEditResult(Context ctx, Pipeline.EditResult result, Map<String, Object> okBody) throws Exception {
+        if (result.ok()) {
+            ctx.status(200).contentType("application/json").result(json.writeValueAsBytes(okBody));
+        } else {
+            // 409 when the state is inconsistent (duplicate edge, missing target),
+            // 400 for blank-input kinds of errors. Pipeline.EditResult only
+            // distinguishes a single 'reason' string so we route by content —
+            // "not found" / "already exists" / "must be blank" all come through
+            // here.
+            int status = result.reason().contains("not found") || result.reason().contains("already exists")
+                    ? 409 : 400;
+            writeError(ctx, status, result.reason());
+        }
+    }
+
     // --- Plugins ---
 
     private PluginLoader.Summary currentPlugins = null;
@@ -524,6 +600,8 @@ public final class HttpServer {
                 "POST /api/processors/enable", "POST /api/processors/disable",
                 "POST /api/processors/state",
                 "GET /api/sources", "POST /api/sources/start", "POST /api/sources/stop",
-                "GET /api/plugins", "POST /api/plugins/reload");
+                "GET /api/plugins", "POST /api/plugins/reload",
+                "POST /api/connections", "DELETE /api/connections",
+                "PUT /api/connections/{from}", "PUT /api/entrypoints");
     }
 }

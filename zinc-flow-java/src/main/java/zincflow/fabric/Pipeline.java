@@ -150,6 +150,118 @@ public final class Pipeline {
         return true;
     }
 
+    // --- Connection-edge mutations ---
+
+    /// Result of a single graph-edit call. {@code ok == false} means
+    /// the edit was rejected (unknown processor, duplicate edge, etc.);
+    /// {@code reason} carries a short human-readable explanation so the
+    /// admin API can echo it.
+    public record EditResult(boolean ok, String reason) {
+        public static EditResult success() { return new EditResult(true, ""); }
+        public static EditResult fail(String reason) { return new EditResult(false, reason); }
+    }
+
+    /// Add a single outbound connection. Rejects unknown processors on
+    /// either end and duplicates of an edge that already exists. All
+    /// other cases build a new graph and swap atomically.
+    public EditResult addConnection(String from, String relationship, String to) {
+        if (from == null || from.isEmpty())
+            return EditResult.fail("from must not be blank");
+        if (relationship == null || relationship.isEmpty())
+            return EditResult.fail("relationship must not be blank");
+        if (to == null || to.isEmpty())
+            return EditResult.fail("to must not be blank");
+        PipelineGraph g = graph;
+        if (!g.processors().containsKey(from))
+            return EditResult.fail("processor '" + from + "' not found");
+        if (!g.processors().containsKey(to))
+            return EditResult.fail("processor '" + to + "' not found");
+
+        Map<String, Map<String, List<String>>> newConns = new HashMap<>(g.connections());
+        Map<String, List<String>> rels = new LinkedHashMap<>(newConns.getOrDefault(from, Map.of()));
+        List<String> targets = new ArrayList<>(rels.getOrDefault(relationship, List.of()));
+        if (targets.contains(to)) {
+            return EditResult.fail("connection '" + from + ":" + relationship + " → " + to + "' already exists");
+        }
+        targets.add(to);
+        rels.put(relationship, List.copyOf(targets));
+        newConns.put(from, rels);
+        graph = new PipelineGraph(g.processors(), newConns, g.entryPoints());
+        return EditResult.success();
+    }
+
+    public EditResult removeConnection(String from, String relationship, String to) {
+        if (from == null || relationship == null || to == null)
+            return EditResult.fail("from, relationship, and to must not be blank");
+        PipelineGraph g = graph;
+        Map<String, List<String>> rels = g.connections().get(from);
+        if (rels == null || !rels.containsKey(relationship) || !rels.get(relationship).contains(to)) {
+            return EditResult.fail("connection '" + from + ":" + relationship + " → " + to + "' not found");
+        }
+        Map<String, Map<String, List<String>>> newConns = new HashMap<>(g.connections());
+        Map<String, List<String>> newRels = new LinkedHashMap<>(rels);
+        List<String> newTargets = new ArrayList<>(newRels.get(relationship));
+        newTargets.remove(to);
+        if (newTargets.isEmpty()) {
+            newRels.remove(relationship);
+        } else {
+            newRels.put(relationship, List.copyOf(newTargets));
+        }
+        if (newRels.isEmpty()) {
+            newConns.remove(from);
+        } else {
+            newConns.put(from, newRels);
+        }
+        graph = new PipelineGraph(g.processors(), newConns, g.entryPoints());
+        return EditResult.success();
+    }
+
+    /// Replace every outbound connection of a processor in a single
+    /// atomic swap. {@code rels} with an empty map clears the processor's
+    /// outbound connections entirely.
+    public EditResult setConnections(String from, Map<String, List<String>> rels) {
+        if (from == null || from.isEmpty())
+            return EditResult.fail("from must not be blank");
+        PipelineGraph g = graph;
+        if (!g.processors().containsKey(from))
+            return EditResult.fail("processor '" + from + "' not found");
+        if (rels == null) rels = Map.of();
+
+        // Validate every target exists before committing.
+        for (List<String> targets : rels.values()) {
+            for (String t : targets) {
+                if (!g.processors().containsKey(t)) {
+                    return EditResult.fail("target processor '" + t + "' not found");
+                }
+            }
+        }
+
+        Map<String, Map<String, List<String>>> newConns = new HashMap<>(g.connections());
+        if (rels.isEmpty()) {
+            newConns.remove(from);
+        } else {
+            Map<String, List<String>> copy = new LinkedHashMap<>();
+            rels.forEach((rel, ts) -> copy.put(rel, List.copyOf(ts)));
+            newConns.put(from, copy);
+        }
+        graph = new PipelineGraph(g.processors(), newConns, g.entryPoints());
+        return EditResult.success();
+    }
+
+    /// Replace the set of entry points. Every name must already be a
+    /// defined processor; otherwise the update is rejected.
+    public EditResult setEntryPoints(List<String> names) {
+        if (names == null) return EditResult.fail("names must not be null");
+        PipelineGraph g = graph;
+        for (String name : names) {
+            if (!g.processors().containsKey(name)) {
+                return EditResult.fail("processor '" + name + "' not found");
+            }
+        }
+        graph = new PipelineGraph(g.processors(), g.connections(), List.copyOf(names));
+        return EditResult.success();
+    }
+
     public boolean disableProcessor(String name) {
         if (!graph.processors().containsKey(name)) return false;
         processorStates.put(name, ComponentState.DISABLED);
