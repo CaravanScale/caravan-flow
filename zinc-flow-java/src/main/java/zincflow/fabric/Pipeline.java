@@ -238,6 +238,44 @@ public final class Pipeline {
         this.graph = Objects.requireNonNull(next);
     }
 
+    /// Diff the current graph against {@code next} and report
+    /// {added, removed, updated, connectionsChanged}. A processor is
+    /// "updated" when it reappears in the new graph with a different
+    /// type or a different processor-def recorded; connection changes
+    /// are tracked per-source. Results inform {@code /api/reload}'s
+    /// response so operators can see what actually changed.
+    public ReloadDiff applyReload(PipelineGraph next) {
+        PipelineGraph before = this.graph;
+        int added = 0, removed = 0, updated = 0, connectionsChanged = 0;
+
+        for (String name : before.processors().keySet()) {
+            if (!next.processors().containsKey(name)) removed++;
+        }
+        for (var entry : next.processors().entrySet()) {
+            String name = entry.getKey();
+            if (!before.processors().containsKey(name)) {
+                added++;
+                continue;
+            }
+            // Same name in both — decide updated vs connections-only
+            if (before.processors().get(name) != entry.getValue()) {
+                updated++;
+            }
+            Map<String, List<String>> oldConns = before.connections().getOrDefault(name, Map.of());
+            Map<String, List<String>> newConns = next.connections().getOrDefault(name, Map.of());
+            if (!oldConns.equals(newConns)) {
+                connectionsChanged++;
+            }
+        }
+
+        this.graph = Objects.requireNonNull(next);
+        return new ReloadDiff(added, removed, updated, connectionsChanged);
+    }
+
+    public record ReloadDiff(int added, int removed, int updated, int connectionsChanged) {
+        public int total() { return added + removed + updated + connectionsChanged; }
+    }
+
     public Stats stats() {
         return stats;
     }

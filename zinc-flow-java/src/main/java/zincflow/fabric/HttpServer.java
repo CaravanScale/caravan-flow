@@ -229,20 +229,28 @@ public final class HttpServer {
         }
     }
 
-    private void handleReload(Context ctx) {
+    private void handleReload(Context ctx) throws Exception {
         if (loader == null || configPath == null) {
-            ctx.status(501).result("reload not supported: server started without a config loader");
+            writeError(ctx, 501, "reload not supported: server started without a config loader");
             return;
         }
         try {
             PipelineGraph fresh = loader.loadFromFile(configPath);
-            pipeline.swapGraph(fresh);
-            log.info("reloaded pipeline from {} — {} processors, entry points: {}",
-                    configPath, fresh.processors().size(), fresh.entryPoints());
-            ctx.status(200).result("reloaded");
+            Pipeline.ReloadDiff diff = pipeline.applyReload(fresh);
+            log.info("reloaded pipeline from {} — {} processors, entry points: {}, diff: {}",
+                    configPath, fresh.processors().size(), fresh.entryPoints(), diff);
+            ctx.status(200)
+               .contentType("application/json")
+               .result(json.writeValueAsBytes(Map.of(
+                    "status", "reloaded",
+                    "added", diff.added(),
+                    "removed", diff.removed(),
+                    "updated", diff.updated(),
+                    "connectionsChanged", diff.connectionsChanged(),
+                    "total", diff.total())));
         } catch (IOException | RuntimeException ex) {
             log.error("reload failed: {}", ex.toString(), ex);
-            ctx.status(400).result("reload failed: " + ex.getMessage());
+            writeError(ctx, 400, "reload failed: " + ex.getMessage());
         }
     }
 

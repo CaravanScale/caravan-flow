@@ -42,8 +42,19 @@ public final class ConfigLoader {
 
     private static final Logger log = LoggerFactory.getLogger(ConfigLoader.class);
 
+    /// Recorded shape of a processor definition (type + config) from the
+    /// last successful load. Keyed by processor name; consulted on the
+    /// next load to decide which instances can be reused.
+    public record ProcessorSpec(String type, Map<String, String> config) {
+        public ProcessorSpec {
+            config = Map.copyOf(config);
+        }
+    }
+
     private final Registry registry;
     private final ProcessorContext context;
+    private Map<String, ProcessorSpec> lastSpecs = Map.of();
+    private Map<String, Processor> lastProcessors = Map.of();
 
     public ConfigLoader(Registry registry) {
         this(registry, new ProcessorContext());
@@ -55,6 +66,11 @@ public final class ConfigLoader {
     }
 
     public ProcessorContext context() { return context; }
+
+    /// Snapshot of the most recently loaded processor spec map. Callers
+    /// use this to diff the next load against the one that's currently
+    /// running — see {@link Pipeline#applyReload}.
+    public Map<String, ProcessorSpec> lastSpecs() { return lastSpecs; }
 
     public PipelineGraph loadFromFile(Path path) throws IOException {
         String yaml = Files.readString(path);
@@ -78,6 +94,7 @@ public final class ConfigLoader {
             throw new IllegalArgumentException("config: 'flow.processors' must be a map");
         }
         Map<String, Processor> processors = new LinkedHashMap<>();
+        Map<String, ProcessorSpec> specs = new LinkedHashMap<>();
         for (Map.Entry<?, ?> entry : procs.entrySet()) {
             String name = String.valueOf(entry.getKey());
             if (!(entry.getValue() instanceof Map<?, ?> def)) {
@@ -88,8 +105,21 @@ public final class ConfigLoader {
                 throw new IllegalArgumentException("config: processor '" + name + "' missing 'type'");
             }
             Map<String, String> config = stringMap(def.get("config"));
-            Processor p = registry.create(String.valueOf(type), config, context);
+            ProcessorSpec spec = new ProcessorSpec(String.valueOf(type), config);
+
+            // Reuse the prior processor instance when the spec is
+            // byte-identical — keeps in-flight state (counters, caches,
+            // connections) across a reload instead of churning every
+            // processor on a cosmetic config change.
+            Processor p;
+            ProcessorSpec prior = lastSpecs.get(name);
+            if (prior != null && prior.equals(spec) && lastProcessors.containsKey(name)) {
+                p = lastProcessors.get(name);
+            } else {
+                p = registry.create(spec.type(), spec.config(), context);
+            }
             processors.put(name, p);
+            specs.put(name, spec);
         }
 
         // --- connections ---
@@ -143,6 +173,11 @@ public final class ConfigLoader {
             log.warn("flow warning: {}", warn);
         }
 
+        // Commit the parsed spec + processor instances so the next
+        // load can diff against them. Only happens after validation
+        // succeeds — a partial load never corrupts the reload baseline.
+        lastSpecs = Map.copyOf(specs);
+        lastProcessors = Map.copyOf(processors);
         return new PipelineGraph(processors, connections, entryPoints);
     }
 
