@@ -2,14 +2,23 @@ package zincflow.fabric;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import zincflow.core.ComponentState;
 import zincflow.core.FlowFile;
 import zincflow.core.Processor;
+import zincflow.core.ProcessorContext;
 import zincflow.core.ProcessorResult;
+import zincflow.core.Source;
+import zincflow.providers.ProvenanceProvider;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 
 /// Direct pipeline executor — iterative, depth-first, work-stack. No
 /// inter-stage queues. Each call to {@link #ingest(FlowFile)} runs the
@@ -29,26 +38,197 @@ public final class Pipeline {
 
     private volatile PipelineGraph graph;
     private final Stats stats;
-    private final Metrics metrics;
     private final int maxHops;
+    private final ProcessorContext context;
+    private final Registry registry;
+    // Per-processor lifecycle state. Processors added via the API land
+    // in ENABLED; disabled processors cause drain() to short-circuit
+    // their slot and drop the FlowFile. Populated lazily — a missing
+    // entry means ENABLED (matches the original pre-3e behaviour where
+    // every processor always ran).
+    private final ConcurrentHashMap<String, ComponentState> processorStates = new ConcurrentHashMap<>();
+    // Record of how each processor was constructed — stored so the admin
+    // API can expose the current shape of the graph. Entries are only
+    // present for processors created through addProcessor / the config
+    // loader's Fabric wiring; processors constructed ad-hoc (unit tests)
+    // have no entry and the API reports type="unknown".
+    private final ConcurrentHashMap<String, ProcessorDef> processorDefs = new ConcurrentHashMap<>();
+    private final ConcurrentHashMap<String, Source> sources = new ConcurrentHashMap<>();
 
     public Pipeline(PipelineGraph graph) {
-        this(graph, DEFAULT_MAX_HOPS, null);
+        this(graph, DEFAULT_MAX_HOPS, null, null, null);
     }
 
     public Pipeline(PipelineGraph graph, int maxHops) {
-        this(graph, maxHops, null);
+        this(graph, maxHops, null, null, null);
     }
 
     public Pipeline(PipelineGraph graph, int maxHops, Metrics metrics) {
+        this(graph, maxHops, metrics, null, null);
+    }
+
+    public Pipeline(PipelineGraph graph, int maxHops, Metrics metrics,
+                    ProcessorContext context, Registry registry) {
         this.graph = Objects.requireNonNull(graph);
         this.maxHops = maxHops;
-        this.metrics = metrics;
         this.stats = new Stats(metrics);
+        this.context = Objects.requireNonNullElseGet(context, ProcessorContext::new);
+        this.registry = registry;
     }
 
     public Metrics metrics() {
-        return metrics;
+        return stats.metrics();
+    }
+
+    public ProcessorContext context() { return context; }
+
+    public Registry registry() { return registry; }
+
+    public ProvenanceProvider provenance() {
+        return context.getProviderAs("provenance", ProvenanceProvider.class);
+    }
+
+    /// Record how a processor was constructed. Called by the Fabric
+    /// wiring (ConfigLoader / addProcessor) after the factory runs so
+    /// the admin API can later answer "what type is X?".
+    public void recordProcessorDef(String name, String type, Map<String, String> config, List<String> requires) {
+        if (name == null || type == null) return;
+        processorDefs.put(name, new ProcessorDef(
+                type,
+                config == null ? Map.of() : Map.copyOf(config),
+                requires == null ? List.of() : List.copyOf(requires)));
+        processorStates.putIfAbsent(name, ComponentState.ENABLED);
+    }
+
+    /// Construct a processor through the registry and add it to the
+    /// running graph. Rejects duplicates. Returns false if no registry
+    /// is wired or the name is already taken. Matches C# Fabric.AddProcessor.
+    public boolean addProcessor(String name, String type, Map<String, String> config,
+                                List<String> requires, Map<String, List<String>> connections) {
+        if (registry == null) return false;
+        if (name == null || name.isEmpty() || type == null) return false;
+        PipelineGraph g = graph;
+        if (g.processors().containsKey(name)) return false;
+        if (!registry.has(type)) return false;
+
+        List<String> req = requires == null ? List.of() : List.copyOf(requires);
+        for (String provName : req) context.registerDependent(provName, name);
+
+        Processor proc = registry.create(type, config, context);
+
+        Map<String, Processor> newProcessors = new LinkedHashMap<>(g.processors());
+        newProcessors.put(name, proc);
+        Map<String, Map<String, List<String>>> newConnections = new HashMap<>(g.connections());
+        if (connections != null && !connections.isEmpty()) {
+            Map<String, List<String>> copy = new LinkedHashMap<>();
+            connections.forEach((k, v) -> copy.put(k, List.copyOf(v)));
+            newConnections.put(name, copy);
+        }
+        graph = new PipelineGraph(newProcessors, newConnections, g.entryPoints());
+        recordProcessorDef(name, type, config, req);
+        return true;
+    }
+
+    public boolean removeProcessor(String name) {
+        PipelineGraph g = graph;
+        if (!g.processors().containsKey(name)) return false;
+        Map<String, Processor> newProcessors = new LinkedHashMap<>(g.processors());
+        newProcessors.remove(name);
+        Map<String, Map<String, List<String>>> newConnections = new HashMap<>(g.connections());
+        newConnections.remove(name);
+        List<String> newEntries = new ArrayList<>(g.entryPoints());
+        newEntries.remove(name);
+        graph = new PipelineGraph(newProcessors, newConnections, newEntries);
+        processorStates.remove(name);
+        processorDefs.remove(name);
+        return true;
+    }
+
+    public boolean enableProcessor(String name) {
+        if (!graph.processors().containsKey(name)) return false;
+        processorStates.put(name, ComponentState.ENABLED);
+        return true;
+    }
+
+    public boolean disableProcessor(String name) {
+        if (!graph.processors().containsKey(name)) return false;
+        processorStates.put(name, ComponentState.DISABLED);
+        return true;
+    }
+
+    public ComponentState processorState(String name) {
+        if (!graph.processors().containsKey(name)) return ComponentState.DISABLED;
+        return processorStates.getOrDefault(name, ComponentState.ENABLED);
+    }
+
+    public String processorType(String name) {
+        ProcessorDef d = processorDefs.get(name);
+        if (d != null) return d.type();
+        Processor p = graph.processors().get(name);
+        return p == null ? "unknown" : p.getClass().getSimpleName();
+    }
+
+    /// Cascade-disable every processor that declared {@code requires}
+    /// on the named provider. Called by {@link #disableProvider(String)}
+    /// to match the C# semantics — disabling a provider takes down its
+    /// consumers so they don't try to use it.
+    public boolean disableProvider(String providerName) {
+        zincflow.core.Provider p = context.getProvider(providerName);
+        if (p == null) return false;
+        for (String proc : context.getDependents(providerName)) {
+            disableProcessor(proc);
+        }
+        p.disable(0);
+        return true;
+    }
+
+    public boolean enableProvider(String providerName) {
+        zincflow.core.Provider p = context.getProvider(providerName);
+        if (p == null) return false;
+        p.enable();
+        return true;
+    }
+
+    // --- Sources ---
+
+    public void addSource(Source source) {
+        if (source == null) return;
+        sources.put(source.name(), source);
+    }
+
+    public Source getSource(String name) { return sources.get(name); }
+
+    public Map<String, Source> sources() { return Map.copyOf(sources); }
+
+    public boolean startSource(String name) {
+        Source s = sources.get(name);
+        if (s == null) return false;
+        if (!s.isRunning()) s.start();
+        return true;
+    }
+
+    public boolean stopSource(String name) {
+        Source s = sources.get(name);
+        if (s == null) return false;
+        if (s.isRunning()) s.stop();
+        return true;
+    }
+
+    public record ProcessorDef(String type, Map<String, String> config, List<String> requires) { }
+
+    /// Per-processor stats pulled from {@link Stats}, shaped the same way
+    /// as the C# {@code GetProcessorStats} endpoint. One entry per
+    /// processor currently in the graph.
+    public Map<String, Map<String, Long>> processorStats() {
+        Map<String, Long> counts = stats.processorCountsSnapshot();
+        Map<String, Long> errors = stats.processorErrorsSnapshot();
+        Map<String, Map<String, Long>> out = new LinkedHashMap<>();
+        for (String name : graph.processors().keySet()) {
+            out.put(name, Map.of(
+                    "processed", counts.getOrDefault(name, 0L),
+                    "errors", errors.getOrDefault(name, 0L)));
+        }
+        return out;
     }
 
     /// Swap the graph atomically. In-flight ingest calls complete against
@@ -85,6 +265,7 @@ public final class Pipeline {
     }
 
     private void drain(PipelineGraph g, Deque<WorkItem> stack) {
+        ProvenanceProvider prov = provenance();
         while (!stack.isEmpty()) {
             WorkItem item = stack.pop();
             FlowFile input = item.flowFile;
@@ -93,6 +274,8 @@ public final class Pipeline {
                 log.error("maxHops={} exceeded at processor={}, dropping {}",
                         maxHops, item.processor, input.stringId());
                 stats.recordFailed(item.processor);
+                if (prov != null) prov.record(input.id(), ProvenanceProvider.EventType.FAILED,
+                        item.processor, "maxHops exceeded");
                 continue;
             }
             Processor processor = g.processors().get(item.processor);
@@ -100,6 +283,16 @@ public final class Pipeline {
                 log.error("unknown processor '{}' referenced by graph — dropping {}",
                         item.processor, input.stringId());
                 stats.recordFailed(item.processor);
+                if (prov != null) prov.record(input.id(), ProvenanceProvider.EventType.FAILED,
+                        item.processor, "unknown processor");
+                continue;
+            }
+
+            // Skip disabled processors — drop the FlowFile silently.
+            if (processorStates.getOrDefault(item.processor, ComponentState.ENABLED) != ComponentState.ENABLED) {
+                if (prov != null) prov.record(input.id(), ProvenanceProvider.EventType.DROPPED,
+                        item.processor, "processor disabled");
+                stats.recordDropped();
                 continue;
             }
 
@@ -110,10 +303,14 @@ public final class Pipeline {
                 log.error("processor '{}' threw while handling {}: {}",
                         item.processor, input.stringId(), ex.toString(), ex);
                 stats.recordFailed(item.processor);
+                if (prov != null) prov.record(input.id(), ProvenanceProvider.EventType.FAILED,
+                        item.processor, ex.getMessage());
                 dispatchFailure(g, stack, item.processor, input, ex.getMessage());
                 continue;
             }
             stats.recordProcessed(item.processor);
+            if (prov != null) prov.record(input.id(), ProvenanceProvider.EventType.PROCESSED,
+                    item.processor, "");
             dispatch(g, stack, item.processor, result);
         }
     }

@@ -1,6 +1,10 @@
 package zincflow.fabric;
 
+import zincflow.core.ContentStore;
 import zincflow.core.Processor;
+import zincflow.core.ProcessorContext;
+import zincflow.providers.ContentProvider;
+import zincflow.providers.LoggingProvider;
 import zincflow.processors.ConvertAvroToRecord;
 import zincflow.processors.ConvertCSVToRecord;
 import zincflow.processors.ConvertJSONToRecord;
@@ -11,6 +15,7 @@ import zincflow.processors.ConvertRecordToJSON;
 import zincflow.processors.ConvertRecordToOCF;
 import zincflow.processors.EvaluateExpression;
 import zincflow.processors.ExtractRecordField;
+import zincflow.processors.ExtractText;
 import zincflow.processors.FilterAttribute;
 import zincflow.processors.LogAttribute;
 import zincflow.processors.PutFile;
@@ -28,16 +33,24 @@ import java.util.List;
 
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.function.Function;
 
 /// Processor registry — maps the {@code type:} value in config.yaml to
-/// a factory that instantiates the processor given its config map.
+/// a factory that instantiates the processor given its config map plus
+/// a {@link ProcessorContext}. Factories that need shared infrastructure
+/// (content store, logger) pull it from the context; factories that
+/// don't simply ignore the ctx argument.
+///
 /// Stateless; one instance shared by the Fabric.
 public final class Registry {
 
-    /// A factory for a processor given its config map.
+    /// A factory for a processor given its config map and the surrounding
+    /// processor context. The context is never null — callers that don't
+    /// care can pass {@code new ProcessorContext()} and ignore it inside
+    /// the factory.
     @FunctionalInterface
-    public interface Factory extends Function<Map<String, String>, Processor> { }
+    public interface Factory {
+        Processor create(Map<String, String> config, ProcessorContext ctx);
+    }
 
     private final ConcurrentHashMap<String, Factory> factories = new ConcurrentHashMap<>();
 
@@ -53,75 +66,101 @@ public final class Registry {
         return factories.containsKey(type);
     }
 
+    /// Context-free convenience — callers that don't have a
+    /// {@link ProcessorContext} handy (e.g. ad-hoc tests) get an empty
+    /// one. Factories that actually consume the context will surface
+    /// their own error.
     public Processor create(String type, Map<String, String> config) {
+        return create(type, config, new ProcessorContext());
+    }
+
+    public Processor create(String type, Map<String, String> config, ProcessorContext ctx) {
         Factory f = factories.get(type);
         if (f == null) {
             throw new IllegalArgumentException("Registry: unknown processor type '" + type + "'");
         }
-        return f.apply(config == null ? Map.of() : config);
+        return f.create(config == null ? Map.of() : config, ctx == null ? new ProcessorContext() : ctx);
     }
 
     public java.util.Set<String> types() {
         return Map.copyOf(factories).keySet();
     }
 
+    /// Return the content store exposed by the {@code "content"}
+    /// provider, or null when no such provider is wired. Processors that
+    /// only handle {@link zincflow.core.RawContent} don't need this;
+    /// processors that also accept {@link zincflow.core.ClaimContent}
+    /// do — they use it to resolve claims back to bytes.
+    private static ContentStore storeFrom(ProcessorContext ctx) {
+        ContentProvider cp = ctx.getProviderAs(ContentProvider.DEFAULT_NAME, ContentProvider.class);
+        return cp == null ? null : cp.store();
+    }
+
+    private static LoggingProvider loggerFrom(ProcessorContext ctx) {
+        return ctx.getProviderAs("logging", LoggingProvider.class);
+    }
+
     private void registerBuiltins() {
-        register("LogAttribute",     cfg -> new LogAttribute(cfg.getOrDefault("prefix", "")));
-        register("UpdateAttribute",  cfg -> new UpdateAttribute(
+        register("LogAttribute",     (cfg, ctx) -> new LogAttribute(cfg.getOrDefault("prefix", ""), loggerFrom(ctx)));
+        register("UpdateAttribute",  (cfg, ctx) -> new UpdateAttribute(
                 required(cfg, "UpdateAttribute", "key"),
                 cfg.getOrDefault("value", "")));
-        register("RouteOnAttribute", cfg -> new RouteOnAttribute(cfg.getOrDefault("routes", "")));
-        register("FilterAttribute",  cfg -> new FilterAttribute(
+        register("RouteOnAttribute", (cfg, ctx) -> new RouteOnAttribute(cfg.getOrDefault("routes", "")));
+        register("FilterAttribute",  (cfg, ctx) -> new FilterAttribute(
                 required(cfg, "FilterAttribute", "key"),
                 cfg.getOrDefault("value", ""),
                 !"false".equalsIgnoreCase(cfg.getOrDefault("dropOnMatch", "true"))));
-        register("PutStdout",        cfg -> new PutStdout(cfg.getOrDefault("prefix", "")));
-        register("PutFile",          cfg -> new PutFile(
+        register("PutStdout",        (cfg, ctx) -> new PutStdout(cfg.getOrDefault("prefix", "")));
+        register("PutFile",          (cfg, ctx) -> new PutFile(
                 required(cfg, "PutFile", "directory"),
                 "true".equalsIgnoreCase(cfg.getOrDefault("append", "false"))));
-        register("ReplaceText",      cfg -> new ReplaceText(
+        register("ReplaceText",      (cfg, ctx) -> new ReplaceText(
                 required(cfg, "ReplaceText", "regex"),
                 cfg.getOrDefault("replacement", "")));
-        register("SplitText",        cfg -> new SplitText(
+        register("SplitText",        (cfg, ctx) -> new SplitText(
                 required(cfg, "SplitText", "delimiter"),
                 "true".equalsIgnoreCase(cfg.getOrDefault("regex", "false"))));
-        register("ConvertJSONToRecord", cfg -> new ConvertJSONToRecord());
-        register("ConvertRecordToJSON", cfg -> new ConvertRecordToJSON(
+        register("ExtractText",      (cfg, ctx) -> new ExtractText(
+                required(cfg, "ExtractText", "pattern"),
+                cfg.getOrDefault("groupNames", ""),
+                storeFrom(ctx)));
+        register("ConvertJSONToRecord", (cfg, ctx) -> new ConvertJSONToRecord());
+        register("ConvertRecordToJSON", (cfg, ctx) -> new ConvertRecordToJSON(
                 "true".equalsIgnoreCase(cfg.getOrDefault("singleObject", "false"))));
-        register("ExtractRecordField",  cfg -> new ExtractRecordField(
+        register("ExtractRecordField",  (cfg, ctx) -> new ExtractRecordField(
                 required(cfg, "ExtractRecordField", "fieldPath"),
                 required(cfg, "ExtractRecordField", "attributeName")));
-        register("PutHTTP", cfg -> new PutHTTP(
+        register("PutHTTP", (cfg, ctx) -> new PutHTTP(
                 required(cfg, "PutHTTP", "endpoint"),
                 cfg.getOrDefault("method", "POST"),
                 Duration.ofSeconds(Long.parseLong(cfg.getOrDefault("timeoutSeconds", "30"))),
                 cfg.getOrDefault("contentType", "application/octet-stream")));
         // --- CSV ---
-        register("ConvertCSVToRecord", cfg -> new ConvertCSVToRecord(
+        register("ConvertCSVToRecord", (cfg, ctx) -> new ConvertCSVToRecord(
                 cfg.getOrDefault("delimiter", ",").charAt(0),
                 !"false".equalsIgnoreCase(cfg.getOrDefault("firstRowHeader", "true")),
                 splitCSVColumns(cfg.get("columns"))));
-        register("ConvertRecordToCSV", cfg -> new ConvertRecordToCSV(
+        register("ConvertRecordToCSV", (cfg, ctx) -> new ConvertRecordToCSV(
                 cfg.getOrDefault("delimiter", ",").charAt(0),
                 !"false".equalsIgnoreCase(cfg.getOrDefault("writeHeader", "true")),
                 splitCSVColumns(cfg.get("columns"))));
         // --- Avro binary (no container framing) ---
-        register("ConvertAvroToRecord", cfg -> new ConvertAvroToRecord(
+        register("ConvertAvroToRecord", (cfg, ctx) -> new ConvertAvroToRecord(
                 required(cfg, "ConvertAvroToRecord", "schema")));
-        register("ConvertRecordToAvro", cfg -> new ConvertRecordToAvro(
+        register("ConvertRecordToAvro", (cfg, ctx) -> new ConvertRecordToAvro(
                 required(cfg, "ConvertRecordToAvro", "schema")));
         // --- Avro OCF (Object Container File) ---
-        register("ConvertOCFToRecord", cfg -> new ConvertOCFToRecord());
-        register("ConvertRecordToOCF", cfg -> new ConvertRecordToOCF(
+        register("ConvertOCFToRecord", (cfg, ctx) -> new ConvertOCFToRecord());
+        register("ConvertRecordToOCF", (cfg, ctx) -> new ConvertRecordToOCF(
                 required(cfg, "ConvertRecordToOCF", "schema"),
                 cfg.getOrDefault("codec", "null")));
         // --- Expression / query (JEXL + JsonPath) ---
-        register("EvaluateExpression", cfg -> new EvaluateExpression(
+        register("EvaluateExpression", (cfg, ctx) -> new EvaluateExpression(
                 required(cfg, "EvaluateExpression", "expression"),
                 required(cfg, "EvaluateExpression", "targetAttribute")));
-        register("TransformRecord", cfg -> new TransformRecord(
+        register("TransformRecord", (cfg, ctx) -> new TransformRecord(
                 parseTransforms(required(cfg, "TransformRecord", "transforms"))));
-        register("QueryRecord", cfg -> new QueryRecord(
+        register("QueryRecord", (cfg, ctx) -> new QueryRecord(
                 required(cfg, "QueryRecord", "query")));
     }
 

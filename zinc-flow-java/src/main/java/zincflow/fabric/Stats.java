@@ -1,13 +1,15 @@
 package zincflow.fabric;
 
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 /// Running counters for the pipeline. Updated on every processor
-/// dispatch, surfaced through {@code /api/stats}. When a
-/// {@link Metrics} registry is wired in, every increment also updates
-/// the Prometheus-backed counter so /metrics stays in sync.
+/// dispatch, surfaced through {@code /api/stats}. Every increment also
+/// updates the paired {@link Metrics} registry so {@code /metrics}
+/// stays in sync — Stats always holds a non-null registry (defaults to
+/// a fresh {@link Metrics} when one isn't supplied).
 public final class Stats {
 
     private final AtomicLong totalIngested = new AtomicLong();
@@ -22,30 +24,35 @@ public final class Stats {
     public Stats() { this(null); }
 
     public Stats(Metrics metrics) {
-        this.metrics = metrics;
+        this.metrics = Objects.requireNonNullElseGet(metrics, Metrics::new);
     }
+
+    public Metrics metrics() { return metrics; }
 
     void recordIngested() {
         totalIngested.incrementAndGet();
-        if (metrics != null) metrics.recordIngested();
+        metrics.recordIngested();
     }
 
     void recordProcessed(String proc) {
         totalProcessed.incrementAndGet();
         processorCounts.computeIfAbsent(proc, _ -> new AtomicLong()).incrementAndGet();
-        if (metrics != null) metrics.recordProcessed(proc);
+        metrics.recordProcessed(proc);
     }
 
     void recordDropped() {
         totalDropped.incrementAndGet();
-        if (metrics != null) metrics.recordDropped();
+        metrics.recordDropped();
     }
 
     void recordFailed(String proc) {
         totalFailed.incrementAndGet();
         processorErrors.computeIfAbsent(proc, _ -> new AtomicLong()).incrementAndGet();
-        if (metrics != null) metrics.recordFailed(proc);
+        metrics.recordFailed(proc);
     }
+
+    public Map<String, Long> processorCountsSnapshot() { return mapSnapshot(processorCounts); }
+    public Map<String, Long> processorErrorsSnapshot() { return mapSnapshot(processorErrors); }
 
     /// Snapshot suitable for JSON serialization through Jackson.
     public Map<String, Object> snapshot() {

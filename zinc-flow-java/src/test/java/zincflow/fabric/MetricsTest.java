@@ -50,11 +50,15 @@ final class MetricsTest {
     }
 
     @Test
-    void nullMetricsNoOps() {
+    void defaultPipelineHasMetrics() {
+        // Pipeline constructed without an explicit Metrics still has one —
+        // a fresh registry is allocated so /metrics always works and the
+        // call sites never need to null-check.
         Processor noop = ff -> ProcessorResult.dropped();
         var graph = new PipelineGraph(Map.of("noop", noop), Map.of(), List.of("noop"));
-        var pipeline = new Pipeline(graph); // null metrics
+        var pipeline = new Pipeline(graph);
+        assertNotNull(pipeline.metrics());
         assertDoesNotThrow(() -> pipeline.ingest(FlowFile.create(new byte[0], Map.of())));
-        assertNull(pipeline.metrics());
+        assertTrue(pipeline.metrics().scrape().contains("zincflow_ingested_total 1"));
     }
 }

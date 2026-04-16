@@ -2,6 +2,7 @@ package zincflow.fabric;
 
 import org.yaml.snakeyaml.Yaml;
 import zincflow.core.Processor;
+import zincflow.core.ProcessorContext;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -38,10 +39,18 @@ import java.util.Map;
 public final class ConfigLoader {
 
     private final Registry registry;
+    private final ProcessorContext context;
 
     public ConfigLoader(Registry registry) {
-        this.registry = registry;
+        this(registry, new ProcessorContext());
     }
+
+    public ConfigLoader(Registry registry, ProcessorContext context) {
+        this.registry = registry;
+        this.context = context == null ? new ProcessorContext() : context;
+    }
+
+    public ProcessorContext context() { return context; }
 
     public PipelineGraph loadFromFile(Path path) throws IOException {
         String yaml = Files.readString(path);
@@ -75,7 +84,7 @@ public final class ConfigLoader {
                 throw new IllegalArgumentException("config: processor '" + name + "' missing 'type'");
             }
             Map<String, String> config = stringMap(def.get("config"));
-            Processor p = registry.create(String.valueOf(type), config);
+            Processor p = registry.create(String.valueOf(type), config, context);
             processors.put(name, p);
         }
 

@@ -7,9 +7,14 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import zincflow.core.FlowFile;
 import zincflow.core.Processor;
+import zincflow.core.ProcessorContext;
+import zincflow.core.Provider;
+import zincflow.core.Source;
+import zincflow.providers.ProvenanceProvider;
 
 import java.io.IOException;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -53,16 +58,31 @@ public final class HttpServer {
                 // classpath. POST / is ingest. Distinguishing by method is a
                 // zincflow-isms since the original C# service followed the
                 // same convention.
-                .get("/",                  this::handleDashboard)
-                .post("/",                 this::handleIngest)
-                .get("/dashboard",         this::handleDashboard)
-                .get("/health",            ctx -> ctx.result("ok"))
-                .get("/metrics",           this::handleMetrics)
-                .get("/api/stats",         this::handleStats)
-                .get("/api/processors",    this::handleProcessors)
-                .get("/api/connections",   this::handleConnections)
-                .get("/api/flow",          this::handleFlow)
-                .post("/api/reload",       this::handleReload);
+                .get("/",                              this::handleDashboard)
+                .post("/",                             this::handleIngest)
+                .get("/dashboard",                     this::handleDashboard)
+                .get("/health",                        this::handleHealth)
+                .get("/metrics",                       this::handleMetrics)
+                .get("/api/stats",                     this::handleStats)
+                .get("/api/processors",                this::handleProcessors)
+                .get("/api/processor-stats",           this::handleProcessorStats)
+                .get("/api/connections",               this::handleConnections)
+                .get("/api/flow",                      this::handleFlow)
+                .get("/api/registry",                  this::handleRegistry)
+                .post("/api/reload",                   this::handleReload)
+                .get("/api/providers",                 this::handleProviders)
+                .post("/api/providers/enable",         this::handleEnableProvider)
+                .post("/api/providers/disable",        this::handleDisableProvider)
+                .get("/api/provenance",                this::handleProvenanceRecent)
+                .get("/api/provenance/{id}",           this::handleProvenanceById)
+                .post("/api/processors/add",           this::handleAddProcessor)
+                .delete("/api/processors/remove",      this::handleRemoveProcessor)
+                .post("/api/processors/enable",        this::handleEnableProcessor)
+                .post("/api/processors/disable",       this::handleDisableProcessor)
+                .post("/api/processors/state",         this::handleProcessorState)
+                .get("/api/sources",                   this::handleSources)
+                .post("/api/sources/start",            this::handleStartSource)
+                .post("/api/sources/stop",             this::handleStopSource);
         app.start(port);
         boundPort = app.port();
         log.info("zinc-flow HTTP server listening on http://localhost:{}", boundPort);
@@ -112,10 +132,13 @@ public final class HttpServer {
         PipelineGraph graph = pipeline.graph();
         Map<String, String> out = new LinkedHashMap<>();
         for (var entry : graph.processors().entrySet()) {
-            Processor p = entry.getValue();
-            out.put(entry.getKey(), p.getClass().getSimpleName());
+            out.put(entry.getKey(), pipeline.processorType(entry.getKey()));
         }
         ctx.contentType("application/json").result(json.writeValueAsBytes(out));
+    }
+
+    private void handleProcessorStats(Context ctx) throws Exception {
+        ctx.contentType("application/json").result(json.writeValueAsBytes(pipeline.processorStats()));
     }
 
     private void handleConnections(Context ctx) throws Exception {
@@ -124,23 +147,59 @@ public final class HttpServer {
 
     private void handleFlow(Context ctx) throws Exception {
         PipelineGraph graph = pipeline.graph();
-        Map<String, String> procTypes = new LinkedHashMap<>();
+        List<Map<String, Object>> processors = new ArrayList<>();
+        Map<String, Map<String, Long>> perProcStats = pipeline.processorStats();
         for (var entry : graph.processors().entrySet()) {
-            procTypes.put(entry.getKey(), entry.getValue().getClass().getSimpleName());
+            String name = entry.getKey();
+            Map<String, Object> info = new LinkedHashMap<>();
+            info.put("name", name);
+            info.put("type", pipeline.processorType(name));
+            info.put("state", pipeline.processorState(name).name());
+            info.put("stats", perProcStats.getOrDefault(name, Map.of()));
+            info.put("connections", graph.connections().getOrDefault(name, Map.of()));
+            processors.add(info);
         }
-        Map<String, Object> out = Map.of(
-                "entryPoints", graph.entryPoints(),
-                "processors",  procTypes,
-                "connections", graph.connections(),
-                "stats",       pipeline.stats().snapshot());
+
+        List<Map<String, Object>> providers = new ArrayList<>();
+        ProcessorContext pctx = pipeline.context();
+        for (String pname : pctx.listProviders()) {
+            Provider p = pctx.getProvider(pname);
+            providers.add(Map.of(
+                    "name",  pname,
+                    "type",  p == null ? "unknown" : p.providerType(),
+                    "state", p == null ? "UNKNOWN" : p.state().name()));
+        }
+
+        List<Map<String, Object>> srcs = new ArrayList<>();
+        for (Source s : pipeline.sources().values()) {
+            srcs.add(Map.of(
+                    "name", s.name(),
+                    "type", s.sourceType(),
+                    "running", s.isRunning()));
+        }
+
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("entryPoints", graph.entryPoints());
+        out.put("processors",  processors);
+        out.put("connections", graph.connections());
+        out.put("providers",   providers);
+        out.put("sources",     srcs);
+        out.put("stats",       pipeline.stats().snapshot());
         ctx.contentType("application/json").result(json.writeValueAsBytes(out));
     }
 
-    private void handleMetrics(Context ctx) {
-        if (pipeline.metrics() == null) {
-            ctx.status(501).result("metrics not enabled — construct Pipeline with a Metrics instance");
-            return;
+    private void handleRegistry(Context ctx) throws Exception {
+        List<String> types;
+        if (pipeline.registry() == null) {
+            types = List.of();
+        } else {
+            types = new ArrayList<>(pipeline.registry().types());
+            java.util.Collections.sort(types);
         }
+        ctx.contentType("application/json").result(json.writeValueAsBytes(types));
+    }
+
+    private void handleMetrics(Context ctx) {
         ctx.contentType("text/plain; version=0.0.4; charset=utf-8")
            .result(pipeline.metrics().scrape());
     }
@@ -174,10 +233,229 @@ public final class HttpServer {
         }
     }
 
+    // --- Health ---
+
+    private void handleHealth(Context ctx) throws Exception {
+        List<Map<String, Object>> srcs = new ArrayList<>();
+        for (Source s : pipeline.sources().values()) {
+            srcs.add(Map.of("name", s.name(), "type", s.sourceType(), "running", s.isRunning()));
+        }
+        ctx.contentType("application/json").result(json.writeValueAsBytes(Map.of(
+                "status", "healthy",
+                "sources", srcs)));
+    }
+
+    // --- Providers ---
+
+    private void handleProviders(Context ctx) throws Exception {
+        List<Map<String, Object>> out = new ArrayList<>();
+        ProcessorContext pctx = pipeline.context();
+        for (String name : pctx.listProviders()) {
+            Provider p = pctx.getProvider(name);
+            out.add(Map.of(
+                    "name",  name,
+                    "type",  p == null ? "unknown" : p.providerType(),
+                    "state", p == null ? "UNKNOWN" : p.state().name()));
+        }
+        ctx.contentType("application/json").result(json.writeValueAsBytes(out));
+    }
+
+    private void handleEnableProvider(Context ctx) throws Exception {
+        String name = nameFromBody(ctx);
+        if (name.isEmpty()) { writeError(ctx, 400, "name required"); return; }
+        boolean ok = pipeline.enableProvider(name);
+        writeStatus(ctx, ok, name, "enabled", "provider not found");
+    }
+
+    private void handleDisableProvider(Context ctx) throws Exception {
+        String name = nameFromBody(ctx);
+        if (name.isEmpty()) { writeError(ctx, 400, "name required"); return; }
+        boolean ok = pipeline.disableProvider(name);
+        writeStatus(ctx, ok, name, "disabled", "provider not found");
+    }
+
+    // --- Provenance ---
+
+    private void handleProvenanceRecent(Context ctx) throws Exception {
+        ProvenanceProvider prov = pipeline.provenance();
+        if (prov == null) { writeError(ctx, 503, "provenance provider not enabled"); return; }
+        int n = 50;
+        String nStr = ctx.queryParam("n");
+        if (nStr != null && !nStr.isEmpty()) {
+            try { n = Integer.parseInt(nStr); }
+            catch (NumberFormatException e) { writeError(ctx, 400, "query param 'n' is not an integer: '" + nStr + "'"); return; }
+        }
+        ctx.contentType("application/json").result(json.writeValueAsBytes(shape(prov.getRecent(n))));
+    }
+
+    private void handleProvenanceById(Context ctx) throws Exception {
+        ProvenanceProvider prov = pipeline.provenance();
+        if (prov == null) { writeError(ctx, 503, "provenance provider not enabled"); return; }
+        long id;
+        try { id = Long.parseLong(ctx.pathParam("id")); }
+        catch (NumberFormatException e) { writeError(ctx, 400, "path param 'id' is not a long"); return; }
+        ctx.contentType("application/json").result(json.writeValueAsBytes(shape(prov.getEvents(id))));
+    }
+
+    private static List<Map<String, Object>> shape(List<ProvenanceProvider.Event> events) {
+        List<Map<String, Object>> out = new ArrayList<>(events.size());
+        for (ProvenanceProvider.Event e : events) {
+            out.add(Map.of(
+                    "flowfile",  "ff-" + e.flowFileId(),
+                    "type",      e.type().name(),
+                    "component", e.component(),
+                    "details",   e.details(),
+                    "timestamp", e.timestampMillis()));
+        }
+        return out;
+    }
+
+    // --- Processor admin ---
+
+    private void handleAddProcessor(Context ctx) throws Exception {
+        Map<String, Object> body = readJsonBody(ctx);
+        if (body == null) { writeError(ctx, 400, "invalid json body"); return; }
+        String name = str(body.get("name"));
+        String type = str(body.get("type"));
+        if (name.isEmpty() || type.isEmpty()) { writeError(ctx, 400, "name and type required"); return; }
+
+        Map<String, String> config = asStringMap(body.get("config"));
+        List<String> requires = asStringList(body.get("requires"));
+        Map<String, List<String>> connections = asConnections(body.get("connections"));
+
+        boolean ok = pipeline.addProcessor(name, type, config, requires, connections);
+        writeStatus(ctx, ok, name, "created", "processor already exists or unknown type");
+    }
+
+    private void handleRemoveProcessor(Context ctx) throws Exception {
+        String name = nameFromBody(ctx);
+        if (name.isEmpty()) { writeError(ctx, 400, "name required"); return; }
+        boolean ok = pipeline.removeProcessor(name);
+        writeStatus(ctx, ok, name, "removed", "processor not found");
+    }
+
+    private void handleEnableProcessor(Context ctx) throws Exception {
+        String name = nameFromBody(ctx);
+        if (name.isEmpty()) { writeError(ctx, 400, "name required"); return; }
+        boolean ok = pipeline.enableProcessor(name);
+        writeStatus(ctx, ok, name, "enabled", "processor not found");
+    }
+
+    private void handleDisableProcessor(Context ctx) throws Exception {
+        String name = nameFromBody(ctx);
+        if (name.isEmpty()) { writeError(ctx, 400, "name required"); return; }
+        boolean ok = pipeline.disableProcessor(name);
+        writeStatus(ctx, ok, name, "disabled", "processor not found");
+    }
+
+    private void handleProcessorState(Context ctx) throws Exception {
+        String name = nameFromBody(ctx);
+        if (name.isEmpty()) { writeError(ctx, 400, "name required"); return; }
+        if (!pipeline.graph().processors().containsKey(name)) { writeError(ctx, 404, "processor not found"); return; }
+        ctx.contentType("application/json").result(json.writeValueAsBytes(Map.of(
+                "name",  name,
+                "state", pipeline.processorState(name).name())));
+    }
+
+    // --- Sources ---
+
+    private void handleSources(Context ctx) throws Exception {
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Source s : pipeline.sources().values()) {
+            out.add(Map.of("name", s.name(), "type", s.sourceType(), "running", s.isRunning()));
+        }
+        ctx.contentType("application/json").result(json.writeValueAsBytes(out));
+    }
+
+    private void handleStartSource(Context ctx) throws Exception {
+        String name = nameFromBody(ctx);
+        if (name.isEmpty()) { writeError(ctx, 400, "name required"); return; }
+        boolean ok = pipeline.startSource(name);
+        writeStatus(ctx, ok, name, "started", "source not found");
+    }
+
+    private void handleStopSource(Context ctx) throws Exception {
+        String name = nameFromBody(ctx);
+        if (name.isEmpty()) { writeError(ctx, 400, "name required"); return; }
+        boolean ok = pipeline.stopSource(name);
+        writeStatus(ctx, ok, name, "stopped", "source not found");
+    }
+
+    // --- Body + response helpers ---
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> readJsonBody(Context ctx) {
+        try { return json.readValue(ctx.bodyAsBytes(), Map.class); }
+        catch (Exception e) { return null; }
+    }
+
+    private String nameFromBody(Context ctx) {
+        Map<String, Object> body = readJsonBody(ctx);
+        return body == null ? "" : str(body.get("name"));
+    }
+
+    private static String str(Object o) { return o == null ? "" : o.toString(); }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, String> asStringMap(Object raw) {
+        if (!(raw instanceof Map<?, ?> m)) return Map.of();
+        Map<String, String> out = new LinkedHashMap<>();
+        for (var entry : m.entrySet()) out.put(String.valueOf(entry.getKey()), str(entry.getValue()));
+        return out;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<String> asStringList(Object raw) {
+        if (!(raw instanceof List<?> l)) return List.of();
+        List<String> out = new ArrayList<>(l.size());
+        for (Object o : l) out.add(str(o));
+        return out;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, List<String>> asConnections(Object raw) {
+        if (!(raw instanceof Map<?, ?> m)) return Map.of();
+        Map<String, List<String>> out = new LinkedHashMap<>();
+        for (var entry : m.entrySet()) {
+            String rel = String.valueOf(entry.getKey());
+            if (entry.getValue() instanceof List<?> l) {
+                List<String> targets = new ArrayList<>(l.size());
+                for (Object o : l) targets.add(str(o));
+                out.put(rel, targets);
+            } else if (entry.getValue() != null) {
+                out.put(rel, List.of(str(entry.getValue())));
+            }
+        }
+        return out;
+    }
+
+    private void writeStatus(Context ctx, boolean ok, String name, String okStatus, String failMessage) throws Exception {
+        Map<String, Object> body = ok
+                ? Map.of("status", okStatus, "name", name)
+                : Map.of("error", failMessage, "name", name);
+        ctx.status(ok ? 200 : 404)
+           .contentType("application/json")
+           .result(json.writeValueAsBytes(body));
+    }
+
+    private void writeError(Context ctx, int status, String message) throws Exception {
+        ctx.status(status)
+           .contentType("application/json")
+           .result(json.writeValueAsBytes(Map.of("error", message)));
+    }
+
     // Exposed for tests/inspection.
     public List<String> routes() {
-        return List.of("GET /", "POST /", "GET /dashboard", "GET /health", "GET /metrics",
-                "GET /api/stats", "GET /api/processors", "GET /api/connections",
-                "GET /api/flow", "POST /api/reload");
+        return List.of(
+                "GET /", "POST /", "GET /dashboard", "GET /health", "GET /metrics",
+                "GET /api/stats", "GET /api/processors", "GET /api/processor-stats",
+                "GET /api/connections", "GET /api/flow", "GET /api/registry",
+                "POST /api/reload",
+                "GET /api/providers", "POST /api/providers/enable", "POST /api/providers/disable",
+                "GET /api/provenance", "GET /api/provenance/{id}",
+                "POST /api/processors/add", "DELETE /api/processors/remove",
+                "POST /api/processors/enable", "POST /api/processors/disable",
+                "POST /api/processors/state",
+                "GET /api/sources", "POST /api/sources/start", "POST /api/sources/stop");
     }
 }

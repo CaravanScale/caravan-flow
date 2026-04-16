@@ -57,7 +57,7 @@ final class RegistryTest {
     void customProcessorCanBeRegistered() {
         Processor trivial = ff -> zincflow.core.ProcessorResult.dropped();
         var r = new Registry();
-        r.register("Trivial", cfg -> trivial);
+        r.register("Trivial", (cfg, ctx) -> trivial);
         assertSame(trivial, r.create("Trivial", Map.of()));
     }
 }

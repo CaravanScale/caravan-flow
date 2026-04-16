@@ -20,6 +20,16 @@ public final class LoggingProvider implements Provider {
         this.rootLogger = LoggerFactory.getLogger("zincflow");
     }
 
+    /// Convenience factory — a pre-enabled instance, suitable as the
+    /// default when no external provider is wired. The returned
+    /// provider logs immediately; toggle it via {@link #disable(int)}
+    /// if you want to mute it.
+    public static LoggingProvider enabled() {
+        LoggingProvider p = new LoggingProvider();
+        p.enable();
+        return p;
+    }
+
     @Override public String name() { return "logging"; }
     @Override public String providerType() { return "logging"; }
     @Override public ComponentState state() { return state; }
