@@ -1,54 +1,161 @@
 @page "/"
 @inject FlowApiClient Api
+@implements IDisposable
+@using System.Text.Json
 
 <PageTitle>caravan-flow — graph</PageTitle>
 
 <h1>Graph</h1>
 
-@if (_error is not null)
-{
-    <p class="error">Failed to load: @_error</p>
-}
-else if (_flow is null)
-{
-    <p>loading…</p>
-}
+@if (_error is not null) { <p class="error">Failed to load: @_error</p> }
+else if (_flow is null) { <p>loading…</p> }
 else
 {
-    <p>
-        @_processorCount processors,
-        @_connectionCount connections,
-        @_entryPointCount entry points
+    <p class="muted">
+        @_processors.Count processors · @_connectionCount connections ·
+        @_entryPoints.Count entry points · polls every 2 s
     </p>
-    <p class="muted">(graph rendering lands in the next commit — this stub just proves the API wiring)</p>
+
+    @if (_processors.Count == 0)
+    {
+        <p class="error">No processors loaded. The worker probably booted without a config file — restart it from the <code>caravan-flow-csharp/</code> directory so it picks up <code>config.yaml</code>.</p>
+    }
+    else
+    {
+        <h2>Processors</h2>
+        <table class="kv">
+            <thead><tr><th>name</th><th>type</th><th>state</th><th>entry?</th><th>outbound</th></tr></thead>
+            <tbody>
+            @foreach (var p in _processors)
+            {
+                <tr>
+                    <td class="mono">@p.Name</td>
+                    <td class="mono">@p.Type</td>
+                    <td>@p.State</td>
+                    <td>@(_entryPoints.Contains(p.Name) ? "yes" : "")</td>
+                    <td class="mono">@string.Join(" · ", p.Outbound)</td>
+                </tr>
+            }
+            </tbody>
+        </table>
+
+        <h2>Connections</h2>
+        @if (_connectionCount == 0) { <p class="muted">none</p> }
+        else
+        {
+            <table class="kv">
+                <thead><tr><th>from</th><th>relationship</th><th>to</th></tr></thead>
+                <tbody>
+                @foreach (var c in _edges)
+                {
+                    <tr>
+                        <td class="mono">@c.From</td>
+                        <td class="mono">@c.Rel</td>
+                        <td class="mono">@c.To</td>
+                    </tr>
+                }
+                </tbody>
+            </table>
+        }
+    }
+
+    <p class="muted">(dagre-based visual render + click-to-edit drawer land in the next commit; this table view is the stub.)</p>
 }
 
 @code {
-    // MVP placeholder. Fetches /api/flow to prove the API client works,
-    // reports summary counts. Dagre-based render + click-to-edit drawer
-    // land in the follow-up graph-view commit.
-    private System.Text.Json.JsonElement? _flow;
+    private JsonElement? _flow;
     private string? _error;
-    private int _processorCount;
+    private List<Proc> _processors = new();
+    private List<string> _entryPoints = new();
+    private List<Edge> _edges = new();
     private int _connectionCount;
-    private int _entryPointCount;
+    private Timer? _timer;
+
+    private sealed record Proc(string Name, string Type, string State, List<string> Outbound);
+    private sealed record Edge(string From, string Rel, string To);
 
     protected override async Task OnInitializedAsync()
+    {
+        await Refresh();
+        _timer = new Timer(async _ => { await Refresh(); await InvokeAsync(StateHasChanged); },
+            null, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
+    }
+
+    private async Task Refresh()
     {
         try
         {
             var flow = await Api.GetFlowAsync();
             _flow = flow;
-            _processorCount = flow.TryGetProperty("processors", out var procs) && procs.ValueKind == System.Text.Json.JsonValueKind.Array
-                ? procs.GetArrayLength() : 0;
-            _connectionCount = flow.TryGetProperty("connections", out var conns) && conns.ValueKind == System.Text.Json.JsonValueKind.Object
-                ? conns.EnumerateObject().Sum(p => p.Value.EnumerateObject().Sum(r => r.Value.GetArrayLength())) : 0;
-            _entryPointCount = flow.TryGetProperty("entryPoints", out var eps) && eps.ValueKind == System.Text.Json.JsonValueKind.Array
-                ? eps.GetArrayLength() : 0;
+            _processors = ParseProcessors(flow);
+            _entryPoints = flow.TryGetProperty("entryPoints", out var eps) && eps.ValueKind == JsonValueKind.Array
+                ? eps.EnumerateArray().Where(e => e.ValueKind == JsonValueKind.String).Select(e => e.GetString()!).ToList()
+                : new();
+            (_edges, _connectionCount) = ParseEdges(flow);
+            _error = null;
         }
-        catch (Exception ex)
-        {
-            _error = ex.Message;
-        }
+        catch (Exception ex) { _error = ex.Message; }
     }
+
+    private static List<Proc> ParseProcessors(JsonElement flow)
+    {
+        var list = new List<Proc>();
+        if (!flow.TryGetProperty("processors", out var procs) || procs.ValueKind != JsonValueKind.Array) return list;
+        foreach (var p in procs.EnumerateArray())
+        {
+            var name = p.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString()! : "";
+            var type = p.TryGetProperty("type", out var t) && t.ValueKind == JsonValueKind.String ? t.GetString()! : "";
+            var state = p.TryGetProperty("state", out var s) && s.ValueKind == JsonValueKind.String ? s.GetString()! : "";
+            var outbound = new List<string>();
+            if (p.TryGetProperty("connections", out var cx) && cx.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var rel in cx.EnumerateObject())
+                {
+                    if (rel.Value.ValueKind != JsonValueKind.Array) continue;
+                    foreach (var tgt in rel.Value.EnumerateArray())
+                        if (tgt.ValueKind == JsonValueKind.String) outbound.Add($"{rel.Name}→{tgt.GetString()}");
+                }
+            }
+            list.Add(new Proc(name, type, state, outbound));
+        }
+        return list;
+    }
+
+    private static (List<Edge>, int) ParseEdges(JsonElement flow)
+    {
+        var edges = new List<Edge>();
+        // Top-level "connections": { from: { rel: [to,…] } } is the separated shape.
+        if (flow.TryGetProperty("connections", out var cs) && cs.ValueKind == JsonValueKind.Object)
+        {
+            foreach (var from in cs.EnumerateObject())
+            {
+                if (from.Value.ValueKind != JsonValueKind.Object) continue;
+                foreach (var rel in from.Value.EnumerateObject())
+                {
+                    if (rel.Value.ValueKind != JsonValueKind.Array) continue;
+                    foreach (var to in rel.Value.EnumerateArray())
+                        if (to.ValueKind == JsonValueKind.String) edges.Add(new Edge(from.Name, rel.Name, to.GetString()!));
+                }
+            }
+            return (edges, edges.Count);
+        }
+        // Fallback: read per-processor inlined connections (older shape).
+        if (flow.TryGetProperty("processors", out var ps) && ps.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var p in ps.EnumerateArray())
+            {
+                var name = p.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
+                if (!p.TryGetProperty("connections", out var px) || px.ValueKind != JsonValueKind.Object) continue;
+                foreach (var rel in px.EnumerateObject())
+                {
+                    if (rel.Value.ValueKind != JsonValueKind.Array) continue;
+                    foreach (var to in rel.Value.EnumerateArray())
+                        if (to.ValueKind == JsonValueKind.String) edges.Add(new Edge(name, rel.Name, to.GetString()!));
+                }
+            }
+        }
+        return (edges, edges.Count);
+    }
+
+    public void Dispose() => _timer?.Dispose();
 }
