@@ -8,6 +8,7 @@ import {
   type Node,
   type Edge,
   type NodeMouseHandler,
+  type EdgeMouseHandler,
 } from '@xyflow/react'
 import { api } from '../api/client'
 import { layoutFlow, type ProcessorNodeData, type RelEdgeData } from '../lib/layout'
@@ -15,6 +16,7 @@ import { ProcessorNode } from '../components/ProcessorNode'
 import { RelationshipEdge } from '../components/RelationshipEdge'
 import { ProcessorDrawer } from '../components/ProcessorDrawer'
 import { AddProcessorDialog } from '../components/AddProcessorDialog'
+import { EdgeDrawer, type EdgeSelection } from '../components/EdgeDrawer'
 import type { Processor } from '../api/types'
 
 const nodeTypes = { processor: ProcessorNode }
@@ -43,6 +45,7 @@ export function GraphPage() {
   })
 
   const [selected, setSelected] = useState<string | null>(null)
+  const [selectedEdge, setSelectedEdge] = useState<EdgeSelection | null>(null)
   const [addOpen, setAddOpen] = useState(false)
 
   // Lay out from the topology, then fold in live stats so the node
@@ -80,8 +83,27 @@ export function GraphPage() {
     }
   }, [topology.data, selected])
 
-  const onNodeClick: NodeMouseHandler = (_, node) => setSelected(node.id)
-  const onPaneClick = () => setSelected(null)
+  // Close edge drawer when that edge vanishes from a refresh.
+  useEffect(() => {
+    if (!selectedEdge || !topology.data) return
+    const src = topology.data.processors.find((p) => p.name === selectedEdge.from)
+    const targets = src?.connections?.[selectedEdge.relationship] ?? []
+    if (!targets.includes(selectedEdge.to)) setSelectedEdge(null)
+  }, [topology.data, selectedEdge])
+
+  const onNodeClick: NodeMouseHandler = (_, node) => {
+    setSelectedEdge(null)
+    setSelected(node.id)
+  }
+  const onEdgeClick: EdgeMouseHandler = (_, edge) => {
+    setSelected(null)
+    const rel = (edge.data as RelEdgeData | undefined)?.relationship ?? 'success'
+    setSelectedEdge({ from: edge.source, relationship: rel, to: edge.target })
+  }
+  const onPaneClick = () => {
+    setSelected(null)
+    setSelectedEdge(null)
+  }
 
   const selectedProcessor: Processor | null =
     topology.data?.processors.find((p) => p.name === selected) ?? null
@@ -102,6 +124,7 @@ export function GraphPage() {
           minZoom={0.2}
           maxZoom={2}
           onNodeClick={onNodeClick}
+          onEdgeClick={onEdgeClick}
           onPaneClick={onPaneClick}
           proOptions={{ hideAttribution: true }}
         >
@@ -177,6 +200,9 @@ export function GraphPage() {
           entryPoints={topology.data.entryPoints}
           onClose={() => setSelected(null)}
         />
+      )}
+      {selectedEdge && (
+        <EdgeDrawer edge={selectedEdge} onClose={() => setSelectedEdge(null)} />
       )}
     </div>
   )
