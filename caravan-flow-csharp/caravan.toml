@@ -1,0 +1,27 @@
+[project]
+name = "CaravanFlow"
+version = "0.1.0"
+main = "CaravanFlow/Program.cs"
+source_dir = "CaravanFlow"
+sdk = "Microsoft.NET.Sdk.Web"
+
+[csharp]
+framework = "net10.0"
+lang_version = "latest"
+nullable = true
+implicit_usings = true
+unsafe = true
+
+[csharp.aot]
+enabled = true
+strip_symbols = true
+invariant_globalization = true
+optimization = "Size"
+stack_traces = false
+trim_metadata = false
+
+[csharp.gc]
+server = true
+
+[csharp.nuget]
+packages = ["YamlDotNet:16.3.0", "ZstdSharp.Port:0.8.4"]

@@ -1,0 +1,56 @@
+server:
+  port: 9091
+
+logging:
+  level: DEBUG
+  format: text
+
+content:
+  dir: /tmp/caravan-flow-csharp/content
+  offload_threshold_kb: 256       # FlowFiles larger than this → disk claim
+  sweep_interval_ms: 300000       # orphan cleanup every 5 min
+
+defaults:
+  max_hops: 50
+  max_concurrent_executions: 100
+
+sources:
+  listen_http:
+    port: 9092
+    path: /
+
+flow:
+  processors:
+    tag-env:
+      type: UpdateAttribute
+      config:
+        key: env
+        value: dev
+      connections:
+        success:
+          - tag-source
+
+    tag-source:
+      type: UpdateAttribute
+      config:
+        key: source
+        value: api
+      connections:
+        success:
+          - logger
+
+    logger:
+      type: LogAttribute
+      config:
+        prefix: flow
+      connections:
+        success:
+          - sink
+
+    sink:
+      type: PutFile
+      requires:
+        - content
+      config:
+        output_dir: /tmp/caravan-flow-csharp/output
+        naming_attribute: filename

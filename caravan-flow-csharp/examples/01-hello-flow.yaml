@@ -1,0 +1,58 @@
+# 01 — Hello flow
+#
+# Smallest useful pipeline. Accepts HTTP POSTs on :9092, tags each FlowFile
+# with environment + source attributes, logs the attributes, writes the body
+# to disk.
+#
+# Try it:
+#   ./build/CaravanFlow validate examples/01-hello-flow.yaml
+#   cp examples/01-hello-flow.yaml config.yaml && ./build/CaravanFlow
+#   curl -X POST http://localhost:9092/ -d 'hello world'
+#   ls /tmp/caravan-out/
+
+server:
+  port: 9091
+
+logging:
+  format: text
+
+content:
+  dir: /tmp/caravan-flow-csharp/content
+
+sources:
+  listen_http:
+    port: 9092
+    path: /
+
+flow:
+  processors:
+
+    tag-env:
+      type: UpdateAttribute
+      config:
+        key: env
+        value: dev
+      connections:
+        success: [tag-source]
+
+    tag-source:
+      type: UpdateAttribute
+      config:
+        key: source
+        value: api
+      connections:
+        success: [logger]
+
+    logger:
+      type: LogAttribute
+      config:
+        prefix: hello
+      connections:
+        success: [sink]
+
+    sink:
+      type: PutFile
+      requires: [content]
+      config:
+        output_dir: /tmp/caravan-out
+        naming_attribute: filename

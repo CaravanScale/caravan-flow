@@ -275,7 +275,7 @@ Governance and compliance — enforcing policies on flow design:
 
 ---
 
-## What Matters for zinc-flow
+## What Matters for caravan-flow
 
 ### Priority 1 — Core cross-cutting services
 1. **Record Format (Read/Write)** — NiFi's power comes from format-agnostic processors. A RecordReader/RecordWriter interface lets one processor handle JSON, CSV, Avro without knowing the format.
@@ -296,6 +296,6 @@ Governance and compliance — enforcing policies on flow design:
 ### Key Insight
 NiFi is ~70% connectors, ~30% core logic. The connectors are thin wrappers around SDKs. The real value is:
 - **Record abstraction** — format-agnostic processing
-- **Routing engine** — attribute-based routing (zinc-flow already has this)
+- **Routing engine** — attribute-based routing (caravan-flow already has this)
 - **Flow control** — backpressure, rate limiting, ordering
 - **Shared services** — connection pools, credentials, caching, schemas

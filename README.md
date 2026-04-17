@@ -1,12 +1,12 @@
-# Zinc Flow
+# Caravan Flow
 
-Lightweight, cloud-native data flow engine inspired by Apache NiFi and Apache Camel. Built in [Zinc](https://github.com/ZincScale/zinc) and compiled via [zinc-csharp](https://github.com/ZincScale/zinc/tree/master/zinc-csharp) to a .NET 10 AOT binary.
+Lightweight, cloud-native data flow engine inspired by Apache NiFi and Apache Camel. Built in [Caravan](https://github.com/CaravanScale/caravan) and compiled via [caravan-csharp](https://github.com/CaravanScale/caravan/tree/master/caravan-csharp) to a .NET 10 AOT binary.
 
 ## What is it?
 
-NiFi's processor model with Camel's direct pipeline execution and Zinc's simplicity.
+NiFi's processor model with Camel's direct pipeline execution and Caravan's simplicity.
 
-- **Processors** are Zinc classes implementing `ProcessorFn` (1-in, 1-out)
+- **Processors** are Caravan classes implementing `ProcessorFn` (1-in, 1-out)
 - **DAG connections** wire processors into a directed graph — FlowFiles flow synchronously through the pipeline
 - **Failure routing** — processors can return `FailureResult`, routed via "failure" connections to error handlers
 - **Providers** give processors scoped access to shared infrastructure (content store, config, logging)
@@ -18,12 +18,12 @@ NiFi's processor model with Camel's direct pipeline execution and Zinc's simplic
 ## Quick Start
 
 ```bash
-cd zinc-flow-csharp
-zinc build .
-./zinc-out/zinc-flow
+cd caravan-flow-csharp
+caravan build .
+./caravan-out/caravan-flow
 
 # Run the test suite
-zinc test .
+caravan test .
 
 # Ingest a FlowFile
 curl -X POST http://localhost:9092/ -d '{"hello":"world"}' -H 'X-Flow-type: order'
@@ -37,11 +37,11 @@ curl http://localhost:9091/api/providers
 ## Project Structure
 
 ```
-zinc-flow/
-├── zinc-flow-csharp/          — C# .NET 10 runtime (17 processors, 395 tests)
+caravan-flow/
+├── caravan-flow-csharp/          — C# .NET 10 runtime (17 processors, 395 tests)
 ├── processors/                — additional processor packages
 ├── config.yaml                — Flow definition (processors, connections)
-├── zinc.toml                  — Project config
+├── caravan.toml                  — Project config
 ├── docs/                      — Design and reference docs
 └── TODO.md                    — Roadmap
 ```
@@ -96,12 +96,12 @@ Sink processors (no outgoing connections) — terminal
 ## Design
 
 - [docs/architecture.md](docs/architecture.md) — canonical architecture document (execution model, types, pipeline graph, providers, deployment)
-- [docs/csharpism-audit.md](docs/csharpism-audit.md) — zinc/C# idiom alignment audit
+- [docs/csharpism-audit.md](docs/csharpism-audit.md) — caravan/C# idiom alignment audit
 - [docs/data-engine-comparison.md](docs/data-engine-comparison.md) — comparison with NiFi, DeltaFi, Flink, Spark, Beam
 - [docs/nifi-component-analysis.md](docs/nifi-component-analysis.md) — NiFi processor catalog (reference for future StdLib expansion)
 - [docs/product-research-2026-04.md](docs/product-research-2026-04.md) — product research notes
 
 ## Related
 
-- [Zinc Language](https://github.com/ZincScale/zinc) — the language Zinc Flow is written in
-- [zinc-csharp](https://github.com/ZincScale/zinc/tree/master/zinc-csharp) — C# build backend (installs .NET, reads zinc.toml, produces AOT binaries)
+- [Caravan Language](https://github.com/CaravanScale/caravan) — the language Caravan Flow is written in
+- [caravan-csharp](https://github.com/CaravanScale/caravan/tree/master/caravan-csharp) — C# build backend (installs .NET, reads caravan.toml, produces AOT binaries)

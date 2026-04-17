@@ -1,0 +1,24 @@
+using CaravanFlow.Tests;
+
+TestRunner.Pass = 0; TestRunner.Fail = 0;
+Console.WriteLine("=== caravan-flow-csharp test suite ===");
+Console.WriteLine();
+
+CoreTests.RunAll();
+ProcessorTests.RunAll();
+CodecTests.RunAll();
+ExpressionTests.RunAll();
+ValidatorTests.RunAll();
+ConfigErrorTests.RunAll();
+EmbeddedSchemaRegistryTests.RunAll();
+FlowFileV3BoundaryTests.RunAll();
+PutHTTPTests.RunAll();
+SustainedLoadTests.RunAll();
+FabricTests.RunAll();
+SourceTests.RunAll();
+PipelineTests.RunAll();
+E2ETests.RunAll();
+
+Console.WriteLine();
+Console.WriteLine($"=== {TestRunner.Pass} passed, {TestRunner.Fail} failed ({TestRunner.Pass + TestRunner.Fail} total) ===");
+return TestRunner.Fail > 0 ? 1 : 0;

@@ -1,0 +1,5 @@
+caravanflow.providers.LoggingProvider$Plugin
+caravanflow.providers.ConfigProvider$Plugin
+caravanflow.providers.ProvenanceProvider$Plugin
+caravanflow.providers.ContentProvider$Plugin
+caravanflow.providers.SchemaRegistryProvider$Plugin

@@ -1,0 +1,89 @@
+# 05 — Schema-registry-backed Avro pipeline (embedded registry, config-loaded)
+#
+# caravan-flow ships an in-process schema registry — no external service needed,
+# fits airgapped deployments. Schemas are loaded from the `schemas:` section
+# at startup; processors reference them by subject just like with a remote
+# registry. REST endpoints under /api/schema-registry/* are also live for
+# runtime registration / inspection (see example 06).
+#
+# Try it:
+#   ./build/CaravanFlow validate examples/05-schema-registry.yaml
+#   cp examples/05-schema-registry.yaml config.yaml && ./build/CaravanFlow
+#
+# Inspect the loaded schema:
+#   curl -s http://localhost:9091/api/schema-registry/subjects
+#   curl -s http://localhost:9091/api/schema-registry/subjects/orders/versions/latest
+
+server:
+  port: 9091
+
+content:
+  dir: /tmp/caravan-flow-csharp/content
+
+# Pre-load schemas into the embedded registry. Each subject is one of:
+#   inline: <Avro JSON schema as a string (multiline `|` works)>
+#   file:   <path to .avsc, relative to this config file>
+schemas:
+  orders:
+    file: schemas/orders.avsc
+
+sources:
+  file:
+    input_dir: /tmp/avro-in
+    pattern: "*.avro"
+
+flow:
+  processors:
+
+    parse:
+      type: ConvertOCFToRecord
+      requires: [content, schema_registry]
+      config:
+        reader_schema_subject: orders
+        # Pin to a specific version for reproducibility, or use "latest"
+        # to always pick up the most-recently-registered version.
+        reader_schema_version: latest
+      connections:
+        success: [filter]
+        failure: [errors]
+
+    filter:
+      type: QueryRecord
+      config:
+        # Nested-path predicates work too: e.g., "user.country = US"
+        where: "amount > 100"
+      connections:
+        success: [transform]
+
+    transform:
+      type: TransformRecord
+      config:
+        operations: >
+          compute:total:amount * qty;
+          compute:tax:total * if(region == "US", 0.07, 0.15);
+          compute:label:upper(region) + "-" + string(round(total + tax))
+      connections:
+        success: [encode]
+
+    # Write back as zstd-compressed OCF. The output schema is whatever the
+    # records carry — same as the registry-fetched reader schema, plus any
+    # fields added by `compute:`.
+    encode:
+      type: ConvertRecordToOCF
+      config:
+        codec: zstandard
+      connections:
+        success: [write]
+
+    write:
+      type: PutFile
+      requires: [content]
+      config:
+        output_dir: /tmp/avro-out
+        naming_attribute: filename
+        suffix: .processed.avro
+
+    errors:
+      type: LogAttribute
+      config:
+        prefix: registry-error

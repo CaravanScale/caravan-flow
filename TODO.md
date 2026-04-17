@@ -1,10 +1,10 @@
-# Zinc Flow Roadmap
+# Caravan Flow Roadmap
 
 ---
 
 ## What Works Now
 
-**zinc-flow** is a fully functional standalone data flow engine. You can use it today for:
+**caravan-flow** is a fully functional standalone data flow engine. You can use it today for:
 
 - Config-driven processor pipelines (YAML, map-keyed, NiFi-style connections)
 - HTTP ingest and file-based ingest with direct pipeline execution
@@ -37,13 +37,13 @@
 
 - [x] Provider lifecycle (ENABLED/DISABLED), ScopedContext, dependency cascade
 - [x] Map-keyed YAML config, graceful shutdown
-- [x] **41 tests via `zinc test`** — core (8) + processors (7) + routing (7) + fabric/queue/DLQ (9) + scenarios (10). Real `go test` integration, `stdlib.asserts` helpers, exit-code-honest failures. (Was 30 tests / 137 assertions under the old `run_tests.sh` src/main.zn-swap hack — retired.)
-- [x] zinc-flow-python port — 129 assertions, DataFrame processors
-- [x] zinc-flow-csharp port — 149 assertions, ThreadStatic pools, ArrayPool, ref-counted Content, 2M+ ff/s AOT
+- [x] **41 tests via `caravan test`** — core (8) + processors (7) + routing (7) + fabric/queue/DLQ (9) + scenarios (10). Real `go test` integration, `stdlib.asserts` helpers, exit-code-honest failures. (Was 30 tests / 137 assertions under the old `run_tests.sh` src/main.zn-swap hack — retired.)
+- [x] caravan-flow-python port — 129 assertions, DataFrame processors
+- [x] caravan-flow-csharp port — 149 assertions, ThreadStatic pools, ArrayPool, ref-counted Content, 2M+ ff/s AOT
 
-## Phase 0 — Zinc compiler gap closure ✓
+## Phase 0 — Caravan compiler gap closure ✓
 
-Prerequisite for porting zinc-flow's processor set to the Zinc language (re-establishing parity with the csharp reference). Audit at [docs/zinc-compiler-audit.md](docs/zinc-compiler-audit.md). Nine compiler tickets (ZCA-01 through ZCA-09) resolved across 10 commits in the [zinc](https://github.com/ZincScale/zinc) repo:
+Prerequisite for porting caravan-flow's processor set to the Caravan language (re-establishing parity with the csharp reference). Audit at [docs/caravan-compiler-audit.md](docs/caravan-compiler-audit.md). Nine compiler tickets (ZCA-01 through ZCA-09) resolved across 10 commits in the [caravan](https://github.com/CaravanScale/caravan) repo:
 
 - [x] `[imports]` alias resolution in flat-src projects (ZCA-01 + ZCA-02)
 - [x] Nested user-generic type args — `Box<List<int>>` (ZCA-04)
@@ -51,9 +51,9 @@ Prerequisite for porting zinc-flow's processor set to the Zinc language (re-esta
 - [x] Compile-time exhaustive `match` enforcement on sealed types (ZCA-03)
 - [x] `_v` unused-var fix for discard/wildcard case arms (ZCA-06)
 - [x] Zero-param lambda parse `() -> { body }` (ZCA-07)
-- [x] `zinc test` command + `test "name" { body }` syntax + `stdlib/asserts` module (ZCA-08)
+- [x] `caravan test` command + `test "name" { body }` syntax + `stdlib/asserts` module (ZCA-08)
 - [x] `fmt.Errorf` with constant format string for `Error("...${interp}")` — go-vet clean (ZCA-09)
-- [x] Unified `[deps]` + `[replace]` in `zinc.toml` (alias-keyed, no duplication with `[imports]`)
+- [x] Unified `[deps]` + `[replace]` in `caravan.toml` (alias-keyed, no duplication with `[imports]`)
 
 Remaining probes (D closure-bridge, E spawn/channels, M testing) all passed; no additional compiler gaps for MVP.
 
@@ -61,7 +61,7 @@ Remaining probes (D closure-bridge, E spawn/channels, M testing) all passed; no 
 
 ## Phase 2 — Useful Standalone
 
-Make zinc-flow useful for real workloads without requiring NATS or K8s. A single binary that can ingest, transform, and deliver data.
+Make caravan-flow useful for real workloads without requiring NATS or K8s. A single binary that can ingest, transform, and deliver data.
 
 ### Phase 2a: Connectors ✓ (C#)
 - [x] ConnectorSource interface (start/stop/isRunning lifecycle)
@@ -92,8 +92,8 @@ Make zinc-flow useful for real workloads without requiring NATS or K8s. A single
 - [x] RouteOnAttribute processor — conditional branching using predicate engine
 - [x] Read-only management dashboard — single-file dashboard.html served at `/`, dagre DAG layout, live processor stats
 - [x] AOT hardening — source-generated JsonContext + Utf8JsonWriter for open shapes, [FromBody] parameter binding for mutation handlers, zero analyzer warnings
-- [x] `test --aot` mode in zinc-csharp build tool — publishes test project as Native AOT binary for nightly CI
-- [x] `zinc-flow validate` — pre-flight config check (parses YAML, builds registry, constructs every processor against a synthetic context, runs DAG validation). Exit 0 valid, 1 errors, 2 usage. (See Phase 2e for full description.)
+- [x] `test --aot` mode in caravan-csharp build tool — publishes test project as Native AOT binary for nightly CI
+- [x] `caravan-flow validate` — pre-flight config check (parses YAML, builds registry, constructs every processor against a synthetic context, runs DAG validation). Exit 0 valid, 1 errors, 2 usage. (See Phase 2e for full description.)
 - [x] FlowFile V3 boundary completion — GetFile sniffs V3 magic, PutFile/PutStdout `format: v3`, ListenHTTP accepts `application/flowfile-v3`, new `PackageFlowFileV3` / `UnpackageFlowFileV3` processors.
 - [ ] Custom processor loading — register processors from external packages
 
@@ -104,7 +104,7 @@ Make zinc-flow useful for real workloads without requiring NATS or K8s. A single
 - [x] **Typed expression engine** — hand-rolled tokenizer + shunting-yard + stack VM. Tagged EvalValue (Long/Double/Bool/String/Null) with type promotion. Operators: `+ - * / %`, `== != < > <= >=`, `&& || !`, parens, unary minus. Functions: upper/lower/trim/length/substring/replace/concat/contains/startsWith/endsWith/coalesce/if/int/long/double/string/bool/abs/min/max/floor/ceil/round/pow/sqrt/isNull/isEmpty.
 - [x] **TransformRecord `compute:` directive** — typed expression evaluation against record fields. Output schema preserves original FieldType for unmodified fields and infers from first record for new fields. Chained computes see prior writes.
 - [x] **Nested field paths** — dotted access (`user.profile.name`) in QueryRecord, ExtractRecordField, RecordValueResolver, DictValueResolver. `RecordHelpers.GetByPath/SetByPath` walks GenericRecord and `Dictionary<string, object?>` values.
-- [x] **`zinc-flow validate` subcommand** — pre-flight config check that catches unknown types, missing config keys, malformed regex, dangling connections, and DAG cycles. Exit 0 valid, 1 errors, 2 usage. Wraps the existing structural ConfigValidator with factory-construction probing.
+- [x] **`caravan-flow validate` subcommand** — pre-flight config check that catches unknown types, missing config keys, malformed regex, dangling connections, and DAG cycles. Exit 0 valid, 1 errors, 2 usage. Wraps the existing structural ConfigValidator with factory-construction probing.
 - [x] **Avro schema evolution** — `SchemaResolver` implements Avro 1.11 resolution: int→long/float/double, long→float/double, float→double, string↔bytes promotion; reader-only fields filled from defaults; writer-only fields dropped. `ConvertOCFToRecord` accepts `reader_schema` (inline JSON) or `reader_schema_subject` (registry-backed).
 - [x] **Zstd OCF codec** — `zstandard` codec via ZstdSharp.Port (pure managed, AOT-safe). null + deflate + zstandard supported; codec name follows the Avro spec ("zstandard", not "zstd").
 - [x] **Embedded schema registry (airgapped)** — in-process `EmbeddedSchemaRegistry` is the sole backend. Three population paths: `schemas:` config section (pre-load + hot reload), Confluent-shape REST endpoints under `/api/schema-registry/*`, and auto-capture from incoming OCF files via `ConvertOCFToRecord`'s `auto_register_subject`. Identical-schema dedup means re-reading known files is free; new schemas become new versions automatically.
@@ -115,36 +115,36 @@ Make zinc-flow useful for real workloads without requiring NATS or K8s. A single
 
 ### Phase 2f: Fleet UI (DESIGNED, EXECUTION DEFERRED)
 
-Headless workers + separate `zinc-flow-ui` binary that fronts a fleet via HTTP. NiFi 1 binds the UI to one node; DeltaFi has no good UI story. We do better with two independent binaries.
+Headless workers + separate `caravan-flow-ui` binary that fronts a fleet via HTTP. NiFi 1 binds the UI to one node; DeltaFi has no good UI story. We do better with two independent binaries.
 
-**Full design:** [`zinc-flow-csharp/docs/design-fleet-ui.md`](zinc-flow-csharp/docs/design-fleet-ui.md). Detailed implementation plan with file paths, test cases, and verification: `~/.claude/plans/kind-orbiting-moth.md`.
+**Full design:** [`caravan-flow-csharp/docs/design-fleet-ui.md`](caravan-flow-csharp/docs/design-fleet-ui.md). Detailed implementation plan with file paths, test cases, and verification: `~/.claude/plans/kind-orbiting-moth.md`.
 
 Decisions locked: Blazor WASM stack (no NPM), workflow-style fixed-slot layout (no positions in git), layered config files for secrets (`config.yaml` ← `config.local.yaml` ← `secrets.yaml`), processor versioning (`type: Foo@1.2.0`), discovery via static list + opt-in worker self-registration.
 
 Phases:
 - [ ] **0. Worker prep** — `ConfigLoader` (layered overlays), `YamlEmitter`, `ProcessorInfo.Version`, `/api/identity`, `UIRegistrationProvider`, mutation API extensions (`PUT /processors/{n}/config`, `POST /flow/save`), `GET /api/provenance/failures`, `GET /api/overlays`, optional `VersionControlProvider`. ~40 new test assertions.
-- [ ] **1. UI scaffold** (single-worker mode) — new `zinc-flow-ui-csharp/` sibling project, Blazor WASM SPA, workflow-style flow visualization, provenance lineage inspector with failure queue.
+- [ ] **1. UI scaffold** (single-worker mode) — new `caravan-flow-ui-csharp/` sibling project, Blazor WASM SPA, workflow-style flow visualization, provenance lineage inspector with failure queue.
 - [ ] **2. Multi-worker registry** — node registry on UI (static + self-registered, heartbeat liveness), aggregated views across the fleet.
 - [ ] **3. Editor + git** — insert/wire/edit processors, save back to YAML, optional commit/push.
 
 ---
 
-## Phase 2 — Zinc/Go port catch-up
+## Phase 2 — Caravan/Go port catch-up
 
-The C# port has shipped Phase 2a-2e; the Zinc/Go port is behind. Ten concrete gaps, mapped to Go libraries that replace code C# had to hand-roll. Binary-size target: 8-9 MB stripped (7.3 MB today).
+The C# port has shipped Phase 2a-2e; the Caravan/Go port is behind. Ten concrete gaps, mapped to Go libraries that replace code C# had to hand-roll. Binary-size target: 8-9 MB stripped (7.3 MB today).
 
-Zinc's direct-Go-import model (`import <pkg>`) means every pure-Go library is fair game. We don't get that in C# AOT without wrestling reflection/trimming.
+Caravan's direct-Go-import model (`import <pkg>`) means every pure-Go library is fair game. We don't get that in C# AOT without wrestling reflection/trimming.
 
 ### Priority 1 — production blockers
 
 - [ ] **Avro OCF + schema registry** — use `github.com/hamba/avro/v2`.
-  C# hand-rolled 1050 lines across AvroBinary + AvroOCF + AvroSchema + SchemaResolver + EmbeddedSchemaRegistry. `hamba/avro` ships OCF (null/deflate/snappy/zstd), binary encoding, schema JSON parse/emit, logical types (timestamp/date/decimal/uuid), and schema resolution/evolution as a library. Land the 4 processors: `ConvertAvroToRecord`, `ConvertRecordToAvro`, `ConvertOCFToRecord`, `ConvertRecordToOCF`. **Est. 300-500 lines of Zinc (vs 1050 C#).**
+  C# hand-rolled 1050 lines across AvroBinary + AvroOCF + AvroSchema + SchemaResolver + EmbeddedSchemaRegistry. `hamba/avro` ships OCF (null/deflate/snappy/zstd), binary encoding, schema JSON parse/emit, logical types (timestamp/date/decimal/uuid), and schema resolution/evolution as a library. Land the 4 processors: `ConvertAvroToRecord`, `ConvertRecordToAvro`, `ConvertOCFToRecord`, `ConvertRecordToOCF`. **Est. 300-500 lines of Caravan (vs 1050 C#).**
 
 - [ ] **Expression engine** — use `github.com/expr-lang/expr`.
   C# hand-rolled 740 lines (tokenizer + shunting-yard + stack VM + 30+ functions). `expr-lang/expr` gives us bytecode compilation, sandboxing, type checks for free; we register the NiFi-flavored function set (upper/lower/trim/coalesce/substring/…) as the eval env. Unblocks:
   - `EvaluateExpression` processor (entirely missing)
   - `TransformRecord.compute` op (currently silently skipped — see `src/processors/transform_record.zn:19`)
-  **Est. 150-200 lines of Zinc (vs 740 C#).**
+  **Est. 150-200 lines of Caravan (vs 740 C#).**
 
 ### Priority 2 — core processor gaps
 
@@ -156,7 +156,7 @@ Zinc's direct-Go-import model (`import <pkg>`) means every pure-Go library is fa
 ### Priority 3 — operational maturity
 
 - [ ] **Prometheus `/metrics` endpoint** — `github.com/prometheus/client_golang`. Per-processor counters, source status, uptime. Replaces C#'s 286-line `Fabric/Metrics.cs` with a few counter registrations + `promhttp.Handler()`. ~80 lines.
-- [ ] **`zinc-flow validate` subcommand** — pre-flight config check: parse YAML, build registry, construct every processor against a synthetic `ScopedContext`, run DAG validation. Exit 0 valid / 1 errors / 2 usage. ~130 lines.
+- [ ] **`caravan-flow validate` subcommand** — pre-flight config check: parse YAML, build registry, construct every processor against a synthetic `ScopedContext`, run DAG validation. Exit 0 valid / 1 errors / 2 usage. ~130 lines.
 - [ ] **DAG cycle + unreachable-processor detection** — reuses the data the validator collects; flagged as separate deliverable since it can run at fabric startup too. ~60 lines on top of validate.
 
 ### Priority 4 — nice to have
@@ -168,7 +168,7 @@ Zinc's direct-Go-import model (`import <pkg>`) means every pure-Go library is fa
 
 ### Go libraries the C# port couldn't use
 
-zinc-flow-csharp had to hand-roll infrastructure that's a library in most ecosystems, because .NET AOT + trimming aggressively drops reflection-backed code and many popular .NET libs (Apache.Avro, Roslyn scripting, …) either don't support AOT or balloon the binary. Zinc/Go inherits Go's ecosystem directly:
+caravan-flow-csharp had to hand-roll infrastructure that's a library in most ecosystems, because .NET AOT + trimming aggressively drops reflection-backed code and many popular .NET libs (Apache.Avro, Roslyn scripting, …) either don't support AOT or balloon the binary. Caravan/Go inherits Go's ecosystem directly:
 
 | Concern | C# approach | Go library | Lines saved |
 |---|---|---|---|
@@ -179,7 +179,7 @@ zinc-flow-csharp had to hand-roll infrastructure that's a library in most ecosys
 | File watching | custom poller | `fsnotify/fsnotify` | ~100 |
 | **Total savings** | | | **~1750** |
 
-The Zinc/Go port lands closer to parity with ~1000 lines of Zinc because the codec/VM/metrics primitives are in the libraries. Binary-size impact after strip: ~3-4 MB combined, keeping total under 9 MB — **roughly half the C# AOT size**.
+The Caravan/Go port lands closer to parity with ~1000 lines of Caravan because the codec/VM/metrics primitives are in the libraries. Binary-size impact after strip: ~3-4 MB combined, keeping total under 9 MB — **roughly half the C# AOT size**.
 
 ### Attack order
 
@@ -194,7 +194,7 @@ The Zinc/Go port lands closer to parity with ~1000 lines of Zinc because the cod
 
 ## Phase 3 — Multi-Instance
 
-Connect multiple zinc-flow instances into a distributed flow graph.
+Connect multiple caravan-flow instances into a distributed flow graph.
 
 ### Phase 3a: NATS messaging
 - [ ] PutNats processor (serialize V3, publish to subject)
@@ -202,11 +202,11 @@ Connect multiple zinc-flow instances into a distributed flow graph.
 - [ ] NATS auth (credentials, TLS)
 - [ ] Add nats.go dependency
 - [ ] Integration tests with embedded NATS
-- [ ] Example: two zinc-flow instances connected via NATS
+- [ ] Example: two caravan-flow instances connected via NATS
 
-### Phase 3b: K8s operator (zinc-flow-operator, separate repo)
+### Phase 3b: K8s operator (caravan-flow-operator, separate repo)
 - [ ] Scaffold with kubebuilder
-- [ ] ProcessorGroup CRD + controller (deploy zinc-flow pods from CRD spec)
+- [ ] ProcessorGroup CRD + controller (deploy caravan-flow pods from CRD spec)
 - [ ] Config generation (CRD spec → config.yaml ConfigMap)
 - [ ] Flow CRD + controller (global topology, cross-group wiring)
 - [ ] Connection validation (PutNats subject matches GetNats subject)

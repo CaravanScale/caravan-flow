@@ -1,6 +1,6 @@
 # Data Flow Engine Comparison
 
-Comparison of data flow/processing engines and how they relate to zinc-flow's design.
+Comparison of data flow/processing engines and how they relate to caravan-flow's design.
 
 ## Engine Overview
 
@@ -11,7 +11,7 @@ Comparison of data flow/processing engines and how they relate to zinc-flow's de
 | **Flink** | Stream processing | Event/Record | Event-at-a-time | Distributed keyed state | Real-time analytics, CEP |
 | **Spark** | Micro-batch | Row/DataFrame | Micro-batch (or continuous) | Checkpoint-based | Batch + streaming analytics |
 | **Beam** | Unified SDK | PCollection element | Runner-dependent | Per-key state + timers | Portable batch + stream pipelines |
-| **zinc-flow** | Flow-based | FlowFile (content + attributes) | Event-at-a-time | Stateless (direct pipeline) | Lightweight data routing, transform |
+| **caravan-flow** | Flow-based | FlowFile (content + attributes) | Event-at-a-time | Stateless (direct pipeline) | Lightweight data routing, transform |
 
 ---
 
@@ -26,7 +26,7 @@ Comparison of data flow/processing engines and how they relate to zinc-flow's de
 | **Flink** | Event/Record | Typed POJO, Tuple, or Row | In-memory, serialized between operators via network buffers. Schema defined by TypeInformation. |
 | **Spark** | Row | Typed columns in a DataFrame/Dataset schema | In-memory columnar format. Schema defined by StructType. |
 | **Beam** | PCollection element | Any serializable type (Coder handles serialization) | In-memory, runner manages distribution. Schema support via Beam Schemas. |
-| **zinc-flow** | FlowFile | Attributes (immutable overlay chain) + content (Raw/Record/Claim) + timestamp | Small content inline (ArrayPool), large content off-heap via content store claims. Object-pooled. |
+| **caravan-flow** | FlowFile | Attributes (immutable overlay chain) + content (Raw/Record/Claim) + timestamp | Small content inline (ArrayPool), large content off-heap via content store claims. Object-pooled. |
 
 **Key insight**: NiFi and DeltaFi store content externally (disk/object store) and pass references. This allows processing multi-GB files without OOM. Flink/Spark/Beam keep data in memory — optimized for high-throughput analytics, not large individual files.
 
@@ -39,9 +39,9 @@ Comparison of data flow/processing engines and how they relate to zinc-flow's de
 | **Flink** | Operator | `ProcessFunction`, `MapFunction`, `FlatMapFunction`, etc. | Programmatic (Java/Scala/Python API) |
 | **Spark** | Transformation | DataFrame operations: `select`, `filter`, `groupBy`, `map`, etc. | Programmatic (Scala/Python/SQL) |
 | **Beam** | PTransform/DoFn | `DoFn.processElement()` — receives element, outputs to collectors | Programmatic (Java/Python/Go SDK) |
-| **zinc-flow** | IProcessor | `Process(FlowFile): ProcessorResult` — returns Single/Multiple/Routed/Dropped/Failure | Classes registered at startup, flow graph is YAML config |
+| **caravan-flow** | IProcessor | `Process(FlowFile): ProcessorResult` — returns Single/Multiple/Routed/Dropped/Failure | Classes registered at startup, flow graph is YAML config |
 
-**Key insight**: NiFi/DeltaFi/zinc-flow are **configuration-driven** (processors are pre-built, graph is config). Flink/Spark/Beam are **code-driven** (you write the pipeline programmatically). This is a fundamental design split.
+**Key insight**: NiFi/DeltaFi/caravan-flow are **configuration-driven** (processors are pre-built, graph is config). Flink/Spark/Beam are **code-driven** (you write the pipeline programmatically). This is a fundamental design split.
 
 ### Flow / Pipeline
 
@@ -52,7 +52,7 @@ Comparison of data flow/processing engines and how they relate to zinc-flow's de
 | **Flink** | Programmatic DAG (Java/Scala/Python), compiled and submitted as a job | No — requires job restart for topology changes |
 | **Spark** | Programmatic DAG, submitted as a job | No — requires job restart |
 | **Beam** | Programmatic DAG, submitted to a runner | No — requires pipeline restart |
-| **zinc-flow** | YAML config (processors + connections) | Yes — hot reload with atomic pipeline graph swap, add/remove processors at runtime |
+| **caravan-flow** | YAML config (processors + connections) | Yes — hot reload with atomic pipeline graph swap, add/remove processors at runtime |
 
 ### State Management
 
@@ -63,7 +63,7 @@ Comparison of data flow/processing engines and how they relate to zinc-flow's de
 | **Flink** | Distributed keyed state (RocksDB or heap), async incremental checkpoints | Exactly-once via checkpointing, barrier alignment |
 | **Spark** | Checkpoint to HDFS/S3, WAL for sources | Exactly-once via checkpoint + WAL |
 | **Beam** | Per-key state + timers, runner handles persistence | Runner-dependent (Flink runner = Flink guarantees) |
-| **zinc-flow** | Stateless direct execution, content store for large data | Failure routing in-graph, replay from source. No inter-stage state. |
+| **caravan-flow** | Stateless direct execution, content store for large data | Failure routing in-graph, replay from source. No inter-stage state. |
 
 ---
 
@@ -148,13 +148,13 @@ This is analogous to:
 - Flink's TypeInformation / RowType
 - Beam's Schema
 
-**For zinc-flow**: This is implemented — `RecordContent` holds `List<Dictionary<string, object?>>`, with ConvertJSONToRecord, ConvertAvroToRecord, ConvertCSVToRecord as readers and their reverse as writers. Processors like TransformRecord and EvaluateExpression work on abstract records, format-agnostic.
+**For caravan-flow**: This is implemented — `RecordContent` holds `List<Dictionary<string, object?>>`, with ConvertJSONToRecord, ConvertAvroToRecord, ConvertCSVToRecord as readers and their reverse as writers. Processors like TransformRecord and EvaluateExpression work on abstract records, format-agnostic.
 
 ---
 
-## Where zinc-flow Sits
+## Where caravan-flow Sits
 
-zinc-flow combines ideas from **NiFi** (processor model, FlowFile abstraction), **Apache Camel** (direct pipeline execution, routes as config), and **NiFi Stateless** (ephemeral, no inter-stage queues):
+caravan-flow combines ideas from **NiFi** (processor model, FlowFile abstraction), **Apache Camel** (direct pipeline execution, routes as config), and **NiFi Stateless** (ephemeral, no inter-stage queues):
 
 - Configuration-driven flow graphs (not programmatic pipelines)
 - Processors as pre-built components, graph as YAML config

@@ -1,4 +1,4 @@
-# zinc-flow Architecture
+# caravan-flow Architecture
 
 Lightweight data flow engine inspired by Apache NiFi (processor model), Apache Camel (direct pipeline execution), and NiFi Stateless (ephemeral, no inter-stage queues).
 
@@ -12,7 +12,7 @@ Lightweight data flow engine inspired by Apache NiFi (processor model), Apache C
 
 3. **Failure routing in-graph.** Processors return typed results (success, failure, drop). Failures follow "failure" connections to error-handling processors. No external DLQ — error handling is part of the graph.
 
-4. **Scale by decomposition.** A single zinc-flow process handles one flow graph. For scaling, break the graph into fast/slow parts connected via NATS between separate zinc-flow instances (pods). No distributed coordination within a single process.
+4. **Scale by decomposition.** A single caravan-flow process handles one flow graph. For scaling, break the graph into fast/slow parts connected via NATS between separate caravan-flow instances (pods). No distributed coordination within a single process.
 
 5. **Zero external deps.** The standalone binary has no runtime dependencies — no database, no message broker, no JVM. Config from YAML, content on disk.
 
@@ -327,8 +327,8 @@ Pool is thread-local (`[ThreadStatic]`), 256 items per thread, no CAS contention
 ## File Layout (C# runtime)
 
 ```
-zinc-flow-csharp/                           5,277 lines
-├── ZincFlow/
+caravan-flow-csharp/                           5,277 lines
+├── CaravanFlow/
 │   ├── Core/
 │   │   ├── Types.cs          489  — FlowFile, Content, ProcessorResult, Pool<T>
 │   │   ├── Providers.cs      305  — IProvider, ProcessorContext, ScopedContext, Logging, Provenance
@@ -357,7 +357,7 @@ zinc-flow-csharp/                           5,277 lines
 ├── tests/Tests/
 │   └── TestSuite.cs         3200+ — 438 tests (core types, processors, codecs, DAG, failure, e2e)
 ├── config.yaml                     — Flow definition
-└── zinc.toml                       — Build config (zinc-csharp reads this)
+└── caravan.toml                       — Build config (caravan-csharp reads this)
 ```
 
 ---
@@ -368,14 +368,14 @@ zinc-flow-csharp/                           5,277 lines
 Single binary, zero deps. Config from YAML. Best for dev, test, edge, single-machine workloads.
 
 ```
-[ListenHTTP :9092] → [zinc-flow process] → [PutFile / PutHTTP]
+[ListenHTTP :9092] → [caravan-flow process] → [PutFile / PutHTTP]
 ```
 
 ### Multi-instance (Phase 3)
-Multiple zinc-flow processes connected via NATS. Break flows into fast/slow segments. Each segment is a separate process (pod) with its own config.
+Multiple caravan-flow processes connected via NATS. Break flows into fast/slow segments. Each segment is a separate process (pod) with its own config.
 
 ```
-[zinc-flow A]                    [zinc-flow B]
+[caravan-flow A]                    [caravan-flow B]
   ListenHTTP → parse → PutNats ──→ GetNats → transform → PutFile
                   (fast segment)       (slow segment)
 ```

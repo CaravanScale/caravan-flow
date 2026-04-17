@@ -1,0 +1,73 @@
+# 07 — NiFi FlowFile V3 in / NiFi FlowFile V3 out
+#
+# This is the canonical caravan-flow shape: ingest NiFi FlowFiles (which package
+# attributes + content into one binary frame), do work on them, emit NiFi
+# FlowFiles back out. The content INSIDE the FlowFile can be anything —
+# JSON, CSV, Avro OCF, raw bytes — that's a side-effect choice, not the
+# system boundary.
+#
+# Pipeline:
+#   GetFile  (auto-detects V3 magic, unwraps; non-V3 files pass through raw)
+#     → log
+#     → PackageFlowFileV3 (re-wraps attributes + (possibly transformed) content)
+#     → PutFile  (writes V3-framed file; downstream caravan-flow / NiFi can read it)
+#
+# Try it:
+#   ./build/CaravanFlow validate examples/07-flowfile-v3-roundtrip.yaml
+#   mkdir -p /tmp/v3-in /tmp/v3-out
+#   # Drop a NiFi-V3-framed file into /tmp/v3-in/ — its attributes survive
+#   # disk → memory → disk, and the output file is V3-framed too.
+
+server:
+  port: 9091
+
+content:
+  dir: /tmp/caravan-flow-csharp/content
+
+sources:
+  file:
+    input_dir: /tmp/v3-in
+    pattern: "*"
+    poll_interval_ms: 1000
+    unpack_v3: true       # default; sniffs magic header and unwraps if present
+
+  # ListenHTTP also accepts V3 frames now — Content-Type
+  # `application/flowfile-v3` (preferred) or `application/octet-stream` triggers
+  # FlowFileV3.UnpackAll on the body. Plain JSON/CSV/etc. POSTs still work
+  # normally — they just become single FlowFiles with X-Flow-* attributes.
+  listen_http:
+    port: 9092
+    path: /
+
+flow:
+  processors:
+
+    # Visibility: log everything that came in, including all attributes.
+    log:
+      type: LogAttribute
+      config: { prefix: ingest }
+      connections:
+        success: [package]
+
+    # Re-wrap (attributes + content) as a V3 binary blob.
+    # The output FlowFile's CONTENT is now the V3-framed bytes;
+    # downstream sinks just write it as-is.
+    package:
+      type: PackageFlowFileV3
+      requires: [content]
+      connections:
+        success: [write]
+
+    # Write the V3-framed bytes to disk. A peer caravan-flow / NiFi pointed at
+    # this directory with a V3-aware reader will see every original attribute.
+    write:
+      type: PutFile
+      requires: [content]
+      config:
+        output_dir: /tmp/v3-out
+        naming_attribute: filename
+        suffix: .v3
+        # `format: v3` is also available on PutFile for the case where you
+        # have NOT used PackageFlowFileV3 upstream — that variant wraps in the
+        # sink itself. Either approach gets you a V3-framed file.
+        # format: v3
