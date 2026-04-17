@@ -10,6 +10,12 @@ lazy val root = (project in file("."))
     autoScalaLibrary := false,
     Compile / mainClass := Some("caravanflow.Main"),
     assembly / mainClass := Some("caravanflow.Main"),
+    // Fork `sbt run` into its own JVM so the worker's non-daemon Jetty
+    // threads keep the process alive after main() returns. Without this,
+    // sbt's in-process run behavior can tear the worker down as soon as
+    // the main method completes. Matters for external trialists running
+    // `sbt 'run config.yaml'` — caravan CLI is unaffected either way.
+    run / fork := true,
     assembly / assemblyJarName := "caravan-flow.jar",
     // Jetty, Jackson, SnakeYAML, slf4j, kotlin-stdlib all ship their
     // own module-info.class — discard duplicates in the fat jar.

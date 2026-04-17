@@ -14,6 +14,11 @@ lazy val root = (project in file("."))
     Compile / mainClass := Some("caravanflow.ui.UiMain"),
     assembly / mainClass := Some("caravanflow.ui.UiMain"),
     assembly / assemblyJarName := "caravan-flow-ui.jar",
+    // Same reasoning as the worker's build.sbt: fork `sbt run` so the
+    // Jetty non-daemon threads keep the UI JVM alive after main()
+    // returns. Lets external trialists use raw sbt without tripping on
+    // the in-process run tear-down.
+    run / fork := true,
     assembly / assemblyMergeStrategy := {
       case PathList("META-INF", "versions", _, "module-info.class") => MergeStrategy.discard
       case PathList("module-info.class") => MergeStrategy.discard
