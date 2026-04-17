@@ -1,0 +1,185 @@
+@inject FlowApiClient Api
+@using System.Text.Json
+
+@*
+    AddProcessorDialog — modal shown from Graph.razor's "+ add" button.
+
+    Populates the type picker from /api/registry. When a type is
+    selected, the component seeds one config row per configKey listed
+    in ProcessorInfo — the operator still has to fill in the values.
+    "Add key" lets them tack on extra keys if the registry entry is
+    out of date or the processor accepts free-form config.
+*@
+
+@if (Visible)
+{
+    <div class="modal-backdrop" @onclick="OnCloseRequested"></div>
+    <div class="modal" role="dialog" aria-modal="true">
+        <header>
+            <strong>Add processor</strong>
+            <button class="drawer-close" @onclick="OnCloseRequested" title="close">×</button>
+        </header>
+
+        <div class="modal-body form">
+            <h4>name</h4>
+            <input class="mono" value="@_name"
+                   @oninput="@(e => _name = e.Value?.ToString() ?? "")"
+                   placeholder="unique name (e.g. route-env)" />
+
+            <h4>type</h4>
+            @if (_registry is null) { <p class="muted">loading types…</p> }
+            else
+            {
+                <select class="mono" value="@_type"
+                        @onchange="@(e => OnTypeChange(e.Value?.ToString() ?? ""))">
+                    <option value="">-- pick a processor type --</option>
+                    @foreach (var entry in _registry)
+                    {
+                        <option value="@entry.Name" selected="@(entry.Name == _type)">
+                            @entry.Name — @entry.Description
+                        </option>
+                    }
+                </select>
+            }
+
+            <h4>config</h4>
+            @if (_config.Count == 0) { <p class="muted">select a type to see its config keys</p> }
+            @foreach (var row in _config)
+            {
+                <div class="kv-row">
+                    <input class="mono" value="@row.Key" placeholder="key"
+                           @onchange="@(e => row.Key = e.Value?.ToString() ?? "")" />
+                    <input class="mono" value="@row.Value" placeholder="value"
+                           @onchange="@(e => row.Value = e.Value?.ToString() ?? "")" />
+                    <button class="btn-tiny" @onclick="() => _config.Remove(row)" title="remove">×</button>
+                </div>
+            }
+            <button @onclick="AddConfigRow" class="btn-ghost">+ add key</button>
+
+            @if (_status is not null) { <p class="@(_statusError ? "error" : "muted")">@_status</p> }
+        </div>
+
+        <footer class="drawer-footer">
+            <button class="btn-ghost" @onclick="OnCloseRequested" disabled="@_busy">cancel</button>
+            <div class="spacer"></div>
+            <button class="btn-primary" @onclick="Submit" disabled="@(!CanSubmit || _busy)">
+                @(_busy ? "adding…" : "add")
+            </button>
+        </footer>
+    </div>
+}
+
+@code {
+    [Parameter] public bool Visible { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback OnAdded { get; set; }
+
+    private string _name = "";
+    private string _type = "";
+    private List<Row> _config = new();
+    private List<RegistryEntry>? _registry;
+    private bool _busy;
+    private string? _status;
+    private bool _statusError;
+    private bool _registryLoaded;
+
+    private sealed class Row { public string Key = ""; public string Value = ""; }
+    private sealed record RegistryEntry(string Name, string Description, List<string> ConfigKeys);
+
+    private bool CanSubmit => !string.IsNullOrWhiteSpace(_name) && !string.IsNullOrWhiteSpace(_type);
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (Visible && !_registryLoaded)
+        {
+            _registryLoaded = true;
+            await LoadRegistry();
+        }
+        if (!Visible && _registryLoaded)
+        {
+            // Reset form on close so next open is clean
+            _name = ""; _type = ""; _config = new(); _status = null; _statusError = false;
+        }
+    }
+
+    private async Task LoadRegistry()
+    {
+        try
+        {
+            var raw = await Api.GetRegistryAsync();
+            var list = new List<RegistryEntry>();
+            if (raw.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var entry in raw.EnumerateArray())
+                {
+                    var name = entry.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
+                    var desc = entry.TryGetProperty("description", out var d) ? d.GetString() ?? "" : "";
+                    var keys = new List<string>();
+                    if (entry.TryGetProperty("configKeys", out var k) && k.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var kk in k.EnumerateArray())
+                            if (kk.ValueKind == JsonValueKind.String) keys.Add(kk.GetString()!);
+                    }
+                    list.Add(new RegistryEntry(name, desc, keys));
+                }
+            }
+            list.Sort((a, b) => string.CompareOrdinal(a.Name, b.Name));
+            _registry = list;
+        }
+        catch (Exception ex)
+        {
+            _status = $"registry load failed: {ex.Message}";
+            _statusError = true;
+        }
+    }
+
+    private void OnTypeChange(string newType)
+    {
+        _type = newType;
+        // Seed config rows from the registry's configKeys list.
+        var entry = _registry?.FirstOrDefault(e => e.Name == newType);
+        _config = entry is null
+            ? new List<Row>()
+            : entry.ConfigKeys.Select(k => new Row { Key = k, Value = "" }).ToList();
+    }
+
+    private void AddConfigRow() => _config.Add(new Row());
+
+    private async Task Submit()
+    {
+        _busy = true; _status = null; _statusError = false;
+        try
+        {
+            var cfg = _config
+                .Where(r => !string.IsNullOrWhiteSpace(r.Key))
+                .ToDictionary(r => r.Key, r => (object?)r.Value);
+            var body = new Dictionary<string, object?>
+            {
+                ["name"] = _name.Trim(),
+                ["type"] = _type,
+                ["config"] = cfg,
+                ["connections"] = new Dictionary<string, List<string>>(),
+            };
+            var resp = await Api.AddProcessorAsync(body);
+            if (resp.IsSuccessStatusCode)
+            {
+                _status = "added";
+                await OnAdded.InvokeAsync();
+                await OnClose.InvokeAsync();
+            }
+            else
+            {
+                _status = $"failed: {(int)resp.StatusCode} {await resp.Content.ReadAsStringAsync()}";
+                _statusError = true;
+            }
+        }
+        catch (Exception ex)
+        {
+            _status = $"error: {ex.Message}";
+            _statusError = true;
+        }
+        finally { _busy = false; }
+    }
+
+    private async Task OnCloseRequested() => await OnClose.InvokeAsync();
+}

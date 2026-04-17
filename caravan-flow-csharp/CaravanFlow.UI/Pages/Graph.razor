@@ -15,7 +15,13 @@
         @if (_lastRenderTick is not null)
         { <text> · last layout @_lastRenderTick</text> }
     </p>
+    <div class="spacer"></div>
+    <button class="btn-primary" @onclick="() => _addDialogOpen = true">+ add processor</button>
 </div>
+
+<AddProcessorDialog Visible="_addDialogOpen"
+                    OnClose="() => _addDialogOpen = false"
+                    OnAdded="RefreshNow" />
 
 @if (_error is not null) { <p class="error">Failed to load: @_error</p> }
 
@@ -63,6 +69,7 @@ else if (_selectedEdge is not null)
     private EdgeSel? _selectedEdge;
     private IReadOnlyList<string> _allNames = Array.Empty<string>();
     private IReadOnlyList<string> _entryPointNames = Array.Empty<string>();
+    private bool _addDialogOpen;
 
     private Timer? _topologyTimer;
     private Timer? _statsTimer;
@@ -103,6 +110,8 @@ else if (_selectedEdge is not null)
                 _lastTopologyHash = hash;
                 _lastRenderTick = DateTime.Now.ToString("HH:mm:ss");
                 await JS.InvokeVoidAsync("caravanGraph.render", "graph-canvas", flow, _selfRef);
+                // SVG was rebuilt — re-apply the selected halo if a drawer is open.
+                await JS.InvokeVoidAsync("caravanGraph.setSelected", (object?)_selectedNode);
                 await InvokeAsync(StateHasChanged);
             }
         }
@@ -172,36 +181,35 @@ else if (_selectedEdge is not null)
         {
             var p2 = FindProcessor(_selectedNode);
             if (p2 is not null) _selectedProcessor = p2;
-            else CloseDrawer(); // processor was deleted out from under us
+            else _ = CloseDrawer(); // processor was deleted out from under us
         }
     }
 
     [JSInvokable]
-    public Task OnNodeClick(string name)
+    public async Task OnNodeClick(string name)
     {
         _selectedNode = name;
         _selectedEdge = null;
         _selectedProcessor = FindProcessor(name);
+        await JS.InvokeVoidAsync("caravanGraph.setSelected", name);
         StateHasChanged();
-        return Task.CompletedTask;
     }
 
     [JSInvokable]
-    public Task OnEdgeClick(string from, string rel, string to)
+    public async Task OnEdgeClick(string from, string rel, string to)
     {
         _selectedEdge = new EdgeSel(from, rel, to);
         _selectedNode = null;
         _selectedProcessor = null;
+        await JS.InvokeVoidAsync("caravanGraph.setSelected", (string?)null);
         StateHasChanged();
-        return Task.CompletedTask;
     }
 
     [JSInvokable]
-    public Task OnCanvasClick()
+    public async Task OnCanvasClick()
     {
-        CloseDrawer();
+        await CloseDrawer();
         StateHasChanged();
-        return Task.CompletedTask;
     }
 
     [JSInvokable]
@@ -211,11 +219,16 @@ else if (_selectedEdge is not null)
         return Task.CompletedTask;
     }
 
-    private void CloseDrawer()
+    private async Task CloseDrawer()
     {
         _selectedNode = null;
         _selectedEdge = null;
         _selectedProcessor = null;
+        if (_selfRef is not null)
+        {
+            try { await JS.InvokeVoidAsync("caravanGraph.setSelected", (string?)null); }
+            catch { /* JS not ready / torn down */ }
+        }
     }
 
     private async Task RefreshNow()

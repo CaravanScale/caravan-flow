@@ -282,6 +282,17 @@
     });
   }
 
+  // Toggle the `selected` class on the named node (and clear any
+  // previous selection). Pass `null` to clear. Called from Graph.razor
+  // whenever the drawer opens or closes so the SVG reflects the
+  // current drawer target.
+  function setSelected(name) {
+    document.querySelectorAll('.graph-svg .node.selected').forEach(el => el.classList.remove('selected'));
+    if (!name) return;
+    const el = document.querySelector(`.graph-svg .node[data-name="${CSS.escape(name)}"]`);
+    if (el) el.classList.add('selected');
+  }
+
   // Visibility-change wiring so the Razor timers can pause when the
   // tab is hidden. Razor subscribes by calling
   // caravanGraph.onVisibilityChange(dotnetRef) once; callback receives
@@ -293,5 +304,5 @@
     });
   }
 
-  window.caravanGraph = { render, updateStats, hashTopology, onVisibilityChange };
+  window.caravanGraph = { render, updateStats, hashTopology, setSelected, onVisibilityChange };
 })();
