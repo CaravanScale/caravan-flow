@@ -1,0 +1,63 @@
+{# Self-refreshing drawer body for one processor. Wrapping element
+   carries hx-get + hx-trigger so it replaces its own outerHTML every
+   2 s — when the user clicks a different node the parent flow.js
+   swaps the entire #flow-drawer-body innerHTML, which kills this
+   trigger and installs a new one pointing at the new processor. #}
+<div class="drawer-root"
+     hx-get="/flow/panel/{{ processor.name | urlencode }}"
+     hx-trigger="every 2s"
+     hx-swap="outerHTML">
+    <header class="drawer-head">
+        <button class="drawer-close" type="button"
+                onclick="document.getElementById('flow-drawer').classList.remove('open'); document.getElementById('flow-drawer-body').innerHTML='';"
+                aria-label="close">&times;</button>
+        <h2>{{ processor.name }}</h2>
+        <span class="type">{{ processor.type }}</span>
+        <span class="state {{ processor.state | lower }}">{{ processor.state }}</span>
+    </header>
+
+    {% if panelError %}
+        <article class="error"><strong>Lookup failed.</strong><pre>{{ panelError }}</pre></article>
+    {% else %}
+        <section class="drawer-section">
+            <h3>Configuration</h3>
+            {% if processor.config is empty %}
+                <p class="empty">No configuration set.</p>
+            {% else %}
+                <table class="kv">
+                    <tbody>
+                        {% for entry in processor.config %}
+                            <tr><th>{{ entry.key }}</th><td>{{ entry.value }}</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            {% endif %}
+        </section>
+
+        <section class="drawer-section">
+            <h3>Stats</h3>
+            {% if processor.stats is empty %}
+                <p class="empty">No counters yet.</p>
+            {% else %}
+                <table class="kv">
+                    <tbody>
+                        {% for entry in processor.stats %}
+                            <tr><th>{{ entry.key }}</th><td class="num">{{ entry.value }}</td></tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            {% endif %}
+        </section>
+
+        {% if processor.connections | length > 0 %}
+            <section class="drawer-section">
+                <h3>Outputs</h3>
+                <ul class="conns">
+                    {% for conn in processor.connections %}
+                        <li><strong>{{ conn.key }}</strong> → {{ conn.value | join(", ") }}</li>
+                    {% endfor %}
+                </ul>
+            </section>
+        {% endif %}
+    {% endif %}
+</div>

@@ -105,9 +105,11 @@ final class FakeWorker {
         flow.put("entryPoints", java.util.List.of("ingress"));
         flow.put("processors", java.util.List.of(
                 Map.of("name", "ingress", "type", "LogAttribute", "state", "ENABLED",
+                        "config", Map.of(),
                         "stats", Map.of("processed", 3L),
                         "connections", Map.of("success", java.util.List.of("tail"))),
                 Map.of("name", "tail", "type", "LogAttribute", "state", "ENABLED",
+                        "config", Map.of(),
                         "stats", Map.of("processed", 3L),
                         "connections", Map.of())));
         flow.put("connections", Map.of(
@@ -116,6 +118,23 @@ final class FakeWorker {
                 Map.of("name", "logging", "type", "LoggingProvider", "state", "ENABLED")));
         flow.put("sources", java.util.List.of());
         flow.put("stats", Map.of("processed", 3L));
+        return flow;
+    }
+
+    /// Like {@link #sampleFlow()} but with non-empty processor config
+    /// — exercises the drawer's config-table render path.
+    static Map<String, Object> sampleFlowWithConfig() {
+        Map<String, Object> flow = new LinkedHashMap<>();
+        flow.put("entryPoints", java.util.List.of("ingress"));
+        flow.put("processors", java.util.List.of(
+                Map.of("name", "ingress", "type", "LogAttribute", "state", "ENABLED",
+                        "config", Map.of("prefix", "[in] "),
+                        "stats", Map.of("processed", 0L),
+                        "connections", Map.of())));
+        flow.put("connections", Map.of());
+        flow.put("providers", java.util.List.of());
+        flow.put("sources", java.util.List.of());
+        flow.put("stats", Map.of());
         return flow;
     }
 }

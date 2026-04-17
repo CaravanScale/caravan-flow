@@ -84,7 +84,8 @@ public final class UiMain {
                 .get(UiRoutes.ROOT,          ctx -> ctx.redirect(UiRoutes.FLOW))
                 .get(UiRoutes.HEALTH,        this::handleHealth)
                 .get(UiRoutes.FLOW,          flow::handleFlow)
-                .get(UiRoutes.FLOW_CARDS,    flow::handleFlowCards)
+                .get(UiRoutes.FLOW_STATS,    flow::handleFlowStats)
+                .get(UiRoutes.FLOW_PANEL,    flow::handleFlowPanel)
                 // Register literal /lineage/list before /lineage/{id} so
                 // the partial path doesn't get captured as id="list".
                 .get(UiRoutes.LINEAGE,       lineage::handleLineage)

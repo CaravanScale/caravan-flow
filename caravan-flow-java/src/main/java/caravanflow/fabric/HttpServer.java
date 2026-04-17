@@ -229,6 +229,7 @@ public final class HttpServer {
             info.put("name", name);
             info.put(ConfigLoader.TYPE_KEY, pipeline.processorType(name));
             info.put("state", pipeline.processorState(name).name());
+            info.put("config", pipeline.processorConfig(name));
             info.put("stats", perProcStats.getOrDefault(name, Map.of()));
             info.put("connections", graph.connections().getOrDefault(name, Map.of()));
             processors.add(info);

@@ -323,6 +323,15 @@ public final class Pipeline {
         return p == null ? "unknown" : p.getClass().getSimpleName();
     }
 
+    /// Config map captured when the processor was registered (via YAML
+    /// load or API create). Returns an empty map if the processor was
+    /// added without a recorded def — keeps callers (/api/flow, UI
+    /// drawer) from having to null-check.
+    public Map<String, String> processorConfig(String name) {
+        ProcessorDef d = processorDefs.get(name);
+        return d == null ? Map.of() : d.config();
+    }
+
     /// Cascade-disable every processor that declared {@code requires}
     /// on the named provider. Called by {@link #disableProvider(String)}
     /// to match the C# semantics — disabling a provider takes down its

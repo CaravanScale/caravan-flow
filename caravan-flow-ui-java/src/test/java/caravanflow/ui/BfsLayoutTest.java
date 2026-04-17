@@ -79,6 +79,6 @@ final class BfsLayoutTest {
     }
 
     private static ProcessorView proc(String name) {
-        return new ProcessorView(name, "LogAttribute", "ENABLED", Map.of(), Map.of());
+        return new ProcessorView(name, "LogAttribute", "ENABLED", Map.of(), Map.of(), Map.of());
     }
 }

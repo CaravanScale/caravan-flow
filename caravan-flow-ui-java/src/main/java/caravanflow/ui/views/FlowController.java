@@ -1,15 +1,12 @@
 package caravanflow.ui.views;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.javalin.http.Context;
 import io.pebbletemplates.pebble.PebbleEngine;
 import io.pebbletemplates.pebble.template.PebbleTemplate;
 import caravanflow.shared.FlowSnapshot;
 import caravanflow.shared.ProcessorView;
-import caravanflow.shared.ProviderView;
-import caravanflow.shared.SourceView;
-import caravanflow.ui.BfsLayout;
 import caravanflow.ui.FleetService;
-import caravanflow.ui.UiRoutes;
 
 import java.io.StringWriter;
 import java.util.ArrayList;
@@ -17,11 +14,20 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/// Handlers for the /flow view. Records don't round-trip through
-/// Pebble's default attribute resolver (which expects bean-style
-/// getters), so the controller converts the snapshot into plain
-/// Maps before handing it off to the template.
+/// Handlers for /flow, the cytoscape-rendered pipeline view.
+///
+/// Three endpoints:
+///   /flow              — full page, bakes initial graph JSON into
+///                        the document so the client doesn't need a
+///                        second roundtrip to render.
+///   /flow/stats.json   — live per-node state + stats; the client
+///                        polls this every 2 s and patches cytoscape
+///                        node data in place (no re-layout).
+///   /flow/panel/{name} — drawer body for one processor (HTMX
+///                        partial — self-refreshes every 2 s).
 public final class FlowController {
+
+    private static final ObjectMapper JSON = new ObjectMapper();
 
     private final FleetService fleet;
     private final PebbleEngine pebble;
@@ -32,36 +38,106 @@ public final class FlowController {
     }
 
     public void handleFlow(Context ctx) throws Exception {
-        ctx.contentType("text/html; charset=utf-8").result(render("flow.peb", baseModel()));
-    }
-
-    public void handleFlowCards(Context ctx) throws Exception {
-        ctx.contentType("text/html; charset=utf-8").result(render("flow-cards.peb", baseModel()));
-    }
-
-    private Map<String, Object> baseModel() {
         Map<String, Object> model = new LinkedHashMap<>();
         model.put("workerUrl", fleet.workerBaseUrl().toString());
-        model.put("flowCardsUrl", UiRoutes.FLOW_CARDS);
         try {
             FlowSnapshot snap = fleet.flow();
-            model.put("flow", flowToMap(snap));
-            model.put("layout", layoutToMap(BfsLayout.of(snap)));
+            model.put("graphJson", JSON.writeValueAsString(graphFromSnapshot(snap)));
         } catch (RuntimeException ex) {
+            // Client-side flow.js reads {error:...} out of the JSON
+            // blob and surfaces it in the error banner.
             model.put("flowError", ex.getMessage());
+            model.put("graphJson", JSON.writeValueAsString(Map.of("error", ex.getMessage())));
         }
-        return model;
+        ctx.contentType("text/html; charset=utf-8").result(render("flow.peb", model));
     }
 
-    private static Map<String, Object> flowToMap(FlowSnapshot snap) {
+    public void handleFlowStats(Context ctx) throws Exception {
+        try {
+            FlowSnapshot snap = fleet.flow();
+            List<Map<String, Object>> procs = new ArrayList<>();
+            for (ProcessorView p : snap.processors()) {
+                Map<String, Object> row = new LinkedHashMap<>();
+                row.put("name",  p.name());
+                row.put("state", p.state());
+                row.put("stats", p.stats() == null ? Map.of() : p.stats());
+                procs.add(row);
+            }
+            ctx.contentType("application/json").result(JSON.writeValueAsBytes(Map.of("processors", procs)));
+        } catch (RuntimeException ex) {
+            ctx.status(503).contentType("application/json")
+               .result(JSON.writeValueAsBytes(Map.of("error", ex.getMessage())));
+        }
+    }
+
+    public void handleFlowPanel(Context ctx) throws Exception {
+        String name = ctx.pathParam("name");
+        Map<String, Object> model = new LinkedHashMap<>();
+        try {
+            FlowSnapshot snap = fleet.flow();
+            ProcessorView match = null;
+            for (ProcessorView p : snap.processors()) {
+                if (p.name().equals(name)) { match = p; break; }
+            }
+            if (match == null) {
+                model.put("panelError", "processor not found: " + name);
+                model.put("processor", Map.of(
+                        "name", name, "type", "-", "state", "UNKNOWN",
+                        "config", Map.of(), "stats", Map.of(), "connections", Map.of()));
+            } else {
+                model.put("processor", procToMap(match));
+            }
+        } catch (RuntimeException ex) {
+            model.put("panelError", ex.getMessage());
+            model.put("processor", Map.of(
+                    "name", name, "type", "-", "state", "UNKNOWN",
+                    "config", Map.of(), "stats", Map.of(), "connections", Map.of()));
+        }
+        ctx.contentType("text/html; charset=utf-8").result(render("flow-panel.peb", model));
+    }
+
+    // --- graph shaping ---
+
+    private static Map<String, Object> graphFromSnapshot(FlowSnapshot snap) {
         Map<String, Object> out = new LinkedHashMap<>();
-        out.put("entryPoints", snap.entryPoints());
-        out.put("processors",  snap.processors().stream().map(FlowController::procToMap).toList());
-        out.put("connections", snap.connections());
-        out.put("providers",   snap.providers().stream().map(FlowController::providerToMap).toList());
-        out.put("sources",     snap.sources().stream().map(FlowController::sourceToMap).toList());
-        out.put("stats",       snap.stats());
+        List<Map<String, Object>> procs = new ArrayList<>();
+        for (ProcessorView p : snap.processors()) procs.add(procForGraph(p));
+        out.put("processors", procs);
+        out.put("edges", edgesFromSnapshot(snap));
         return out;
+    }
+
+    private static Map<String, Object> procForGraph(ProcessorView p) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("name",  p.name());
+        out.put("type",  p.type());
+        out.put("state", p.state());
+        out.put("stats", p.stats() == null ? Map.of() : p.stats());
+        return out;
+    }
+
+    private static List<Map<String, Object>> edgesFromSnapshot(FlowSnapshot snap) {
+        List<Map<String, Object>> edges = new ArrayList<>();
+        int counter = 0;
+        for (var entry : snap.connections().entrySet()) {
+            String source = entry.getKey();
+            Map<String, List<String>> rels = entry.getValue();
+            if (rels == null) continue;
+            for (var rel : rels.entrySet()) {
+                String relationship = rel.getKey();
+                List<String> targets = rel.getValue();
+                if (targets == null) continue;
+                for (String target : targets) {
+                    Map<String, Object> edge = new LinkedHashMap<>();
+                    edge.put("id",     "e" + (counter++));
+                    edge.put("source", source);
+                    edge.put("target", target);
+                    edge.put("label",  relationship);
+                    edges.add(edge);
+                }
+            }
+        }
+        return edges;
     }
 
     private static Map<String, Object> procToMap(ProcessorView p) {
@@ -69,29 +145,9 @@ public final class FlowController {
         out.put("name",        p.name());
         out.put("type",        p.type());
         out.put("state",       p.state());
-        out.put("stats",       p.stats());
-        out.put("connections", p.connections());
-        return out;
-    }
-
-    private static Map<String, Object> providerToMap(ProviderView p) {
-        return Map.of("name", p.name(), "type", p.type(), "state", p.state());
-    }
-
-    private static Map<String, Object> sourceToMap(SourceView s) {
-        return Map.of("name", s.name(), "type", s.type(), "running", s.running());
-    }
-
-    private static Map<String, Object> layoutToMap(BfsLayout layout) {
-        Map<String, Object> out = new LinkedHashMap<>();
-        List<List<Map<String, Object>>> cols = new ArrayList<>();
-        for (List<ProcessorView> col : layout.columns()) {
-            List<Map<String, Object>> colMaps = new ArrayList<>();
-            for (ProcessorView p : col) colMaps.add(procToMap(p));
-            cols.add(colMaps);
-        }
-        out.put("columns", cols);
-        out.put("unreachable", layout.unreachable().stream().map(FlowController::procToMap).toList());
+        out.put("config",      p.config() == null ? Map.of() : p.config());
+        out.put("stats",       p.stats() == null ? Map.of() : p.stats());
+        out.put("connections", p.connections() == null ? Map.of() : p.connections());
         return out;
     }
 

@@ -1,12 +1,22 @@
 {% extends "templates/layout.peb" %}
 {% block content %}
-<h1>Flow</h1>
-<p class="meta">Worker: <code>{{ workerUrl }}</code></p>
-
-<div id="flow-cards"
-     hx-get="{{ flowCardsUrl }}"
-     hx-trigger="every 2s"
-     hx-swap="innerHTML">
-    {% include "templates/flow-cards.peb" %}
+<div class="flow-header">
+    <h1>Flow</h1>
+    <p class="meta">Worker: <code>{{ workerUrl }}</code> — click a node for details</p>
 </div>
+
+<div class="flow-stage">
+    <div id="flow-graph"></div>
+    <aside id="flow-drawer" aria-hidden="true">
+        <div id="flow-drawer-body"></div>
+    </aside>
+</div>
+
+<p id="flow-error" class="flow-error">{% if flowError %}{{ flowError }}{% endif %}</p>
+
+<script type="application/json" id="flow-data">{{ graphJson | raw }}</script>
+<script src="/static/dagre.min.js"></script>
+<script src="/static/cytoscape.min.js"></script>
+<script src="/static/cytoscape-dagre.js"></script>
+<script src="/static/flow.js"></script>
 {% endblock %}

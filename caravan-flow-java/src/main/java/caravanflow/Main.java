@@ -96,6 +96,15 @@ public final class Main {
         Metrics metrics = new Metrics();
         Pipeline pipeline = new Pipeline(graph, Pipeline.DEFAULT_MAX_HOPS, metrics, context, registry);
 
+        // Backfill processorDefs with the YAML-loaded configs so the
+        // UI drawer / /api/flow can surface them. addProcessor (the
+        // HTTP mutation path) already calls recordProcessorDef, so
+        // this is only needed for the initial YAML-driven population.
+        for (var entry : loader.lastSpecs().entrySet()) {
+            var spec = entry.getValue();
+            pipeline.recordProcessorDef(entry.getKey(), spec.type(), spec.config(), List.of());
+        }
+
         // Resolve node identity from the effective layered config (or
         // the persisted UUID file), then populate the atomic so the
         // UIReg factory's lazy identity supplier can see it.
