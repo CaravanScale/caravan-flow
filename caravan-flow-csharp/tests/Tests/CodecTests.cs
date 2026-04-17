@@ -365,9 +365,9 @@ public static class CodecTests
         Console.WriteLine("--- EvaluateExpression ---");
         var exprs = new Dictionary<string, string>
         {
-            ["greeting"] = "Hello ${name}!",
-            ["upper_env"] = "${env:toUpper()}",
-            ["literal"] = "static-value"
+            ["greeting"] = "\"Hello \" + name + \"!\"",
+            ["upper_env"] = "upper(env)",
+            ["literal"] = "\"static-value\""
         };
         var proc = new EvaluateExpression(exprs);
         var ff = FlowFile.Create("x"u8, new() { ["name"] = "Alice", ["env"] = "dev" });
@@ -384,16 +384,27 @@ public static class CodecTests
     static void TestEvaluateExpressionFunctions()
     {
         Console.WriteLine("--- EvaluateExpression: Functions ---");
-        var attrs = AttributeMap.FromDict(new() { ["val"] = "  Hello World  ", ["empty"] = "" });
+        // Run each expression through the full processor flow so we
+        // exercise the wiring from attribute resolver → engine →
+        // stringified output, not just the engine in isolation.
+        var ff = FlowFile.Create("x"u8, new() { ["val"] = "  Hello World  ", ["empty"] = "" });
 
-        AssertEqual("toLower", EvaluateExpression.Evaluate("${val:toLower()}", attrs), "  hello world  ");
-        AssertEqual("trim", EvaluateExpression.Evaluate("${val:trim()}", attrs), "Hello World");
-        AssertEqual("length", EvaluateExpression.Evaluate("${val:length()}", attrs), "15");
-        AssertEqual("replace", EvaluateExpression.Evaluate("${val:replace('World','Earth')}", attrs), "  Hello Earth  ");
-        AssertEqual("append", EvaluateExpression.Evaluate("${val:trim():append('!')}", attrs), "Hello World!");
-        AssertEqual("defaultIfEmpty", EvaluateExpression.Evaluate("${empty:defaultIfEmpty('fallback')}", attrs), "fallback");
-        AssertEqual("contains true", EvaluateExpression.Evaluate("${val:contains('Hello')}", attrs), "true");
-        AssertEqual("contains false", EvaluateExpression.Evaluate("${val:contains('xyz')}", attrs), "false");
+        static string RunOne(FlowFile ff, string target, string expr)
+        {
+            var p = new EvaluateExpression(new() { [target] = expr });
+            var outFf = ((SingleResult)p.Process(ff)).FlowFile;
+            outFf.Attributes.TryGetValue(target, out var v);
+            return v ?? "";
+        }
+
+        AssertEqual("lower",        RunOne(ff, "r", "lower(val)"),                               "  hello world  ");
+        AssertEqual("trim",         RunOne(ff, "r", "trim(val)"),                                "Hello World");
+        AssertEqual("length",       RunOne(ff, "r", "length(val)"),                              "15");
+        AssertEqual("replace",      RunOne(ff, "r", "replace(val, \"World\", \"Earth\")"),       "  Hello Earth  ");
+        AssertEqual("trim+concat",  RunOne(ff, "r", "trim(val) + \"!\""),                        "Hello World!");
+        AssertEqual("coalesce",     RunOne(ff, "r", "coalesce(empty, \"fallback\")"),            "fallback");
+        AssertEqual("contains true",RunOne(ff, "r", "contains(val, \"Hello\")"),                 "true");
+        AssertEqual("contains false",RunOne(ff, "r", "contains(val, \"xyz\")"),                  "false");
     }
 
     static void TestTransformRecord()

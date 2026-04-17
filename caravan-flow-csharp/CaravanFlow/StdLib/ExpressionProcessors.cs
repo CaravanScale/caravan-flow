@@ -1,156 +1,73 @@
-using System.Text.RegularExpressions;
 using CaravanFlow.Core;
 
 namespace CaravanFlow.StdLib;
 
 /// <summary>
-/// EvaluateExpression: compute new FlowFile attributes from expressions on existing attributes.
-/// Config: expressions as key=value pairs where value is an expression.
+/// EvaluateExpression: compute new FlowFile attributes from typed
+/// expressions. Config key <c>expressions</c> is a map of target name
+/// → expression; each expression evaluates through
+/// <see cref="ExpressionEngine"/> (arithmetic, comparisons, booleans,
+/// ternary via <c>if(c,a,b)</c>, string ops, math functions).
 ///
-/// Expression syntax:
-///   ${attr}                    — attribute reference
-///   ${attr:toUpper()}          — toUpper
-///   ${attr:toLower()}          — toLower
-///   ${attr:substring(s,e)}    — substring (start, end)
-///   ${attr:replace(old,new)}  — string replace
-///   ${attr:length()}          — string length
-///   ${attr:trim()}            — trim whitespace
-///   ${attr:append(suffix)}    — append text
-///   ${attr:prepend(prefix)}   — prepend text
-///   literal text              — passed through as-is
-///   ${attr}/${other}          — concatenation via mixed literal/expression
+/// Attribute references are bare identifiers — e.g. <c>env</c>,
+/// <c>tenant</c>. Dotted paths on nested values aren't meaningful for
+/// flat attribute maps. The typed result is stringified for storage
+/// (FlowFile attributes are <c>string → string</c>).
+///
+/// Mirrors caravan-flow-java's JEXL-based EvaluateExpression — both
+/// tracks now accept the same expression shape and operator set, so
+/// <c>expressions</c> configs are portable between workers.
+///
+/// Examples:
+///   tax:        amount * 0.07
+///   label:      upper(region) + "-" + string(round(amount))
+///   flag:       amount > 100 &amp;&amp; region == "US"
+///   greeting:   "Hello " + name
+///   fallback:   coalesce(nickname, name)
 /// </summary>
 public sealed class EvaluateExpression : IProcessor
 {
-    private readonly Dictionary<string, string> _expressions;
-    private static readonly Regex ExprPattern = new(@"\$\{([^}]+)\}", RegexOptions.Compiled);
+    private readonly Dictionary<string, CompiledExpression> _compiled;
 
     public EvaluateExpression(Dictionary<string, string> expressions)
     {
-        _expressions = expressions;
+        _compiled = new Dictionary<string, CompiledExpression>(expressions.Count);
+        foreach (var (target, expr) in expressions)
+        {
+            if (string.IsNullOrWhiteSpace(expr))
+                throw new ConfigException(target, "expression must not be blank");
+            try
+            {
+                _compiled[target] = ExpressionEngine.Compile(expr);
+            }
+            catch (FormatException ex)
+            {
+                throw new ConfigException(target, $"invalid expression '{expr}': {ex.Message}");
+            }
+        }
     }
 
     public ProcessorResult Process(FlowFile ff)
     {
         var result = ff;
-        foreach (var (target, expr) in _expressions)
+        foreach (var (target, compiled) in _compiled)
         {
-            var value = Evaluate(expr, result.Attributes);
-            result = FlowFile.WithAttribute(result, target, value);
+            EvalValue val;
+            try
+            {
+                val = compiled.Eval(new AttributeValueResolver(result.Attributes.ToDictionary()));
+            }
+            catch (Exception)
+            {
+                // Runtime evaluation errors (divide by zero, bad casts)
+                // surface as null rather than failing the whole FlowFile.
+                // The attribute just doesn't get set; downstream can
+                // detect with coalesce() or an isNull(...) check.
+                val = EvalValue.Null;
+            }
+            result = FlowFile.WithAttribute(result, target, val.AsString());
         }
         return SingleResult.Rent(result);
-    }
-
-    public static string Evaluate(string expression, AttributeMap attrs)
-    {
-        return ExprPattern.Replace(expression, match =>
-        {
-            var inner = match.Groups[1].Value;
-            return EvaluateReference(inner, attrs);
-        });
-    }
-
-    private static string EvaluateReference(string expr, AttributeMap attrs)
-    {
-        // Parse: attrName or attrName:func(args)
-        var colonIdx = expr.IndexOf(':');
-        string attrName;
-        string? funcChain;
-
-        if (colonIdx < 0)
-        {
-            attrName = expr;
-            funcChain = null;
-        }
-        else
-        {
-            attrName = expr[..colonIdx];
-            funcChain = expr[(colonIdx + 1)..];
-        }
-
-        if (!attrs.TryGetValue(attrName, out var value))
-            value = "";
-
-        if (funcChain is null)
-            return value;
-
-        // Apply chained functions: func1():func2(arg)
-        foreach (var call in ParseFuncChain(funcChain))
-        {
-            value = ApplyFunction(value, call.Name, call.Args);
-        }
-        return value;
-    }
-
-    private static string ApplyFunction(string value, string funcName, string[] args)
-    {
-        return funcName switch
-        {
-            "toUpper" => value.ToUpperInvariant(),
-            "toLower" => value.ToLowerInvariant(),
-            "trim" => value.Trim(),
-            "length" => value.Length.ToString(),
-            "substring" => args.Length >= 2
-                && int.TryParse(args[0], out var s)
-                && int.TryParse(args[1], out var e)
-                ? value.Substring(Math.Min(s, value.Length), Math.Min(e - s, value.Length - Math.Min(s, value.Length)))
-                : value,
-            "replace" => args.Length >= 2 ? value.Replace(args[0], args[1]) : value,
-            "append" => args.Length >= 1 ? value + args[0] : value,
-            "prepend" => args.Length >= 1 ? args[0] + value : value,
-            "contains" => args.Length >= 1 ? value.Contains(args[0], StringComparison.Ordinal).ToString().ToLowerInvariant() : "false",
-            "startsWith" => args.Length >= 1 ? value.StartsWith(args[0], StringComparison.Ordinal).ToString().ToLowerInvariant() : "false",
-            "endsWith" => args.Length >= 1 ? value.EndsWith(args[0], StringComparison.Ordinal).ToString().ToLowerInvariant() : "false",
-            "defaultIfEmpty" => string.IsNullOrEmpty(value) && args.Length >= 1 ? args[0] : value,
-            _ => value
-        };
-    }
-
-    private static List<(string Name, string[] Args)> ParseFuncChain(string chain)
-    {
-        var calls = new List<(string, string[])>();
-        int i = 0;
-        while (i < chain.Length)
-        {
-            // Find function name
-            int parenOpen = chain.IndexOf('(', i);
-            if (parenOpen < 0) break;
-            var name = chain[i..parenOpen];
-
-            // Find matching close paren
-            int parenClose = chain.IndexOf(')', parenOpen);
-            if (parenClose < 0) break;
-
-            var argsStr = chain[(parenOpen + 1)..parenClose];
-            var args = string.IsNullOrEmpty(argsStr)
-                ? Array.Empty<string>()
-                : SplitArgs(argsStr);
-
-            calls.Add((name, args));
-
-            // Skip past ')' and optional ':'
-            i = parenClose + 1;
-            if (i < chain.Length && chain[i] == ':')
-                i++;
-        }
-        return calls;
-    }
-
-    private static string[] SplitArgs(string argsStr)
-    {
-        // Simple comma split, respecting single quotes
-        var args = new List<string>();
-        var sb = new System.Text.StringBuilder();
-        bool inQuote = false;
-        foreach (char c in argsStr)
-        {
-            if (c == '\'' && !inQuote) { inQuote = true; continue; }
-            if (c == '\'' && inQuote) { inQuote = false; continue; }
-            if (c == ',' && !inQuote) { args.Add(sb.ToString()); sb.Clear(); continue; }
-            sb.Append(c);
-        }
-        args.Add(sb.ToString());
-        return args.ToArray();
     }
 }
 

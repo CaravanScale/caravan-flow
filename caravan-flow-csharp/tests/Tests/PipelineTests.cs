@@ -86,7 +86,11 @@ public static class PipelineTests
         AssertEqual("default role", rc2.Records[1].GetField("role")?.ToString() ?? "", "user");
 
         // Enrich with expression on FlowFile attributes
-        var enrich = new EvaluateExpression(new() { ["processed_by"] = "caravan-flow", ["record_count"] = "2" });
+        var enrich = new EvaluateExpression(new()
+        {
+            ["processed_by"] = "\"caravan-flow\"",
+            ["record_count"] = "2"
+        });
         var r3 = (SingleResult)enrich.Process(r2.FlowFile);
         r3.FlowFile.Attributes.TryGetValue("processed_by", out var procBy);
         AssertEqual("enriched attr", procBy ?? "", "caravan-flow");
@@ -122,8 +126,8 @@ public static class PipelineTests
         // Expression: derive new attributes
         var expr = new EvaluateExpression(new()
         {
-            ["alert_key"] = "${component:toUpper()}:${level}",
-            ["is_error"] = "${level:contains('ERROR')}"
+            ["alert_key"] = "upper(component) + \":\" + level",
+            ["is_error"] = "contains(level, \"ERROR\")"
         });
         var r2 = (SingleResult)expr.Process(r1.FlowFile);
         r2.FlowFile.Attributes.TryGetValue("alert_key", out var alertKey);
@@ -325,8 +329,8 @@ public static class PipelineTests
         // First expression: compute derived attributes
         var expr1 = new EvaluateExpression(new()
         {
-            ["full_name"] = "${first_name:toUpper()} ${last_name:toUpper()}",
-            ["env_short"] = "${env:substring(0,4)}"
+            ["full_name"] = "upper(first_name) + \" \" + upper(last_name)",
+            ["env_short"] = "substring(env, 0, 4)"
         });
         var r1 = (SingleResult)expr1.Process(ff);
         r1.FlowFile.Attributes.TryGetValue("full_name", out var fullName);
@@ -337,8 +341,8 @@ public static class PipelineTests
         // Second expression: use derived attributes
         var expr2 = new EvaluateExpression(new()
         {
-            ["greeting"] = "Hello ${full_name}!",
-            ["tag"] = "${env_short:append('-v1')}"
+            ["greeting"] = "\"Hello \" + full_name + \"!\"",
+            ["tag"] = "env_short + \"-v1\""
         });
         var r2 = (SingleResult)expr2.Process(r1.FlowFile);
         r2.FlowFile.Attributes.TryGetValue("greeting", out var greeting);
