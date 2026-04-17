@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk.BlazorWebAssembly">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+
+    <!--
+      Blazor WASM AOT compilation. Worker AOT binary is separate (27-28
+      MB native native binary); this AOT targets the WASM bundle that
+      runs in the browser. AOT inflates .wasm size ~2x in exchange for
+      ~5x runtime performance — fine for an internal-ops UI.
+    -->
+    <RunAOTCompilation>true</RunAOTCompilation>
+    <BlazorEnableCompression>true</BlazorEnableCompression>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly" Version="10.0.0" />
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.DevServer" Version="10.0.0" PrivateAssets="all" />
+  </ItemGroup>
+
+  <!--
+    No project reference to CaravanFlow.csproj for now. The worker
+    mixes DTOs with Fabric/Registry/processor runtime — pulling all of
+    that into the WASM bundle would triple the size. For MVP we use
+    dynamic JSON shapes in the API client. Once the UI stabilizes, a
+    future CaravanFlow.Shared project can extract the pure DTOs
+    (FlowSnapshot, ProcessorView, etc.) and get referenced from both
+    sides — zero drift between client and server without the bloat.
+  -->
+
+</Project>

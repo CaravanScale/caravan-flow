@@ -1,0 +1,84 @@
+@page "/settings"
+@inject FlowApiClient Api
+
+<PageTitle>caravan-flow — settings</PageTitle>
+
+<h1>Settings</h1>
+
+<p class="muted">overlay stack: base ← local ← secrets ← env</p>
+
+@if (_error is not null) { <p class="error">@_error</p> }
+else if (_overlays is null) { <p>loading…</p> }
+else
+{
+    <div class="overlay-grid">
+        @foreach (var layer in new[] { "base", "local", "secrets" })
+        {
+            var l = _overlays.Value.GetProperty(layer);
+            <div class="overlay-card">
+                <h3>@layer</h3>
+                <dl class="kv">
+                    <dt>present</dt><dd>@l.GetProperty("present").GetBoolean()</dd>
+                    @if (l.TryGetProperty("path", out var p)) { <dt>path</dt><dd class="mono">@p.GetString()</dd> }
+                    @if (l.TryGetProperty("keys", out var k) && k.ValueKind == System.Text.Json.JsonValueKind.Number)
+                    { <dt>keys</dt><dd>@k.GetInt32()</dd> }
+                </dl>
+            </div>
+        }
+    </div>
+
+    <h2>Secrets editor</h2>
+    <p class="muted">writes <code>secrets.yaml</code> via <code>PUT /api/overlays/secrets</code>. base + local are edit-via-git only.</p>
+    <textarea class="yaml-edit" rows="12" @bind="_secretsYaml" placeholder="key: value"></textarea>
+    <div>
+        <button @onclick="SaveSecrets" disabled="@_saving">@(_saving ? "saving…" : "save secrets")</button>
+        @if (_saveStatus is not null) { <span class="muted">@_saveStatus</span> }
+    </div>
+
+    <h2>Version control</h2>
+    @if (_vc is not null)
+    {
+        <dl class="kv">
+            <dt>enabled</dt><dd>@_vc.Value.GetProperty("enabled").GetBoolean()</dd>
+            @if (_vc.Value.GetProperty("enabled").GetBoolean())
+            {
+                <dt>branch</dt><dd>@_vc.Value.GetProperty("branch").GetString()</dd>
+                <dt>clean</dt><dd>@_vc.Value.GetProperty("clean").GetBoolean()</dd>
+                <dt>ahead</dt><dd>@_vc.Value.GetProperty("ahead").GetInt32()</dd>
+                <dt>behind</dt><dd>@_vc.Value.GetProperty("behind").GetInt32()</dd>
+            }
+        </dl>
+    }
+}
+
+@code {
+    private System.Text.Json.JsonElement? _overlays;
+    private System.Text.Json.JsonElement? _vc;
+    private string? _error;
+    private string _secretsYaml = "";
+    private bool _saving;
+    private string? _saveStatus;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            _overlays = await Api.GetOverlaysAsync();
+            _vc = await Api.GetVcStatusAsync();
+        }
+        catch (Exception ex) { _error = ex.Message; }
+    }
+
+    private async Task SaveSecrets()
+    {
+        _saving = true;
+        _saveStatus = null;
+        try
+        {
+            var resp = await Api.WriteSecretsAsync(new { yaml = _secretsYaml });
+            _saveStatus = resp.IsSuccessStatusCode ? "saved" : $"failed: {(int)resp.StatusCode}";
+        }
+        catch (Exception ex) { _saveStatus = $"error: {ex.Message}"; }
+        finally { _saving = false; }
+    }
+}

@@ -1,0 +1,151 @@
+/*
+  Dark, monospace, dashboard.html-style visual language. Single CSS
+  file for now — once component count grows past ~10 we'll split into
+  per-component scoped stylesheets.
+*/
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  background: #0f0f1a;
+  color: #e0e0e0;
+  font-family: 'SF Mono', 'Fira Code', 'Consolas', 'Menlo', monospace;
+  font-size: 13px;
+  overflow: hidden;
+}
+
+.loading {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: #888;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  height: 100vh;
+}
+
+.nav {
+  background: #16162a;
+  border-right: 1px solid #2a2a4a;
+  padding: 1rem 0;
+}
+
+.nav-brand {
+  padding: 0 1rem 0.75rem;
+  font-size: 14px;
+  font-weight: 600;
+  color: #00d2ff;
+  border-bottom: 1px solid #2a2a4a;
+  margin-bottom: 0.75rem;
+}
+
+.nav-menu {
+  display: flex;
+  flex-direction: column;
+}
+
+.nav-link {
+  padding: 0.5rem 1rem;
+  color: #b0b0c0;
+  text-decoration: none;
+  border-left: 3px solid transparent;
+  transition: background 0.1s, border-color 0.1s;
+}
+
+.nav-link:hover { background: #1a1a3e; color: #fff; }
+
+.nav-link.active {
+  background: #1a1a3e;
+  color: #fff;
+  border-left-color: #00d2ff;
+}
+
+.view {
+  overflow: auto;
+  padding: 1rem 1.5rem;
+}
+
+.view h1 {
+  font-size: 18px;
+  font-weight: 600;
+  color: #fff;
+  margin-bottom: 1rem;
+}
+
+.muted { color: #888; }
+.error { color: #e74c3c; }
+.mono { font-family: inherit; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+table.kv {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.5rem 0 1rem;
+}
+table.kv th, table.kv td {
+  text-align: left;
+  padding: 0.25rem 0.5rem;
+  border-bottom: 1px solid #2a2a4a;
+}
+table.kv th { color: #00d2ff; font-weight: 600; }
+
+dl.kv { display: grid; grid-template-columns: max-content 1fr; gap: 0.25rem 1rem; margin: 0.5rem 0; }
+dl.kv dt { color: #888; }
+dl.kv dd { color: #e0e0e0; }
+
+.overlay-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.75rem; margin-bottom: 1rem; }
+.overlay-card {
+  background: #16162a;
+  border: 1px solid #2a2a4a;
+  border-radius: 4px;
+  padding: 0.75rem;
+}
+.overlay-card h3 { color: #00d2ff; margin-bottom: 0.5rem; font-size: 13px; }
+
+textarea.yaml-edit {
+  width: 100%;
+  background: #0a0a14;
+  color: #e0e0e0;
+  border: 1px solid #2a2a4a;
+  border-radius: 4px;
+  padding: 0.5rem;
+  font-family: inherit;
+  font-size: 12px;
+  resize: vertical;
+}
+
+button {
+  background: #1a1a3e;
+  color: #e0e0e0;
+  border: 1px solid #2a2a4a;
+  border-radius: 4px;
+  padding: 0.35rem 0.75rem;
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  margin: 0.5rem 0.5rem 0.5rem 0;
+}
+button:hover:not(:disabled) { background: #2a2a5e; border-color: #00d2ff; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+#blazor-error-ui {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: #2a1a1a;
+  color: #fff;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid #e74c3c;
+}
+
+#blazor-error-ui .reload,
+#blazor-error-ui .dismiss {
+  color: #00d2ff;
+  margin-left: 1rem;
+  cursor: pointer;
+}

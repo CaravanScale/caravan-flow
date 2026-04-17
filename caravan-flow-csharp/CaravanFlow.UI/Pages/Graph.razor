@@ -1,0 +1,54 @@
+@page "/"
+@inject FlowApiClient Api
+
+<PageTitle>caravan-flow — graph</PageTitle>
+
+<h1>Graph</h1>
+
+@if (_error is not null)
+{
+    <p class="error">Failed to load: @_error</p>
+}
+else if (_flow is null)
+{
+    <p>loading…</p>
+}
+else
+{
+    <p>
+        @_processorCount processors,
+        @_connectionCount connections,
+        @_entryPointCount entry points
+    </p>
+    <p class="muted">(graph rendering lands in the next commit — this stub just proves the API wiring)</p>
+}
+
+@code {
+    // MVP placeholder. Fetches /api/flow to prove the API client works,
+    // reports summary counts. Dagre-based render + click-to-edit drawer
+    // land in the follow-up graph-view commit.
+    private System.Text.Json.JsonElement? _flow;
+    private string? _error;
+    private int _processorCount;
+    private int _connectionCount;
+    private int _entryPointCount;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var flow = await Api.GetFlowAsync();
+            _flow = flow;
+            _processorCount = flow.TryGetProperty("processors", out var procs) && procs.ValueKind == System.Text.Json.JsonValueKind.Array
+                ? procs.GetArrayLength() : 0;
+            _connectionCount = flow.TryGetProperty("connections", out var conns) && conns.ValueKind == System.Text.Json.JsonValueKind.Object
+                ? conns.EnumerateObject().Sum(p => p.Value.EnumerateObject().Sum(r => r.Value.GetArrayLength())) : 0;
+            _entryPointCount = flow.TryGetProperty("entryPoints", out var eps) && eps.ValueKind == System.Text.Json.JsonValueKind.Array
+                ? eps.GetArrayLength() : 0;
+        }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+        }
+    }
+}

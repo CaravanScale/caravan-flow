@@ -1,0 +1,53 @@
+@page "/errors"
+@inject FlowApiClient Api
+@implements IDisposable
+
+<PageTitle>caravan-flow — errors</PageTitle>
+
+<h1>Errors</h1>
+
+<p class="muted">last @_n FAILED events (polls every 5 s)</p>
+
+@if (_error is not null) { <p class="error">@_error</p> }
+else if (_events is null) { <p>loading…</p> }
+else if (_events.Value.GetArrayLength() == 0) { <p class="muted">no failures recorded</p> }
+else
+{
+    <table class="kv">
+        <thead><tr><th>timestamp</th><th>component</th><th>flowfile</th><th>details</th></tr></thead>
+        <tbody>
+        @foreach (var e in _events.Value.EnumerateArray())
+        {
+            var ff = e.GetProperty("flowfile").GetString();
+            <tr>
+                <td>@e.GetProperty("timestamp").GetInt64()</td>
+                <td>@e.GetProperty("component").GetString()</td>
+                <td><a href="lineage/@ff?.Replace("ff-", "")">@ff</a></td>
+                <td>@e.GetProperty("details").GetString()</td>
+            </tr>
+        }
+        </tbody>
+    </table>
+}
+
+@code {
+    private System.Text.Json.JsonElement? _events;
+    private string? _error;
+    private int _n = 50;
+    private Timer? _timer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Refresh();
+        _timer = new Timer(async _ => { await Refresh(); await InvokeAsync(StateHasChanged); },
+            null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+    }
+
+    private async Task Refresh()
+    {
+        try { _events = await Api.GetProvenanceFailuresAsync(_n); _error = null; }
+        catch (Exception ex) { _error = ex.Message; }
+    }
+
+    public void Dispose() => _timer?.Dispose();
+}

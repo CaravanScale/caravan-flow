@@ -1,0 +1,62 @@
+@page "/lineage"
+@page "/lineage/{id:long}"
+@inject FlowApiClient Api
+
+<PageTitle>caravan-flow — lineage</PageTitle>
+
+<h1>Lineage</h1>
+
+<div class="row">
+    <label>FlowFile ID: <input @bind="_idText" @onkeydown="OnKey" /></label>
+    <button @onclick="Load">Load</button>
+</div>
+
+@if (_error is not null) { <p class="error">@_error</p> }
+else if (_events is null && Id is not null) { <p>loading…</p> }
+else if (_events is not null)
+{
+    <table class="kv">
+        <thead><tr><th>timestamp</th><th>type</th><th>component</th><th>details</th></tr></thead>
+        <tbody>
+        @foreach (var e in _events.Value.EnumerateArray())
+        {
+            <tr>
+                <td>@e.GetProperty("timestamp").GetInt64()</td>
+                <td>@e.GetProperty("type").GetString()</td>
+                <td>@e.GetProperty("component").GetString()</td>
+                <td>@e.GetProperty("details").GetString()</td>
+            </tr>
+        }
+        </tbody>
+    </table>
+}
+
+@code {
+    [Parameter] public long? Id { get; set; }
+
+    private string _idText = "";
+    private System.Text.Json.JsonElement? _events;
+    private string? _error;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (Id is not null)
+        {
+            _idText = Id.Value.ToString();
+            await Load();
+        }
+    }
+
+    private async Task OnKey(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter") await Load();
+    }
+
+    private async Task Load()
+    {
+        _error = null;
+        if (!long.TryParse(_idText, out var id)) { _error = "enter a numeric FlowFile ID"; return; }
+        try { _events = await Api.GetProvenanceByIdAsync(id); }
+        catch (Exception ex) { _error = ex.Message; }
+    }
+}

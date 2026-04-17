@@ -1,0 +1,17 @@
+@*
+    Router root. Hash-based routing kept simple — everything serves the
+    same index.html from the worker; the client component matches the
+    URL and renders the right page.
+*@
+<Router AppAssembly="@typeof(Program).Assembly">
+    <Found Context="routeData">
+        <RouteView RouteData="@routeData" DefaultLayout="@typeof(MainLayout)" />
+        <FocusOnNavigate RouteData="@routeData" Selector="h1" />
+    </Found>
+    <NotFound>
+        <PageTitle>caravan-flow — not found</PageTitle>
+        <LayoutView Layout="@typeof(MainLayout)">
+            <p role="alert">No view matched that URL.</p>
+        </LayoutView>
+    </NotFound>
+</Router>
