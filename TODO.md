@@ -113,19 +113,43 @@ Make caravan-flow useful for real workloads without requiring NATS or K8s. A sin
 - [ ] **Confluent wire format** — 1-byte magic + 4-byte schema ID prefix on Kafka messages. Different from OCF (which embeds the full schema). Defer until we have a Kafka source/sink.
 - [ ] **Apache Parquet support** — deferred; row-oriented flow model doesn't benefit from columnar storage. Revisit for one-shot batch ingest sources only.
 
-### Phase 2f: Fleet UI (DESIGNED, EXECUTION DEFERRED)
+### Phase 2f: Fleet UI (SUPERSEDED)
 
-Headless workers + separate `caravan-flow-ui` binary that fronts a fleet via HTTP. NiFi 1 binds the UI to one node; DeltaFi has no good UI story. We do better with two independent binaries.
+Original Blazor-UI-binary plan is obsolete. React UI (`caravan-flow-ui-web`) has shipped phases 1 / 2a / 2b / 2c / 2d (Graph CRUD + observability views). Multi-worker management is now addressed by the operator + aggregator split captured in Phase 2g below.
 
-**Full design:** [`caravan-flow-csharp/docs/design-fleet-ui.md`](caravan-flow-csharp/docs/design-fleet-ui.md). Detailed implementation plan with file paths, test cases, and verification: `~/.claude/plans/kind-orbiting-moth.md`.
+Predecessor design: [`caravan-flow-csharp/docs/design-fleet-ui.md`](caravan-flow-csharp/docs/design-fleet-ui.md) (marked superseded). Shipped UI slices:
+- [x] **slice 1** (`1d75420`) — React + Vite + React Flow scaffold
+- [x] **2a** (`57874e4`) — editable drawer + Save-to-config button
+- [x] **2b** (`9d40917`) — add-processor dialog + empty-canvas CTA
+- [x] **2c** (`19b1016`) — edge drawer for connection removal
+- [x] **2d** (`d4609d7`) — Errors / Provenance / Lineage / Metrics / Settings pages real
 
-Decisions locked: Blazor WASM stack (no NPM), workflow-style fixed-slot layout (no positions in git), layered config files for secrets (`config.yaml` ← `config.local.yaml` ← `secrets.yaml`), processor versioning (`type: Foo@1.2.0`), discovery via static list + opt-in worker self-registration.
+Remaining UI work that's independent of the fleet design:
+- [ ] **2e** — per-user layout persistence (drag positions, localStorage keyed by flow-identity hash; never in config)
+- [ ] **2f** — NiFi-style status + validation on node cards (running/stopped/invalid icon, inline config-error tooltip, Save button disabled when invalid)
+- [ ] **2g** — per-node context menu (right-click start/stop/configure/delete, keyboard Enter/Del)
+- [ ] **2h** — global flow controls (Stop all sources / Start all sources / Drain) in app-shell header
 
-Phases:
-- [ ] **0. Worker prep** — `ConfigLoader` (layered overlays), `YamlEmitter`, `ProcessorInfo.Version`, `/api/identity`, `UIRegistrationProvider`, mutation API extensions (`PUT /processors/{n}/config`, `POST /flow/save`), `GET /api/provenance/failures`, `GET /api/overlays`, optional `VersionControlProvider`. ~40 new test assertions.
-- [ ] **1. UI scaffold** (single-worker mode) — new `caravan-flow-ui-csharp/` sibling project, Blazor WASM SPA, workflow-style flow visualization, provenance lineage inspector with failure queue.
-- [ ] **2. Multi-worker registry** — node registry on UI (static + self-registered, heartbeat liveness), aggregated views across the fleet.
-- [ ] **3. Editor + git** — insert/wire/edit processors, save back to YAML, optional commit/push.
+### Phase 2g: K8s operator + multi-worker deployment (DESIGNED)
+
+Three deployment shapes behind one HTTP contract: single-worker standalone (unchanged), multi-worker classic (aggregator + N headless workers, non-k8s), and k8s fleet (operator + aggregator + Flow CRD). Closes the gap to NiFi clustered-mode UX: declarative fleet management, rolling updates, primary-node scheduling, drain, config validation, GitOps via ArgoCD/Flux against the Flow CRD.
+
+**Full design:** [`docs/design-k8s-operator.md`](docs/design-k8s-operator.md). Covers CRD schemas (Flow, FlowCluster), aggregator API contract, worker headless-mode delta, RBAC, packaging (Helm + Kustomize), migration paths, testing strategy.
+
+Phases (each is commit-sized and backward-compatible):
+
+- [ ] **A. Contract endpoints on worker** — `GET /api/identity`, `GET /api/cluster`, `GET /api/cluster/events`. UI reads identity on boot to learn role. Ships in the next worker release, no new deployment shape.
+- [ ] **B. Headless mode on worker** — `--mode=headless` + `CARAVAN_MODE` env var. Skip wwwroot, disable VC provider, 405 on `/api/flow/save`, mounted ConfigMap file watcher, hot reload on change.
+- [ ] **C. Aggregator skeleton (classic mode)** — new `caravan-flow-aggregator-csharp/` project. Serves React bundle, implements full HTTP contract with fan-out over a static peer list, canonical config file + optional git integration. Enables docker-compose / VM multi-worker without k8s.
+- [ ] **D. CRDs + operator skeleton** — new `caravan-flow-operator/` repo, Go + kubebuilder. Flow + FlowCluster CRDs, reconciler to ConfigMap + Deployment + Service, admission webhook, status subresource. E2E tests on kind.
+- [ ] **E. Aggregator fleet mode** — aggregator reads from k8s instead of peer list. `/api/flow/save` does CRD PATCH. `/api/cluster/events` reads k8s Events.
+- [ ] **F. Primary-node handling** — operator manages Lease per Flow, injects `CARAVAN_PRIMARY_NODE` env var. Worker respects `primaryOnly: true`. UI crown icon.
+- [ ] **G. Rollout semantics** — config-only vs image-change paths, `POST /api/cluster/drain` with readiness-probe 503, rolling update honors `FlowCluster.spec.rollout`.
+- [ ] **H. UI polish for cluster view** — worker selector in app shell, reconcile banner, per-node mini-bar stats on each processor card, cluster events panel, inline validation warnings driven by same validator the operator runs.
+- [ ] **I. Packaging + docs** — Helm chart under `charts/caravan-flow/`, Kustomize bases under `deploy/kustomize/`, `caravan-flow migrate-to-crd` CLI, getting-started per mode, operator runbook.
+- [ ] **J. GitOps integration** — `/api/vc/status` reads ArgoCD `Application` or Flux `Kustomization` state for the Flow resource. Example manifests in `docs/examples/`.
+
+**Open questions (flagged in design doc):** operator language (Go vs C# — leaning Go for k8s-ecosystem reasons), primary-node election strategy (Lease vs StatefulSet ordinal — leaning Lease), hot-reload aggressiveness, aggregator HA replicas.
 
 ---
 

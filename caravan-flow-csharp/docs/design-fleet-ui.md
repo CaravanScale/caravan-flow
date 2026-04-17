@@ -1,7 +1,16 @@
 # Design — caravan-flow fleet UI
 
-> **Status (2026-04-13): APPROVED, EXECUTION DEFERRED.**
-> Captured for later pickup. Resume from Phase 0a (layered config loading).
+> **Status (2026-04-17): SUPERSEDED by [`docs/design-k8s-operator.md`](../../docs/design-k8s-operator.md).**
+> Earlier design landed the UI as a separate binary that talked directly to each worker
+> and kept VC integration on the worker side. The replacement design moves fleet
+> management behind a k8s operator + aggregator split, with the Flow CRD as the
+> source of truth. Read this doc for the original motivation; the operator doc owns
+> the current architecture, CRD schemas, API contract, and phase plan.
+>
+> **Still load-bearing from this doc:** the headless-worker principle, the three "UI
+> jobs" (authoring, provenance inspection, fix-loop), and the "layered config files"
+> idea (which became overlay-loaders in the worker and survives in the operator's
+> ConfigMap-materialization step).
 
 ## Why this exists
 
