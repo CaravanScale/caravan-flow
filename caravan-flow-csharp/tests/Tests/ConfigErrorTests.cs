@@ -97,10 +97,10 @@ public static class ConfigErrorTests
 
     static void TestSplitTextBadHeaderLines()
     {
-        Console.WriteLine("--- SplitText: header_lines not an int ---");
-        var cfg = Flow(new() { ["s"] = Proc("SplitText", new() { ["delimiter"] = ",", ["header_lines"] = "seven" }) });
+        Console.WriteLine("--- SplitText: headerLines not an int ---");
+        var cfg = Flow(new() { ["s"] = Proc("SplitText", new() { ["delimiter"] = ",", ["headerLines"] = "seven" }) });
         var r = FlowValidator.Validate(cfg, Reg());
-        AssertConfigError("splittext bad int", r, "s", "header_lines", "seven");
+        AssertConfigError("splittext bad int", r, "s", "headerLines", "seven");
     }
 
     static void TestCsvBadDelimiter()
@@ -114,10 +114,10 @@ public static class ConfigErrorTests
 
     static void TestCsvBadHasHeaderBool()
     {
-        Console.WriteLine("--- ConvertCSVToRecord: has_header is not a bool ---");
-        var cfg = Flow(new() { ["c"] = Proc("ConvertCSVToRecord", new() { ["has_header"] = "maybe" }) });
+        Console.WriteLine("--- ConvertCSVToRecord: hasHeader is not a bool ---");
+        var cfg = Flow(new() { ["c"] = Proc("ConvertCSVToRecord", new() { ["hasHeader"] = "maybe" }) });
         var r = FlowValidator.Validate(cfg, Reg());
-        AssertConfigError("csv has_header bool", r, "c", "has_header", "maybe");
+        AssertConfigError("csv hasHeader bool", r, "c", "hasHeader", "maybe");
     }
 
     // --- Tranche 2 ---
@@ -278,7 +278,7 @@ public static class ConfigErrorTests
         {
             ["a"] = Proc("DoesNotExist"),
             ["b"] = Proc("UpdateAttribute", new() { ["key"] = "env" /* value missing */ }),
-            ["c"] = Proc("SplitText", new() { ["delimiter"] = ",", ["header_lines"] = "oops" }),
+            ["c"] = Proc("SplitText", new() { ["delimiter"] = ",", ["headerLines"] = "oops" }),
             ["d"] = Proc("RouteOnAttribute", new() { ["routes"] = "bogus" }),
         });
 
@@ -307,7 +307,7 @@ public static class ConfigErrorTests
         AssertTrue("aggregate mentions processor b (missing key)",
             configErrors.Any(e => e.ComponentName == "b" && e.Message.Contains("missing required config key")));
         AssertTrue("aggregate mentions processor c (bad int)",
-            configErrors.Any(e => e.ComponentName == "c" && e.Message.Contains("header_lines")));
+            configErrors.Any(e => e.ComponentName == "c" && e.Message.Contains("headerLines")));
         AssertTrue("aggregate mentions processor d (malformed route)",
             configErrors.Any(e => e.ComponentName == "d" && e.Message.Contains("malformed route")));
     }

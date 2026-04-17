@@ -248,10 +248,10 @@ public sealed class ListenHTTP : IConnectorSource
 ///
 /// Config:
 ///   content         — FlowFile content string (default: empty)
-///   content_type    — set as http.content.type attribute
+///   contentType    — set as http.content.type attribute
 ///   attributes      — semicolon-separated key:value pairs
-///   batch_size      — FlowFiles per poll cycle (default: 1)
-///   poll_interval_ms — polling interval (default: 1000)
+///   batchSize      — FlowFiles per poll cycle (default: 1)
+///   pollIntervalMs — polling interval (default: 1000)
 /// </summary>
 public sealed class GenerateFlowFile : PollingSource
 {

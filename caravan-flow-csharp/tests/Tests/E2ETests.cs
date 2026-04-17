@@ -217,7 +217,7 @@ public static class E2ETests
                 {
                     ["processors"] = new Dictionary<string, object?>
                     {
-                        ["writer"] = new Dictionary<string, object?> { ["type"] = "PutFile", ["config"] = new Dictionary<string, object?> { ["output_dir"] = outputDir } }
+                        ["writer"] = new Dictionary<string, object?> { ["type"] = "PutFile", ["config"] = new Dictionary<string, object?> { ["outputDir"] = outputDir } }
                     }
                 }
             };
@@ -277,7 +277,7 @@ public static class E2ETests
                     ["json-parse"] = new Dictionary<string, object?>
                     {
                         ["type"] = "ConvertJSONToRecord",
-                        ["config"] = new Dictionary<string, object?> { ["schema_name"] = "data" },
+                        ["config"] = new Dictionary<string, object?> { ["schemaName"] = "data" },
                         ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "enrich" } }
                     },
                     ["enrich"] = new Dictionary<string, object?>
@@ -669,7 +669,7 @@ public static class E2ETests
                     ["json-parse"] = new Dictionary<string, object?>
                     {
                         ["type"] = "ConvertJSONToRecord",
-                        ["config"] = new Dictionary<string, object?> { ["schema_name"] = "order" },
+                        ["config"] = new Dictionary<string, object?> { ["schemaName"] = "order" },
                         ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "extract" } }
                     },
                     ["extract"] = new Dictionary<string, object?>

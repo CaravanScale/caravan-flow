@@ -117,7 +117,7 @@ public static class FabricTests
                     ["parser"] = new Dictionary<string, object?>
                     {
                         ["type"] = "ConvertJSONToRecord",
-                        ["config"] = new Dictionary<string, object?> { ["schema_name"] = "test" },
+                        ["config"] = new Dictionary<string, object?> { ["schemaName"] = "test" },
                         ["connections"] = new Dictionary<string, object?>
                         {
                             ["success"] = new List<object?> { "sink" },
@@ -285,12 +285,12 @@ public static class FabricTests
         var logProv = new LoggingProvider(); logProv.Enable();
         ctx.AddProvider(logProv);
 
-        // Create a cycle: A -> B -> A with max_hops = 5
+        // Create a cycle: A -> B -> A with maxHops = 5
         var config = new Dictionary<string, object?>
         {
             ["defaults"] = new Dictionary<string, object?>
             {
-                ["max_hops"] = 5
+                ["maxHops"] = 5
             },
             ["flow"] = new Dictionary<string, object?>
             {
@@ -731,7 +731,7 @@ public static class FabricTests
                     ["parser"] = new Dictionary<string, object?>
                     {
                         ["type"] = "ConvertJSONToRecord",
-                        ["config"] = new Dictionary<string, object?> { ["schema_name"] = "data" },
+                        ["config"] = new Dictionary<string, object?> { ["schemaName"] = "data" },
                         ["connections"] = new Dictionary<string, object?>
                         {
                             ["success"] = new List<object?> { "sink" },
@@ -779,7 +779,7 @@ public static class FabricTests
                     ["parser"] = new Dictionary<string, object?>
                     {
                         ["type"] = "ConvertJSONToRecord",
-                        ["config"] = new Dictionary<string, object?> { ["schema_name"] = "data" },
+                        ["config"] = new Dictionary<string, object?> { ["schemaName"] = "data" },
                         ["connections"] = new Dictionary<string, object?>
                         {
                             ["success"] = new List<object?> { "sink" }
@@ -894,12 +894,12 @@ public static class FabricTests
         var logProv = new LoggingProvider(); logProv.Enable();
         ctx.AddProvider(logProv);
 
-        // Cycle with low max_hops
+        // Cycle with low maxHops
         var config = new Dictionary<string, object?>
         {
             ["defaults"] = new Dictionary<string, object?>
             {
-                ["max_hops"] = 3
+                ["maxHops"] = 3
             },
             ["flow"] = new Dictionary<string, object?>
             {
@@ -941,7 +941,7 @@ public static class FabricTests
         {
             ["defaults"] = new Dictionary<string, object?>
             {
-                ["max_concurrent_executions"] = 1
+                ["maxConcurrentExecutions"] = 1
             },
             ["flow"] = new Dictionary<string, object?>
             {
@@ -957,7 +957,7 @@ public static class FabricTests
         };
         var fab = BuildFabric(config, ctx);
 
-        // With max_concurrent_executions=1, a single synchronous Execute should succeed
+        // With maxConcurrentExecutions=1, a single synchronous Execute should succeed
         var ff1 = FlowFile.Create("test1"u8, new());
         var ok1 = fab.Execute(ff1, "tag");
         AssertTrue("first execute ok", ok1);
@@ -1080,7 +1080,7 @@ public static class FabricTests
                     ["bad-branch"] = new Dictionary<string, object?>
                     {
                         ["type"] = "ConvertJSONToRecord",
-                        ["config"] = new Dictionary<string, object?> { ["schema_name"] = "data" },
+                        ["config"] = new Dictionary<string, object?> { ["schemaName"] = "data" },
                         ["connections"] = new Dictionary<string, object?>
                         {
                             ["success"] = new List<object?> { "never-reached" },
@@ -1142,7 +1142,7 @@ public static class FabricTests
                     ["C"] = new Dictionary<string, object?>
                     {
                         ["type"] = "ConvertJSONToRecord",
-                        ["config"] = new Dictionary<string, object?> { ["schema_name"] = "data" },
+                        ["config"] = new Dictionary<string, object?> { ["schemaName"] = "data" },
                         ["connections"] = new Dictionary<string, object?>
                         {
                             ["success"] = new List<object?> { "D" },
@@ -1236,7 +1236,7 @@ public static class FabricTests
                     ["parser"] = new Dictionary<string, object?>
                     {
                         ["type"] = "ConvertJSONToRecord",
-                        ["config"] = new Dictionary<string, object?> { ["schema_name"] = "data" },
+                        ["config"] = new Dictionary<string, object?> { ["schemaName"] = "data" },
                         ["connections"] = new Dictionary<string, object?>
                         {
                             ["success"] = new List<object?> { "json-sink" },

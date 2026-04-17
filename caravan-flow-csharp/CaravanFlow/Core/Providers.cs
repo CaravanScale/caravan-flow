@@ -307,8 +307,8 @@ public sealed class ContentProvider : IProvider
 /// <summary>
 /// Wraps the embedded schema registry as a provider. Always constructed at
 /// startup (airgapped — no remote registry option). Processors that need
-/// registry-backed schemas (e.g. ConvertOCFToRecord with reader_schema_subject
-/// or auto_register_subject) request this provider via
+/// registry-backed schemas (e.g. ConvertOCFToRecord with readerSchemaSubject
+/// or autoRegisterSubject) request this provider via
 /// requires=["schema_registry"].
 /// </summary>
 public sealed class SchemaRegistryProvider : IProvider

@@ -6,7 +6,7 @@ namespace CaravanFlow.StdLib;
 /// <summary>
 /// ConvertAvroToRecord: Avro binary content → RecordContent.
 /// Requires a schema — reads from avro.schema attribute (JSON field defs) or config.
-/// Config: schema_name, fields (comma-separated name:type pairs, e.g. "name:string,age:int,score:double").
+/// Config: schemaName, fields (comma-separated name:type pairs, e.g. "name:string,age:int,score:double").
 /// </summary>
 public sealed class ConvertAvroToRecord : IProcessor
 {
@@ -287,7 +287,7 @@ public sealed class ConvertRecordToOCF : IProcessor
 ///
 /// Config:
 ///   delimiter    — single character separator, default ","
-///   has_header   — first row is the header, default true
+///   hasHeader   — first row is the header, default true
 ///   fields       — optional explicit schema as "name:type,name:type" pairs
 ///                  (same syntax as ConvertAvroToRecord). When supplied, CSV
 ///                  cells are parsed into the declared CLR types (Long, Double,
@@ -295,7 +295,7 @@ public sealed class ConvertRecordToOCF : IProcessor
 ///                  every cell as a string, which loses type fidelity when
 ///                  forwarding to schema-rich sinks like Avro/OCF.
 ///
-/// When `fields` is set and `has_header` is true, the header row is still
+/// When `fields` is set and `hasHeader` is true, the header row is still
 /// consumed (and ignored). Schema field order wins.
 /// </summary>
 public sealed class ConvertCSVToRecord : IProcessor
@@ -341,7 +341,7 @@ public sealed class ConvertCSVToRecord : IProcessor
 
 /// <summary>
 /// ConvertRecordToCSV: RecordContent → CSV content.
-/// Config: delimiter, include_header.
+/// Config: delimiter, includeHeader.
 /// </summary>
 public sealed class ConvertRecordToCSV : IProcessor
 {
@@ -365,7 +365,7 @@ public sealed class ConvertRecordToCSV : IProcessor
 
 /// <summary>
 /// ExtractRecordField: extract field values from GenericRecord into FlowFile attributes.
-/// Config: fields (format "fieldName:attrName;fieldName2:attrName2"), record_index (default 0).
+/// Config: fields (format "fieldName:attrName;fieldName2:attrName2"), recordIndex (default 0).
 /// </summary>
 public sealed class ExtractRecordField : IProcessor
 {

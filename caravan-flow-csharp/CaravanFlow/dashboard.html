@@ -340,7 +340,7 @@ function renderSources(sources) {
 
 function updateStats(stats) {
   document.getElementById('stat-processed').textContent = formatNum(stats?.processed || 0);
-  document.getElementById('stat-active').textContent = stats?.active_executions || 0;
+  document.getElementById('stat-active').textContent = stats?.activeExecutions || 0;
   document.getElementById('stat-processors').textContent = stats?.processors || 0;
 }
 

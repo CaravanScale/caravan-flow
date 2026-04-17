@@ -9,8 +9,8 @@ namespace CaravanFlow.Core;
 /// <see cref="ConfigException"/>, not quietly become the default.
 ///
 /// Why these exist: a processor declared with
-/// <c>batch_size: "seven"</c> previously loaded with
-/// <c>batch_size = 1</c> (silent default), and the operator only noticed
+/// <c>batchSize: "seven"</c> previously loaded with
+/// <c>batchSize = 1</c> (silent default), and the operator only noticed
 /// when throughput was off. Now the factory throws at load time.
 /// </summary>
 public static class ConfigHelpers
@@ -42,7 +42,7 @@ public static class ConfigHelpers
     /// Retrieve a required string config key, trimming surrounding
     /// whitespace. Missing / empty → <see cref="ConfigException"/>.
     /// Use for keys the factory can't meaningfully default — e.g.
-    /// UpdateAttribute's "key" or PutFile's "output_dir".
+    /// UpdateAttribute's "key" or PutFile's "outputDir".
     /// </summary>
     public static string RequireString(IReadOnlyDictionary<string, string> config, string key)
     {

@@ -331,7 +331,7 @@ public sealed class PutFile : IProcessor
             return FailureResult.Rent(error, ff);
 
         // V3 framing wraps attributes + content. The on-disk file is then a
-        // self-describing NiFi FlowFile that GetFile (with unpack_v3=true)
+        // self-describing NiFi FlowFile that GetFile (with unpackV3=true)
         // can ingest losslessly on the other side.
         if (_format == "v3")
             data = FlowFileV3.Pack(ff, data);

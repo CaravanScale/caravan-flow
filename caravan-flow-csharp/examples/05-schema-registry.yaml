@@ -29,7 +29,7 @@ schemas:
 
 sources:
   file:
-    input_dir: /tmp/avro-in
+    inputDir: /tmp/avro-in
     pattern: "*.avro"
 
 flow:
@@ -39,10 +39,10 @@ flow:
       type: ConvertOCFToRecord
       requires: [content, schema_registry]
       config:
-        reader_schema_subject: orders
+        readerSchemaSubject: orders
         # Pin to a specific version for reproducibility, or use "latest"
         # to always pick up the most-recently-registered version.
-        reader_schema_version: latest
+        readerSchemaVersion: latest
       connections:
         success: [filter]
         failure: [errors]
@@ -79,8 +79,8 @@ flow:
       type: PutFile
       requires: [content]
       config:
-        output_dir: /tmp/avro-out
-        naming_attribute: filename
+        outputDir: /tmp/avro-out
+        namingAttribute: filename
         suffix: .processed.avro
 
     errors:

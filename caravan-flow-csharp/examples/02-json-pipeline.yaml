@@ -32,7 +32,7 @@ flow:
       type: ConvertJSONToRecord
       requires: [content]
       config:
-        schema_name: orders
+        schemaName: orders
       connections:
         success: [filter]
         failure: [errors]
@@ -67,8 +67,8 @@ flow:
       type: PutFile
       requires: [content]
       config:
-        output_dir: /tmp/caravan-out
-        naming_attribute: filename
+        outputDir: /tmp/caravan-out
+        namingAttribute: filename
         suffix: .json
 
     errors:

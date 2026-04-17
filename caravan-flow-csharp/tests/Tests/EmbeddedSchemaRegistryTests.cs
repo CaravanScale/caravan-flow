@@ -337,7 +337,7 @@ public static class EmbeddedSchemaRegistryTests
 
     static void TestConvertOCFAutoRegistersWriterSchema()
     {
-        Console.WriteLine("--- ConvertOCFToRecord: auto_register_subject captures writer schema ---");
+        Console.WriteLine("--- ConvertOCFToRecord: autoRegisterSubject captures writer schema ---");
         var reg = new EmbeddedSchemaRegistry();
         var srProvider = new SchemaRegistryProvider(reg);
         srProvider.Enable();

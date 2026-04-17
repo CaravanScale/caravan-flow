@@ -175,7 +175,7 @@ public static class PipelineTests
                     ["parser"] = new Dictionary<string, object?>
                     {
                         ["type"] = "ConvertJSONToRecord",
-                        ["config"] = new Dictionary<string, object?> { ["schema_name"] = "data" },
+                        ["config"] = new Dictionary<string, object?> { ["schemaName"] = "data" },
                         ["connections"] = new Dictionary<string, object?>
                         {
                             ["success"] = new List<object?> { "next" },
@@ -224,7 +224,7 @@ public static class PipelineTests
                     ["parser"] = new Dictionary<string, object?>
                     {
                         ["type"] = "ConvertJSONToRecord",
-                        ["config"] = new Dictionary<string, object?> { ["schema_name"] = "data" },
+                        ["config"] = new Dictionary<string, object?> { ["schemaName"] = "data" },
                         ["connections"] = new Dictionary<string, object?>
                         {
                             ["success"] = new List<object?> { "next" }

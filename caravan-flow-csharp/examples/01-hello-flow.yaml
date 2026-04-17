@@ -54,5 +54,5 @@ flow:
       type: PutFile
       requires: [content]
       config:
-        output_dir: /tmp/caravan-out
-        naming_attribute: filename
+        outputDir: /tmp/caravan-out
+        namingAttribute: filename

@@ -27,7 +27,7 @@ public sealed class MetricsHandler
         // Active executions
         sb.AppendLine("# HELP caravan_flow_active_executions Currently in-flight pipeline executions");
         sb.AppendLine("# TYPE caravan_flow_active_executions gauge");
-        sb.Append("caravan_flow_active_executions ").AppendLine(stats.GetValueOrDefault("active_executions", (object)0)?.ToString() ?? "0");
+        sb.Append("caravan_flow_active_executions ").AppendLine(stats.GetValueOrDefault("activeExecutions", (object)0)?.ToString() ?? "0");
 
         // Per-processor stats
         var procStats = _fab.GetProcessorStats();

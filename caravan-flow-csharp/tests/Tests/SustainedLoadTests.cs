@@ -82,7 +82,7 @@ public static class SustainedLoadTests
     static void TestBackpressureRejectsWhenSaturated()
     {
         Console.WriteLine("--- SustainedLoad: backpressure rejects when execution gate is saturated ---");
-        // Configure max_concurrent_executions=1, then have a slow processor
+        // Configure maxConcurrentExecutions=1, then have a slow processor
         // that holds the gate. Concurrent submissions should be rejected.
         var ctx = TestContext();
         var reg = new Registry();
@@ -100,10 +100,10 @@ public static class SustainedLoadTests
             ["hold"] = MakeProc("HoldProcessor", new())
         });
         // Top-level defaults section. Fabric.LoadFlow reads
-        // defaults.max_concurrent_executions as int.
+        // defaults.maxConcurrentExecutions as int.
         config["defaults"] = new Dictionary<string, object?>
         {
-            ["max_concurrent_executions"] = 1
+            ["maxConcurrentExecutions"] = 1
         };
         fab.LoadFlow(config);
 

@@ -14,7 +14,7 @@ public sealed class Fabric
     private readonly ProcessorContext _globalCtx;
     private readonly Dictionary<string, IConnectorSource> _sources = new();
     private readonly CancellationTokenSource _cts = new();
-    // Replaceable in LoadFlow when defaults.max_concurrent_executions is set.
+    // Replaceable in LoadFlow when defaults.maxConcurrentExecutions is set.
     // Safe on initial load (no in-flight Execute yet). On hot reload, the swap
     // is best-effort — in-flight Wait()/Release() calls against the old
     // semaphore drain naturally; new requests use the new one.
@@ -51,8 +51,8 @@ public sealed class Fabric
     public void LoadFlow(Dictionary<string, object?> config)
     {
         // Read defaults
-        if (TryGetConfig<int>(config, "defaults.max_hops", out var mh)) _maxHops = mh;
-        if (TryGetConfig<int>(config, "defaults.max_concurrent_executions", out var mce)
+        if (TryGetConfig<int>(config, "defaults.maxHops", out var mh)) _maxHops = mh;
+        if (TryGetConfig<int>(config, "defaults.maxConcurrentExecutions", out var mce)
             && mce != _maxConcurrentExecutions)
         {
             // Replace the gate with one sized to the configured limit. Without
@@ -457,7 +457,7 @@ public sealed class Fabric
     public Dictionary<string, object> GetStats() => new()
     {
         ["processed"] = Interlocked.Read(ref _totalProcessed),
-        ["active_executions"] = Volatile.Read(ref _activeExecutions),
+        ["activeExecutions"] = Volatile.Read(ref _activeExecutions),
         ["processors"] = _graph.ProcessorNames.Count,
         ["sources"] = _sources.Count
     };
@@ -587,7 +587,7 @@ public sealed class Fabric
         int added = 0, removed = 0, updated = 0, connectionsChanged = 0;
 
         // Read new defaults
-        if (TryGetConfig<int>(config, "defaults.max_hops", out var mh)) _maxHops = mh;
+        if (TryGetConfig<int>(config, "defaults.maxHops", out var mh)) _maxHops = mh;
 
         // Parse new processor defs from config
         var newDefs = new Dictionary<string, (string Type, Dictionary<string, string> Config, List<string> Requires, Dictionary<string, List<string>> Connections)>();

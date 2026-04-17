@@ -41,7 +41,7 @@ public sealed class ReplaceText : IProcessor
 
 /// <summary>
 /// ExtractText: regex capture groups from content → FlowFile attributes.
-/// Config: pattern (with named or positional groups), group_names (comma-separated attribute names for positional groups).
+/// Config: pattern (with named or positional groups), groupNames (comma-separated attribute names for positional groups).
 /// Named groups (?&lt;name&gt;...) automatically become attributes.
 /// </summary>
 public sealed class ExtractText : IProcessor
@@ -80,7 +80,7 @@ public sealed class ExtractText : IProcessor
                 result = FlowFile.WithAttribute(result, name, group.Value);
         }
 
-        // Positional groups → mapped via group_names config
+        // Positional groups → mapped via groupNames config
         for (int i = 0; i < _groupNames.Length && i + 1 < match.Groups.Count; i++)
         {
             var group = match.Groups[i + 1]; // group 0 is full match
@@ -94,7 +94,7 @@ public sealed class ExtractText : IProcessor
 
 /// <summary>
 /// SplitText: split raw content by delimiter into multiple FlowFiles.
-/// Config: delimiter (regex), header_lines (count of header lines to repeat in each split).
+/// Config: delimiter (regex), headerLines (count of header lines to repeat in each split).
 /// Returns MultipleResult.
 /// </summary>
 public sealed class SplitText : IProcessor

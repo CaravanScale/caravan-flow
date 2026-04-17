@@ -22,7 +22,7 @@ content:
 
 sources:
   file:
-    input_dir: /tmp/avro-v1-in
+    inputDir: /tmp/avro-v1-in
     pattern: "*.avro"
 
 flow:
@@ -35,7 +35,7 @@ flow:
         # Inline JSON schema. The Avro JSON spec allows a field's "type" to be
         # an object with logicalType + precision/scale (for timestamps,
         # decimals, etc.) — they're preserved through the OCF roundtrip.
-        reader_schema: |
+        readerSchema: |
           {
             "type": "record",
             "name": "User",
@@ -61,8 +61,8 @@ flow:
       type: PutFile
       requires: [content]
       config:
-        output_dir: /tmp/avro-v2-out
-        naming_attribute: filename
+        outputDir: /tmp/avro-v2-out
+        namingAttribute: filename
         suffix: .v2.avro
 
     errors:

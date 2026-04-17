@@ -210,7 +210,7 @@ public static class ValidatorTests
         var cfg = Config(new()
         {
             ["parse"] = Proc("ConvertJSONToRecord",
-                cfg: new() { ["schema_name"] = "orders" },
+                cfg: new() { ["schemaName"] = "orders" },
                 connections: new() { ["success"] = new() { "filter" }, ["failure"] = new() { "log" } }),
             ["filter"] = Proc("QueryRecord",
                 cfg: new() { ["where"] = "amount > 100" },

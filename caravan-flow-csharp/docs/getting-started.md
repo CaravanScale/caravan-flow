@@ -53,12 +53,12 @@ logging:
 
 content:
   dir: /tmp/caravan-flow-csharp/content
-  offload_threshold_kb: 256  # FlowFiles bigger than this offload to disk
-  sweep_interval_ms: 300000  # orphan content cleanup interval
+  offloadThresholdKb: 256  # FlowFiles bigger than this offload to disk
+  sweepIntervalMs: 300000  # orphan content cleanup interval
 
 defaults:
-  max_hops: 50               # max processor hops per FlowFile (cycle guard)
-  max_concurrent_executions: 100  # backpressure semaphore
+  maxHops: 50               # max processor hops per FlowFile (cycle guard)
+  maxConcurrentExecutions: 100  # backpressure semaphore
 
 schemas:                     # optional — pre-load the embedded schema registry
   orders:
@@ -70,8 +70,8 @@ schemas:                     # optional — pre-load the embedded schema registr
 
 sources:                     # ingest connectors
   listen_http: { port: 9092, path: / }
-  file:        { input_dir: /in, pattern: "*.avro", poll_interval_ms: 1000 }
-  generate:    { content: "tick", poll_interval_ms: 5000 }   # for testing
+  file:        { inputDir: /in, pattern: "*.avro", pollIntervalMs: 1000 }
+  generate:    { content: "tick", pollIntervalMs: 5000 }   # for testing
 
 flow:
   processors:
@@ -86,7 +86,7 @@ flow:
 
 ## Walkthrough — JSON pipeline
 
-`examples/02-json-pipeline.yaml`. Note: `schema_name` is just a *label* used in
+`examples/02-json-pipeline.yaml`. Note: `schemaName` is just a *label* used in
 provenance/log output. JSON is schema-on-read — `ConvertJSONToRecord` infers
 the field types from the first object in the array (Long, Double, String, etc.).
 You only need a `schemas:` section if a downstream processor wants to
@@ -99,7 +99,7 @@ flow:
     parse:
       type: ConvertJSONToRecord
       requires: [content]
-      config: { schema_name: orders }     # label only; types inferred from JSON
+      config: { schemaName: orders }     # label only; types inferred from JSON
       connections: { success: [filter], failure: [errors] }
 
     filter:
@@ -123,7 +123,7 @@ flow:
     write:
       type: PutFile
       requires: [content]
-      config: { output_dir: /tmp/caravan-out, suffix: .json }
+      config: { outputDir: /tmp/caravan-out, suffix: .json }
 
     errors:
       type: LogAttribute
@@ -159,22 +159,22 @@ computed and land in `/tmp/caravan-out/`.
 | `RouteOnAttribute` | Branch by predicate on attributes | `routes` |
 | `QueryRecord` | Filter records by predicate (supports nested paths) | `where` |
 | **Records — codecs** | | |
-| `ConvertJSONToRecord` / `ConvertRecordToJSON` | JSON ↔ records | `schema_name` (read) |
-| `ConvertCSVToRecord` / `ConvertRecordToCSV` | CSV ↔ records | optional `delimiter`, `has_header`, `fields` (typed columns) |
+| `ConvertJSONToRecord` / `ConvertRecordToJSON` | JSON ↔ records | `schemaName` (read) |
+| `ConvertCSVToRecord` / `ConvertRecordToCSV` | CSV ↔ records | optional `delimiter`, `hasHeader`, `fields` (typed columns) |
 | `ConvertAvroToRecord` / `ConvertRecordToAvro` | Raw Avro binary ↔ records | `fields` (read) |
-| `ConvertOCFToRecord` / `ConvertRecordToOCF` | Avro `.avro` files ↔ records | optional `reader_schema` / `reader_schema_subject`; codec ∈ `null`, `deflate`, `zstandard` |
+| `ConvertOCFToRecord` / `ConvertRecordToOCF` | Avro `.avro` files ↔ records | optional `readerSchema` / `readerSchemaSubject`; codec ∈ `null`, `deflate`, `zstandard` |
 | **Records — query/transform** | | |
-| `ExtractRecordField` | Lift record fields to attributes (dotted paths) | `fields`, optional `record_index` |
+| `ExtractRecordField` | Lift record fields to attributes (dotted paths) | `fields`, optional `recordIndex` |
 | `TransformRecord` | Rename/remove/add/copy/upper/lower/default + `compute:expr` | `operations` |
 | **Text** | | |
 | `ReplaceText` | Regex find/replace on content | `pattern`, optional `replacement` |
-| `ExtractText` | Regex capture → attributes | `pattern`, optional `group_names` |
+| `ExtractText` | Regex capture → attributes | `pattern`, optional `groupNames` |
 | `SplitText` | Split content into multiple FlowFiles | `delimiter` |
 | **NiFi V3 framing** (let V3 wrapping be a pipeline step) | | |
 | `PackageFlowFileV3` | Wrap (attributes + content) into V3 binary content; output content is the V3 frame | none |
 | `UnpackageFlowFileV3` | Decode V3 binary content into one or more original FlowFiles (MultipleResult on multi-frame) | none |
 | **Sinks** | | |
-| `PutFile` | Write content to disk. `format: v3` writes V3-framed bytes (lossless attributes); default is raw. | `output_dir`, optional `format` |
+| `PutFile` | Write content to disk. `format: v3` writes V3-framed bytes (lossless attributes); default is raw. | `outputDir`, optional `format` |
 | `PutHTTP` | POST content to URL. `format: v3` sends V3-framed body; default sends raw with `X-Flow-*` headers carrying attributes. | `endpoint`, optional `format` |
 | `PutStdout` | Write content to stdout. `format` ∈ `text` (default), `hex`, `attrs`, `v3` | optional `format` |
 
@@ -212,7 +212,7 @@ compute:targetField:expression
 ## Avro schema evolution
 
 When the writer schema in a `.avro` file differs from what the reader wants,
-supply a `reader_schema` (inline JSON) or `reader_schema_subject` (registry).
+supply a `readerSchema` (inline JSON) or `readerSchemaSubject` (registry).
 The reader applies Avro 1.11 resolution rules:
 
 - **Type promotion**: `int → long, float, double`; `long → float, double`;
@@ -272,7 +272,7 @@ us:
 | `DELETE /api/schema-registry/subjects/{s}` | Drop a subject |
 | `DELETE /api/schema-registry/subjects/{s}/versions/{v}` | Drop one version |
 
-**3. Auto-capture from incoming OCF files.** Set `auto_register_subject` on
+**3. Auto-capture from incoming OCF files.** Set `autoRegisterSubject` on
 `ConvertOCFToRecord` and every `.avro` file's writer schema is registered under
 that subject. Identical schemas are no-ops; new schemas become new versions.
 This is the airgapped magic — the first file teaches the registry:
@@ -281,7 +281,7 @@ This is the airgapped magic — the first file teaches the registry:
 parse:
   type: ConvertOCFToRecord
   requires: [content, schema_registry]
-  config: { auto_register_subject: discovered }
+  config: { autoRegisterSubject: discovered }
 ```
 
 **Reading with a registered schema.** Processors that need a reader schema
@@ -292,8 +292,8 @@ parse:
   type: ConvertOCFToRecord
   requires: [content, schema_registry]
   config:
-    reader_schema_subject: orders
-    reader_schema_version: latest    # or "3" to pin
+    readerSchemaSubject: orders
+    readerSchemaVersion: latest    # or "3" to pin
 ```
 
 Lookup is lazy (first FlowFile triggers it) and cached. `latest` always

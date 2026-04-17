@@ -26,10 +26,10 @@ content:
 
 sources:
   file:
-    input_dir: /tmp/v3-in
+    inputDir: /tmp/v3-in
     pattern: "*"
-    poll_interval_ms: 1000
-    unpack_v3: true       # default; sniffs magic header and unwraps if present
+    pollIntervalMs: 1000
+    unpackV3: true       # default; sniffs magic header and unwraps if present
 
   # ListenHTTP also accepts V3 frames now — Content-Type
   # `application/flowfile-v3` (preferred) or `application/octet-stream` triggers
@@ -64,8 +64,8 @@ flow:
       type: PutFile
       requires: [content]
       config:
-        output_dir: /tmp/v3-out
-        naming_attribute: filename
+        outputDir: /tmp/v3-out
+        namingAttribute: filename
         suffix: .v3
         # `format: v3` is also available on PutFile for the case where you
         # have NOT used PackageFlowFileV3 upstream — that variant wraps in the

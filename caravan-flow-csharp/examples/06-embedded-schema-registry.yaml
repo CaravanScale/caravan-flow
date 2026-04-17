@@ -4,7 +4,7 @@
 #
 #   1. CONFIG (`schemas:` section) — loaded at startup, re-applied on hot reload.
 #   2. REST  — POST to /api/schema-registry/subjects/<subject>/versions
-#   3. AUTO  — `auto_register_subject` on ConvertOCFToRecord captures the writer
+#   3. AUTO  — `autoRegisterSubject` on ConvertOCFToRecord captures the writer
 #              schema from every incoming .avro file. Identical files are no-ops
 #              (dedup); a never-before-seen schema becomes a new version under
 #              that subject. Ideal for airgapped systems: the first .avro file
@@ -53,7 +53,7 @@ schemas:
 
 sources:
   file:
-    input_dir: /tmp/avro-in
+    inputDir: /tmp/avro-in
     pattern: "*.avro"
 
 flow:
@@ -65,7 +65,7 @@ flow:
       type: ConvertOCFToRecord
       requires: [content, schema_registry]
       config:
-        auto_register_subject: discovered
+        autoRegisterSubject: discovered
       connections:
         success: [encode]
         failure: [errors]
@@ -81,8 +81,8 @@ flow:
       type: PutFile
       requires: [content]
       config:
-        output_dir: /tmp/avro-out
-        naming_attribute: filename
+        outputDir: /tmp/avro-out
+        namingAttribute: filename
         suffix: .seen.avro
 
     errors:

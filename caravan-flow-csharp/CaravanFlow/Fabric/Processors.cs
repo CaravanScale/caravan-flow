@@ -25,9 +25,9 @@ public static class BuiltinProcessors
             });
 
         reg.Register(
-            new ProcessorInfo("ConvertJSONToRecord", "Parses JSON content into records", ["schema_name"]),
+            new ProcessorInfo("ConvertJSONToRecord", "Parses JSON content into records", ["schemaName"]),
             (ctx, config) => new ConvertJSONToRecord(
-                config.GetValueOrDefault("schema_name", "default"),
+                config.GetValueOrDefault("schemaName", "default"),
                 ctx.GetContentStoreOrDefault()));
 
         reg.Register(
@@ -44,10 +44,10 @@ public static class BuiltinProcessors
 
         reg.Register(
             new ProcessorInfo("PutFile", "Write FlowFile content to directory",
-                ["output_dir", "naming_attribute", "prefix", "suffix", "format"]),
+                ["outputDir", "namingAttribute", "prefix", "suffix", "format"]),
             (ctx, config) => new PutFile(
-                ConfigHelpers.RequireString(config, "output_dir"),
-                ConfigHelpers.GetString(config, "naming_attribute", "filename"),
+                ConfigHelpers.RequireString(config, "outputDir"),
+                ConfigHelpers.GetString(config, "namingAttribute", "filename"),
                 ConfigHelpers.GetString(config, "prefix"),
                 ConfigHelpers.GetString(config, "suffix"),
                 ctx.GetContentStoreOrDefault(),
@@ -81,19 +81,19 @@ public static class BuiltinProcessors
 
         reg.Register(
             new ProcessorInfo("ExtractText", "Regex capture groups → attributes",
-                ["pattern", "group_names"]),
+                ["pattern", "groupNames"]),
             (ctx, config) => new ExtractText(
                 ConfigHelpers.RequireString(config, "pattern"),
-                ConfigHelpers.GetString(config, "group_names"),
+                ConfigHelpers.GetString(config, "groupNames"),
                 ctx.GetContentStoreOrDefault()));
 
         reg.Register(
             new ProcessorInfo("SplitText", "Split content by delimiter into multiple FlowFiles",
-                ["delimiter", "header_lines"]),
+                ["delimiter", "headerLines"]),
             (ctx, config) =>
             {
                 var delim = ConfigHelpers.RequireString(config, "delimiter");
-                var headerLines = ConfigHelpers.ParseInt(config.GetValueOrDefault("header_lines"), "header_lines", 0);
+                var headerLines = ConfigHelpers.ParseInt(config.GetValueOrDefault("headerLines"), "headerLines", 0);
                 return new SplitText(delim, headerLines, ctx.GetContentStoreOrDefault());
             });
 
@@ -101,9 +101,9 @@ public static class BuiltinProcessors
 
         reg.Register(
             new ProcessorInfo("ConvertAvroToRecord", "Decode Avro binary into records",
-                ["fields", "schema_name"]),
+                ["fields", "schemaName"]),
             (ctx, config) => new ConvertAvroToRecord(
-                config.GetValueOrDefault("schema_name", "default"),
+                config.GetValueOrDefault("schemaName", "default"),
                 config.GetValueOrDefault("fields", ""),
                 ctx.GetContentStoreOrDefault()));
 
@@ -113,35 +113,35 @@ public static class BuiltinProcessors
 
         reg.Register(
             new ProcessorInfo("ConvertOCFToRecord", "Decode Avro OCF (.avro file) into records",
-                ["reader_schema", "reader_schema_subject", "reader_schema_version", "auto_register_subject"]),
+                ["readerSchema", "readerSchemaSubject", "readerSchemaVersion", "autoRegisterSubject"]),
             (ctx, config) =>
             {
                 Schema? staticSchema = null;
                 SchemaRegistryProvider? registry = null;
                 string? subject = null;
-                var version = config.GetValueOrDefault("reader_schema_version", "latest");
-                string? autoRegister = config.GetValueOrDefault("auto_register_subject", "");
+                var version = config.GetValueOrDefault("readerSchemaVersion", "latest");
+                string? autoRegister = config.GetValueOrDefault("autoRegisterSubject", "");
                 if (string.IsNullOrWhiteSpace(autoRegister)) autoRegister = null;
 
-                // Resolve registry provider once — needed for both reader_schema_subject
-                // and auto_register_subject.
+                // Resolve registry provider once — needed for both readerSchemaSubject
+                // and autoRegisterSubject.
                 if (ctx.TryGetProvider<SchemaRegistryProvider>("schema_registry", out var srProvider))
                     registry = srProvider;
 
                 // Inline JSON schema takes priority over registry lookup.
-                if (config.TryGetValue("reader_schema", out var rsJson) && !string.IsNullOrWhiteSpace(rsJson))
+                if (config.TryGetValue("readerSchema", out var rsJson) && !string.IsNullOrWhiteSpace(rsJson))
                 {
                     staticSchema = AvroSchemaJson.Parse(rsJson);
                 }
-                else if (config.TryGetValue("reader_schema_subject", out var subj) && !string.IsNullOrWhiteSpace(subj))
+                else if (config.TryGetValue("readerSchemaSubject", out var subj) && !string.IsNullOrWhiteSpace(subj))
                 {
                     if (registry is null)
-                        throw new InvalidOperationException("reader_schema_subject set but no schema_registry provider available");
+                        throw new InvalidOperationException("readerSchemaSubject set but no schema_registry provider available");
                     subject = subj;
                 }
 
                 if (autoRegister is not null && registry is null)
-                    throw new InvalidOperationException("auto_register_subject set but no schema_registry provider available");
+                    throw new InvalidOperationException("autoRegisterSubject set but no schema_registry provider available");
 
                 return new ConvertOCFToRecord(
                     ctx.GetContentStoreOrDefault(),
@@ -157,13 +157,13 @@ public static class BuiltinProcessors
 
         reg.Register(
             new ProcessorInfo("ConvertCSVToRecord", "Parse CSV content into records",
-                ["delimiter", "has_header", "fields", "schema_name"]),
+                ["delimiter", "hasHeader", "fields", "schemaName"]),
             (ctx, config) =>
             {
                 var delim = ConfigHelpers.ParseSingleChar(config.GetValueOrDefault("delimiter"), "delimiter", ',');
-                var hasHeader = ConfigHelpers.ParseBool(config.GetValueOrDefault("has_header"), "has_header", true);
+                var hasHeader = ConfigHelpers.ParseBool(config.GetValueOrDefault("hasHeader"), "hasHeader", true);
                 return new ConvertCSVToRecord(
-                    ConfigHelpers.GetString(config, "schema_name", "default"),
+                    ConfigHelpers.GetString(config, "schemaName", "default"),
                     delim,
                     hasHeader,
                     ctx.GetContentStoreOrDefault(),
@@ -172,11 +172,11 @@ public static class BuiltinProcessors
 
         reg.Register(
             new ProcessorInfo("ConvertRecordToCSV", "Serialize records to CSV",
-                ["delimiter", "include_header"]),
+                ["delimiter", "includeHeader"]),
             (ctx, config) =>
             {
                 var delim = ConfigHelpers.ParseSingleChar(config.GetValueOrDefault("delimiter"), "delimiter", ',');
-                var includeHeader = ConfigHelpers.ParseBool(config.GetValueOrDefault("include_header"), "include_header", true);
+                var includeHeader = ConfigHelpers.ParseBool(config.GetValueOrDefault("includeHeader"), "includeHeader", true);
                 return new ConvertRecordToCSV(delim, includeHeader);
             });
 
@@ -212,10 +212,10 @@ public static class BuiltinProcessors
         // --- Record field extraction / query ---
 
         reg.Register(
-            new ProcessorInfo("ExtractRecordField", "Extract record fields into FlowFile attributes", ["fields", "record_index"]),
+            new ProcessorInfo("ExtractRecordField", "Extract record fields into FlowFile attributes", ["fields", "recordIndex"]),
             (ctx, config) => new ExtractRecordField(
                 ConfigHelpers.RequireString(config, "fields"),
-                ConfigHelpers.ParseInt(config.GetValueOrDefault("record_index"), "record_index", 0)));
+                ConfigHelpers.ParseInt(config.GetValueOrDefault("recordIndex"), "recordIndex", 0)));
 
         reg.Register(
             new ProcessorInfo("QueryRecord", "Filter records by predicate", ["where"]),

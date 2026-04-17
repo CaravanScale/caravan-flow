@@ -441,7 +441,7 @@ public static class SourceTests
         AssertTrue("has source attr", ff.Attributes.TryGetValue("source", out var src) && src == "test-gen");
         AssertTrue("has type attr", ff.Attributes.TryGetValue("type", out var t) && t == "heartbeat");
         AssertTrue("has env attr", ff.Attributes.TryGetValue("env", out var e) && e == "dev");
-        AssertTrue("has content_type", ff.Attributes.TryGetValue("http.content.type", out var ct) && ct == "application/json");
+        AssertTrue("has contentType", ff.Attributes.TryGetValue("http.content.type", out var ct) && ct == "application/json");
         AssertTrue("has generate.index", ff.Attributes.TryGetValue("generate.index", out _));
     }
 
@@ -458,7 +458,7 @@ public static class SourceTests
         gen.Stop();
         WaitFor(() => !gen.IsRunning, timeoutMs: 2000);
 
-        // batch_size=5, should have at least 5 from first poll
+        // batchSize=5, should have at least 5 from first poll
         AssertTrue("batch: generated >= 5", ingested.Count >= 5);
         // Each should have unique index
         var indices = ingested.Select(f =>

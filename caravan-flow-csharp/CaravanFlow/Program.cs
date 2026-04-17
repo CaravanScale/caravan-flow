@@ -59,8 +59,8 @@ var contentDir = GetConfigString(config, "content.dir", "/tmp/caravan-flow-cshar
 // GetConfigString, so the string is always present here. Bad input
 // must throw rather than silently use the compiled-in default.
 ContentHelpers.ClaimThreshold = ConfigHelpers.ParseIntRaw(
-    GetConfigString(config, "content.offload_threshold_kb", "256"),
-    "content.offload_threshold_kb") * 1024;
+    GetConfigString(config, "content.offloadThresholdKb", "256"),
+    "content.offloadThresholdKb") * 1024;
 var store = new FileContentStore(contentDir);
 var cleanup = new ContentStoreCleanup(store, contentDir);
 ContentStoreCleanup.Instance = cleanup;
@@ -88,7 +88,7 @@ globalCtx.AddProvider(provenanceProvider);
 // Pre-loads from the optional `schemas:` section in config, then exposes REST
 // endpoints under /api/schema-registry/* on the management port and supports
 // auto-capture from incoming OCF files via ConvertOCFToRecord's
-// auto_register_subject config.
+// autoRegisterSubject config.
 var embeddedRegistry = new CaravanFlow.StdLib.EmbeddedSchemaRegistry();
 var schemaConfigDir = File.Exists(configPath) ? Path.GetDirectoryName(Path.GetFullPath(configPath)) : null;
 var schemasSection = CaravanFlow.Fabric.Fabric.AsStringDict(config.GetValueOrDefault("schemas"));
@@ -125,14 +125,14 @@ fab.Status();
 Directory.CreateDirectory("/tmp/caravan-flow-csharp/output");
 
 // Config-driven sources
-var fileInputDir = GetConfigString(config, "sources.file.input_dir", "");
+var fileInputDir = GetConfigString(config, "sources.file.inputDir", "");
 if (!string.IsNullOrEmpty(fileInputDir))
 {
     var pattern = GetConfigString(config, "sources.file.pattern", "*");
     var pollMs = ConfigHelpers.ParseIntRaw(
-        GetConfigString(config, "sources.file.poll_interval_ms", "1000"),
-        "sources.file.poll_interval_ms");
-    var unpackV3 = GetConfigString(config, "sources.file.unpack_v3", "true") != "false";
+        GetConfigString(config, "sources.file.pollIntervalMs", "1000"),
+        "sources.file.pollIntervalMs");
+    var unpackV3 = GetConfigString(config, "sources.file.unpackV3", "true") != "false";
     fab.AddSource(new GetFile("file-ingest", fileInputDir, pattern, pollMs, store, unpackV3));
 }
 
@@ -145,14 +145,14 @@ fab.AddSource(new ListenHTTP("http-ingest", int.Parse(ingestPort), ingestPath, s
 var genContent = GetConfigString(config, "sources.generate.content", "");
 if (!string.IsNullOrEmpty(genContent))
 {
-    var genType = GetConfigString(config, "sources.generate.content_type", "");
+    var genType = GetConfigString(config, "sources.generate.contentType", "");
     var genAttrs = GetConfigString(config, "sources.generate.attributes", "");
     var genBatch = ConfigHelpers.ParseIntRaw(
-        GetConfigString(config, "sources.generate.batch_size", "1"),
-        "sources.generate.batch_size");
+        GetConfigString(config, "sources.generate.batchSize", "1"),
+        "sources.generate.batchSize");
     var genPoll = ConfigHelpers.ParseIntRaw(
-        GetConfigString(config, "sources.generate.poll_interval_ms", "1000"),
-        "sources.generate.poll_interval_ms");
+        GetConfigString(config, "sources.generate.pollIntervalMs", "1000"),
+        "sources.generate.pollIntervalMs");
     fab.AddSource(new GenerateFlowFile("generator", genPoll, genContent, genType, genAttrs, genBatch));
 }
 
@@ -214,8 +214,8 @@ _ = Task.Run(async () =>
 
 // Content store cleanup
 var sweepMs = ConfigHelpers.ParseIntRaw(
-    GetConfigString(config, "content.sweep_interval_ms", "300000"),
-    "content.sweep_interval_ms");
+    GetConfigString(config, "content.sweepIntervalMs", "300000"),
+    "content.sweepIntervalMs");
 var appCts = new CancellationTokenSource();
 cleanup.StartPeriodicSweep(sweepMs, appCts.Token);
 
