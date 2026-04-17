@@ -358,6 +358,7 @@ public final class Pipeline {
     public void addSource(Source source) {
         if (source == null) return;
         sources.put(source.name(), source);
+        stats.metrics().onSourceRegistered(source);
     }
 
     public Source getSource(String name) { return sources.get(name); }
@@ -461,20 +462,31 @@ public final class Pipeline {
 
     /// Push a FlowFile into the pipeline at each entry point. Returns
     /// when all downstream dispatches for this FlowFile have completed.
+    ///
+    /// Bracketed with {@code beginExecution}/{@code endExecution} so the
+    /// {@code caravan_flow_active_executions} gauge reflects true
+    /// in-flight work; the finally block guarantees the gauge decrements
+    /// even if drain throws.
     public void ingest(FlowFile ff) {
         PipelineGraph g = graph; // single snapshot for this call
         if (g.entryPoints().isEmpty()) {
             log.warn("ingest called but pipeline has no entry points — dropping {}", ff.stringId());
             return;
         }
-        stats.recordIngested();
-        // A work item = (processor name, flowfile to hand it). Stack is
-        // local per ingest call so concurrent ingests don't share state.
-        Deque<WorkItem> stack = new ArrayDeque<>();
-        for (String entry : g.entryPoints()) {
-            stack.push(new WorkItem(entry, ff));
+        Metrics m = stats.metrics();
+        m.beginExecution();
+        try {
+            stats.recordIngested();
+            // A work item = (processor name, flowfile to hand it). Stack is
+            // local per ingest call so concurrent ingests don't share state.
+            Deque<WorkItem> stack = new ArrayDeque<>();
+            for (String entry : g.entryPoints()) {
+                stack.push(new WorkItem(entry, ff));
+            }
+            drain(g, stack);
+        } finally {
+            m.endExecution();
         }
-        drain(g, stack);
     }
 
     private void drain(PipelineGraph g, Deque<WorkItem> stack) {

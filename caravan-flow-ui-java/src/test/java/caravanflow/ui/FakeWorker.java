@@ -41,7 +41,7 @@ final class FakeWorker {
     }
 
     FakeWorker withLineage(long id, java.util.List<Map<String, Object>> body) {
-        app.get("/api/provenance/lineage/" + id, ctx ->
+        app.get("/api/provenance/" + id, ctx ->
                 ctx.contentType("application/json").result(JSON.writeValueAsBytes(body)));
         return this;
     }

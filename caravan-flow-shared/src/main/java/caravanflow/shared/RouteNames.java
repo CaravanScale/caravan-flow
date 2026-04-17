@@ -11,7 +11,9 @@ public final class RouteNames {
     public static final String API_STATS        = "/api/stats";
     public static final String API_OVERLAYS     = "/api/overlays";
     public static final String API_PROVENANCE_FAILURES = "/api/provenance/failures";
-    public static final String API_PROVENANCE_LINEAGE  = "/api/provenance/lineage/";
+    /// Prefix for the by-FlowFileId lookup — append the id to get the
+    /// full path. Matches caravan-flow-csharp's {@code /api/provenance/{id}}.
+    public static final String API_PROVENANCE_BY_ID    = "/api/provenance/";
     public static final String API_VC_STATUS    = "/api/vc/status";
     public static final String API_FLOW_SAVE    = "/api/flow/save";
 

@@ -99,7 +99,7 @@ public final class FleetService {
     /// cached — detail pages are user-triggered, so a fresh read per
     /// hit keeps the view honest.
     public List<ProvenanceEvent> lineage(long flowFileId) {
-        return fetchList(RouteNames.API_PROVENANCE_LINEAGE + flowFileId, ProvenanceEvent.class);
+        return fetchList(RouteNames.API_PROVENANCE_BY_ID + flowFileId, ProvenanceEvent.class);
     }
 
     /// Current overlay stack from the worker — base YAML plus any

@@ -114,7 +114,6 @@ public final class HttpServer {
                 // to handleProvenanceById with id="failures" and 400s.
                 .get("/api/provenance",                this::handleProvenanceRecent)
                 .get("/api/provenance/failures",       this::handleProvenanceFailures)
-                .get("/api/provenance/lineage/{id}",   this::handleProvenanceLineage)
                 .get("/api/provenance/{id}",           this::handleProvenanceById)
                 .post("/api/processors/add",           this::handleAddProcessor)
                 .delete("/api/processors/remove",      this::handleRemoveProcessor)
@@ -585,7 +584,7 @@ public final class HttpServer {
                 .result(json.writeValueAsBytes(out));
     }
 
-    // --- Provenance failures + lineage (design-doc URL shape) ---
+    // --- Provenance failures ---
 
     private void handleProvenanceFailures(Context ctx) throws Exception {
         ProvenanceProvider prov = pipeline.provenance();
@@ -609,15 +608,6 @@ public final class HttpServer {
             if (failures.size() >= n) break;
         }
         ctx.contentType("application/json").result(json.writeValueAsBytes(shape(failures)));
-    }
-
-    private void handleProvenanceLineage(Context ctx) throws Exception {
-        ProvenanceProvider prov = pipeline.provenance();
-        if (prov == null) { writeError(ctx, 503, "provenance provider not enabled"); return; }
-        long id;
-        try { id = Long.parseLong(ctx.pathParam("id")); }
-        catch (NumberFormatException e) { writeError(ctx, 400, "path param 'id' is not a long"); return; }
-        ctx.contentType("application/json").result(json.writeValueAsBytes(shape(prov.getEvents(id))));
     }
 
     // --- Processor config / connection updates ---
@@ -918,7 +908,6 @@ public final class HttpServer {
                 "PUT /api/processors/{name}/config",
                 "PUT /api/processors/{name}/connections",
                 "GET /api/provenance/failures",
-                "GET /api/provenance/lineage/{id}",
                 "GET /api/vc/status", "POST /api/vc/commit", "POST /api/vc/push");
     }
 }

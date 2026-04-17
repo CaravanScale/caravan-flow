@@ -106,6 +106,7 @@ final class DtoRoundTripTest {
     void routeNamesAreConstants() {
         assertEquals("/api/identity", RouteNames.API_IDENTITY);
         assertEquals("/api/flow",     RouteNames.API_FLOW);
-        assertTrue(RouteNames.API_PROVENANCE_LINEAGE.endsWith("/"));
+        assertEquals("/api/provenance/", RouteNames.API_PROVENANCE_BY_ID);
+        assertTrue(RouteNames.API_PROVENANCE_BY_ID.endsWith("/"));
     }
 }

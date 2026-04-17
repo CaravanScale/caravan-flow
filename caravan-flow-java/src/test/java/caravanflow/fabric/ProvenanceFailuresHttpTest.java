@@ -82,7 +82,7 @@ final class ProvenanceFailuresHttpTest {
         prov.record(42, ProvenanceProvider.EventType.PROCESSED, "stage");
         prov.record(99, ProvenanceProvider.EventType.PROCESSED, "other");
 
-        var resp = get("/api/provenance/lineage/42");
+        var resp = get("/api/provenance/42");
         assertEquals(200, resp.statusCode());
         JsonNode body = JSON.readTree(resp.body());
         assertEquals(2, body.size());
@@ -93,7 +93,7 @@ final class ProvenanceFailuresHttpTest {
         server.stop();
         var pipeline = new Pipeline(PipelineGraph.empty());
         server = new HttpServer(pipeline).start(0);
-        var resp = get("/api/provenance/lineage/1");
+        var resp = get("/api/provenance/1");
         assertEquals(503, resp.statusCode());
     }
 }

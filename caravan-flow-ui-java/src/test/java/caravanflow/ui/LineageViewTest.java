@@ -117,7 +117,7 @@ final class LineageViewTest {
 
     @Test
     void detailSurfacesWorkerUnreachable() throws Exception {
-        // No /api/provenance/lineage/42 registered → worker 404s → UI
+        // No /api/provenance/42 registered → worker 404s → UI
         // renders the error banner rather than blanking out.
         worker = new FakeWorker().withIdentity(FakeWorker.sampleIdentity()).start();
         ui = new UiMain(worker.url()).start(0);
