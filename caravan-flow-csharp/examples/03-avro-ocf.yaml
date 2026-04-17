@@ -18,10 +18,12 @@ content:
   dir: /tmp/caravan-flow-csharp/content
 
 sources:
-  file:
-    inputDir: /tmp/avro-in
-    pattern: "*.avro"
-    pollIntervalMs: 1000
+  fileIngest:
+    type: GetFile
+    config:
+      inputDir: /tmp/avro-in
+      pattern: "*.avro"
+      pollIntervalMs: 1000
 
 flow:
   processors:

@@ -25,11 +25,13 @@ content:
   dir: /tmp/caravan-flow-csharp/content
 
 sources:
-  file:
-    inputDir: /tmp/v3-in
-    pattern: "*"
-    pollIntervalMs: 1000
-    unpackV3: true       # default; sniffs magic header and unwraps if present
+  fileIngest:
+    type: GetFile
+    config:
+      inputDir: /tmp/v3-in
+      pattern: "*"
+      pollIntervalMs: 1000
+      unpackV3: true     # default; sniffs magic header and unwraps if present
 
   # HTTP ingest is now POST / on the management port — use
   # UnpackageFlowFileV3 in your flow if the POSTed body is V3-framed.

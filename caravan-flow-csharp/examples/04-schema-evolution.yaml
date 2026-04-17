@@ -21,9 +21,11 @@ content:
   dir: /tmp/caravan-flow-csharp/content
 
 sources:
-  file:
-    inputDir: /tmp/avro-v1-in
-    pattern: "*.avro"
+  fileIngest:
+    type: GetFile
+    config:
+      inputDir: /tmp/avro-v1-in
+      pattern: "*.avro"
 
 flow:
   processors:

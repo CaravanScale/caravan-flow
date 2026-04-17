@@ -124,36 +124,63 @@ fab.Status();
 // Create output directory
 Directory.CreateDirectory("/tmp/caravan-flow-csharp/output");
 
-// Config-driven sources
-var fileInputDir = GetConfigString(config, "sources.file.inputDir", "");
-if (!string.IsNullOrEmpty(fileInputDir))
-{
-    var pattern = GetConfigString(config, "sources.file.pattern", "*");
-    var pollMs = ConfigHelpers.ParseIntRaw(
-        GetConfigString(config, "sources.file.pollIntervalMs", "1000"),
-        "sources.file.pollIntervalMs");
-    var unpackV3 = GetConfigString(config, "sources.file.unpackV3", "true") != "false";
-    fab.AddSource(new GetFile("file-ingest", fileInputDir, pattern, pollMs, store, unpackV3));
-}
+// Config-driven sources — generic `sources:` shape:
+//   sources:
+//     <name>:
+//       type: GetFile|GenerateFlowFile|...
+//       config: { key: value, ... }
+// Each named entry becomes an IConnectorSource via the registry.
+// Multiple instances per type are allowed (e.g. two GetFile pollers
+// on different dirs). A factory returning null signals "not
+// configured" and is skipped without error.
+//
+// HTTP ingest is handled on the management port (POST /) below, not
+// as a source.
+var sourceRegistry = new SourceRegistry();
+BuiltinSources.RegisterAll(sourceRegistry);
 
-// HTTP ingest is now POST / on the management API (ApiHandler path
-// below) — same port as the dashboard and admin routes. The previous
-// ListenHTTP source running on its own port has been removed; one
-// canonical HTTP ingress per worker matches caravan-flow-java's shape.
-
-// GenerateFlowFile source — optional, for testing/heartbeats
-var genContent = GetConfigString(config, "sources.generate.content", "");
-if (!string.IsNullOrEmpty(genContent))
+var sourcesSection = CaravanFlow.Fabric.Fabric.AsStringDict(config.GetValueOrDefault("sources"));
+if (sourcesSection is not null)
 {
-    var genType = GetConfigString(config, "sources.generate.contentType", "");
-    var genAttrs = GetConfigString(config, "sources.generate.attributes", "");
-    var genBatch = ConfigHelpers.ParseIntRaw(
-        GetConfigString(config, "sources.generate.batchSize", "1"),
-        "sources.generate.batchSize");
-    var genPoll = ConfigHelpers.ParseIntRaw(
-        GetConfigString(config, "sources.generate.pollIntervalMs", "1000"),
-        "sources.generate.pollIntervalMs");
-    fab.AddSource(new GenerateFlowFile("generator", genPoll, genContent, genType, genAttrs, genBatch));
+    foreach (var (sourceName, sourceSpecObj) in sourcesSection)
+    {
+        var spec = CaravanFlow.Fabric.Fabric.AsStringDict(sourceSpecObj);
+        if (spec is null)
+        {
+            Console.Error.WriteLine($"source '{sourceName}': expected map, got {sourceSpecObj?.GetType().Name}");
+            continue;
+        }
+        var typeName = CaravanFlow.Fabric.Fabric.GetStr(spec, "type");
+        if (string.IsNullOrEmpty(typeName))
+        {
+            Console.Error.WriteLine($"source '{sourceName}': missing 'type' key");
+            continue;
+        }
+        if (!sourceRegistry.Has(typeName))
+        {
+            Console.Error.WriteLine($"source '{sourceName}': unknown type '{typeName}'");
+            continue;
+        }
+
+        var cfgMap = CaravanFlow.Fabric.Fabric.AsStringDict(spec.GetValueOrDefault("config"));
+        var cfgFlat = new Dictionary<string, string>();
+        if (cfgMap is not null)
+        {
+            foreach (var (k, v) in cfgMap)
+                cfgFlat[k] = v?.ToString() ?? "";
+        }
+
+        var source = sourceRegistry.Create(typeName, sourceName, cfgFlat, store);
+        if (source is not null)
+        {
+            fab.AddSource(source);
+            Console.WriteLine($"source {sourceName} ({typeName}) registered");
+        }
+        else
+        {
+            Console.WriteLine($"source {sourceName} ({typeName}) disabled by factory — skipping");
+        }
+    }
 }
 
 // Build ASP.NET Minimal API app

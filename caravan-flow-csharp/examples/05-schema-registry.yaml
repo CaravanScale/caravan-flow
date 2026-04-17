@@ -28,9 +28,11 @@ schemas:
     file: schemas/orders.avsc
 
 sources:
-  file:
-    inputDir: /tmp/avro-in
-    pattern: "*.avro"
+  fileIngest:
+    type: GetFile
+    config:
+      inputDir: /tmp/avro-in
+      pattern: "*.avro"
 
 flow:
   processors:

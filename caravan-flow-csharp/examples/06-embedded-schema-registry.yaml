@@ -52,9 +52,11 @@ schemas:
         {"name":"kind","type":"string"}]}
 
 sources:
-  file:
-    inputDir: /tmp/avro-in
-    pattern: "*.avro"
+  fileIngest:
+    type: GetFile
+    config:
+      inputDir: /tmp/avro-in
+      pattern: "*.avro"
 
 flow:
   processors:
