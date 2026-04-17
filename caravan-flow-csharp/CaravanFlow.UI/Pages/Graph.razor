@@ -23,50 +23,21 @@
     <p class="muted">loading…</p>
 </div>
 
-@if (_selectedNode is not null)
+@if (_selectedNode is not null && _selectedProcessor is not null)
 {
-    <aside class="drawer open">
-        <header>
-            <strong class="mono">@_selectedNode</strong>
-            <button class="drawer-close" @onclick="CloseDrawer" title="close">×</button>
-        </header>
-        <div class="drawer-body">
-            <p class="muted">Drawer is a stub — edit UI (Config / Connections tabs) lands in slice 3b.</p>
-            @if (_selectedProcessor is not null)
-            {
-                <dl class="kv">
-                    <dt>type</dt><dd class="mono">@_selectedProcessor.Value.GetProperty("type").GetString()</dd>
-                    <dt>state</dt><dd>@_selectedProcessor.Value.GetProperty("state").GetString()</dd>
-                </dl>
-                @if (_selectedProcessor.Value.TryGetProperty("config", out var cfg) && cfg.ValueKind == JsonValueKind.Object)
-                {
-                    <h3>config</h3>
-                    <dl class="kv">
-                    @foreach (var kv in cfg.EnumerateObject())
-                    {
-                        <dt class="mono">@kv.Name</dt><dd class="mono">@kv.Value.ToString()</dd>
-                    }
-                    </dl>
-                }
-            }
-        </div>
-    </aside>
+    <ProcessorDrawer Processor="_selectedProcessor"
+                     AllProcessorNames="_allNames"
+                     EntryPoints="_entryPointNames"
+                     OnClose="CloseDrawer"
+                     OnChanged="RefreshNow" />
 }
-
-@if (_selectedEdge is not null)
+else if (_selectedEdge is not null)
 {
-    <aside class="drawer open">
-        <header>
-            <strong class="mono">@_selectedEdge.Value.From → @_selectedEdge.Value.To</strong>
-            <button class="drawer-close" @onclick="CloseDrawer" title="close">×</button>
-        </header>
-        <div class="drawer-body">
-            <dl class="kv">
-                <dt>relationship</dt><dd class="mono">@_selectedEdge.Value.Rel</dd>
-            </dl>
-            <p class="muted">Remove/rewire buttons land in slice 3b.</p>
-        </div>
-    </aside>
+    <EdgeDrawer From="@_selectedEdge.Value.From"
+                Relationship="@_selectedEdge.Value.Rel"
+                To="@_selectedEdge.Value.To"
+                OnClose="CloseDrawer"
+                OnChanged="RefreshNow" />
 }
 
 @code {
@@ -90,6 +61,8 @@
     private string? _selectedNode;
     private JsonElement? _selectedProcessor;
     private EdgeSel? _selectedEdge;
+    private IReadOnlyList<string> _allNames = Array.Empty<string>();
+    private IReadOnlyList<string> _entryPointNames = Array.Empty<string>();
 
     private Timer? _topologyTimer;
     private Timer? _statsTimer;
@@ -170,14 +143,36 @@
         _entryPointCount = flow.TryGetProperty("entryPoints", out var ep) && ep.ValueKind == JsonValueKind.Array
             ? ep.GetArrayLength() : 0;
         _connectionCount = 0;
+        var names = new List<string>();
         if (flow.TryGetProperty("processors", out var ps) && ps.ValueKind == JsonValueKind.Array)
         {
             foreach (var proc in ps.EnumerateArray())
             {
+                if (proc.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String)
+                    names.Add(n.GetString()!);
                 if (!proc.TryGetProperty("connections", out var c) || c.ValueKind != JsonValueKind.Object) continue;
                 foreach (var rel in c.EnumerateObject())
                     if (rel.Value.ValueKind == JsonValueKind.Array) _connectionCount += rel.Value.GetArrayLength();
             }
+        }
+        _allNames = names;
+
+        var entries = new List<string>();
+        if (flow.TryGetProperty("entryPoints", out var eps) && eps.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var e in eps.EnumerateArray())
+                if (e.ValueKind == JsonValueKind.String) entries.Add(e.GetString()!);
+        }
+        _entryPointNames = entries;
+
+        // If a drawer is open for a processor that now exists in the new
+        // flow, refresh its Processor parameter so stats/state stay fresh.
+        // (ProcessorDrawer's dirty-lock prevents overwriting in-flight edits.)
+        if (_selectedNode is not null)
+        {
+            var p2 = FindProcessor(_selectedNode);
+            if (p2 is not null) _selectedProcessor = p2;
+            else CloseDrawer(); // processor was deleted out from under us
         }
     }
 
@@ -221,6 +216,15 @@
         _selectedNode = null;
         _selectedEdge = null;
         _selectedProcessor = null;
+    }
+
+    private async Task RefreshNow()
+    {
+        // Drawer-invoked after a successful mutation. Force an immediate
+        // topology refresh so the graph reflects the change without
+        // waiting on the 15 s timer.
+        await RefreshTopology();
+        await RefreshStats();
     }
 
     private JsonElement? FindProcessor(string name)
