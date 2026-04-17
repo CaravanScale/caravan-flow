@@ -1,4 +1,5 @@
 import type { ReactNode } from 'react'
+import { SaveButton } from '../components/SaveButton'
 
 type View = 'graph' | 'lineage' | 'provenance' | 'errors' | 'settings' | 'metrics'
 
@@ -19,8 +20,11 @@ interface Props {
 
 export function AppShell({ current, onNavigate, children }: Props) {
   return (
-    <div className="grid h-full" style={{ gridTemplateColumns: '200px 1fr' }}>
-      <aside style={{ background: 'var(--surface)', borderRight: '1px solid var(--border)' }}>
+    <div className="grid h-full" style={{ gridTemplateColumns: '200px 1fr', gridTemplateRows: '42px 1fr' }}>
+      <aside
+        className="row-span-2"
+        style={{ background: 'var(--surface)', borderRight: '1px solid var(--border)' }}
+      >
         <div
           className="px-4 py-3 text-[14px] font-semibold"
           style={{ color: 'var(--accent)', borderBottom: '1px solid var(--border)' }}
@@ -47,7 +51,13 @@ export function AppShell({ current, onNavigate, children }: Props) {
           })}
         </nav>
       </aside>
-      <main className="relative">{children}</main>
+      <header
+        className="flex items-center justify-end gap-3 px-4"
+        style={{ background: 'var(--surface)', borderBottom: '1px solid var(--border)' }}
+      >
+        <SaveButton />
+      </header>
+      <main className="relative overflow-hidden">{children}</main>
     </div>
   )
 }

@@ -13,6 +13,7 @@ import { api } from '../api/client'
 import { layoutFlow, type ProcessorNodeData, type RelEdgeData } from '../lib/layout'
 import { ProcessorNode } from '../components/ProcessorNode'
 import { RelationshipEdge } from '../components/RelationshipEdge'
+import { ProcessorDrawer } from '../components/ProcessorDrawer'
 import type { Processor } from '../api/types'
 
 const nodeTypes = { processor: ProcessorNode }
@@ -125,9 +126,11 @@ export function GraphPage() {
         )}
         {topology.isError && <p className="text-[11px] text-red-400">failed to load /api/flow</p>}
       </div>
-      {selectedProcessor && (
+      {selectedProcessor && topology.data && (
         <ProcessorDrawer
           processor={selectedProcessor}
+          allProcessorNames={topology.data.processors.map((p) => p.name)}
+          entryPoints={topology.data.entryPoints}
           onClose={() => setSelected(null)}
         />
       )}
@@ -135,83 +138,3 @@ export function GraphPage() {
   )
 }
 
-function ProcessorDrawer({ processor, onClose }: { processor: Processor; onClose: () => void }) {
-  return (
-    <aside
-      className="absolute right-0 top-0 z-20 flex h-full w-[400px] flex-col"
-      style={{ background: 'var(--surface)', borderLeft: '1px solid var(--border)' }}
-    >
-      <header
-        className="flex items-center justify-between px-4 py-3"
-        style={{ background: 'var(--surface-2)', borderBottom: '1px solid var(--border)' }}
-      >
-        <div>
-          <div className="font-semibold text-white">{processor.name}</div>
-          <div className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-            {processor.type} · {processor.state}
-          </div>
-        </div>
-        <button
-          onClick={onClose}
-          className="text-lg"
-          style={{ color: 'var(--text-muted)' }}
-          aria-label="close"
-        >
-          ×
-        </button>
-      </header>
-      <div className="flex-1 overflow-y-auto p-4">
-        <h3 className="mb-2 text-[11px] uppercase tracking-widest" style={{ color: 'var(--accent)' }}>
-          config
-        </h3>
-        {processor.config && Object.keys(processor.config).length > 0 ? (
-          <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1">
-            {Object.entries(processor.config).map(([k, v]) => (
-              <div key={k} className="contents">
-                <dt style={{ color: 'var(--text-muted)' }}>{k}</dt>
-                <dd className="break-all">{String(v ?? '')}</dd>
-              </div>
-            ))}
-          </dl>
-        ) : (
-          <p style={{ color: 'var(--text-muted)' }}>no config keys</p>
-        )}
-
-        <h3 className="mb-2 mt-6 text-[11px] uppercase tracking-widest" style={{ color: 'var(--accent)' }}>
-          outbound
-        </h3>
-        {processor.connections && Object.keys(processor.connections).length > 0 ? (
-          <ul className="space-y-1">
-            {Object.entries(processor.connections).flatMap(([rel, targets]) =>
-              targets.map((t) => (
-                <li key={`${rel}::${t}`}>
-                  <span style={{ color: 'var(--text-muted)' }}>{rel}</span>
-                  <span className="mx-2" style={{ color: 'var(--accent)' }}>
-                    →
-                  </span>
-                  {t}
-                </li>
-              )),
-            )}
-          </ul>
-        ) : (
-          <p style={{ color: 'var(--text-muted)' }}>no outbound connections</p>
-        )}
-
-        <h3 className="mb-2 mt-6 text-[11px] uppercase tracking-widest" style={{ color: 'var(--accent)' }}>
-          stats
-        </h3>
-        <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1">
-          <dt style={{ color: 'var(--text-muted)' }}>processed</dt>
-          <dd>{processor.stats?.processed ?? 0}</dd>
-          <dt style={{ color: 'var(--text-muted)' }}>errors</dt>
-          <dd>{processor.stats?.errors ?? 0}</dd>
-        </dl>
-
-        <p className="mt-6 text-[11px]" style={{ color: 'var(--text-muted)' }}>
-          edit drawer (inputs + save) lands in the next commit — this is the read-only MVP.
-        </p>
-      </div>
-    </aside>
-  )
-}
