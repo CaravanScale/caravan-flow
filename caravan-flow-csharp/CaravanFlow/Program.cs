@@ -213,10 +213,9 @@ if (sourcesSection is not null)
 }
 
 // Build ASP.NET Minimal API app.
-// ContentRoot is pinned to the directory that holds the endpoint
-// manifest + wwwroot so MapStaticAssets can resolve AssetFile paths
-// (which are relative to the manifest's emission directory) no matter
-// where the operator runs the binary from.
+// ContentRoot + WebRoot are pinned to the directory that holds
+// wwwroot/ so UseStaticFiles picks up the Vite-built React bundle no
+// matter where the operator runs the binary from.
 string? manifestRoot = null;
 foreach (var candidate in new[]
 {
@@ -226,8 +225,7 @@ foreach (var candidate in new[]
     Directory.GetCurrentDirectory(),
 })
 {
-    if (File.Exists(Path.Combine(candidate, "CaravanFlow.staticwebassets.endpoints.json")) &&
-        Directory.Exists(Path.Combine(candidate, "wwwroot")))
+    if (File.Exists(Path.Combine(candidate, "wwwroot", "index.html")))
     {
         manifestRoot = Path.GetFullPath(candidate);
         break;
@@ -272,16 +270,27 @@ app.UseCors();
 // at request time, and serves every asset (including the hashed
 // .wasm files) with correct Cache-Control + ETag + content-encoding
 // negotiation. Bundle lives at /; dashboard.html moves to /legacy.
-bool uiHosted = false;
-try
+// Vite-built React bundle in wwwroot/. Plain UseStaticFiles is all we
+// need — Vite emits hashed asset filenames, so cache headers can be
+// far-future on /assets/* and no-cache on index.html. MapStaticAssets
+// (Blazor's magic manifest endpoint) is deliberately NOT used here:
+// we hit a content-encoding negotiation bug on .NET 10 where .br/.gz
+// variants got served with the wrong Content-Encoding header.
+bool uiHosted = manifestRoot is not null && Directory.Exists(Path.Combine(manifestRoot, "wwwroot"));
+if (uiHosted)
 {
-    app.MapStaticAssets();
-    uiHosted = true;
-    Console.WriteLine("[ui] MapStaticAssets wired — WASM bundle hosted at /");
-}
-catch (Exception ex)
-{
-    Console.Error.WriteLine($"[ui] MapStaticAssets failed (bundle missing?): {ex.Message}");
+    app.UseStaticFiles(new Microsoft.AspNetCore.Builder.StaticFileOptions
+    {
+        OnPrepareResponse = ctx =>
+        {
+            var p = ctx.File.PhysicalPath ?? "";
+            if (p.Contains("/assets/") || p.Contains("\\assets\\"))
+                ctx.Context.Response.Headers["Cache-Control"] = "public, max-age=31536000, immutable";
+            else
+                ctx.Context.Response.Headers["Cache-Control"] = "no-cache";
+        }
+    });
+    Console.WriteLine($"[ui] hosting wwwroot/ from {Path.Combine(manifestRoot!, "wwwroot")}");
 }
 
 // Dashboard — kept on /legacy for one release as an escape hatch.
