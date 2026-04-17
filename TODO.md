@@ -242,6 +242,18 @@ Additional connectors, advanced features, developer tools.
 - [ ] TUI dashboard (terminal UI with live processor stats)
 - [ ] Web UI — flow graph visualization, drag-and-drop processor wiring
 - [ ] Provenance viewer — trace a FlowFile's path through the graph
+- [ ] **NiFi-style dynamic layout, per-user persistence** — currently
+      `caravan-flow-ui-web` forces dagre auto-layout (`nodesDraggable=false`)
+      because operators shouldn't spend time on cosmetic box-moving.
+      For complex graphs that reasoning benefits from stable spatial
+      memory, enable drag + persist positions **per-user** (localStorage
+      first, keyed by a flow identity hash; later a user-scoped server
+      endpoint like `PUT /api/users/me/layouts/{flowId}`). **Never**
+      write positions into `config.yaml` — the k8s-replica-consistency
+      story depends on `config.yaml` holding logical topology only.
+      See `memory/project_ui_layout_is_ephemeral.md` for the design
+      rule and render pipeline (topology → dagre seed → apply stored
+      overrides → React Flow).
 
 ---
 
