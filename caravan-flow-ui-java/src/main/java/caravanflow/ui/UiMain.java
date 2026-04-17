@@ -7,9 +7,11 @@ import io.pebbletemplates.pebble.loader.ClasspathLoader;
 import org.eclipse.jetty.util.thread.QueuedThreadPool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import caravanflow.shared.RouteNames;
 import caravanflow.ui.views.FlowController;
 import caravanflow.ui.views.LineageController;
 import caravanflow.ui.views.NodesController;
+import caravanflow.ui.views.RegistryController;
 import caravanflow.ui.views.SettingsController;
 
 import java.net.URI;
@@ -43,6 +45,7 @@ public final class UiMain {
 
     private final FleetService fleet;
     private final PebbleEngine pebble;
+    private final NodeRegistry registry = new NodeRegistry();
     private Javalin app;
     private volatile int boundPort = -1;
 
@@ -70,6 +73,7 @@ public final class UiMain {
         LineageController lineage = new LineageController(fleet, pebble);
         SettingsController settings = new SettingsController(fleet, pebble);
         NodesController nodes = new NodesController(fleet, pebble);
+        RegistryController ingress = new RegistryController(registry);
         app = Javalin.create(javalin -> {
                     QueuedThreadPool qtp = new QueuedThreadPool();
                     qtp.setName("caravan-flow-ui-jetty");
@@ -89,6 +93,13 @@ public final class UiMain {
                 .get(UiRoutes.LINEAGE_ONE_EVENTS, lineage::handleLineageDetailEvents)
                 .get(UiRoutes.SETTINGS,      settings::handleSettings)
                 .get(UiRoutes.NODES,         nodes::handleNodes)
+                // Ingress for worker self-registration — the worker's
+                // UIRegistrationProvider hits these paths. Both accept
+                // an identity payload; /heartbeat just refreshes the
+                // entry's timestamp.
+                .post(RouteNames.UI_REGISTER,  ingress::handleRegister)
+                .post(RouteNames.UI_HEARTBEAT, ingress::handleHeartbeat)
+                .get(RouteNames.UI_NODES,      ingress::handleList)
                 .start(port);
         boundPort = app.port();
         return this;
@@ -108,6 +119,8 @@ public final class UiMain {
     }
 
     public FleetService fleet() { return fleet; }
+
+    public NodeRegistry registry() { return registry; }
 
     // --- Handlers ---
 
