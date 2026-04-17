@@ -1,34 +1,37 @@
 import { useState } from 'react'
 import { AppShell, type View } from './layout/AppShell'
 import { GraphPage } from './pages/GraphPage'
-
-// First-commit shape: only the Graph view is real. Other views are
-// "coming soon" placeholders so the navigation renders and the app
-// compiles end-to-end. Each placeholder turns into its own file
-// (src/pages/*.tsx) as the slices land.
-
-function Placeholder({ label }: { label: string }) {
-  return (
-    <div className="p-6">
-      <h1 className="text-base font-semibold text-white">{label}</h1>
-      <p className="mt-2 text-[12px]" style={{ color: 'var(--text-muted)' }}>
-        landing in a follow-up slice — Graph view is the first commit of the React migration.
-      </p>
-    </div>
-  )
-}
+import { ErrorsPage } from './pages/ErrorsPage'
+import { ProvenancePage } from './pages/ProvenancePage'
+import { LineagePage } from './pages/LineagePage'
+import { MetricsPage } from './pages/MetricsPage'
+import { SettingsPage } from './pages/SettingsPage'
 
 export function App() {
   const [view, setView] = useState<View>('graph')
+  // Cross-view navigation: Provenance rows open Lineage focused on a
+  // specific FlowFile. Kept as top-level state so the Lineage page can
+  // hydrate its input + auto-load the ID on first render.
+  const [lineageFocus, setLineageFocus] = useState<string | null>(null)
+
+  const openLineage = (flowfile: string) => {
+    setLineageFocus(flowfile)
+    setView('lineage')
+  }
 
   return (
     <AppShell current={view} onNavigate={setView}>
       {view === 'graph' && <GraphPage />}
-      {view === 'lineage' && <Placeholder label="Lineage" />}
-      {view === 'provenance' && <Placeholder label="Provenance" />}
-      {view === 'errors' && <Placeholder label="Errors" />}
-      {view === 'settings' && <Placeholder label="Settings" />}
-      {view === 'metrics' && <Placeholder label="Metrics" />}
+      {view === 'lineage' && (
+        <LineagePage
+          initialId={lineageFocus}
+          onClearInitial={() => setLineageFocus(null)}
+        />
+      )}
+      {view === 'provenance' && <ProvenancePage onOpenLineage={openLineage} />}
+      {view === 'errors' && <ErrorsPage onOpenLineage={openLineage} />}
+      {view === 'settings' && <SettingsPage />}
+      {view === 'metrics' && <MetricsPage />}
     </AppShell>
   )
 }
