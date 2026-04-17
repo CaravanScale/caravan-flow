@@ -15,37 +15,37 @@ defaults:
   maxConcurrentExecutions: 100
 
 flow:
+  entryPoints: [tag-env]
+
   processors:
     tag-env:
       type: UpdateAttribute
       config:
         key: env
         value: dev
-      connections:
-        success:
-          - tag-source
 
     tag-source:
       type: UpdateAttribute
       config:
         key: source
         value: api
-      connections:
-        success:
-          - logger
 
     logger:
       type: LogAttribute
       config:
         prefix: flow
-      connections:
-        success:
-          - sink
 
     sink:
       type: PutFile
-      requires:
-        - content
+      requires: [content]
       config:
         outputDir: /tmp/caravan-flow-csharp/output
         namingAttribute: filename
+
+  connections:
+    tag-env:
+      success: [tag-source]
+    tag-source:
+      success: [logger]
+    logger:
+      success: [sink]

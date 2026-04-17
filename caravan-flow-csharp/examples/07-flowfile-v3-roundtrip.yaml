@@ -37,14 +37,13 @@ sources:
   # UnpackageFlowFileV3 in your flow if the POSTed body is V3-framed.
 
 flow:
-  processors:
+  entryPoints: [log]
 
+  processors:
     # Visibility: log everything that came in, including all attributes.
     log:
       type: LogAttribute
       config: { prefix: ingest }
-      connections:
-        success: [package]
 
     # Re-wrap (attributes + content) as a V3 binary blob.
     # The output FlowFile's CONTENT is now the V3-framed bytes;
@@ -52,8 +51,6 @@ flow:
     package:
       type: PackageFlowFileV3
       requires: [content]
-      connections:
-        success: [write]
 
     # Write the V3-framed bytes to disk. A peer caravan-flow / NiFi pointed at
     # this directory with a V3-aware reader will see every original attribute.
@@ -68,3 +65,9 @@ flow:
         # have NOT used PackageFlowFileV3 upstream — that variant wraps in the
         # sink itself. Either approach gets you a V3-framed file.
         # format: v3
+
+  connections:
+    log:
+      success: [package]
+    package:
+      success: [write]

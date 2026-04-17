@@ -7,7 +7,7 @@
 # Try it:
 #   ./build/CaravanFlow validate examples/02-json-pipeline.yaml
 #   cp examples/02-json-pipeline.yaml config.yaml && ./build/CaravanFlow
-#   curl -X POST http://localhost:9092/ \
+#   curl -X POST http://localhost:9091/ \
 #     -H 'Content-Type: application/json' \
 #     -d '[{"id":1,"amount":120,"qty":2,"region":"US"},
 #          {"id":2,"amount":40,"qty":1,"region":"EU"},
@@ -21,16 +21,14 @@ content:
   dir: /tmp/caravan-flow-csharp/content
 
 flow:
-  processors:
+  entryPoints: [parse]
 
+  processors:
     parse:
       type: ConvertJSONToRecord
       requires: [content]
       config:
         schemaName: orders
-      connections:
-        success: [filter]
-        failure: [errors]
 
     # Filter rows. QueryRecord supports =, !=, <, >, <=, >=, contains,
     # startsWith, endsWith. Field references support dotted paths.
@@ -38,8 +36,6 @@ flow:
       type: QueryRecord
       config:
         where: "amount > 100"
-      connections:
-        success: [transform]
 
     # The new compute: directive evaluates typed expressions against record
     # fields. Each step sees prior writes.
@@ -50,13 +46,9 @@ flow:
           compute:total:amount * qty;
           compute:tax:total * if(region == "US", 0.07, 0.15);
           compute:label:upper(region) + "-" + string(round(total + tax))
-      connections:
-        success: [encode]
 
     encode:
       type: ConvertRecordToJSON
-      connections:
-        success: [write]
 
     write:
       type: PutFile
@@ -70,3 +62,14 @@ flow:
       type: LogAttribute
       config:
         prefix: parse-error
+
+  connections:
+    parse:
+      success: [filter]
+      failure: [errors]
+    filter:
+      success: [transform]
+    transform:
+      success: [encode]
+    encode:
+      success: [write]

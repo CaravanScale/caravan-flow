@@ -26,16 +26,14 @@ sources:
       pollIntervalMs: 1000
 
 flow:
-  processors:
+  entryPoints: [parse]
 
+  processors:
     # OCF reader. With no readerSchema config, decodes using the writer
     # schema from the file header — supports null, deflate, zstandard codecs.
     parse:
       type: ConvertOCFToRecord
       requires: [content]
-      connections:
-        success: [transform]
-        failure: [errors]
 
     # Add a derived field. Original field types are preserved.
     transform:
@@ -44,8 +42,6 @@ flow:
         operations: >
           compute:processed_at:long(1234567890);
           compute:summary:concat("rec-", string(id))
-      connections:
-        success: [encode]
 
     # Write back as OCF with zstandard compression (most space-efficient codec).
     # Supported codecs: null, deflate, zstandard.
@@ -53,8 +49,6 @@ flow:
       type: ConvertRecordToOCF
       config:
         codec: zstandard
-      connections:
-        success: [write]
 
     write:
       type: PutFile
@@ -68,3 +62,12 @@ flow:
       type: LogAttribute
       config:
         prefix: avro-error
+
+  connections:
+    parse:
+      success: [transform]
+      failure: [errors]
+    transform:
+      success: [encode]
+    encode:
+      success: [write]

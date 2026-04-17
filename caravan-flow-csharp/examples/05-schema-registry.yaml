@@ -35,8 +35,9 @@ sources:
       pattern: "*.avro"
 
 flow:
-  processors:
+  entryPoints: [parse]
 
+  processors:
     parse:
       type: ConvertOCFToRecord
       requires: [content, schema_registry]
@@ -45,17 +46,12 @@ flow:
         # Pin to a specific version for reproducibility, or use "latest"
         # to always pick up the most-recently-registered version.
         readerSchemaVersion: latest
-      connections:
-        success: [filter]
-        failure: [errors]
 
     filter:
       type: QueryRecord
       config:
         # Nested-path predicates work too: e.g., "user.country = US"
         where: "amount > 100"
-      connections:
-        success: [transform]
 
     transform:
       type: TransformRecord
@@ -64,8 +60,6 @@ flow:
           compute:total:amount * qty;
           compute:tax:total * if(region == "US", 0.07, 0.15);
           compute:label:upper(region) + "-" + string(round(total + tax))
-      connections:
-        success: [encode]
 
     # Write back as zstd-compressed OCF. The output schema is whatever the
     # records carry — same as the registry-fetched reader schema, plus any
@@ -74,8 +68,6 @@ flow:
       type: ConvertRecordToOCF
       config:
         codec: zstandard
-      connections:
-        success: [write]
 
     write:
       type: PutFile
@@ -89,3 +81,14 @@ flow:
       type: LogAttribute
       config:
         prefix: registry-error
+
+  connections:
+    parse:
+      success: [filter]
+      failure: [errors]
+    filter:
+      success: [transform]
+    transform:
+      success: [encode]
+    encode:
+      success: [write]

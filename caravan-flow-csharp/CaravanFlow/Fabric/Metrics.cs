@@ -131,34 +131,54 @@ public static class ConfigValidator
             }
         }
 
-        // Check connections reference valid destinations
-        foreach (var (name, defObj) in procDefs)
+        // Check connections reference valid destinations. Canonical
+        // shape: sibling flow.connections. Legacy inlined shape is
+        // still parseable during test-fixture migration.
+        var flowConnections = Fabric.ParseFlowConnections(flowDict);
+        if (flowConnections.Count == 0)
         {
-            var def = Fabric.AsStringDict(defObj);
-            if (def is null) continue;
-            var connDefs = Fabric.AsStringDict(def.GetValueOrDefault("connections"));
-            if (connDefs is null) continue;
-            foreach (var (rel, destObj) in connDefs)
+            // Legacy: per-processor inlined connections
+            foreach (var (name, defObj) in procDefs)
             {
-                var dests = Fabric.GetStringList(connDefs, rel);
-                if (dests is null) continue;
+                var def = Fabric.AsStringDict(defObj);
+                if (def is null) continue;
+                var inline = Fabric.ParseInlineConnections(def);
+                if (inline.Count > 0) flowConnections[name] = inline;
+            }
+        }
+        foreach (var (from, rels) in flowConnections)
+        {
+            if (!procNames.Contains(from))
+                errors.Add(new($"flow.connections.{from}", $"source '{from}' is not a defined processor"));
+            foreach (var (rel, dests) in rels)
+            {
                 foreach (var dest in dests)
                 {
                     if (!procNames.Contains(dest))
-                        errors.Add(new($"flow.processors.{name}.connections.{rel}", $"target '{dest}' is not a defined processor"));
+                        errors.Add(new($"flow.connections.{from}.{rel}", $"target '{dest}' is not a defined processor"));
                 }
             }
         }
 
-        // DAG validation
-        var connections = new Dictionary<string, Dictionary<string, List<string>>>();
-        foreach (var (name, defObj) in procDefs)
+        // Validate explicit entryPoints: (if set). Names must refer to
+        // declared processors; empty list is allowed (DAG inference
+        // takes over at runtime).
+        var entryPoints = Fabric.GetStringList(flowDict, "entryPoints");
+        if (entryPoints is not null)
         {
-            var def = Fabric.AsStringDict(defObj);
-            if (def is null) continue;
-            var parsed = Fabric.ParseConnections(def);
-            connections[name] = parsed;
+            foreach (var ep in entryPoints)
+            {
+                if (!procNames.Contains(ep))
+                    errors.Add(new($"flow.entryPoints", $"'{ep}' is not a defined processor"));
+            }
         }
+
+        // DAG validation — pre-populate empty connection entries for
+        // every declared processor so the validator sees the full
+        // processor set.
+        var connections = new Dictionary<string, Dictionary<string, List<string>>>();
+        foreach (var procName in procNames)
+            connections[procName] = flowConnections.GetValueOrDefault(procName) ?? new();
         var dagResult = DagValidator.Validate(connections);
         foreach (var err in dagResult.Errors)
             errors.Add(new("flow.dag", err));

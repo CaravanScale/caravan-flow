@@ -117,10 +117,6 @@ public sealed class Fabric
                     foreach (var pn in requires)
                         _globalCtx.RegisterDependent(pn, name);
 
-                    // Connections
-                    var conns = ParseConnections(def);
-                    connections[name] = conns;
-
                     // Factory invocation — any ConfigException raised by the
                     // factory (missing key, unparseable value, unknown op)
                     // gets tagged with the processor name and collected.
@@ -148,6 +144,52 @@ public sealed class Fabric
             }
         }
 
+        // Read connections — canonical shape is sibling flow.connections:
+        // (matches caravan-flow-java's separated layout). If that block
+        // isn't present, fall back to per-processor connections: inlined
+        // in each processor's dict — the original C# shape. All example
+        // YAMLs + docs use the separated shape now; the inlined path
+        // stays to keep existing in-memory test fixtures working during
+        // migration and will be removed once tests are ported.
+        if (flowDict is not null)
+        {
+            var flowConns = ParseFlowConnections(flowDict);
+            if (flowConns.Count > 0)
+            {
+                foreach (var (from, _) in flowConns)
+                    if (!processors.ContainsKey(from))
+                        loadErrors.Add(new ConfigException(from, "connections source refers to unknown processor"));
+                foreach (var (_, rels) in flowConns)
+                    foreach (var (_, dests) in rels)
+                        foreach (var d in dests)
+                            if (!processors.ContainsKey(d) && !loadErrors.Any(e => e.Message.Contains(d)))
+                                loadErrors.Add(new ConfigException($"connection target '{d}' is not a defined processor"));
+                connections = flowConns;
+            }
+            else
+            {
+                // Legacy per-processor-inlined connections path.
+                var procDefsLegacy = AsStringDict(flowDict.GetValueOrDefault("processors"));
+                if (procDefsLegacy is not null)
+                {
+                    foreach (var (name, defObj) in procDefsLegacy)
+                    {
+                        var def = AsStringDict(defObj);
+                        if (def is null) continue;
+                        var inline = ParseInlineConnections(def);
+                        if (inline.Count > 0) connections[name] = inline;
+                    }
+                }
+            }
+        }
+
+        // Pre-populate empty-connection entries for every declared
+        // processor so DagValidator sees the full processor set (it
+        // derives its allProcessors from the connections map keys).
+        foreach (var name in processorNames)
+            if (!connections.ContainsKey(name))
+                connections[name] = new Dictionary<string, List<string>>();
+
         // DAG validation. Errors collected into the same aggregate so the
         // operator sees connection problems alongside processor-factory
         // problems in one report. Warnings keep going to stdout — they're
@@ -166,7 +208,31 @@ public sealed class Fabric
                 $"flow load failed with {loadErrors.Count} config error(s)",
                 loadErrors);
 
-        Console.WriteLine($"[fabric] entry points: [{string.Join(", ", dagResult.EntryPoints)}]");
+        // Explicit entryPoints override inferred. Flag divergence so
+        // operators catch the common "I thought X was an entry but it's
+        // targeted from Y" bug. Explicit wins at runtime — that's the
+        // whole point of declaring intent.
+        var explicitEntries = flowDict is not null ? GetStringList(flowDict, "entryPoints") : null;
+        var effectiveEntries = (explicitEntries is not null && explicitEntries.Count > 0)
+            ? explicitEntries
+            : dagResult.EntryPoints;
+
+        if (explicitEntries is not null && explicitEntries.Count > 0)
+        {
+            var inferredSet = new HashSet<string>(dagResult.EntryPoints);
+            var explicitSet = new HashSet<string>(explicitEntries);
+            if (!inferredSet.SetEquals(explicitSet))
+            {
+                var explicitOnly = explicitSet.Except(inferredSet).ToList();
+                var inferredOnly = inferredSet.Except(explicitSet).ToList();
+                if (explicitOnly.Count > 0)
+                    Console.WriteLine($"[fabric] entry-point warning: explicit-only [{string.Join(", ", explicitOnly)}] — these are declared entry points but also have inbound connections");
+                if (inferredOnly.Count > 0)
+                    Console.WriteLine($"[fabric] entry-point warning: inferred-only [{string.Join(", ", inferredOnly)}] — these have no inbound connections but aren't in entryPoints: (add them or connect them)");
+            }
+        }
+
+        Console.WriteLine($"[fabric] entry points: [{string.Join(", ", effectiveEntries)}]");
 
         // Initialize per-processor counters
         foreach (var name in processorNames)
@@ -176,7 +242,7 @@ public sealed class Fabric
         }
 
         // Build and swap graph
-        _graph = new PipelineGraph(processors, connections, dagResult.EntryPoints, processorNames, processorStates, processorDefs);
+        _graph = new PipelineGraph(processors, connections, effectiveEntries, processorNames, processorStates, processorDefs);
     }
 
     // --- Pipeline execution ---
@@ -589,9 +655,16 @@ public sealed class Fabric
         // Read new defaults
         if (TryGetConfig<int>(config, "defaults.maxHops", out var mh)) _maxHops = mh;
 
-        // Parse new processor defs from config
+        // Parse new processor defs from config. Connections live in the
+        // sibling flow.connections: block (canonical). Fall back to
+        // per-processor inlined connections when the sibling block is
+        // absent — transition compat for in-memory test fixtures.
         var newDefs = new Dictionary<string, (string Type, Dictionary<string, string> Config, List<string> Requires, Dictionary<string, List<string>> Connections)>();
         var flowDict = AsStringDict(config.GetValueOrDefault("flow"));
+        var flowConnsParsed = flowDict is not null
+            ? ParseFlowConnections(flowDict)
+            : new Dictionary<string, Dictionary<string, List<string>>>();
+        bool useFlowConnections = flowConnsParsed.Count > 0;
         if (flowDict is not null)
         {
             var procDefs = AsStringDict(flowDict.GetValueOrDefault("processors"));
@@ -609,7 +682,9 @@ public sealed class Fabric
                         foreach (var (k, v) in cfgDict)
                             procConfig[k] = v?.ToString() ?? "";
                     var requires = GetStringList(def, "requires") ?? [];
-                    var connections = ParseConnections(def);
+                    var connections = useFlowConnections
+                        ? flowConnsParsed.GetValueOrDefault(name) ?? new Dictionary<string, List<string>>()
+                        : ParseInlineConnections(def);
                     newDefs[name] = (typeName, procConfig, requires, connections);
                 }
             }
@@ -681,8 +756,14 @@ public sealed class Fabric
 
         var dagResult = DagValidator.Validate(newConnections);
 
+        // Explicit entryPoints override; fall back to DAG inference.
+        var reloadExplicitEntries = flowDict is not null ? GetStringList(flowDict, "entryPoints") : null;
+        var reloadEffectiveEntries = (reloadExplicitEntries is not null && reloadExplicitEntries.Count > 0)
+            ? reloadExplicitEntries
+            : dagResult.EntryPoints;
+
         // Atomic swap
-        _graph = new PipelineGraph(newProcessors, newConnections, dagResult.EntryPoints, newNames, newStates, newProcessorDefs);
+        _graph = new PipelineGraph(newProcessors, newConnections, reloadEffectiveEntries, newNames, newStates, newProcessorDefs);
 
         var total = added + removed + updated + connectionsChanged;
         if (total > 0)
@@ -722,7 +803,13 @@ public sealed class Fabric
         return new ScopedContext(scoped);
     }
 
-    internal static Dictionary<string, List<string>> ParseConnections(Dictionary<string, object?> def)
+    /// <summary>
+    /// Legacy per-processor inlined-connections parser. Reads the
+    /// <c>connections:</c> field directly off a single processor def.
+    /// Used only by the in-memory test-fixture compat path; user-facing
+    /// YAML uses the sibling <c>flow.connections:</c> block.
+    /// </summary>
+    internal static Dictionary<string, List<string>> ParseInlineConnections(Dictionary<string, object?> def)
     {
         var connections = new Dictionary<string, List<string>>();
         var connDefs = AsStringDict(def.GetValueOrDefault("connections"));
@@ -734,13 +821,48 @@ public sealed class Fabric
                 connections[rel] = dests;
             else
             {
-                // Handle single string value (not a list)
                 var single = GetStr(connDefs, rel);
                 if (!string.IsNullOrEmpty(single))
-                    connections[rel] = [single];
+                    connections[rel] = new List<string> { single };
             }
         }
         return connections;
+    }
+
+    /// <summary>
+    /// Parse the sibling <c>flow.connections:</c> block into a
+    /// {fromProcessor: {relationship: [targets]}} map. Entries are
+    /// absent when the processor has no outgoing connections — callers
+    /// that need a full map (one entry per defined processor) should
+    /// pre-populate empty-connection entries themselves (LoadFlow does
+    /// this before handing the map to DagValidator).
+    /// </summary>
+    internal static Dictionary<string, Dictionary<string, List<string>>> ParseFlowConnections(Dictionary<string, object?> flowDict)
+    {
+        var result = new Dictionary<string, Dictionary<string, List<string>>>();
+        var connsRaw = AsStringDict(flowDict.GetValueOrDefault("connections"));
+        if (connsRaw is null) return result;
+        foreach (var (fromProc, relObj) in connsRaw)
+        {
+            var rels = AsStringDict(relObj);
+            if (rels is null) continue;
+            var perRel = new Dictionary<string, List<string>>();
+            foreach (var (rel, _) in rels)
+            {
+                var dests = GetStringList(rels, rel);
+                if (dests is not null && dests.Count > 0)
+                    perRel[rel] = dests;
+                else
+                {
+                    var single = GetStr(rels, rel);
+                    if (!string.IsNullOrEmpty(single))
+                        perRel[rel] = new List<string> { single };
+                }
+            }
+            if (perRel.Count > 0)
+                result[fromProc] = perRel;
+        }
+        return result;
     }
 
     private static bool DictEqual(Dictionary<string, string> a, Dictionary<string, string> b)

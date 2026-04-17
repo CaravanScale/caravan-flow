@@ -59,8 +59,9 @@ sources:
       pattern: "*.avro"
 
 flow:
-  processors:
+  entryPoints: [parse]
 
+  processors:
     # Auto-capture writer schemas under the subject "discovered" as files arrive.
     # The registry will accumulate every distinct writer schema seen.
     parse:
@@ -68,16 +69,11 @@ flow:
       requires: [content, schema_registry]
       config:
         autoRegisterSubject: discovered
-      connections:
-        success: [encode]
-        failure: [errors]
 
     encode:
       type: ConvertRecordToOCF
       config:
         codec: zstandard
-      connections:
-        success: [write]
 
     write:
       type: PutFile
@@ -91,3 +87,10 @@ flow:
       type: LogAttribute
       config:
         prefix: capture-error
+
+  connections:
+    parse:
+      success: [encode]
+      failure: [errors]
+    encode:
+      success: [write]

@@ -28,8 +28,9 @@ sources:
       pattern: "*.avro"
 
 flow:
-  processors:
+  entryPoints: [parse-evolved]
 
+  processors:
     parse-evolved:
       type: ConvertOCFToRecord
       requires: [content]
@@ -48,16 +49,11 @@ flow:
               {"name": "email", "type": "string"}
             ]
           }
-      connections:
-        success: [encode]
-        failure: [errors]
 
     encode:
       type: ConvertRecordToOCF
       config:
         codec: deflate
-      connections:
-        success: [write]
 
     write:
       type: PutFile
@@ -71,3 +67,10 @@ flow:
       type: LogAttribute
       config:
         prefix: evolve-error
+
+  connections:
+    parse-evolved:
+      success: [encode]
+      failure: [errors]
+    encode:
+      success: [write]
