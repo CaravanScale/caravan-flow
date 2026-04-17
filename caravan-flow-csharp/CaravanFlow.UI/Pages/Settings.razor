@@ -41,13 +41,21 @@ else
         }
     </div>
 
-    <h2>Secrets editor</h2>
-    <p class="muted">writes <code>secrets.yaml</code> via <code>PUT /api/overlays/secrets</code>. base + local are edit-via-git only.</p>
-    <textarea class="yaml-edit" rows="12" @bind="_secretsYaml" placeholder="key: value"></textarea>
-    <div>
-        <button @onclick="SaveSecrets" disabled="@_saving">@(_saving ? "saving…" : "save secrets")</button>
-        @if (_saveStatus is not null) { <span class="muted">@_saveStatus</span> }
-    </div>
+    <h2>Secrets editor <span class="pill disabled">deprecated</span></h2>
+    <p class="error">
+        Secrets belong in environment variables, not on disk. This editor and
+        the underlying <code>secrets.yaml</code> overlay are scheduled for
+        removal — an env-var listing replaces them.
+    </p>
+    <details>
+        <summary class="muted">show legacy editor anyway</summary>
+        <p class="muted">writes <code>secrets.yaml</code> via <code>PUT /api/overlays/secrets</code>. base + local are edit-via-git only.</p>
+        <textarea class="yaml-edit" rows="8" @bind="_secretsYaml" placeholder="key: value"></textarea>
+        <div>
+            <button @onclick="SaveSecrets" disabled="@_saving">@(_saving ? "saving…" : "save secrets")</button>
+            @if (_saveStatus is not null) { <span class="muted">@_saveStatus</span> }
+        </div>
+    </details>
 }
 
 <h2>Version control</h2>

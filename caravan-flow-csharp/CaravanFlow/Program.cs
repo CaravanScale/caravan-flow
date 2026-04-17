@@ -212,10 +212,37 @@ if (sourcesSection is not null)
     }
 }
 
-// Build ASP.NET Minimal API app
-var builder = WebApplication.CreateBuilder(args);
+// Build ASP.NET Minimal API app.
+// ContentRoot is pinned to the directory that holds the endpoint
+// manifest + wwwroot so MapStaticAssets can resolve AssetFile paths
+// (which are relative to the manifest's emission directory) no matter
+// where the operator runs the binary from.
+string? manifestRoot = null;
+foreach (var candidate in new[]
+{
+    AppContext.BaseDirectory,
+    Path.Combine(AppContext.BaseDirectory, "..", "CaravanFlow"),
+    Path.Combine(Directory.GetCurrentDirectory(), "CaravanFlow"),
+    Directory.GetCurrentDirectory(),
+})
+{
+    if (File.Exists(Path.Combine(candidate, "CaravanFlow.staticwebassets.endpoints.json")) &&
+        Directory.Exists(Path.Combine(candidate, "wwwroot")))
+    {
+        manifestRoot = Path.GetFullPath(candidate);
+        break;
+    }
+}
+
+var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+{
+    Args = args,
+    ContentRootPath = manifestRoot ?? Directory.GetCurrentDirectory(),
+    WebRootPath = manifestRoot is not null ? Path.Combine(manifestRoot, "wwwroot") : null,
+});
 builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
+if (manifestRoot is not null) Console.WriteLine($"[ui] ContentRoot pinned to {manifestRoot}");
 
 // Use source-generated CaravanJsonContext for AOT-safe JSON (no reflection fallback).
 builder.Services.ConfigureHttpJsonOptions(options =>
@@ -238,67 +265,27 @@ builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
 var app = builder.Build();
 app.UseCors();
 
-// Blazor WASM bundle — CaravanFlow.UI publishes into wwwroot/, worker
-// mounts it at /ui/ so the legacy dashboard and POST / ingest keep
-// working. Client-side router uses path-based routing with
-// <base href="/ui/">; any unmatched /ui/* serves index.html so deep
-// links (/ui/lineage, /ui/settings) survive hard reloads.
-//
-// UseStaticFiles must be registered BEFORE the first Map* call — the
-// first Map auto-inserts UseRouting at the front of the pipeline, and
-// once UseRouting has matched an endpoint, UseStaticFiles skips the
-// request. Register file middleware first so physical assets win the
-// race against the /ui/{**path} SPA-fallback route below.
-string? uiRoot = null;
-foreach (var candidate in new[]
+// Blazor WASM bundle — CaravanFlow.UI's `dotnet publish` drops its
+// wwwroot/ into CaravanFlow/wwwroot/ (via build-ui.sh) and its
+// endpoint manifest into CaravanFlow/CaravanFlow.staticwebassets.endpoints.json.
+// MapStaticAssets reads the manifest, auto-generates dotnet.boot.js
+// at request time, and serves every asset (including the hashed
+// .wasm files) with correct Cache-Control + ETag + content-encoding
+// negotiation. Bundle lives at /; dashboard.html moves to /legacy.
+bool uiHosted = false;
+try
 {
-    Path.Combine(AppContext.BaseDirectory, "wwwroot"),
-    Path.Combine(AppContext.BaseDirectory, "..", "CaravanFlow", "wwwroot"),
-    Path.Combine(Directory.GetCurrentDirectory(), "CaravanFlow", "wwwroot"),
-    Path.Combine(Directory.GetCurrentDirectory(), "wwwroot"),
-})
-{
-    if (Directory.Exists(candidate) && File.Exists(Path.Combine(candidate, "index.html")))
-    { uiRoot = Path.GetFullPath(candidate); break; }
+    app.MapStaticAssets();
+    uiHosted = true;
+    Console.WriteLine("[ui] MapStaticAssets wired — WASM bundle hosted at /");
 }
-if (uiRoot is not null)
+catch (Exception ex)
 {
-    var uiIndex = File.ReadAllText(Path.Combine(uiRoot, "index.html"));
-    Console.WriteLine($"[ui] serving bundle from {uiRoot} (index {uiIndex.Length}B)");
-    var fileProvider = new Microsoft.Extensions.FileProviders.PhysicalFileProvider(uiRoot);
-
-    // Branch the pipeline at /ui — an isolated sub-app sidesteps the
-    // main pipeline's routing middleware, so StaticFiles gets to see
-    // every request under /ui before any endpoint matching happens.
-    // Assets fall through to a terminal handler that returns
-    // index.html for any remaining path (Blazor's client-side router
-    // takes it from there, so /ui/lineage etc. survive hard reloads).
-    app.Map("/ui", uiApp =>
-    {
-        uiApp.UseStaticFiles(new Microsoft.AspNetCore.Builder.StaticFileOptions
-        {
-            FileProvider = fileProvider,
-            RequestPath = "",
-            ServeUnknownFileTypes = true,
-            OnPrepareResponse = ctx =>
-            {
-                var p = ctx.File.PhysicalPath ?? "";
-                if (p.Contains("_framework"))
-                    ctx.Context.Response.Headers["Cache-Control"] = "public, max-age=31536000, immutable";
-                else
-                    ctx.Context.Response.Headers["Cache-Control"] = "no-cache";
-            }
-        });
-        uiApp.Run(async ctx =>
-        {
-            ctx.Response.ContentType = "text/html; charset=utf-8";
-            ctx.Response.Headers["Cache-Control"] = "no-cache";
-            await ctx.Response.WriteAsync(uiIndex);
-        });
-    });
+    Console.Error.WriteLine($"[ui] MapStaticAssets failed (bundle missing?): {ex.Message}");
 }
 
-// Dashboard — serve at /
+// Dashboard — kept on /legacy for one release as an escape hatch.
+// New UI lives at / via MapStaticAssets above.
 string? dashboardPath = null;
 foreach (var candidate in new[]
 {
@@ -313,7 +300,7 @@ foreach (var candidate in new[]
 if (dashboardPath is not null)
 {
     var dashHtml = File.ReadAllText(dashboardPath);
-    app.MapGet("/", () => Results.Content(dashHtml, "text/html"));
+    app.MapGet("/legacy", () => Results.Content(dashHtml, "text/html"));
 }
 
 // POST / — HTTP ingest on the management port. Body is the raw
@@ -399,6 +386,15 @@ lifetime.ApplicationStopping.Register(() =>
     globalCtx.ShutdownAll();
     Console.WriteLine("Shutdown complete");
 });
+
+// SPA fallback — any GET that wasn't matched above goes to index.html
+// so Blazor's client-side router handles /settings, /lineage, etc.
+// POST / (HTTP ingest) is unaffected because fallback only applies to
+// GET. Registered last so it doesn't shadow /api/* handlers.
+if (uiHosted)
+{
+    app.MapFallbackToFile("index.html");
+}
 
 app.Run();
 
