@@ -407,51 +407,47 @@ public sealed class ExtractRecordField : IProcessor
 }
 
 /// <summary>
-/// QueryRecord: filter records using a simple predicate expression.
-/// Config: where (format "field operator value").
-/// Operators: =, !=, &gt;, &lt;, &gt;=, &lt;=, contains, startsWith, endsWith.
+/// QueryRecord: filter records using a JsonPath query (RFC-9535).
+/// Backed by JsonCons.JsonPath over System.Text.Json — AOT-friendly,
+/// no reflection, ~200 KB of library overhead vs Newtonsoft's ~7 MB.
+///
+/// Config: query (JsonPath expression).
+///
+/// Examples:
+///   $[?(@.amount > 100)]                     — rows where amount exceeds 100
+///   $[?(@.priority == 'high')]               — rows with a specific string value
+///   $[?(@.address.country == 'US')]          — nested predicate
+///   $[?(@.qty >= 2 &amp;&amp; @.qty &lt;= 10)]           — compound filter
+///   $[*]                                      — match everything (trivial pass)
+///
+/// We mirror each incoming record into a System.Text.Json JsonElement
+/// wrapped in a root JSON array, ask JsonSelector for matching
+/// locations, then project those matches back to the original
+/// GenericRecord list by array index. Schema and original types are
+/// preserved — no re-materialization from JSON.
+///
+/// Mirrors caravan-flow-java's QueryRecord — both tracks accept the
+/// same JsonPath strings in YAML, so configs are portable.
 /// </summary>
 public sealed class QueryRecord : IProcessor
 {
-    private readonly string _field;
-    private readonly string _operator;
-    private readonly string _value;
+    private readonly string _query;
+    private readonly JsonCons.JsonPath.JsonSelector? _selector;
+    private readonly string? _parseError;
 
-    public QueryRecord(string where)
+    public QueryRecord(string query)
     {
-        _field = "";
-        _operator = "=";
-        _value = "";
-        if (string.IsNullOrWhiteSpace(where)) return;
-
-        // Parse "field operator value" — operator may be multi-char (>=, <=, !=, contains, startsWith, endsWith)
-        var trimmed = where.Trim();
-        var spaceIdx = trimmed.IndexOf(' ');
-        if (spaceIdx <= 0)
-            throw new ConfigException(
-                $"QueryRecord: malformed where clause '{where}' — expected 'field OP value' (e.g. 'age > 18')");
-        _field = trimmed[..spaceIdx];
-        var rest = trimmed[(spaceIdx + 1)..].TrimStart();
-
-        string[] multiOps = [">=", "<=", "!=", "contains", "startsWith", "endsWith"];
-        foreach (var op in multiOps)
+        _query = string.IsNullOrWhiteSpace(query) ? "$" : query.Trim();
+        try
         {
-            if (rest.StartsWith(op, StringComparison.OrdinalIgnoreCase) &&
-                (rest.Length == op.Length || rest[op.Length] == ' '))
-            {
-                _operator = op;
-                _value = rest.Length > op.Length ? rest[(op.Length + 1)..].Trim() : "";
-                return;
-            }
+            _selector = JsonCons.JsonPath.JsonSelector.Parse(_query);
+            _parseError = null;
         }
-        if (rest.Length > 0 && (rest[0] == '=' || rest[0] == '>' || rest[0] == '<'))
+        catch (Exception ex)
         {
-            _operator = rest[0].ToString();
-            _value = rest.Length > 1 ? rest[1..].Trim() : "";
-            return;
+            _selector = null;
+            _parseError = ex.Message;
         }
-        throw new ConfigException(
-            $"QueryRecord: unknown operator in '{where}' — valid: =, !=, >, <, >=, <=, contains, startsWith, endsWith");
     }
 
     public ProcessorResult Process(FlowFile ff)
@@ -459,46 +455,138 @@ public sealed class QueryRecord : IProcessor
         if (ff.Content is not RecordContent rc || rc.Records.Count == 0)
             return SingleResult.Rent(ff);
 
-        var filtered = new List<GenericRecord>();
-        foreach (var record in rc.Records)
+        if (_selector is null)
+            return FailureResult.Rent($"QueryRecord: bad JsonPath '{_query}' — {_parseError}", ff);
+
+        // Render the records as a top-level JSON array so a filter like
+        // $[?(@.x > 1)] matches against each record in turn. We serialize
+        // via System.Text.Json's Utf8JsonWriter (no reflection, AOT-safe)
+        // then parse back into a JsonDocument for the selector.
+        byte[] json;
+        try
         {
-            if (EvaluatePredicate(record))
-                filtered.Add(record);
+            using var stream = new MemoryStream();
+            using (var writer = new System.Text.Json.Utf8JsonWriter(stream))
+            {
+                writer.WriteStartArray();
+                foreach (var record in rc.Records)
+                    WriteValue(writer, record.ToDictionary());
+                writer.WriteEndArray();
+            }
+            json = stream.ToArray();
+        }
+        catch (Exception ex)
+        {
+            return FailureResult.Rent($"QueryRecord: serialize failed — {ex.Message}", ff);
         }
 
-        if (filtered.Count == 0)
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+
+        // JsonSelector.SelectPaths returns normalized paths to each
+        // matched location. For our top-level array root, first path
+        // segment is the array index — we strip it back out and use it
+        // to index rc.Records directly so original typed values + schema
+        // survive the round-trip untouched.
+        List<JsonCons.JsonPath.NormalizedPath> paths;
+        try
+        {
+            paths = _selector.SelectPaths(doc.RootElement).ToList();
+        }
+        catch (Exception ex)
+        {
+            return FailureResult.Rent($"QueryRecord: evaluate failed — {ex.Message}", ff);
+        }
+
+        var kept = new HashSet<int>();
+        foreach (var path in paths)
+        {
+            // First hop beyond root is the array index. JsonCons exposes
+            // each path component via enumeration; we take the first
+            // ArrayIndex-ish segment and use it as the record index.
+            int? idx = FirstArrayIndex(path);
+            if (idx is null) continue;
+            if (idx.Value >= 0 && idx.Value < rc.Records.Count) kept.Add(idx.Value);
+        }
+
+        if (kept.Count == 0)
             return DroppedResult.Instance;
+
+        var filtered = new List<GenericRecord>(kept.Count);
+        for (int i = 0; i < rc.Records.Count; i++)
+            if (kept.Contains(i)) filtered.Add(rc.Records[i]);
 
         var updated = FlowFile.WithContent(ff, new RecordContent(rc.Schema, filtered));
         return SingleResult.Rent(updated);
     }
 
-    private bool EvaluatePredicate(GenericRecord record)
+    private static int? FirstArrayIndex(JsonCons.JsonPath.NormalizedPath path)
     {
-        // Supports dotted paths (e.g., "address.country") via RecordHelpers.GetByPath.
-        var fieldVal = RecordHelpers.GetByPath(record, _field);
-        if (fieldVal is null) return false;
-        var fieldStr = fieldVal.ToString()!;
-
-        return _operator.ToLowerInvariant() switch
+        // NormalizedPath is enumerable over its NormalizedPathNode segments.
+        // First node is the root ($); the next Index-kind segment is our
+        // top-level array index (since records are mirrored as a root array).
+        foreach (var node in path)
         {
-            "=" => CompareValues(fieldStr, _value) == 0,
-            "!=" => CompareValues(fieldStr, _value) != 0,
-            ">" => CompareValues(fieldStr, _value) > 0,
-            "<" => CompareValues(fieldStr, _value) < 0,
-            ">=" => CompareValues(fieldStr, _value) >= 0,
-            "<=" => CompareValues(fieldStr, _value) <= 0,
-            "contains" => fieldStr.Contains(_value, StringComparison.Ordinal),
-            "startswith" => fieldStr.StartsWith(_value, StringComparison.Ordinal),
-            "endswith" => fieldStr.EndsWith(_value, StringComparison.Ordinal),
-            _ => false
-        };
+            if (node.ComponentKind == JsonCons.JsonPath.NormalizedPathNodeKind.Index)
+                return node.GetIndex();
+        }
+        return null;
     }
 
-    private static int CompareValues(string a, string b)
+    /// <summary>
+    /// Serialize a record value into a Utf8JsonWriter without touching
+    /// reflection. Handles nested GenericRecord (recurse into its
+    /// ToDictionary view), dictionaries, lists, and primitive scalars.
+    /// </summary>
+    private static void WriteValue(System.Text.Json.Utf8JsonWriter writer, object? value)
     {
-        if (double.TryParse(a, out var da) && double.TryParse(b, out var db))
-            return da.CompareTo(db);
-        return string.Compare(a, b, StringComparison.Ordinal);
+        switch (value)
+        {
+            case null:
+                writer.WriteNullValue();
+                break;
+            case GenericRecord gr:
+                WriteValue(writer, gr.ToDictionary());
+                break;
+            case Dictionary<string, object?> dict:
+                writer.WriteStartObject();
+                foreach (var (k, v) in dict)
+                {
+                    writer.WritePropertyName(k);
+                    WriteValue(writer, v);
+                }
+                writer.WriteEndObject();
+                break;
+            case IDictionary<string, object?> idict:
+                writer.WriteStartObject();
+                foreach (var (k, v) in idict)
+                {
+                    writer.WritePropertyName(k);
+                    WriteValue(writer, v);
+                }
+                writer.WriteEndObject();
+                break;
+            case List<object?> list:
+                writer.WriteStartArray();
+                foreach (var v in list) WriteValue(writer, v);
+                writer.WriteEndArray();
+                break;
+            case string s:    writer.WriteStringValue(s); break;
+            case bool b:      writer.WriteBooleanValue(b); break;
+            case int i:       writer.WriteNumberValue(i); break;
+            case long l:      writer.WriteNumberValue(l); break;
+            case float f:     writer.WriteNumberValue(f); break;
+            case double d:    writer.WriteNumberValue(d); break;
+            case decimal m:   writer.WriteNumberValue(m); break;
+            case byte[] bytes: writer.WriteBase64StringValue(bytes); break;
+            case System.Collections.IEnumerable enumerable:
+                writer.WriteStartArray();
+                foreach (var v in enumerable) WriteValue(writer, v);
+                writer.WriteEndArray();
+                break;
+            default:
+                writer.WriteStringValue(value.ToString());
+                break;
+        }
     }
+
 }

@@ -30,8 +30,12 @@ public static class ConfigErrorTests
         TestExtractRecordFieldMalformedSpec();
         TestAvroUnknownFieldType();
         TestAvroMalformedFieldDef();
-        TestQueryRecordMalformedWhere();
-        TestQueryRecordUnknownOperator();
+        // QueryRecord's old "where" parser (with positional 'field OP value'
+        // and custom operator set) is replaced by a JsonPath engine —
+        // invalid paths surface at Process() time as FailureResult, not at
+        // validate time. The old TestQueryRecordMalformedWhere +
+        // TestQueryRecordUnknownOperator cases no longer map to validator
+        // errors; runtime behavior is covered by the pipeline tests.
 
         // Tranche 3 — factory vocab + unwired warning
         TestTransformRecordUnknownOp();
@@ -163,22 +167,6 @@ public static class ConfigErrorTests
         var cfg = Flow(new() { ["a"] = Proc("ConvertAvroToRecord", new() { ["fields"] = "onlyfield" }) });
         var r = FlowValidator.Validate(cfg, Reg());
         AssertConfigError("avro malformed", r, "a", "malformed field def", "onlyfield");
-    }
-
-    static void TestQueryRecordMalformedWhere()
-    {
-        Console.WriteLine("--- QueryRecord: malformed where (no operator) ---");
-        var cfg = Flow(new() { ["q"] = Proc("QueryRecord", new() { ["where"] = "justfield" }) });
-        var r = FlowValidator.Validate(cfg, Reg());
-        AssertConfigError("query malformed", r, "q", "malformed where", "justfield");
-    }
-
-    static void TestQueryRecordUnknownOperator()
-    {
-        Console.WriteLine("--- QueryRecord: unknown operator ---");
-        var cfg = Flow(new() { ["q"] = Proc("QueryRecord", new() { ["where"] = "age WEIRD 5" }) });
-        var r = FlowValidator.Validate(cfg, Reg());
-        AssertConfigError("query unknown op", r, "q", "unknown operator");
     }
 
     // --- Tranche 3 ---

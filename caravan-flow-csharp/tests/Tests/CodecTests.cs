@@ -1008,7 +1008,7 @@ public static class CodecTests
         }
         var ff = FlowFile.CreateWithContent(new RecordContent(schema, records), new());
 
-        var q = new QueryRecord("user.country = US");
+        var q = new QueryRecord("$[?(@.user.country == 'US')]");
         var result = q.Process(ff);
         AssertTrue("query returned single result", result is SingleResult);
         var filtered = ((RecordContent)((SingleResult)result).FlowFile.Content).Records;

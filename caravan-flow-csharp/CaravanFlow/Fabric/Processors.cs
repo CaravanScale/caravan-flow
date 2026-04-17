@@ -218,8 +218,8 @@ public static class BuiltinProcessors
                 ConfigHelpers.ParseInt(config.GetValueOrDefault("recordIndex"), "recordIndex", 0)));
 
         reg.Register(
-            new ProcessorInfo("QueryRecord", "Filter records by predicate", ["where"]),
-            (ctx, config) => new QueryRecord(config.GetValueOrDefault("where", "")));
+            new ProcessorInfo("QueryRecord", "Filter records using a JsonPath query", ["query"]),
+            (ctx, config) => new QueryRecord(config.GetValueOrDefault("query", "$")));
 
         // --- Attribute filtering ---
 

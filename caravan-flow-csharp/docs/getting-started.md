@@ -110,7 +110,7 @@ flow:
 
     filter:
       type: QueryRecord
-      config: { where: "amount > 100" }
+      config: { query: "$[?(@.amount > 100)]" }
       connections: { success: [transform] }
 
     transform:

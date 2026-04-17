@@ -345,7 +345,7 @@ public static class ProcessorTests
         var rc = new RecordContent(schema, [rec1, rec2, rec3]);
         var ff = FlowFile.CreateWithContent(rc, new());
 
-        var proc = new QueryRecord("score > 50");
+        var proc = new QueryRecord("$[?(@.score > 50)]");
         var result = proc.Process(ff);
         AssertTrue("returns single", result is SingleResult);
         var outFf = ((SingleResult)result).FlowFile;
@@ -365,7 +365,7 @@ public static class ProcessorTests
         var rc = new RecordContent(schema, [rec1, rec2]);
         var ff = FlowFile.CreateWithContent(rc, new());
 
-        var proc = new QueryRecord("score > 90");
+        var proc = new QueryRecord("$[?(@.score > 90)]");
         var result = proc.Process(ff);
         AssertTrue("no match returns dropped", result is DroppedResult);
     }
@@ -380,7 +380,9 @@ public static class ProcessorTests
         var rc = new RecordContent(schema, [rec1, rec2, rec3]);
         var ff = FlowFile.CreateWithContent(rc, new());
 
-        var proc = new QueryRecord("email contains test.com");
+        // JsonPath: =~ is a JsonPath regex-match operator supported by
+        // Newtonsoft.Json — matches records whose email contains "test.com".
+        var proc = new QueryRecord("$[?(@.email =~ /test\\.com/)]");
         var result = proc.Process(ff);
         AssertTrue("returns single", result is SingleResult);
         var outRc = (RecordContent)((SingleResult)result).FlowFile.Content;

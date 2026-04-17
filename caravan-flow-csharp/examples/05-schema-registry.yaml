@@ -50,8 +50,8 @@ flow:
     filter:
       type: QueryRecord
       config:
-        # Nested-path predicates work too: e.g., "user.country = US"
-        where: "amount > 100"
+        # JsonPath filter — nested paths work: "$[?(@.user.country == 'US')]"
+        query: "$[?(@.amount > 100)]"
 
     transform:
       type: TransformRecord

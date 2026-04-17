@@ -213,7 +213,7 @@ public static class ValidatorTests
                 cfg: new() { ["schemaName"] = "orders" },
                 connections: new() { ["success"] = new() { "filter" }, ["failure"] = new() { "log" } }),
             ["filter"] = Proc("QueryRecord",
-                cfg: new() { ["where"] = "amount > 100" },
+                cfg: new() { ["query"] = "$[?(@.amount > 100)]" },
                 connections: new() { ["success"] = new() { "transform" } }),
             ["transform"] = Proc("TransformRecord",
                 cfg: new() { ["operations"] = "compute:total:amount * 1.1" },
