@@ -10,6 +10,14 @@
     const dataEl = document.getElementById("flow-data");
     if (!dataEl) return;
 
+    // cytoscape-dagre is a UMD bundle that ONLY self-exposes as
+    // window.cytoscapeDagre — it does not auto-register as a
+    // cytoscape extension. Without this the dagre layout silently
+    // no-ops and every node stacks at (0,0).
+    if (typeof cytoscape !== "undefined" && typeof cytoscapeDagre !== "undefined") {
+        cytoscape.use(cytoscapeDagre);
+    }
+
     let raw;
     try { raw = JSON.parse(dataEl.textContent); }
     catch (e) { console.error("flow-data parse failed", e); return; }
@@ -99,20 +107,46 @@
 
     cy.fit(null, 30);
 
+    async function openDrawer(name) {
+        const drawer = document.getElementById("flow-drawer");
+        const body = document.getElementById("flow-drawer-body");
+        drawer.classList.add("open");
+        drawer.setAttribute("aria-hidden", "false");
+        // Drawer shrinks #flow-graph via flex. Cytoscape caches canvas
+        // dimensions at init — without resize() its canvases keep their
+        // old width and overflow on top of the drawer, hiding it.
+        setTimeout(() => cy.resize().fit(null, 30), 220);
+        body.innerHTML = '<p class="drawer-loading">Loading…</p>';
+        try {
+            const resp = await fetch("/flow/panel/" + encodeURIComponent(name), { cache: "no-store" });
+            if (!resp.ok) throw new Error("HTTP " + resp.status);
+            body.innerHTML = await resp.text();
+            // The loaded panel carries hx-trigger="every 2s" on its
+            // root — we need to tell htmx to scan the new DOM so the
+            // auto-refresh kicks in.
+            if (typeof htmx !== "undefined" && htmx.process) htmx.process(body);
+        } catch (e) {
+            console.error("[flow] panel load failed", e);
+            body.innerHTML = '<p class="drawer-error">Panel load failed: ' + String(e) + '</p>';
+        }
+    }
+
+    function closeDrawer() {
+        const drawer = document.getElementById("flow-drawer");
+        drawer.classList.remove("open");
+        drawer.setAttribute("aria-hidden", "true");
+        document.getElementById("flow-drawer-body").innerHTML = "";
+        setTimeout(() => cy.resize().fit(null, 30), 220);
+    }
+
     cy.on("tap", "node", (evt) => {
         const name = evt.target.id();
-        const drawer = document.getElementById("flow-drawer");
-        drawer.classList.add("open");
-        htmx.ajax("GET", "/flow/panel/" + encodeURIComponent(name),
-                  { target: "#flow-drawer-body", swap: "innerHTML" });
+        console.log("[flow] node tapped:", name);
+        openDrawer(name);
     });
 
     cy.on("tap", (evt) => {
-        if (evt.target === cy) {
-            const drawer = document.getElementById("flow-drawer");
-            drawer.classList.remove("open");
-            document.getElementById("flow-drawer-body").innerHTML = "";
-        }
+        if (evt.target === cy) closeDrawer();
     });
 
     // Live stats refresh. Pulls just state + stats every 2s, patches
@@ -140,9 +174,6 @@
 
     // Close drawer on Escape.
     document.addEventListener("keydown", (e) => {
-        if (e.key === "Escape") {
-            document.getElementById("flow-drawer").classList.remove("open");
-            document.getElementById("flow-drawer-body").innerHTML = "";
-        }
+        if (e.key === "Escape") closeDrawer();
     });
 })();
