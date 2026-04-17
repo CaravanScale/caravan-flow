@@ -1,161 +1,244 @@
 @page "/"
 @inject FlowApiClient Api
+@inject IJSRuntime JS
 @implements IDisposable
 @using System.Text.Json
+@using Microsoft.JSInterop
 
 <PageTitle>caravan-flow — graph</PageTitle>
 
-<h1>Graph</h1>
+<div class="graph-header">
+    <h1>Graph</h1>
+    <p class="muted">
+        @_processorCount processors · @_connectionCount connections ·
+        @_entryPointCount entry points
+        @if (_lastRenderTick is not null)
+        { <text> · last layout @_lastRenderTick</text> }
+    </p>
+</div>
 
 @if (_error is not null) { <p class="error">Failed to load: @_error</p> }
-else if (_flow is null) { <p>loading…</p> }
-else
+
+<div id="graph-canvas" class="graph-canvas">
+    <p class="muted">loading…</p>
+</div>
+
+@if (_selectedNode is not null)
 {
-    <p class="muted">
-        @_processors.Count processors · @_connectionCount connections ·
-        @_entryPoints.Count entry points · polls every 2 s
-    </p>
-
-    @if (_processors.Count == 0)
-    {
-        <p class="error">No processors loaded. The worker probably booted without a config file — restart it from the <code>caravan-flow-csharp/</code> directory so it picks up <code>config.yaml</code>.</p>
-    }
-    else
-    {
-        <h2>Processors</h2>
-        <table class="kv">
-            <thead><tr><th>name</th><th>type</th><th>state</th><th>entry?</th><th>outbound</th></tr></thead>
-            <tbody>
-            @foreach (var p in _processors)
+    <aside class="drawer open">
+        <header>
+            <strong class="mono">@_selectedNode</strong>
+            <button class="drawer-close" @onclick="CloseDrawer" title="close">×</button>
+        </header>
+        <div class="drawer-body">
+            <p class="muted">Drawer is a stub — edit UI (Config / Connections tabs) lands in slice 3b.</p>
+            @if (_selectedProcessor is not null)
             {
-                <tr>
-                    <td class="mono">@p.Name</td>
-                    <td class="mono">@p.Type</td>
-                    <td>@p.State</td>
-                    <td>@(_entryPoints.Contains(p.Name) ? "yes" : "")</td>
-                    <td class="mono">@string.Join(" · ", p.Outbound)</td>
-                </tr>
-            }
-            </tbody>
-        </table>
-
-        <h2>Connections</h2>
-        @if (_connectionCount == 0) { <p class="muted">none</p> }
-        else
-        {
-            <table class="kv">
-                <thead><tr><th>from</th><th>relationship</th><th>to</th></tr></thead>
-                <tbody>
-                @foreach (var c in _edges)
+                <dl class="kv">
+                    <dt>type</dt><dd class="mono">@_selectedProcessor.Value.GetProperty("type").GetString()</dd>
+                    <dt>state</dt><dd>@_selectedProcessor.Value.GetProperty("state").GetString()</dd>
+                </dl>
+                @if (_selectedProcessor.Value.TryGetProperty("config", out var cfg) && cfg.ValueKind == JsonValueKind.Object)
                 {
-                    <tr>
-                        <td class="mono">@c.From</td>
-                        <td class="mono">@c.Rel</td>
-                        <td class="mono">@c.To</td>
-                    </tr>
+                    <h3>config</h3>
+                    <dl class="kv">
+                    @foreach (var kv in cfg.EnumerateObject())
+                    {
+                        <dt class="mono">@kv.Name</dt><dd class="mono">@kv.Value.ToString()</dd>
+                    }
+                    </dl>
                 }
-                </tbody>
-            </table>
-        }
-    }
+            }
+        </div>
+    </aside>
+}
 
-    <p class="muted">(dagre-based visual render + click-to-edit drawer land in the next commit; this table view is the stub.)</p>
+@if (_selectedEdge is not null)
+{
+    <aside class="drawer open">
+        <header>
+            <strong class="mono">@_selectedEdge.Value.From → @_selectedEdge.Value.To</strong>
+            <button class="drawer-close" @onclick="CloseDrawer" title="close">×</button>
+        </header>
+        <div class="drawer-body">
+            <dl class="kv">
+                <dt>relationship</dt><dd class="mono">@_selectedEdge.Value.Rel</dd>
+            </dl>
+            <p class="muted">Remove/rewire buttons land in slice 3b.</p>
+        </div>
+    </aside>
 }
 
 @code {
+    // Split-poll model:
+    //   topology (/api/flow)          — every 15 s, re-renders SVG only when the fingerprint changes
+    //   stats (/api/processor-stats)  — every 2 s, patches labels in place via caravanGraph.updateStats
+    //   RefreshNow()                  — called after every operator mutation for zero-latency reconciliation
+    //   visibility change             — both timers suspend while the tab is hidden
+
+    private const int TopologyPollMs = 15_000;
+    private const int StatsPollMs = 2_000;
+
     private JsonElement? _flow;
+    private string _lastTopologyHash = "";
     private string? _error;
-    private List<Proc> _processors = new();
-    private List<string> _entryPoints = new();
-    private List<Edge> _edges = new();
+    private int _processorCount;
     private int _connectionCount;
-    private Timer? _timer;
+    private int _entryPointCount;
+    private string? _lastRenderTick;
 
-    private sealed record Proc(string Name, string Type, string State, List<string> Outbound);
-    private sealed record Edge(string From, string Rel, string To);
+    private string? _selectedNode;
+    private JsonElement? _selectedProcessor;
+    private EdgeSel? _selectedEdge;
 
-    protected override async Task OnInitializedAsync()
+    private Timer? _topologyTimer;
+    private Timer? _statsTimer;
+    private DotNetObjectReference<Graph>? _selfRef;
+    private bool _jsReady;
+    private bool _paused;
+
+    private readonly record struct EdgeSel(string From, string Rel, string To);
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
     {
-        await Refresh();
-        _timer = new Timer(async _ => { await Refresh(); await InvokeAsync(StateHasChanged); },
-            null, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(2));
+        if (!firstRender) return;
+        _selfRef = DotNetObjectReference.Create(this);
+        _jsReady = true;
+
+        try { await JS.InvokeVoidAsync("caravanGraph.onVisibilityChange", _selfRef); }
+        catch (Exception ex) { Console.Error.WriteLine($"visibility wire failed: {ex.Message}"); }
+
+        await RefreshTopology();
+        _topologyTimer = new Timer(async _ => { if (!_paused) await RefreshTopology(); },
+            null, TopologyPollMs, TopologyPollMs);
+        _statsTimer = new Timer(async _ => { if (!_paused) await RefreshStats(); },
+            null, StatsPollMs, StatsPollMs);
     }
 
-    private async Task Refresh()
+    private async Task RefreshTopology()
     {
         try
         {
             var flow = await Api.GetFlowAsync();
             _flow = flow;
-            _processors = ParseProcessors(flow);
-            _entryPoints = flow.TryGetProperty("entryPoints", out var eps) && eps.ValueKind == JsonValueKind.Array
-                ? eps.EnumerateArray().Where(e => e.ValueKind == JsonValueKind.String).Select(e => e.GetString()!).ToList()
-                : new();
-            (_edges, _connectionCount) = ParseEdges(flow);
             _error = null;
+            UpdateCounts(flow);
+
+            var hash = await JS.InvokeAsync<string>("caravanGraph.hashTopology", flow);
+            if (hash != _lastTopologyHash)
+            {
+                _lastTopologyHash = hash;
+                _lastRenderTick = DateTime.Now.ToString("HH:mm:ss");
+                await JS.InvokeVoidAsync("caravanGraph.render", "graph-canvas", flow, _selfRef);
+                await InvokeAsync(StateHasChanged);
+            }
         }
-        catch (Exception ex) { _error = ex.Message; }
+        catch (Exception ex)
+        {
+            _error = ex.Message;
+            await InvokeAsync(StateHasChanged);
+        }
     }
 
-    private static List<Proc> ParseProcessors(JsonElement flow)
+    private async Task RefreshStats()
     {
-        var list = new List<Proc>();
-        if (!flow.TryGetProperty("processors", out var procs) || procs.ValueKind != JsonValueKind.Array) return list;
-        foreach (var p in procs.EnumerateArray())
+        try
         {
-            var name = p.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString()! : "";
-            var type = p.TryGetProperty("type", out var t) && t.ValueKind == JsonValueKind.String ? t.GetString()! : "";
-            var state = p.TryGetProperty("state", out var s) && s.ValueKind == JsonValueKind.String ? s.GetString()! : "";
-            var outbound = new List<string>();
-            if (p.TryGetProperty("connections", out var cx) && cx.ValueKind == JsonValueKind.Object)
+            var stats = await Api.GetProcessorStatsAsync();
+            // Normalize from {processors: {name: {processed, errors}, …}} or {name: {…}, …}
+            if (stats.ValueKind == JsonValueKind.Object &&
+                stats.TryGetProperty("processors", out var nested) &&
+                nested.ValueKind == JsonValueKind.Object)
             {
-                foreach (var rel in cx.EnumerateObject())
-                {
-                    if (rel.Value.ValueKind != JsonValueKind.Array) continue;
-                    foreach (var tgt in rel.Value.EnumerateArray())
-                        if (tgt.ValueKind == JsonValueKind.String) outbound.Add($"{rel.Name}→{tgt.GetString()}");
-                }
+                stats = nested;
             }
-            list.Add(new Proc(name, type, state, outbound));
+            if (stats.ValueKind == JsonValueKind.Object)
+            {
+                await JS.InvokeVoidAsync("caravanGraph.updateStats", stats);
+            }
         }
-        return list;
+        catch
+        {
+            // Silent — stats polling must not spam errors if the worker briefly hiccups.
+        }
     }
 
-    private static (List<Edge>, int) ParseEdges(JsonElement flow)
+    private void UpdateCounts(JsonElement flow)
     {
-        var edges = new List<Edge>();
-        // Top-level "connections": { from: { rel: [to,…] } } is the separated shape.
-        if (flow.TryGetProperty("connections", out var cs) && cs.ValueKind == JsonValueKind.Object)
-        {
-            foreach (var from in cs.EnumerateObject())
-            {
-                if (from.Value.ValueKind != JsonValueKind.Object) continue;
-                foreach (var rel in from.Value.EnumerateObject())
-                {
-                    if (rel.Value.ValueKind != JsonValueKind.Array) continue;
-                    foreach (var to in rel.Value.EnumerateArray())
-                        if (to.ValueKind == JsonValueKind.String) edges.Add(new Edge(from.Name, rel.Name, to.GetString()!));
-                }
-            }
-            return (edges, edges.Count);
-        }
-        // Fallback: read per-processor inlined connections (older shape).
+        _processorCount = flow.TryGetProperty("processors", out var p) && p.ValueKind == JsonValueKind.Array
+            ? p.GetArrayLength() : 0;
+        _entryPointCount = flow.TryGetProperty("entryPoints", out var ep) && ep.ValueKind == JsonValueKind.Array
+            ? ep.GetArrayLength() : 0;
+        _connectionCount = 0;
         if (flow.TryGetProperty("processors", out var ps) && ps.ValueKind == JsonValueKind.Array)
         {
-            foreach (var p in ps.EnumerateArray())
+            foreach (var proc in ps.EnumerateArray())
             {
-                var name = p.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
-                if (!p.TryGetProperty("connections", out var px) || px.ValueKind != JsonValueKind.Object) continue;
-                foreach (var rel in px.EnumerateObject())
-                {
-                    if (rel.Value.ValueKind != JsonValueKind.Array) continue;
-                    foreach (var to in rel.Value.EnumerateArray())
-                        if (to.ValueKind == JsonValueKind.String) edges.Add(new Edge(name, rel.Name, to.GetString()!));
-                }
+                if (!proc.TryGetProperty("connections", out var c) || c.ValueKind != JsonValueKind.Object) continue;
+                foreach (var rel in c.EnumerateObject())
+                    if (rel.Value.ValueKind == JsonValueKind.Array) _connectionCount += rel.Value.GetArrayLength();
             }
         }
-        return (edges, edges.Count);
     }
 
-    public void Dispose() => _timer?.Dispose();
+    [JSInvokable]
+    public Task OnNodeClick(string name)
+    {
+        _selectedNode = name;
+        _selectedEdge = null;
+        _selectedProcessor = FindProcessor(name);
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    [JSInvokable]
+    public Task OnEdgeClick(string from, string rel, string to)
+    {
+        _selectedEdge = new EdgeSel(from, rel, to);
+        _selectedNode = null;
+        _selectedProcessor = null;
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    [JSInvokable]
+    public Task OnCanvasClick()
+    {
+        CloseDrawer();
+        StateHasChanged();
+        return Task.CompletedTask;
+    }
+
+    [JSInvokable]
+    public Task OnVisibilityChange(string state)
+    {
+        _paused = state == "hidden";
+        return Task.CompletedTask;
+    }
+
+    private void CloseDrawer()
+    {
+        _selectedNode = null;
+        _selectedEdge = null;
+        _selectedProcessor = null;
+    }
+
+    private JsonElement? FindProcessor(string name)
+    {
+        if (_flow is null) return null;
+        if (!_flow.Value.TryGetProperty("processors", out var ps) || ps.ValueKind != JsonValueKind.Array) return null;
+        foreach (var p in ps.EnumerateArray())
+        {
+            if (p.TryGetProperty("name", out var n) && n.ValueKind == JsonValueKind.String && n.GetString() == name)
+                return p;
+        }
+        return null;
+    }
+
+    public void Dispose()
+    {
+        _topologyTimer?.Dispose();
+        _statsTimer?.Dispose();
+        _selfRef?.Dispose();
+    }
 }

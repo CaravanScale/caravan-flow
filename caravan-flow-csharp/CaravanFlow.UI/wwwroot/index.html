@@ -6,6 +6,10 @@
     <title>caravan-flow</title>
     <base href="/" />
     <link rel="stylesheet" href="css/app.css" />
+    <!-- Dagre is loaded before blazor.webassembly.js so window.dagre
+         is ready by the time Graph.razor's JSInterop fires. -->
+    <script src="js/dagre.min.js"></script>
+    <script src="js/graph.js"></script>
 </head>
 <body>
     <div id="app">
