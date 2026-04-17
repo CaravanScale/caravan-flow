@@ -223,10 +223,80 @@ builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.TypeInfoResolverChain.Insert(0, CaravanFlow.Core.CaravanJsonContext.Default);
 });
 
+// Permissive CORS — the Blazor WASM UI runs on its own dev-server
+// port during development, and AllowAnyOrigin lets the bundle call
+// the management API from that separate origin. Production deployments
+// can narrow this down when the UI ships co-located with the worker.
+builder.Services.AddCors(cors =>
+{
+    cors.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod());
+});
+
 var port = GetConfigString(config, "server.port", "9091");
 builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
 
 var app = builder.Build();
+app.UseCors();
+
+// Blazor WASM bundle — CaravanFlow.UI publishes into wwwroot/, worker
+// mounts it at /ui/ so the legacy dashboard and POST / ingest keep
+// working. Client-side router uses path-based routing with
+// <base href="/ui/">; any unmatched /ui/* serves index.html so deep
+// links (/ui/lineage, /ui/settings) survive hard reloads.
+//
+// UseStaticFiles must be registered BEFORE the first Map* call — the
+// first Map auto-inserts UseRouting at the front of the pipeline, and
+// once UseRouting has matched an endpoint, UseStaticFiles skips the
+// request. Register file middleware first so physical assets win the
+// race against the /ui/{**path} SPA-fallback route below.
+string? uiRoot = null;
+foreach (var candidate in new[]
+{
+    Path.Combine(AppContext.BaseDirectory, "wwwroot"),
+    Path.Combine(AppContext.BaseDirectory, "..", "CaravanFlow", "wwwroot"),
+    Path.Combine(Directory.GetCurrentDirectory(), "CaravanFlow", "wwwroot"),
+    Path.Combine(Directory.GetCurrentDirectory(), "wwwroot"),
+})
+{
+    if (Directory.Exists(candidate) && File.Exists(Path.Combine(candidate, "index.html")))
+    { uiRoot = Path.GetFullPath(candidate); break; }
+}
+if (uiRoot is not null)
+{
+    var uiIndex = File.ReadAllText(Path.Combine(uiRoot, "index.html"));
+    Console.WriteLine($"[ui] serving bundle from {uiRoot} (index {uiIndex.Length}B)");
+    var fileProvider = new Microsoft.Extensions.FileProviders.PhysicalFileProvider(uiRoot);
+
+    // Branch the pipeline at /ui — an isolated sub-app sidesteps the
+    // main pipeline's routing middleware, so StaticFiles gets to see
+    // every request under /ui before any endpoint matching happens.
+    // Assets fall through to a terminal handler that returns
+    // index.html for any remaining path (Blazor's client-side router
+    // takes it from there, so /ui/lineage etc. survive hard reloads).
+    app.Map("/ui", uiApp =>
+    {
+        uiApp.UseStaticFiles(new Microsoft.AspNetCore.Builder.StaticFileOptions
+        {
+            FileProvider = fileProvider,
+            RequestPath = "",
+            ServeUnknownFileTypes = true,
+            OnPrepareResponse = ctx =>
+            {
+                var p = ctx.File.PhysicalPath ?? "";
+                if (p.Contains("_framework"))
+                    ctx.Context.Response.Headers["Cache-Control"] = "public, max-age=31536000, immutable";
+                else
+                    ctx.Context.Response.Headers["Cache-Control"] = "no-cache";
+            }
+        });
+        uiApp.Run(async ctx =>
+        {
+            ctx.Response.ContentType = "text/html; charset=utf-8";
+            ctx.Response.Headers["Cache-Control"] = "no-cache";
+            await ctx.Response.WriteAsync(uiIndex);
+        });
+    });
+}
 
 // Dashboard — serve at /
 string? dashboardPath = null;

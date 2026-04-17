@@ -12,9 +12,20 @@
       runs in the browser. AOT inflates .wasm size ~2x in exchange for
       ~5x runtime performance — fine for an internal-ops UI.
     -->
-    <RunAOTCompilation>true</RunAOTCompilation>
+    <RunAOTCompilation Condition="'$(EnableWasmAot)' == 'true'">true</RunAOTCompilation>
     <BlazorEnableCompression>true</BlazorEnableCompression>
     <InvariantGlobalization>true</InvariantGlobalization>
+
+    <!--
+      Disable the .NET 10 static-web-assets fingerprinting and endpoint
+      manifest so the worker can serve the bundle with a plain static
+      file middleware (no MapStaticAssets required). This trades the
+      far-future Cache-Control hashing for a much simpler server-side
+      hosting contract — acceptable for an internal ops UI shipped as
+      a sibling bundle to the AOT worker binary.
+    -->
+    <WasmFingerprintAssets>false</WasmFingerprintAssets>
+    <WasmFingerprintDotnetJs>false</WasmFingerprintDotnetJs>
   </PropertyGroup>
 
   <ItemGroup>
