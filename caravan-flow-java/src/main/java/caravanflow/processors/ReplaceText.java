@@ -12,15 +12,27 @@ import java.util.regex.Pattern;
 /// Regex search-and-replace on the FlowFile's text payload. The match
 /// pattern is treated as a Java regex; the replacement supports back
 /// references like {@code $1} per {@link java.util.regex.Matcher#replaceAll}.
+///
+/// Config mirrors caravan-flow-csharp's {@code ReplaceText}
+/// (StdLib/TextProcessors.cs:11-40):
+///   pattern     — required regex
+///   replacement — default ""
+///   mode        — "all" (default) or "first"
 public final class ReplaceText implements Processor {
 
     private final Pattern pattern;
     private final String replacement;
+    private final boolean firstOnly;
 
-    public ReplaceText(String regex, String replacement) {
-        if (regex == null) throw new IllegalArgumentException("ReplaceText: regex must not be null");
-        this.pattern = Pattern.compile(regex);
+    public ReplaceText(String pattern, String replacement) {
+        this(pattern, replacement, "all");
+    }
+
+    public ReplaceText(String pattern, String replacement, String mode) {
+        if (pattern == null) throw new IllegalArgumentException("ReplaceText: pattern must not be null");
+        this.pattern = Pattern.compile(pattern);
         this.replacement = replacement == null ? "" : replacement;
+        this.firstOnly = "first".equalsIgnoreCase(mode);
     }
 
     @Override
@@ -31,7 +43,8 @@ public final class ReplaceText implements Processor {
                     "ReplaceText: expected RawContent, got " + content.getClass().getSimpleName(), ff);
         }
         String input = new String(raw.bytes(), StandardCharsets.UTF_8);
-        String output = pattern.matcher(input).replaceAll(replacement);
+        var matcher = pattern.matcher(input);
+        String output = firstOnly ? matcher.replaceFirst(replacement) : matcher.replaceAll(replacement);
         return ProcessorResult.single(ff.withContent(new RawContent(output.getBytes(StandardCharsets.UTF_8))));
     }
 }

@@ -10,14 +10,23 @@ import caravanflow.core.Processor;
 import caravanflow.core.ProcessorResult;
 import caravanflow.core.RecordContent;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/// Evaluates an Apache Commons JEXL 3 expression against the FlowFile's
-/// attributes (and the first record, when the payload is RecordContent).
-/// Stores the string form of the result in the {@code targetAttribute}.
+/// Evaluates one or more Apache Commons JEXL 3 expressions against the
+/// FlowFile's attributes (and the first record, when the payload is
+/// RecordContent). Each expression produces a FlowFile attribute named
+/// by the entry's target.
 ///
-/// Variables visible in the expression:
+/// Mirrors caravan-flow-csharp's {@code EvaluateExpression} shape
+/// (StdLib/ExpressionProcessors.cs:23) — multi-output, target→expression.
+/// The expression ENGINE differs: Java uses JEXL (full arithmetic,
+/// booleans, ternary, lambdas); C# uses a string-template DSL with a
+/// fixed function set. Configs are therefore not yet interoperable;
+/// C# is slated to gain arithmetic + booleans in the post-Java cohort.
+///
+/// Variables visible in each expression:
 /// <ul>
 ///   <li>{@code attributes} — {@code Map<String,String>} of FlowFile attributes
 ///   <li>{@code record}     — first record as a {@code Map<String,Object>}
@@ -28,10 +37,6 @@ import java.util.Map;
 ///                             {@code contentSize} not {@code size} to avoid
 ///                             JEXL's reserved {@code size} operator.
 /// </ul>
-///
-/// JEXL gives us arithmetic, string ops, booleans, ternary, null-safe
-/// access, and lambdas — a production-grade expression surface without
-/// a hand-rolled parser.
 public final class EvaluateExpression implements Processor {
 
     private static final JexlEngine ENGINE = new JexlBuilder()
@@ -40,23 +45,32 @@ public final class EvaluateExpression implements Processor {
             .silent(false) // Still surface syntax errors.
             .create();
 
-    private final JexlExpression expression;
-    private final String targetAttribute;
+    private final Map<String, JexlExpression> expressions;
 
-    public EvaluateExpression(String expressionSource, String targetAttribute) {
-        if (expressionSource == null || expressionSource.isEmpty()) {
-            throw new IllegalArgumentException("EvaluateExpression: expression must not be blank");
-        }
-        if (targetAttribute == null || targetAttribute.isEmpty()) {
-            throw new IllegalArgumentException("EvaluateExpression: targetAttribute must not be blank");
-        }
-        try {
-            this.expression = ENGINE.createExpression(expressionSource);
-        } catch (JexlException ex) {
+    public EvaluateExpression(Map<String, String> expressionsByTarget) {
+        if (expressionsByTarget == null || expressionsByTarget.isEmpty()) {
             throw new IllegalArgumentException(
-                    "EvaluateExpression: invalid JEXL — " + ex.getMessage(), ex);
+                    "EvaluateExpression: expressions map must have at least one target=expression entry");
         }
-        this.targetAttribute = targetAttribute;
+        Map<String, JexlExpression> compiled = new LinkedHashMap<>();
+        for (var entry : expressionsByTarget.entrySet()) {
+            String target = entry.getKey();
+            String source = entry.getValue();
+            if (target == null || target.isBlank()) {
+                throw new IllegalArgumentException("EvaluateExpression: target attribute must not be blank");
+            }
+            if (source == null || source.isBlank()) {
+                throw new IllegalArgumentException(
+                        "EvaluateExpression: expression for '" + target + "' must not be blank");
+            }
+            try {
+                compiled.put(target, ENGINE.createExpression(source));
+            } catch (JexlException ex) {
+                throw new IllegalArgumentException(
+                        "EvaluateExpression: invalid JEXL for '" + target + "' — " + ex.getMessage(), ex);
+            }
+        }
+        this.expressions = Map.copyOf(compiled);
     }
 
     @Override
@@ -73,13 +87,17 @@ public final class EvaluateExpression implements Processor {
             ctx.set("records", List.of());
             ctx.set("record", null);
         }
-        try {
-            Object value = expression.evaluate(ctx);
-            String asString = value == null ? "" : String.valueOf(value);
-            return ProcessorResult.single(ff.withAttribute(targetAttribute, asString));
-        } catch (JexlException ex) {
-            return ProcessorResult.failure(
-                    "EvaluateExpression: evaluation failed — " + ex.getMessage(), ff);
+        FlowFile result = ff;
+        for (var entry : expressions.entrySet()) {
+            try {
+                Object value = entry.getValue().evaluate(ctx);
+                String asString = value == null ? "" : String.valueOf(value);
+                result = result.withAttribute(entry.getKey(), asString);
+            } catch (JexlException ex) {
+                return ProcessorResult.failure(
+                        "EvaluateExpression: evaluation failed for '" + entry.getKey() + "' — " + ex.getMessage(), ff);
+            }
         }
+        return ProcessorResult.single(result);
     }
 }

@@ -10,6 +10,7 @@ import caravanflow.core.Processor;
 import caravanflow.core.ProcessorResult;
 import caravanflow.core.RawContent;
 import caravanflow.core.RecordContent;
+import caravanflow.core.SchemaDefs;
 
 import java.io.ByteArrayInputStream;
 import java.io.EOFException;
@@ -18,18 +19,26 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
-/// Avro binary → {@link RecordContent}. Reads records until the decoder
-/// hits EOF, so payloads with concatenated records work — useful for
-/// pipelines that fan-in from multiple producers.
+/// Avro binary → {@link RecordContent}. Mirrors caravan-flow-csharp's
+/// {@code ConvertAvroToRecord} (StdLib/RecordProcessors.cs:11-84).
+///
+/// Config:
+///   schemaName — record name label for the parsed schema (optional)
+///   fields     — compact Avro field defs: {@code "name:type,name:type"}
+///                (see {@link SchemaDefs} for supported types)
+///
+/// When {@code fields} is omitted, the processor falls back to the
+/// {@code avro.schema} FlowFile attribute (same compact format). When
+/// neither produces a schema, ingestion fails with a clear message —
+/// Avro binary is self-describing only when paired with a schema.
 public final class ConvertAvroToRecord implements Processor {
 
-    private final Schema schema;
+    private final String schemaName;
+    private final Schema configSchema;
 
-    public ConvertAvroToRecord(String schemaJson) {
-        if (schemaJson == null || schemaJson.isEmpty()) {
-            throw new IllegalArgumentException("ConvertAvroToRecord: schema must not be blank");
-        }
-        this.schema = new Schema.Parser().parse(schemaJson);
+    public ConvertAvroToRecord(String schemaName, String fieldDefs) {
+        this.schemaName = schemaName == null ? "" : schemaName;
+        this.configSchema = SchemaDefs.parse(this.schemaName, fieldDefs);
     }
 
     @Override
@@ -38,6 +47,19 @@ public final class ConvertAvroToRecord implements Processor {
             return ProcessorResult.failure(
                     "ConvertAvroToRecord: expected RawContent, got " + ff.content().getClass().getSimpleName(), ff);
         }
+
+        Schema schema = configSchema;
+        if (schema == null) {
+            String attrFields = ff.attributes().get("avro.schema");
+            if (attrFields != null && !attrFields.isBlank()) {
+                schema = SchemaDefs.parse(schemaName, attrFields);
+            }
+        }
+        if (schema == null || schema.getFields().isEmpty()) {
+            return ProcessorResult.failure(
+                    "no schema: set 'fields' config or 'avro.schema' attribute", ff);
+        }
+
         try {
             GenericDatumReader<GenericRecord> reader = new GenericDatumReader<>(schema);
             BinaryDecoder decoder = DecoderFactory.get().binaryDecoder(new ByteArrayInputStream(raw.bytes()), null);
@@ -46,11 +68,13 @@ public final class ConvertAvroToRecord implements Processor {
                 GenericRecord r = reader.read(null, decoder);
                 records.add(AvroConversion.toMap(r));
             }
+            if (records.isEmpty()) {
+                return ProcessorResult.failure("no records decoded from Avro binary", ff);
+            }
             return ProcessorResult.single(
-                    ff.withContent(new RecordContent(records))
+                    ff.withContent(new RecordContent(records, schema))
                       .withAttribute("record.count", String.valueOf(records.size())));
         } catch (EOFException eof) {
-            // Rare — should be caught by isEnd() — treat as an incomplete payload.
             return ProcessorResult.failure("ConvertAvroToRecord: unexpected EOF mid-record", ff);
         } catch (IOException ex) {
             return ProcessorResult.failure("ConvertAvroToRecord: decode failed — " + ex.getMessage(), ff);

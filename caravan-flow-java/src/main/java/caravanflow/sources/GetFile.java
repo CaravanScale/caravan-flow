@@ -36,10 +36,10 @@ import java.util.Map;
 /// <pre>
 /// sources:
 ///   file:
-///     input_dir: /var/spool/caravanflow
+///     inputDir: /var/spool/caravanflow
 ///     pattern: "*"
-///     poll_interval_ms: 1000
-///     unpack_v3: true
+///     pollIntervalMs: 1000
+///     unpackV3: true
 /// </pre>
 ///
 /// Mirrors caravan-flow-csharp's GetFile.
@@ -160,7 +160,7 @@ public final class GetFile extends PollingSource {
     @Override
     protected void onRejected(FlowFile ff) {
         // Drop bookkeeping without moving the file — it stays in
-        // input_dir for the next poll to retry.
+        // inputDir for the next poll to retry.
         Path file = pendingMoves.remove(ff.id());
         if (file != null) outstandingPerFile.remove(file);
         super.onRejected(ff);
@@ -196,16 +196,16 @@ public final class GetFile extends PollingSource {
         @Override public String sourceType() { return TYPE; }
         @Override public String description() { return "Polls a directory; emits one FlowFile per file (V3 bundles are unpacked)."; }
         @Override public List<String> configKeys() {
-            return List.of("input_dir", "pattern", "poll_interval_ms", "unpack_v3");
+            return List.of("inputDir", "pattern", "pollIntervalMs", "unpackV3");
         }
         @Override public Source create(String name, Map<String, Object> config) {
-            String inputDir = str(config.get("input_dir"));
-            if (inputDir.isEmpty()) return null; // disabled when input_dir is absent
+            String inputDir = str(config.get("inputDir"));
+            if (inputDir.isEmpty()) return null; // disabled when inputDir is absent
             return new GetFile(name,
                     Path.of(inputDir),
                     str(config.getOrDefault("pattern", "*")),
-                    longOr(config.get("poll_interval_ms"), 1000),
-                    boolOr(config.get("unpack_v3"), true));
+                    longOr(config.get("pollIntervalMs"), 1000),
+                    boolOr(config.get("unpackV3"), true));
         }
 
         private static String str(Object o) { return o == null ? "" : String.valueOf(o); }

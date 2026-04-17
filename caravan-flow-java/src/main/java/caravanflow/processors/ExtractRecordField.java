@@ -5,26 +5,48 @@ import caravanflow.core.Processor;
 import caravanflow.core.ProcessorResult;
 import caravanflow.core.RecordContent;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
-/// Extracts one field from the first record in a {@link RecordContent}
-/// payload and stores it as a FlowFile attribute. Useful for hoisting
-/// routing keys ("tenant", "priority", etc.) out of records into
-/// attributes so downstream RouteOnAttribute can dispatch on them.
+/// Extracts one or more field values from a {@link RecordContent} record
+/// and stores them as FlowFile attributes. Mirrors caravan-flow-csharp's
+/// {@code ExtractRecordField} (StdLib/RecordProcessors.cs:370-407).
+///
+/// Config:
+///   fields      — semicolon-delimited {@code "fieldName:attrName"} pairs.
+///                 Dotted paths supported on the field side
+///                 ({@code "address.city:city"}).
+///   recordIndex — which record to read (default 0 — the first).
+///
+/// Missing fields and out-of-range indices are silently skipped (the
+/// FlowFile passes through) — matches C# semantics. Empty records list
+/// also passes through.
 public final class ExtractRecordField implements Processor {
 
-    private final String fieldPath;
-    private final String attributeName;
+    private record Pair(String field, String attr) {}
 
-    public ExtractRecordField(String fieldPath, String attributeName) {
-        if (fieldPath == null || fieldPath.isEmpty()) {
-            throw new IllegalArgumentException("ExtractRecordField: fieldPath must not be blank");
+    private final List<Pair> pairs;
+    private final int recordIndex;
+
+    public ExtractRecordField(String fields, int recordIndex) {
+        this.recordIndex = Math.max(0, recordIndex);
+        List<Pair> parsed = new ArrayList<>();
+        if (fields != null && !fields.isBlank()) {
+            for (String entry : fields.split(";")) {
+                String trimmed = entry.trim();
+                if (trimmed.isEmpty()) continue;
+                int colon = trimmed.indexOf(':');
+                if (colon <= 0 || colon == trimmed.length() - 1) {
+                    throw new IllegalArgumentException(
+                            "ExtractRecordField: malformed entry '" + trimmed + "' — expected 'fieldName:attrName'");
+                }
+                parsed.add(new Pair(
+                        trimmed.substring(0, colon).trim(),
+                        trimmed.substring(colon + 1).trim()));
+            }
         }
-        if (attributeName == null || attributeName.isEmpty()) {
-            throw new IllegalArgumentException("ExtractRecordField: attributeName must not be blank");
-        }
-        this.fieldPath = fieldPath;
-        this.attributeName = attributeName;
+        this.pairs = List.copyOf(parsed);
     }
 
     @Override
@@ -33,21 +55,25 @@ public final class ExtractRecordField implements Processor {
             return ProcessorResult.failure(
                     "ExtractRecordField: expected RecordContent, got " + ff.content().getClass().getSimpleName(), ff);
         }
-        if (rc.records().isEmpty()) {
-            return ProcessorResult.failure("ExtractRecordField: record list is empty", ff);
+        if (rc.records().isEmpty() || recordIndex >= rc.records().size()) {
+            return ProcessorResult.single(ff);
         }
-        Object value = resolve(rc.records().getFirst(), fieldPath);
-        if (value == null) {
-            return ProcessorResult.failure(
-                    "ExtractRecordField: field '" + fieldPath + "' not present in first record", ff);
+        Map<String, Object> record = rc.records().get(recordIndex);
+        FlowFile result = ff;
+        for (Pair p : pairs) {
+            Object val = resolve(record, p.field());
+            if (val != null) {
+                result = result.withAttribute(p.attr(), String.valueOf(val));
+            }
         }
-        return ProcessorResult.single(ff.withAttribute(attributeName, String.valueOf(value)));
+        return ProcessorResult.single(result);
     }
 
-    /// Resolves a dotted field path against a nested map. {@code "a.b.c"}
-    /// traverses record["a"]["b"]["c"]. Returns null on any missing hop
-    /// or non-map intermediate value.
+    /// Dotted path lookup: {@code "a.b.c"} traverses
+    /// record["a"]["b"]["c"]. Returns null on any missing hop or
+    /// non-map intermediate value.
     private static Object resolve(Map<String, Object> record, String path) {
+        if (!path.contains(".")) return record.get(path);
         String[] parts = path.split("\\.");
         Object current = record;
         for (String part : parts) {

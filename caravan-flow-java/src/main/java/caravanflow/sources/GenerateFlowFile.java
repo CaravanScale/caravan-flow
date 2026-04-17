@@ -30,10 +30,10 @@ import java.util.concurrent.atomic.AtomicLong;
 /// sources:
 ///   generate:
 ///     content: "ping"
-///     content_type: application/json
+///     contentType: application/json
 ///     attributes: "env:dev;tenant:acme"
-///     batch_size: 1
-///     poll_interval_ms: 1000
+///     batchSize: 1
+///     pollIntervalMs: 1000
 /// </pre>
 ///
 /// Mirrors caravan-flow-csharp's GenerateFlowFile.
@@ -76,17 +76,17 @@ public final class GenerateFlowFile extends PollingSource {
         @Override public String sourceType() { return TYPE; }
         @Override public String description() { return "Timer-driven FlowFile generator for heartbeats and load tests."; }
         @Override public List<String> configKeys() {
-            return List.of("content", "content_type", "attributes", "batch_size", "poll_interval_ms");
+            return List.of("content", "contentType", "attributes", "batchSize", "pollIntervalMs");
         }
         @Override public Source create(String name, Map<String, Object> config) {
             String content = str(config.get("content"));
             if (content.isEmpty()) return null; // disabled when content is absent
             return new GenerateFlowFile(name,
-                    longOr(config.get("poll_interval_ms"), 1000),
+                    longOr(config.get("pollIntervalMs"), 1000),
                     content,
-                    str(config.get("content_type")),
+                    str(config.get("contentType")),
                     str(config.get("attributes")),
-                    (int) longOr(config.get("batch_size"), 1));
+                    (int) longOr(config.get("batchSize"), 1));
         }
 
         private static String str(Object o) { return o == null ? "" : String.valueOf(o); }

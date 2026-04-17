@@ -118,26 +118,46 @@ final class ProcessorsTest {
     // --- FilterAttribute ---
 
     @Test
-    void filterAttributeDropsOnMatch() {
-        var proc = new FilterAttribute("drop", "yes");
-        var ff = FlowFile.create(new byte[0], Map.of("drop", "yes"));
-        assertSame(ProcessorResult.Dropped.INSTANCE, proc.process(ff));
+    void filterAttributeRemoveModeStripsListedAttributes() {
+        var proc = new FilterAttribute("remove", "debug;trace");
+        var ff = FlowFile.create(new byte[0], Map.of(
+                "keep1", "a", "debug", "x", "keep2", "b", "trace", "y"));
+        var out = singleOut(proc.process(ff));
+        assertEquals(Map.of("keep1", "a", "keep2", "b"), out.attributes());
     }
 
     @Test
-    void filterAttributePassesWhenNoMatch() {
-        var proc = new FilterAttribute("drop", "yes");
-        var ff = FlowFile.create(new byte[0], Map.of("drop", "no"));
-        assertInstanceOf(ProcessorResult.Single.class, proc.process(ff));
+    void filterAttributeKeepModeRetainsOnlyListedAttributes() {
+        var proc = new FilterAttribute("keep", "a;b");
+        var ff = FlowFile.create(new byte[0], Map.of(
+                "a", "1", "b", "2", "c", "3", "d", "4"));
+        var out = singleOut(proc.process(ff));
+        assertEquals(Map.of("a", "1", "b", "2"), out.attributes());
     }
 
     @Test
-    void filterAttributeInvertedKeepsOnMatch() {
-        var proc = new FilterAttribute("keep", "me", false); // drop when NOT matching
-        var keep = FlowFile.create(new byte[0], Map.of("keep", "me"));
-        var drop = FlowFile.create(new byte[0], Map.of("keep", "other"));
-        assertInstanceOf(ProcessorResult.Single.class, proc.process(keep));
-        assertSame(ProcessorResult.Dropped.INSTANCE, proc.process(drop));
+    void filterAttributeDefaultsToRemoveMode() {
+        // mode="" / null / anything-but-"keep" behaves as remove
+        var proc = new FilterAttribute("", "gone");
+        var ff = FlowFile.create(new byte[0], Map.of("gone", "x", "kept", "y"));
+        var out = singleOut(proc.process(ff));
+        assertEquals(Map.of("kept", "y"), out.attributes());
+    }
+
+    @Test
+    void filterAttributeEmptyListIsNoOpInRemoveMode() {
+        var proc = new FilterAttribute("remove", "");
+        var ff = FlowFile.create(new byte[0], Map.of("a", "1", "b", "2"));
+        var out = singleOut(proc.process(ff));
+        assertEquals(Map.of("a", "1", "b", "2"), out.attributes());
+    }
+
+    @Test
+    void filterAttributeEmptyListInKeepModeDropsEverything() {
+        var proc = new FilterAttribute("keep", "");
+        var ff = FlowFile.create(new byte[0], Map.of("a", "1", "b", "2"));
+        var out = singleOut(proc.process(ff));
+        assertTrue(out.attributes().isEmpty());
     }
 
     // --- ReplaceText ---
@@ -166,6 +186,31 @@ final class ProcessorsTest {
         }
     }
 
+    @Test
+    void replaceTextFirstModeReplacesOnlyLeadingMatch() {
+        // Default "all" hits every occurrence; "first" stops after one.
+        var proc = new ReplaceText("a", "X", "first");
+        var ff = FlowFile.create("banana".getBytes(), Map.of());
+        var out = singleOut(proc.process(ff));
+        if (out.content() instanceof RawContent(byte[] bytes)) {
+            assertEquals("bXnana", new String(bytes));
+        } else {
+            fail("expected RawContent, got " + out.content());
+        }
+    }
+
+    @Test
+    void replaceTextDefaultsToAllMode() {
+        var proc = new ReplaceText("a", "X", "all");
+        var ff = FlowFile.create("banana".getBytes(), Map.of());
+        var out = singleOut(proc.process(ff));
+        if (out.content() instanceof RawContent(byte[] bytes)) {
+            assertEquals("bXnXnX", new String(bytes));
+        } else {
+            fail("expected RawContent, got " + out.content());
+        }
+    }
+
     // --- SplitText ---
 
     @Test
@@ -180,6 +225,52 @@ final class ProcessorsTest {
             fail("expected RawContent at index 1");
         }
         assertEquals("1", ffs.get(1).attributes().get("split.index"));
-        assertEquals(ff.stringId(), ffs.get(1).attributes().get("split.parent"));
+        assertEquals("3", ffs.get(1).attributes().get("split.count"));
+    }
+
+    @Test
+    void splitTextTreatsDelimiterAsRegex() {
+        // C# shape: delimiter is always a regex, no flag needed.
+        var proc = new SplitText("\\s+");
+        var ff = FlowFile.create("one   two\tthree".getBytes(), Map.of());
+        var ffs = multiOut(proc.process(ff));
+        assertEquals(3, ffs.size());
+    }
+
+    @Test
+    void splitTextNoDelimiterMatchPassesThrough() {
+        // When the delimiter never matches, the original FlowFile is
+        // returned untouched (Single, not Multiple).
+        var proc = new SplitText(",");
+        var ff = FlowFile.create("no-comma-here".getBytes(), Map.of());
+        var out = singleOut(proc.process(ff));
+        assertSame(ff, out);
+    }
+
+    @Test
+    void splitTextPrependsHeaderLinesToEachChunk() {
+        // headerLines=1: first line is reused as a header on every split
+        // chunk — typical CSV-shard-with-header pattern.
+        var proc = new SplitText(",", 1);
+        var ff = FlowFile.create("col1,col2\nrow1,row1\nrow2,row2".getBytes(), Map.of());
+        var ffs = multiOut(proc.process(ff));
+        // The header "col1,col2\n" prefixes every emitted chunk.
+        for (var piece : ffs) {
+            if (piece.content() instanceof RawContent(byte[] bytes)) {
+                assertTrue(new String(bytes).startsWith("col1,col2\n"),
+                        "expected header prepended, got: " + new String(bytes));
+            } else {
+                fail("expected RawContent, got " + piece.content());
+            }
+        }
+    }
+
+    @Test
+    void splitTextSkipsBlankParts() {
+        // Consecutive delimiters produce empty parts — C# skips them.
+        var proc = new SplitText(",");
+        var ff = FlowFile.create("a,,b,".getBytes(), Map.of());
+        var ffs = multiOut(proc.process(ff));
+        assertEquals(2, ffs.size());
     }
 }

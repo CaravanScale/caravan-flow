@@ -92,36 +92,68 @@ final class RecordProcessorsTest {
     void extractFieldHoistsValueToAttribute() {
         var records = List.<Map<String,Object>>of(Map.of("tenant", "acme", "other", 1));
         var ff = FlowFile.create(new RecordContent(records), Map.of());
-        var out = (ProcessorResult.Single) new ExtractRecordField("tenant", "tenant.id").process(ff);
+        var out = (ProcessorResult.Single) new ExtractRecordField("tenant:tenant.id", 0).process(ff);
         assertEquals("acme", out.flowFile().attributes().get("tenant.id"));
+    }
+
+    @Test
+    void extractFieldSupportsMultipleFieldPairs() {
+        var records = List.<Map<String,Object>>of(Map.of("tenant", "acme", "priority", "high", "junk", "x"));
+        var ff = FlowFile.create(new RecordContent(records), Map.of());
+        var out = (ProcessorResult.Single) new ExtractRecordField(
+                "tenant:tenant.id;priority:priority.level", 0).process(ff);
+        assertEquals("acme", out.flowFile().attributes().get("tenant.id"));
+        assertEquals("high", out.flowFile().attributes().get("priority.level"));
     }
 
     @Test
     void extractFieldSupportsDottedPath() {
         var records = List.<Map<String,Object>>of(Map.of("meta", Map.of("user", Map.of("id", 7))));
         var ff = FlowFile.create(new RecordContent(records), Map.of());
-        var out = (ProcessorResult.Single) new ExtractRecordField("meta.user.id", "user.id").process(ff);
+        var out = (ProcessorResult.Single) new ExtractRecordField("meta.user.id:user.id", 0).process(ff);
         assertEquals("7", out.flowFile().attributes().get("user.id"));
     }
 
     @Test
-    void extractFieldMissingPathRoutesToFailure() {
+    void extractFieldRecordIndexSelectsSpecificRecord() {
+        var records = List.<Map<String,Object>>of(
+                Map.of("tenant", "first"),
+                Map.of("tenant", "second"),
+                Map.of("tenant", "third"));
+        var ff = FlowFile.create(new RecordContent(records), Map.of());
+        var out = (ProcessorResult.Single) new ExtractRecordField("tenant:t", 2).process(ff);
+        assertEquals("third", out.flowFile().attributes().get("t"));
+    }
+
+    @Test
+    void extractFieldMissingPathSilentlySkipped() {
+        // Matches C#: missing fields are not failures — the FlowFile just
+        // passes through without that attribute set.
         var records = List.<Map<String,Object>>of(Map.of("x", "y"));
         var ff = FlowFile.create(new RecordContent(records), Map.of());
-        assertInstanceOf(ProcessorResult.Failure.class,
-                new ExtractRecordField("missing", "out").process(ff));
+        var out = (ProcessorResult.Single) new ExtractRecordField("missing:out", 0).process(ff);
+        assertFalse(out.flowFile().attributes().containsKey("out"));
     }
 
     @Test
-    void extractFieldEmptyRecordListRoutesToFailure() {
+    void extractFieldEmptyRecordListPassesThrough() {
         var ff = FlowFile.create(new RecordContent(List.of()), Map.of());
-        assertInstanceOf(ProcessorResult.Failure.class,
-                new ExtractRecordField("any", "out").process(ff));
+        var out = (ProcessorResult.Single) new ExtractRecordField("any:out", 0).process(ff);
+        assertSame(ff, out.flowFile());
     }
 
     @Test
-    void extractFieldValidatesConstructorArgs() {
-        assertThrows(IllegalArgumentException.class, () -> new ExtractRecordField("", "x"));
-        assertThrows(IllegalArgumentException.class, () -> new ExtractRecordField("x", ""));
+    void extractFieldRecordIndexOutOfRangePassesThrough() {
+        var records = List.<Map<String,Object>>of(Map.of("tenant", "acme"));
+        var ff = FlowFile.create(new RecordContent(records), Map.of());
+        var out = (ProcessorResult.Single) new ExtractRecordField("tenant:t", 5).process(ff);
+        assertSame(ff, out.flowFile());
+    }
+
+    @Test
+    void extractFieldMalformedEntryThrows() {
+        assertThrows(IllegalArgumentException.class, () -> new ExtractRecordField("tenant", 0));
+        assertThrows(IllegalArgumentException.class, () -> new ExtractRecordField(":attr", 0));
+        assertThrows(IllegalArgumentException.class, () -> new ExtractRecordField("field:", 0));
     }
 }

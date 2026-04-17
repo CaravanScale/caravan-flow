@@ -212,9 +212,8 @@ public final class Registry {
                 cfg.getOrDefault("value", "")));
         register("RouteOnAttribute", (cfg, ctx) -> new RouteOnAttribute(cfg.getOrDefault("routes", "")));
         register("FilterAttribute",  (cfg, ctx) -> new FilterAttribute(
-                required(cfg, "FilterAttribute", "key"),
-                cfg.getOrDefault("value", ""),
-                !"false".equalsIgnoreCase(cfg.getOrDefault("dropOnMatch", "true"))));
+                cfg.getOrDefault("mode", "remove"),
+                cfg.getOrDefault("attributes", "")));
         register("PutStdout",        (cfg, ctx) -> new PutStdout(
                 cfg.getOrDefault("prefix", ""),
                 cfg.getOrDefault("format", "raw"),
@@ -225,21 +224,23 @@ public final class Registry {
                 cfg.getOrDefault("format", "raw"),
                 storeFrom(ctx)));
         register("ReplaceText",      (cfg, ctx) -> new ReplaceText(
-                required(cfg, "ReplaceText", "regex"),
-                cfg.getOrDefault("replacement", "")));
+                required(cfg, "ReplaceText", "pattern"),
+                cfg.getOrDefault("replacement", ""),
+                cfg.getOrDefault("mode", "all")));
         register("SplitText",        (cfg, ctx) -> new SplitText(
                 required(cfg, "SplitText", "delimiter"),
-                "true".equalsIgnoreCase(cfg.getOrDefault("regex", "false"))));
+                parseInt(cfg.getOrDefault("headerLines", "0"), 0)));
         register("ExtractText",      (cfg, ctx) -> new ExtractText(
                 required(cfg, "ExtractText", "pattern"),
                 cfg.getOrDefault("groupNames", ""),
                 storeFrom(ctx)));
-        register("ConvertJSONToRecord", (cfg, ctx) -> new ConvertJSONToRecord());
+        register("ConvertJSONToRecord", (cfg, ctx) -> new ConvertJSONToRecord(
+                cfg.getOrDefault("schemaName", "")));
         register("ConvertRecordToJSON", (cfg, ctx) -> new ConvertRecordToJSON(
                 "true".equalsIgnoreCase(cfg.getOrDefault("singleObject", "false"))));
         register("ExtractRecordField",  (cfg, ctx) -> new ExtractRecordField(
-                required(cfg, "ExtractRecordField", "fieldPath"),
-                required(cfg, "ExtractRecordField", "attributeName")));
+                required(cfg, "ExtractRecordField", "fields"),
+                parseInt(cfg.getOrDefault("recordIndex", "0"), 0)));
         register("PutHTTP", (cfg, ctx) -> new PutHTTP(
                 required(cfg, "PutHTTP", "endpoint"),
                 cfg.getOrDefault("method", "POST"),
@@ -251,38 +252,36 @@ public final class Registry {
         register("UnpackageFlowFileV3", (cfg, ctx) -> new UnpackageFlowFileV3(storeFrom(ctx)));
         // --- CSV ---
         register("ConvertCSVToRecord", (cfg, ctx) -> new ConvertCSVToRecord(
+                cfg.getOrDefault("schemaName", ""),
                 cfg.getOrDefault("delimiter", ",").charAt(0),
-                !"false".equalsIgnoreCase(cfg.getOrDefault("firstRowHeader", "true")),
-                splitCSVColumns(cfg.get("columns"))));
+                !"false".equalsIgnoreCase(cfg.getOrDefault("hasHeader", "true")),
+                cfg.getOrDefault("fields", "")));
         register("ConvertRecordToCSV", (cfg, ctx) -> new ConvertRecordToCSV(
                 cfg.getOrDefault("delimiter", ",").charAt(0),
-                !"false".equalsIgnoreCase(cfg.getOrDefault("writeHeader", "true")),
-                splitCSVColumns(cfg.get("columns"))));
+                !"false".equalsIgnoreCase(cfg.getOrDefault("includeHeader", "true"))));
         // --- Avro binary (no container framing) ---
         register("ConvertAvroToRecord", (cfg, ctx) -> new ConvertAvroToRecord(
-                required(cfg, "ConvertAvroToRecord", "schema")));
-        register("ConvertRecordToAvro", (cfg, ctx) -> new ConvertRecordToAvro(
-                required(cfg, "ConvertRecordToAvro", "schema")));
+                cfg.getOrDefault("schemaName", ""),
+                cfg.getOrDefault("fields", "")));
+        register("ConvertRecordToAvro", (cfg, ctx) -> new ConvertRecordToAvro());
         // --- Avro OCF (Object Container File) ---
         register("ConvertOCFToRecord", (cfg, ctx) -> new ConvertOCFToRecord());
         register("ConvertRecordToOCF", (cfg, ctx) -> new ConvertRecordToOCF(
-                required(cfg, "ConvertRecordToOCF", "schema"),
                 cfg.getOrDefault("codec", "null")));
         // --- Expression / query (JEXL + JsonPath) ---
         register("EvaluateExpression", (cfg, ctx) -> new EvaluateExpression(
-                required(cfg, "EvaluateExpression", "expression"),
-                required(cfg, "EvaluateExpression", "targetAttribute")));
+                parseTransforms(required(cfg, "EvaluateExpression", "expressions"))));
         register("TransformRecord", (cfg, ctx) -> new TransformRecord(
-                parseTransforms(required(cfg, "TransformRecord", "transforms"))));
+                required(cfg, "TransformRecord", "operations")));
         register("QueryRecord", (cfg, ctx) -> new QueryRecord(
                 required(cfg, "QueryRecord", "query")));
     }
 
-    /// Parse a compact transforms spec like
+    /// Parse a compact key=value spec like
     /// {@code "field1=expr1;field2=expr2"} into a map. Used by the
-    /// TransformRecord factory so config.yaml can set multiple field
-    /// transforms in a single string value (config map is {@code Map<String,String>},
-    /// so we can't nest directly).
+    /// TransformRecord and EvaluateExpression factories so config.yaml
+    /// can express multi-target settings in one string (the config map
+    /// is {@code Map<String,String>}, can't nest directly).
     private static java.util.Map<String, String> parseTransforms(String spec) {
         java.util.Map<String, String> out = new java.util.LinkedHashMap<>();
         for (String entry : spec.split(";")) {
@@ -291,25 +290,20 @@ public final class Registry {
             int eq = trimmed.indexOf('=');
             if (eq <= 0) {
                 throw new IllegalArgumentException(
-                        "TransformRecord: malformed transform '" + trimmed + "' — expected 'field=expression'");
+                        "malformed entry '" + trimmed + "' — expected 'target=expression'");
             }
             out.put(trimmed.substring(0, eq).trim(), trimmed.substring(eq + 1).trim());
         }
         if (out.isEmpty()) {
-            throw new IllegalArgumentException("TransformRecord: transforms spec produced no entries");
+            throw new IllegalArgumentException("spec produced no entries");
         }
         return out;
     }
 
-    private static List<String> splitCSVColumns(String spec) {
-        if (spec == null || spec.isBlank()) return List.of();
-        String[] parts = spec.split(",");
-        List<String> out = new java.util.ArrayList<>(parts.length);
-        for (String p : parts) {
-            String trimmed = p.trim();
-            if (!trimmed.isEmpty()) out.add(trimmed);
-        }
-        return List.copyOf(out);
+    private static int parseInt(String s, int fallback) {
+        if (s == null || s.isBlank()) return fallback;
+        try { return Integer.parseInt(s.trim()); }
+        catch (NumberFormatException e) { return fallback; }
     }
 
     private static String required(Map<String, String> cfg, String processor, String key) {

@@ -11,25 +11,29 @@ import caravanflow.core.RecordContent;
 import java.util.List;
 import java.util.Map;
 
-/// Serializes {@link RecordContent} to CSV text using Jackson's
-/// {@code jackson-dataformat-csv}. Column order is taken from the first
-/// record's key insertion order (LinkedHashMap preserves this from
-/// JSON/Avro reads) or from {@code explicitColumns} config. A header
-/// row is written unless {@code writeHeader=false}.
+/// Serializes {@link RecordContent} to CSV text. Mirrors caravan-flow-csharp's
+/// {@code ConvertRecordToCSV} (StdLib/RecordProcessors.cs:346-364).
+///
+/// Config:
+///   delimiter     — single char (default ',')
+///   includeHeader — write the column header row (default true)
+///
+/// Column order is driven by the first record's key insertion order
+/// (LinkedHashMap preserves this from JSON/Avro reads). No explicit
+/// column-override config — matches C#, which relies on the
+/// RecordContent schema.
 public final class ConvertRecordToCSV implements Processor {
 
     private static final CsvMapper MAPPER = new CsvMapper();
 
     private final char delimiter;
-    private final boolean writeHeader;
-    private final List<String> explicitColumns;
+    private final boolean includeHeader;
 
-    public ConvertRecordToCSV() { this(',', true, List.of()); }
+    public ConvertRecordToCSV() { this(',', true); }
 
-    public ConvertRecordToCSV(char delimiter, boolean writeHeader, List<String> explicitColumns) {
+    public ConvertRecordToCSV(char delimiter, boolean includeHeader) {
         this.delimiter = delimiter;
-        this.writeHeader = writeHeader;
-        this.explicitColumns = explicitColumns == null ? List.of() : List.copyOf(explicitColumns);
+        this.includeHeader = includeHeader;
     }
 
     @Override
@@ -40,18 +44,16 @@ public final class ConvertRecordToCSV implements Processor {
         }
         List<Map<String, Object>> records = rc.records();
 
-        List<String> columns = explicitColumns;
-        if (columns.isEmpty()) {
-            if (records.isEmpty()) {
-                // Empty record list + no explicit schema → emit an empty payload.
-                return ProcessorResult.single(ff.withContent(new RawContent(new byte[0])));
-            }
-            columns = List.copyOf(records.getFirst().keySet());
+        if (records.isEmpty()) {
+            // Empty record list → empty payload. Can't emit a header
+            // without a first record to source keys from.
+            return ProcessorResult.single(ff.withContent(new RawContent(new byte[0])));
         }
 
+        List<String> columns = List.copyOf(records.getFirst().keySet());
         CsvSchema.Builder sb = CsvSchema.builder().setColumnSeparator(delimiter);
         for (String c : columns) sb.addColumn(c);
-        CsvSchema schema = sb.build().withUseHeader(writeHeader);
+        CsvSchema schema = sb.build().withUseHeader(includeHeader);
 
         try {
             byte[] bytes = MAPPER.writer(schema).writeValueAsBytes(records);

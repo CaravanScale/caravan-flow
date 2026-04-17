@@ -57,7 +57,8 @@ public final class QueryRecord implements Processor {
             if (matches.isEmpty()) {
                 return ProcessorResult.routed(Relationships.UNMATCHED, ff);
             }
-            return ProcessorResult.routed(Relationships.MATCHED, ff.withContent(new RecordContent(matches)));
+            return ProcessorResult.routed(Relationships.MATCHED,
+                    ff.withContent(new RecordContent(matches, rc.schema())));
         } catch (PathNotFoundException ex) {
             // With SUPPRESS_EXCEPTIONS this usually becomes an empty result,
             // but some malformed paths still throw — treat as no match.

@@ -15,24 +15,23 @@ import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.Map;
 
-/// RecordContent → OCF bytes (Object Container File). Schema is
-/// required — OCF's header embeds it so downstream readers need no
-/// config. Codec defaults to {@code null} (no compression) to match
-/// the caravan-flow-csharp default; {@code deflate}, {@code snappy},
-/// {@code bzip2}, {@code xz}, and {@code zstandard} are passed through
-/// to {@link CodecFactory#fromString(String)}.
+/// {@link RecordContent} → OCF bytes (Object Container File). Mirrors
+/// caravan-flow-csharp's {@code ConvertRecordToOCF} (StdLib/RecordProcessors.cs:259-283):
+/// no schema config — the schema already on the RecordContent is what
+/// gets embedded in the OCF header.
+///
+/// Config:
+///   codec — compression codec; {@code null} (default, no compression),
+///           {@code deflate}, {@code snappy}, {@code bzip2}, {@code xz},
+///           {@code zstandard}. Passed through to
+///           {@link CodecFactory#fromString(String)}.
 public final class ConvertRecordToOCF implements Processor {
 
-    private final Schema schema;
     private final CodecFactory codec;
 
-    public ConvertRecordToOCF(String schemaJson) { this(schemaJson, "null"); }
+    public ConvertRecordToOCF() { this("null"); }
 
-    public ConvertRecordToOCF(String schemaJson, String codecName) {
-        if (schemaJson == null || schemaJson.isEmpty()) {
-            throw new IllegalArgumentException("ConvertRecordToOCF: schema must not be blank");
-        }
-        this.schema = new Schema.Parser().parse(schemaJson);
+    public ConvertRecordToOCF(String codecName) {
         this.codec = CodecFactory.fromString(codecName == null || codecName.isEmpty() ? "null" : codecName);
     }
 
@@ -42,6 +41,15 @@ public final class ConvertRecordToOCF implements Processor {
             return ProcessorResult.failure(
                     "ConvertRecordToOCF: expected RecordContent, got " + ff.content().getClass().getSimpleName(), ff);
         }
+        if (rc.records().isEmpty()) {
+            return ProcessorResult.single(ff);
+        }
+        Schema schema = rc.schema();
+        if (schema == null) {
+            return ProcessorResult.failure(
+                    "ConvertRecordToOCF: RecordContent has no schema — upstream must declare one", ff);
+        }
+
         GenericDatumWriter<GenericRecord> datum = new GenericDatumWriter<>(schema);
         ByteArrayOutputStream buf = new ByteArrayOutputStream();
         try (DataFileWriter<GenericRecord> writer = new DataFileWriter<>(datum)) {

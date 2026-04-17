@@ -14,21 +14,17 @@ import caravanflow.core.RecordContent;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.util.Map;
+import java.util.StringJoiner;
 
-/// {@link RecordContent} → Avro binary bytes. Each record is encoded
-/// sequentially with no container framing — the counterpart of
-/// {@link ConvertAvroToRecord}. For file-style payloads with schema
-/// embedded, use {@link ConvertRecordToOCF}.
+/// {@link RecordContent} → Avro binary bytes. Mirrors caravan-flow-csharp's
+/// {@code ConvertRecordToAvro} (StdLib/RecordProcessors.cs:90-105) — no
+/// config, schema is read directly from the incoming RecordContent.
+///
+/// Writes an {@code avro.schema} attribute on the output FlowFile with the
+/// compact field-defs representation so a downstream
+/// {@link ConvertAvroToRecord} can decode without repeating the schema in
+/// its config.
 public final class ConvertRecordToAvro implements Processor {
-
-    private final Schema schema;
-
-    public ConvertRecordToAvro(String schemaJson) {
-        if (schemaJson == null || schemaJson.isEmpty()) {
-            throw new IllegalArgumentException("ConvertRecordToAvro: schema must not be blank");
-        }
-        this.schema = new Schema.Parser().parse(schemaJson);
-    }
 
     @Override
     public ProcessorResult process(FlowFile ff) {
@@ -36,6 +32,15 @@ public final class ConvertRecordToAvro implements Processor {
             return ProcessorResult.failure(
                     "ConvertRecordToAvro: expected RecordContent, got " + ff.content().getClass().getSimpleName(), ff);
         }
+        if (rc.records().isEmpty()) {
+            return ProcessorResult.single(ff);
+        }
+        Schema schema = rc.schema();
+        if (schema == null) {
+            return ProcessorResult.failure(
+                    "ConvertRecordToAvro: RecordContent has no schema — upstream must declare one", ff);
+        }
+
         GenericDatumWriter<GenericRecord> writer = new GenericDatumWriter<>(schema);
         ByteArrayOutputStream buf = new ByteArrayOutputStream();
         BinaryEncoder encoder = EncoderFactory.get().binaryEncoder(buf, null);
@@ -44,9 +49,32 @@ public final class ConvertRecordToAvro implements Processor {
                 writer.write(AvroConversion.toGenericRecord(record, schema), encoder);
             }
             encoder.flush();
-            return ProcessorResult.single(ff.withContent(new RawContent(buf.toByteArray())));
+            return ProcessorResult.single(
+                    ff.withContent(new RawContent(buf.toByteArray()))
+                      .withAttribute("avro.schema", compactFieldDefs(schema)));
         } catch (IOException ex) {
             return ProcessorResult.failure("ConvertRecordToAvro: encode failed — " + ex.getMessage(), ff);
         }
+    }
+
+    /// Serialize a Schema as the compact {@code "name:type,name:type"}
+    /// form so downstream processors can re-parse it with
+    /// {@link caravanflow.core.SchemaDefs#parse}.
+    private static String compactFieldDefs(Schema schema) {
+        StringJoiner sj = new StringJoiner(",");
+        for (Schema.Field f : schema.getFields()) {
+            Schema.Type t = f.schema().getType() == Schema.Type.UNION
+                    ? firstNonNullBranch(f.schema())
+                    : f.schema().getType();
+            sj.add(f.name() + ":" + t.getName());
+        }
+        return sj.toString();
+    }
+
+    private static Schema.Type firstNonNullBranch(Schema union) {
+        for (Schema branch : union.getTypes()) {
+            if (branch.getType() != Schema.Type.NULL) return branch.getType();
+        }
+        return Schema.Type.NULL;
     }
 }

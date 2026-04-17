@@ -32,7 +32,7 @@ final class SourceConfigTest {
                     type: GenerateFlowFile
                     config:
                       content: "ping"
-                      batch_size: 3
+                      batchSize: 3
                 """);
 
         List<Source> built = loader.lastSources();
@@ -68,7 +68,7 @@ final class SourceConfigTest {
         PluginLoader.loadSources(getClass().getClassLoader(), sources);
 
         var loader = new ConfigLoader(registry, null, sources);
-        // GetFile without input_dir → Plugin.create returns null.
+        // GetFile without inputDir → Plugin.create returns null.
         loader.load("""
                 flow:
                   entryPoints: [noop]

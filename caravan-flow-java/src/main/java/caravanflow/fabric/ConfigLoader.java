@@ -292,7 +292,7 @@ public final class ConfigLoader {
     ///   infile:
     ///     type: GetFile@1.0.0
     ///     config:
-    ///       input_dir: /var/spool/caravanflow
+    ///       inputDir: /var/spool/caravanflow
     ///       pattern: "*.json"
     ///   heartbeat:
     ///     type: GenerateFlowFile
@@ -301,7 +301,7 @@ public final class ConfigLoader {
     /// </pre>
     ///
     /// A null source returned by a factory (e.g. GetFile without
-    /// input_dir) is treated as "disabled" — logged, not thrown.
+    /// inputDir) is treated as "disabled" — logged, not thrown.
     private List<Source> buildSources(Object sourcesRaw) {
         if (sourcesRaw == null) return List.of();
         if (!(sourcesRaw instanceof Map<?, ?> m)) {

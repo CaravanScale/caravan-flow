@@ -42,7 +42,7 @@ final class RegistryTest {
         assertThrows(IllegalArgumentException.class,
                 () -> r.create("PutFile", Map.of())); // missing directory
         assertThrows(IllegalArgumentException.class,
-                () -> r.create("ReplaceText", Map.of())); // missing regex
+                () -> r.create("ReplaceText", Map.of())); // missing pattern
         assertThrows(IllegalArgumentException.class,
                 () -> r.create("SplitText", Map.of())); // missing delimiter
     }
