@@ -60,6 +60,18 @@ public sealed class ApiHandler
         // Overlay stack: base ← config.local.yaml ← secrets.yaml
         app.MapGet("/api/overlays", Overlays);
         app.MapPut("/api/overlays/secrets", WriteSecretsOverlay);
+
+        // Version control (opt-in via vc.enabled=true in config.yaml)
+        app.MapGet("/api/vc/status", VcStatus);
+        app.MapPost("/api/vc/commit", VcCommit);
+        app.MapPost("/api/vc/push", VcPush);
+
+        // Save runtime graph to config.yaml (VC-aware — commits+pushes
+        // when VersionControlProvider is enabled)
+        app.MapPost("/api/flow/save", FlowSave);
+
+        // Recent failed provenance events (errors view)
+        app.MapGet("/api/provenance/failures", ProvenanceFailures);
     }
 
     // --- Stats ---
@@ -307,6 +319,120 @@ public sealed class ApiHandler
         finally { await Task.CompletedTask; }
     }
 
+    // --- Version control (opt-in via vc.enabled=true in config.yaml) ---
+
+    private IResult VcStatus()
+    {
+        var vc = ResolveVcProvider();
+        if (vc is null)
+            return Json(new Dictionary<string, object?> { ["enabled"] = false });
+        return Json(vc.StatusJson());
+    }
+
+    private IResult VcCommit([FromBody] Dictionary<string, object?>? body)
+    {
+        var vc = ResolveVcProvider();
+        if (vc is null)
+            return Json(new Dictionary<string, object?> { ["error"] = "vc provider not enabled" });
+
+        var message = body is not null && body.TryGetValue("message", out var m) ? m?.ToString() ?? "" : "";
+        if (string.IsNullOrWhiteSpace(message))
+            return Json(new Dictionary<string, object?> { ["error"] = "commit message must not be blank" });
+
+        var path = body is not null && body.TryGetValue("path", out var p) ? p?.ToString() : null;
+        var result = vc.Commit(path, message);
+        return CommandResultJson(result);
+    }
+
+    private IResult VcPush()
+    {
+        var vc = ResolveVcProvider();
+        if (vc is null)
+            return Json(new Dictionary<string, object?> { ["error"] = "vc provider not enabled" });
+        var result = vc.Push();
+        return CommandResultJson(result);
+    }
+
+    /// <summary>Write runtime graph to config.yaml, optionally commit via VC.</summary>
+    private IResult FlowSave([FromBody] Dictionary<string, object?>? body)
+    {
+        if (string.IsNullOrEmpty(_configPath))
+            return Json(new Dictionary<string, object?> { ["error"] = "config path not set — worker booted without a config file" });
+
+        // Serialize the runtime graph to the canonical separated YAML shape.
+        byte[] bytes;
+        try
+        {
+            var graphMap = _fab.ExportToConfig();
+            bytes = YamlEmitter.Emit(graphMap);
+        }
+        catch (Exception ex)
+        {
+            return Json(new Dictionary<string, object?> { ["error"] = $"emit failed: {ex.Message}" });
+        }
+
+        try { File.WriteAllBytes(_configPath, bytes); }
+        catch (Exception ex)
+        {
+            return Json(new Dictionary<string, object?> { ["error"] = $"write failed: {ex.Message}" });
+        }
+
+        var response = new Dictionary<string, object?>
+        {
+            ["status"] = "saved",
+            ["path"] = _configPath,
+            ["bytes"] = bytes.Length,
+            ["committed"] = false,
+            ["pushed"] = false,
+        };
+
+        // VC-aware: if a VersionControlProvider is enabled, also commit +
+        // push. Push defaults to true; body can opt out with {push: false}
+        // or override the commit message with {message: "..."}.
+        var vc = ResolveVcProvider();
+        if (vc is not null)
+        {
+            var message = body is not null && body.TryGetValue("message", out var m) && m is not null
+                ? m.ToString()! : "flow: update via UI";
+            var pushFlag = !(body is not null && body.TryGetValue("push", out var pObj)
+                             && pObj is bool pb && pb == false);
+
+            var commitResult = vc.Commit(Path.GetFileName(_configPath), message);
+            response["committed"] = commitResult.Ok;
+            response["commitExitCode"] = commitResult.ExitCode;
+            response["commitStdout"] = commitResult.Stdout;
+            if (!commitResult.Ok) response["commitStderr"] = commitResult.Stderr;
+
+            if (commitResult.Ok && pushFlag)
+            {
+                var pushResult = vc.Push();
+                response["pushed"] = pushResult.Ok;
+                response["pushExitCode"] = pushResult.ExitCode;
+                response["pushStdout"] = pushResult.Stdout;
+                if (!pushResult.Ok) response["pushStderr"] = pushResult.Stderr;
+            }
+        }
+
+        return Json(response);
+    }
+
+    private VersionControlProvider? ResolveVcProvider()
+    {
+        var provider = _fab.GetContext().GetProvider(VersionControlProvider.NameConst);
+        return provider is VersionControlProvider vc && vc.IsEnabled ? vc : null;
+    }
+
+    private static IResult CommandResultJson(VersionControlProvider.CommandResult r)
+    {
+        return Json(new Dictionary<string, object?>
+        {
+            ["ok"] = r.Ok,
+            ["exitCode"] = r.ExitCode,
+            ["stdout"] = r.Stdout,
+            ["stderr"] = r.Stderr,
+        });
+    }
+
     // --- Provenance ---
 
     private IResult ProvenanceRecent(HttpContext ctx)
@@ -328,6 +454,45 @@ public sealed class ApiHandler
             ["details"] = e.Details,
             ["timestamp"] = e.Timestamp
         }).ToList());
+    }
+
+    /// <summary>
+    /// Filtered view of recent provenance events limited to the
+    /// Failed type. Over-fetches the ring buffer so small n values
+    /// still return a meaningful window when most events are
+    /// successful. Powers the Errors view.
+    /// </summary>
+    private IResult ProvenanceFailures(HttpContext ctx)
+    {
+        var prov = _fab.GetProvenance();
+        if (prov is null)
+            return Json(new Dictionary<string, object?> { ["error"] = "provenance provider not enabled" });
+        var n = 50;
+        if (ctx.Request.Query.TryGetValue("n", out var nStr) && !string.IsNullOrEmpty(nStr))
+        {
+            if (!int.TryParse(nStr, out var parsed))
+                return Results.BadRequest(new Dictionary<string, object?> { ["error"] = $"query param 'n' is not an integer: '{nStr}'" });
+            n = parsed;
+        }
+
+        // Scan a larger window so low n still finds failures when the
+        // success:failure ratio is skewed (typical operational case).
+        var window = Math.Max(n * 20, 500);
+        var failures = new List<Dictionary<string, object?>>(n);
+        foreach (var e in prov.GetRecent(window))
+        {
+            if (e.EventType != ProvenanceEventType.Failed) continue;
+            failures.Add(new Dictionary<string, object?>
+            {
+                ["flowfile"] = $"ff-{e.FlowFileId}",
+                ["type"] = e.EventType.ToString(),
+                ["component"] = e.Component,
+                ["details"] = e.Details,
+                ["timestamp"] = e.Timestamp,
+            });
+            if (failures.Count >= n) break;
+        }
+        return Json(failures);
     }
 
     private IResult ProvenanceById(long id)

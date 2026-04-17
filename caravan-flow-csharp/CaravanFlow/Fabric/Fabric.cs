@@ -520,6 +520,73 @@ public sealed class Fabric
     public List<string> GetEntryPoints() => new(_graph.EntryPoints);
     public string GetProcessorType(string name) => _graph.ProcessorDefs.TryGetValue(name, out var def) ? def.Type : "unknown";
 
+    /// <summary>
+    /// Build a nested Dictionary config tree from the runtime graph,
+    /// shaped exactly as the canonical separated YAML layout:
+    ///
+    /// <code>
+    /// flow:
+    ///   entryPoints: [...]
+    ///   processors:
+    ///     name: { type, config, requires }
+    ///   connections:
+    ///     from: { rel: [targets] }
+    /// </code>
+    ///
+    /// Used by <c>POST /api/flow/save</c> to serialize the runtime
+    /// state back to disk. Insertion order of the outer dict is
+    /// deliberate so the YAML emitter produces stable diffs between
+    /// saves. Processor names iterate in <c>_graph.ProcessorNames</c>
+    /// order (insertion order from load); connection keys iterate in
+    /// the same processor order so adjacent processor+connections
+    /// entries stay aligned under review.
+    /// </summary>
+    public Dictionary<string, object?> ExportToConfig()
+    {
+        // flow.processors: map of name → { type, config?, requires? }
+        var processors = new Dictionary<string, object?>();
+        foreach (var name in _graph.ProcessorNames)
+        {
+            if (!_graph.ProcessorDefs.TryGetValue(name, out var def)) continue;
+            var procEntry = new Dictionary<string, object?> { ["type"] = def.Type };
+            if (def.Config.Count > 0)
+            {
+                // Preserve insertion order of config keys as given at
+                // load time — matches the original YAML's ordering.
+                var cfgCopy = new Dictionary<string, object?>(def.Config.Count);
+                foreach (var (k, v) in def.Config) cfgCopy[k] = v;
+                procEntry["config"] = cfgCopy;
+            }
+            if (def.Requires.Count > 0)
+                procEntry["requires"] = new List<string>(def.Requires);
+            processors[name] = procEntry;
+        }
+
+        // flow.connections: map of from → { rel: [targets] }. Skip
+        // processors with no outbound connections so the emitted YAML
+        // doesn't carry empty dicts.
+        var connections = new Dictionary<string, object?>();
+        foreach (var name in _graph.ProcessorNames)
+        {
+            if (!_graph.Connections.TryGetValue(name, out var rels) || rels.Count == 0) continue;
+            var relMap = new Dictionary<string, object?>();
+            foreach (var (rel, targets) in rels)
+            {
+                if (targets.Count > 0) relMap[rel] = new List<string>(targets);
+            }
+            if (relMap.Count > 0) connections[name] = relMap;
+        }
+
+        var flow = new Dictionary<string, object?>
+        {
+            ["entryPoints"] = new List<string>(_graph.EntryPoints),
+            ["processors"] = processors,
+        };
+        if (connections.Count > 0) flow["connections"] = connections;
+
+        return new Dictionary<string, object?> { ["flow"] = flow };
+    }
+
     public Dictionary<string, object> GetStats() => new()
     {
         ["processed"] = Interlocked.Read(ref _totalProcessed),

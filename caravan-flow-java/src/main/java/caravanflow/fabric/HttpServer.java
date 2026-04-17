@@ -692,6 +692,7 @@ public final class HttpServer {
 
     // --- Flow save ---
 
+    @SuppressWarnings("unchecked")
     private void handleFlowSave(Context ctx) throws Exception {
         if (loader == null || configPath == null) {
             writeError(ctx, 501, "flow save unavailable — server started without a config path");
@@ -705,10 +706,48 @@ public final class HttpServer {
             return;
         }
         log.info("flow saved to {}", configPath);
+
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("status", "saved");
         body.put("path", configPath.toString());
         body.put("bytes", yaml.length());
+        body.put("committed", false);
+        body.put("pushed", false);
+
+        // VC-aware save: if VersionControlProvider is enabled, also
+        // stage+commit the config file and optionally push to the
+        // configured remote. One UI button → one backend call → right
+        // thing happens. Matches caravan-flow-csharp's POST /api/flow/save
+        // behavior so the UI sees the same response shape on both tracks.
+        caravanflow.providers.VersionControlProvider vc =
+                pipeline.context().getProviderAs("version_control",
+                        caravanflow.providers.VersionControlProvider.class);
+        if (vc != null && vc.isEnabled()) {
+            Map<String, Object> reqBody = readJsonBody(ctx);
+            String message = "flow: update via UI";
+            boolean push = true;
+            if (reqBody != null) {
+                Object m = reqBody.get("message");
+                if (m instanceof String s && !s.isBlank()) message = s;
+                Object p = reqBody.get("push");
+                if (p instanceof Boolean pb) push = pb;
+            }
+            String relPath = configPath.getFileName().toString();
+            var commitRes = vc.commit(relPath, message);
+            body.put("committed", commitRes.ok());
+            body.put("commitExitCode", commitRes.exitCode());
+            body.put("commitStdout", commitRes.stdout());
+            if (!commitRes.ok()) body.put("commitStderr", commitRes.stderr());
+
+            if (commitRes.ok() && push) {
+                var pushRes = vc.push();
+                body.put("pushed", pushRes.ok());
+                body.put("pushExitCode", pushRes.exitCode());
+                body.put("pushStdout", pushRes.stdout());
+                if (!pushRes.ok()) body.put("pushStderr", pushRes.stderr());
+            }
+        }
+
         ctx.status(200).contentType("application/json").result(json.writeValueAsBytes(body));
     }
 

@@ -112,6 +112,23 @@ Console.WriteLine($"[schema-registry] embedded ({preloaded} subjects preloaded)"
 if (!string.IsNullOrEmpty(GetConfigString(config, "schema_registry.url", "")))
     Console.Error.WriteLine("[schema-registry] WARNING: schema_registry.url is set but ignored — this build only supports the embedded backend");
 
+// Optional VC provider — shells out to git for config-commit + push.
+// Defaults to the parent directory of the base config file as the repo
+// when `vc.repo` isn't specified; that matches the common "config
+// lives in a git repo" layout and avoids needing explicit paths.
+if (GetConfigString(config, "vc.enabled", "false") == "true")
+{
+    var vcRepo = GetConfigString(config, "vc.repo",
+        File.Exists(configPath) ? Path.GetDirectoryName(Path.GetFullPath(configPath)) ?? "." : ".");
+    var vcGit = GetConfigString(config, "vc.git", "git");
+    var vcRemote = GetConfigString(config, "vc.remote", "origin");
+    var vcBranch = GetConfigString(config, "vc.branch", "main");
+    var vcProvider = new VersionControlProvider(vcRepo, vcGit, vcRemote, vcBranch);
+    vcProvider.Enable();
+    globalCtx.AddProvider(vcProvider);
+    Console.WriteLine($"[vc] enabled repo={vcRepo} remote={vcRemote} branch={vcBranch}");
+}
+
 // Create registry
 var reg = new Registry();
 BuiltinProcessors.RegisterAll(reg);
