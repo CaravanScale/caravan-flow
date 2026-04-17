@@ -679,8 +679,16 @@ public sealed class Fabric
         var newDefs = new Dictionary<string, (string, Dictionary<string, string>, List<string>)>(graph.ProcessorDefs)
             { [name] = (typeName, new Dictionary<string, string>(config), new List<string>(requires)) };
 
-        var dagResult = DagValidator.Validate(newConnections);
-        _graph = new PipelineGraph(newProcessors, newConnections, dagResult.EntryPoints, newNames, newStates, newDefs);
+        // Preserve the graph's explicit EntryPoints across mutations —
+        // only SetEntryPoints changes them. DAG re-inference here
+        // would clobber an operator's explicit entry-points choice
+        // every time they added/removed a processor or connection.
+        // Add-processor implicitly adds it as a potential entry point
+        // only if the current list is empty (load-time inference).
+        var newEntries = new List<string>(graph.EntryPoints);
+        if (newEntries.Count == 0) newEntries.Add(name);
+
+        _graph = new PipelineGraph(newProcessors, newConnections, newEntries, newNames, newStates, newDefs);
 
         _processorCounts.TryAdd(name, 0);
         _processorErrors.TryAdd(name, 0);
@@ -696,16 +704,256 @@ public sealed class Fabric
         newProcessors.Remove(name);
         var newConnections = new Dictionary<string, Dictionary<string, List<string>>>(graph.Connections);
         newConnections.Remove(name);
+        // Also strip any inbound references to the deleted processor.
+        foreach (var (from, rels) in newConnections.ToList())
+        {
+            var trimmed = new Dictionary<string, List<string>>();
+            foreach (var (rel, targets) in rels)
+            {
+                var keep = targets.Where(t => t != name).ToList();
+                if (keep.Count > 0) trimmed[rel] = keep;
+            }
+            if (trimmed.Count > 0) newConnections[from] = trimmed;
+            else newConnections[from] = new Dictionary<string, List<string>>();
+        }
         var newNames = new List<string>(graph.ProcessorNames);
         newNames.Remove(name);
         var newStates = new Dictionary<string, ComponentState>(graph.ProcessorStates);
         newStates.Remove(name);
         var newDefs = new Dictionary<string, (string, Dictionary<string, string>, List<string>)>(graph.ProcessorDefs);
         newDefs.Remove(name);
+        // Filter the deleted name out of explicit entry points; preserve
+        // everything else so the operator's intent survives the edit.
+        var newEntries = graph.EntryPoints.Where(ep => ep != name).ToList();
 
-        var dagResult = DagValidator.Validate(newConnections);
-        _graph = new PipelineGraph(newProcessors, newConnections, dagResult.EntryPoints, newNames, newStates, newDefs);
+        _graph = new PipelineGraph(newProcessors, newConnections, newEntries, newNames, newStates, newDefs);
         return true;
+    }
+
+    /// <summary>
+    /// Result of a graph-edit call. <c>Ok == false</c> means the edit
+    /// was rejected (unknown processor, duplicate edge, etc.);
+    /// <c>Reason</c> carries a short human-readable explanation the
+    /// admin API echoes to the operator. Mirrors caravan-flow-java's
+    /// <c>Pipeline.EditResult</c> so HTTP response shapes match.
+    /// </summary>
+    public sealed record EditResult(bool Ok, string Reason)
+    {
+        public static EditResult Success() => new(true, "");
+        public static EditResult Fail(string reason) => new(false, reason);
+    }
+
+    /// <summary>
+    /// Add a single outbound connection. Rejects unknown processors on
+    /// either end and duplicate edges. Atomic swap on success.
+    /// </summary>
+    public EditResult AddConnection(string from, string relationship, string to)
+    {
+        if (string.IsNullOrEmpty(from)) return EditResult.Fail("from must not be blank");
+        if (string.IsNullOrEmpty(relationship)) return EditResult.Fail("relationship must not be blank");
+        if (string.IsNullOrEmpty(to)) return EditResult.Fail("to must not be blank");
+        var graph = _graph;
+        if (!graph.Processors.ContainsKey(from)) return EditResult.Fail($"processor '{from}' not found");
+        if (!graph.Processors.ContainsKey(to)) return EditResult.Fail($"processor '{to}' not found");
+
+        var newConns = new Dictionary<string, Dictionary<string, List<string>>>(graph.Connections);
+        var rels = newConns.TryGetValue(from, out var existing)
+            ? new Dictionary<string, List<string>>(existing)
+            : new Dictionary<string, List<string>>();
+        var targets = rels.TryGetValue(relationship, out var current)
+            ? new List<string>(current)
+            : new List<string>();
+        if (targets.Contains(to))
+            return EditResult.Fail($"connection '{from}:{relationship} → {to}' already exists");
+        targets.Add(to);
+        rels[relationship] = targets;
+        newConns[from] = rels;
+
+        // Connection-level mutations don't touch entry points —
+        // preserve whatever's there so explicit operator intent
+        // survives downstream edits. DagValidator stays available
+        // for warnings elsewhere; not authoritative here.
+        _graph = new PipelineGraph(graph.Processors, newConns, graph.EntryPoints,
+            graph.ProcessorNames, graph.ProcessorStates, graph.ProcessorDefs);
+        return EditResult.Success();
+    }
+
+    public EditResult RemoveConnection(string from, string relationship, string to)
+    {
+        if (string.IsNullOrEmpty(from) || string.IsNullOrEmpty(relationship) || string.IsNullOrEmpty(to))
+            return EditResult.Fail("from, relationship, and to must not be blank");
+        var graph = _graph;
+        if (!graph.Connections.TryGetValue(from, out var rels)
+            || !rels.TryGetValue(relationship, out var targets)
+            || !targets.Contains(to))
+        {
+            return EditResult.Fail($"connection '{from}:{relationship} → {to}' not found");
+        }
+
+        var newConns = new Dictionary<string, Dictionary<string, List<string>>>(graph.Connections);
+        var newRels = new Dictionary<string, List<string>>(rels);
+        var newTargets = new List<string>(targets);
+        newTargets.Remove(to);
+        if (newTargets.Count == 0) newRels.Remove(relationship);
+        else newRels[relationship] = newTargets;
+
+        if (newRels.Count == 0) newConns.Remove(from);
+        else newConns[from] = newRels;
+
+        // Pre-populate empty entries for every declared processor so
+        // DagValidator sees the full set (matches LoadFlow's prep).
+        foreach (var name in graph.ProcessorNames)
+            if (!newConns.ContainsKey(name))
+                newConns[name] = new Dictionary<string, List<string>>();
+
+        // Connection-level mutations don't touch entry points —
+        // preserve whatever's there so explicit operator intent
+        // survives downstream edits. DagValidator stays available
+        // for warnings elsewhere; not authoritative here.
+        _graph = new PipelineGraph(graph.Processors, newConns, graph.EntryPoints,
+            graph.ProcessorNames, graph.ProcessorStates, graph.ProcessorDefs);
+        return EditResult.Success();
+    }
+
+    /// <summary>
+    /// Replace every outbound connection of a processor in one atomic
+    /// swap. An empty <c>rels</c> map clears the processor's outbound
+    /// connections entirely.
+    /// </summary>
+    public EditResult SetConnections(string from, Dictionary<string, List<string>> rels)
+    {
+        if (string.IsNullOrEmpty(from)) return EditResult.Fail("from must not be blank");
+        var graph = _graph;
+        if (!graph.Processors.ContainsKey(from)) return EditResult.Fail($"processor '{from}' not found");
+        rels ??= new Dictionary<string, List<string>>();
+        foreach (var (_, targets) in rels)
+        {
+            foreach (var t in targets)
+            {
+                if (!graph.Processors.ContainsKey(t))
+                    return EditResult.Fail($"target processor '{t}' not found");
+            }
+        }
+
+        var newConns = new Dictionary<string, Dictionary<string, List<string>>>(graph.Connections);
+        if (rels.Count == 0) newConns.Remove(from);
+        else
+        {
+            var copy = new Dictionary<string, List<string>>();
+            foreach (var (rel, targets) in rels) copy[rel] = new List<string>(targets);
+            newConns[from] = copy;
+        }
+        foreach (var name in graph.ProcessorNames)
+            if (!newConns.ContainsKey(name))
+                newConns[name] = new Dictionary<string, List<string>>();
+
+        // Connection-level mutations don't touch entry points —
+        // preserve whatever's there so explicit operator intent
+        // survives downstream edits. DagValidator stays available
+        // for warnings elsewhere; not authoritative here.
+        _graph = new PipelineGraph(graph.Processors, newConns, graph.EntryPoints,
+            graph.ProcessorNames, graph.ProcessorStates, graph.ProcessorDefs);
+        return EditResult.Success();
+    }
+
+    /// <summary>
+    /// Replace the set of entry points. Every name must already be a
+    /// defined processor. Explicit override of the DAG-inferred set.
+    /// </summary>
+    public EditResult SetEntryPoints(List<string> names)
+    {
+        if (names is null) return EditResult.Fail("names must not be null");
+        var graph = _graph;
+        foreach (var name in names)
+        {
+            if (!graph.Processors.ContainsKey(name))
+                return EditResult.Fail($"processor '{name}' not found");
+        }
+        _graph = new PipelineGraph(graph.Processors, graph.Connections, new List<string>(names),
+            graph.ProcessorNames, graph.ProcessorStates, graph.ProcessorDefs);
+        return EditResult.Success();
+    }
+
+    /// <summary>
+    /// Update a provider's live config. Scope is intentionally narrow —
+    /// only providers with genuinely editable runtime state are
+    /// supported; others return a rejection pointing the operator at
+    /// the edit-YAML-then-reload path. Supported today:
+    ///   - <see cref="VersionControlProvider"/> — rebuild with new
+    ///     repo/git/remote/branch (credentials live in on-disk git
+    ///     config; swapping instances is safe).
+    ///   - <see cref="LoggingProvider"/> — toggle JsonOutput via the
+    ///     <c>format</c> key (json|text).
+    /// Content + schema-registry + provenance providers require graph
+    /// downtime to reconfigure so they stay edit-YAML-only.
+    /// </summary>
+    public EditResult UpdateProviderConfig(string name, Dictionary<string, string> config)
+    {
+        var provider = _globalCtx.GetProvider(name);
+        if (provider is null) return EditResult.Fail($"provider '{name}' not found");
+        config ??= new Dictionary<string, string>();
+
+        switch (provider)
+        {
+            case VersionControlProvider oldVc:
+            {
+                var repo = config.GetValueOrDefault("repo", oldVc.Repo);
+                var git = config.GetValueOrDefault("git", oldVc.GitBinary);
+                var remote = config.GetValueOrDefault("remote", oldVc.Remote);
+                var branch = config.GetValueOrDefault("branch", oldVc.Branch);
+                var newVc = new VersionControlProvider(repo, git, remote, branch);
+                if (oldVc.IsEnabled) newVc.Enable();
+                _globalCtx.AddProvider(newVc);
+                return EditResult.Success();
+            }
+            case LoggingProvider logging:
+            {
+                if (config.TryGetValue("format", out var fmt))
+                {
+                    logging.JsonOutput = string.Equals(fmt, "json", StringComparison.OrdinalIgnoreCase);
+                }
+                return EditResult.Success();
+            }
+            default:
+                return EditResult.Fail(
+                    $"provider '{name}' ({provider.ProviderType}) does not support runtime config edits — edit config.yaml and POST /api/reload");
+        }
+    }
+
+    /// <summary>
+    /// Rebuild a running processor with a new config. Keeps its
+    /// connections, name, and lifecycle state; replaces the instance
+    /// atomically. <paramref name="typeName"/> may be null to reuse
+    /// the processor's current type.
+    /// </summary>
+    public EditResult UpdateProcessorConfig(string name, string? typeName, Dictionary<string, string> config)
+    {
+        if (string.IsNullOrEmpty(name)) return EditResult.Fail("name must not be blank");
+        var graph = _graph;
+        if (!graph.Processors.ContainsKey(name)) return EditResult.Fail($"processor '{name}' not found");
+
+        var currentDef = graph.ProcessorDefs.GetValueOrDefault(name);
+        var effectiveType = string.IsNullOrEmpty(typeName) ? currentDef.Type : typeName;
+        if (string.IsNullOrEmpty(effectiveType) || effectiveType == "unknown")
+            return EditResult.Fail($"cannot determine type for '{name}' — pass 'type' explicitly");
+        if (!_reg.Has(effectiveType))
+            return EditResult.Fail($"unknown processor type '{effectiveType}'");
+
+        config ??= new Dictionary<string, string>();
+        var requires = currentDef.Requires ?? new List<string>();
+        var ctx = BuildScopedContext(requires);
+        IProcessor rebuilt;
+        try { rebuilt = _reg.Create(effectiveType, ctx, config); }
+        catch (Exception ex) { return EditResult.Fail($"factory failed: {ex.Message}"); }
+
+        var newProcessors = new Dictionary<string, IProcessor>(graph.Processors) { [name] = rebuilt };
+        var newDefs = new Dictionary<string, (string, Dictionary<string, string>, List<string>)>(graph.ProcessorDefs)
+        {
+            [name] = (effectiveType, new Dictionary<string, string>(config), new List<string>(requires))
+        };
+        _graph = new PipelineGraph(newProcessors, graph.Connections, graph.EntryPoints,
+            graph.ProcessorNames, graph.ProcessorStates, newDefs);
+        return EditResult.Success();
     }
 
     // --- Hot reload ---

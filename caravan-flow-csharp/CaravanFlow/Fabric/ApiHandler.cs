@@ -72,6 +72,17 @@ public sealed class ApiHandler
 
         // Recent failed provenance events (errors view)
         app.MapGet("/api/provenance/failures", ProvenanceFailures);
+
+        // Graph mutation — runtime only; POST /api/flow/save persists
+        app.MapPut("/api/processors/{name}/config", UpdateProcessorConfig);
+        app.MapPut("/api/processors/{name}/connections", SetProcessorConnections);
+        app.MapPost("/api/connections", AddConnection);
+        app.MapDelete("/api/connections", DeleteConnection);
+        app.MapPut("/api/connections/{from}", SetConnections);
+        app.MapPut("/api/entrypoints", SetEntryPoints);
+
+        // Provider config edits (new on both tracks)
+        app.MapPut("/api/providers/{name}/config", UpdateProviderConfig);
     }
 
     // --- Stats ---
@@ -432,6 +443,176 @@ public sealed class ApiHandler
             ["stderr"] = r.Stderr,
         });
     }
+
+    // --- Graph mutation: runtime state only; /api/flow/save persists to YAML ---
+
+    private IResult UpdateProcessorConfig(string name, [FromBody] Dictionary<string, object?>? body)
+    {
+        if (body is null) return BadRequest("invalid json body");
+        var type = body.TryGetValue("type", out var t) ? t?.ToString() : null;
+        var config = ExtractStringMap(body, "config");
+        return EditResultJson(
+            _fab.UpdateProcessorConfig(name, type, config),
+            new() { ["status"] = "updated", ["name"] = name });
+    }
+
+    private IResult SetProcessorConnections(string name, [FromBody] Dictionary<string, object?>? body)
+    {
+        if (body is null) return BadRequest("invalid json body");
+        var rels = ExtractRelationshipMap(body);
+        if (rels is null) return BadRequest("each relationship value must be a list of target names");
+        return EditResultJson(
+            _fab.SetConnections(name, rels),
+            new() { ["status"] = "replaced", ["from"] = name, ["relationships"] = rels });
+    }
+
+    private IResult AddConnection([FromBody] Dictionary<string, object?>? body)
+    {
+        if (body is null) return BadRequest("invalid json body");
+        var from = body.TryGetValue("from", out var f) ? f?.ToString() ?? "" : "";
+        var rel = body.TryGetValue("relationship", out var r) ? r?.ToString() ?? "" : "";
+        var to = body.TryGetValue("to", out var t) ? t?.ToString() ?? "" : "";
+        return EditResultJson(
+            _fab.AddConnection(from, rel, to),
+            new() { ["status"] = "added", ["from"] = from, ["relationship"] = rel, ["to"] = to });
+    }
+
+    private IResult DeleteConnection([FromBody] Dictionary<string, object?>? body)
+    {
+        if (body is null) return BadRequest("invalid json body");
+        var from = body.TryGetValue("from", out var f) ? f?.ToString() ?? "" : "";
+        var rel = body.TryGetValue("relationship", out var r) ? r?.ToString() ?? "" : "";
+        var to = body.TryGetValue("to", out var t) ? t?.ToString() ?? "" : "";
+        return EditResultJson(
+            _fab.RemoveConnection(from, rel, to),
+            new() { ["status"] = "removed", ["from"] = from, ["relationship"] = rel, ["to"] = to });
+    }
+
+    private IResult SetConnections(string from, [FromBody] Dictionary<string, object?>? body)
+    {
+        if (body is null) return BadRequest("invalid json body");
+        var rels = ExtractRelationshipMap(body);
+        if (rels is null) return BadRequest("each relationship value must be a list of target names");
+        return EditResultJson(
+            _fab.SetConnections(from, rels),
+            new() { ["status"] = "replaced", ["from"] = from, ["relationships"] = rels });
+    }
+
+    private IResult SetEntryPoints([FromBody] Dictionary<string, object?>? body)
+    {
+        if (body is null) return BadRequest("invalid json body");
+        if (!body.TryGetValue("names", out var namesObj) || namesObj is null)
+            return BadRequest("body must include a 'names' array");
+        List<string>? names = namesObj switch
+        {
+            System.Text.Json.JsonElement je when je.ValueKind == System.Text.Json.JsonValueKind.Array
+                => EnumerateStringArray(je),
+            System.Collections.IEnumerable raw when namesObj is not string
+                => EnumerateStrings(raw),
+            _ => null,
+        };
+        if (names is null) return BadRequest("body must include a 'names' array");
+        return EditResultJson(
+            _fab.SetEntryPoints(names),
+            new() { ["status"] = "replaced", ["names"] = names });
+    }
+
+    /// <summary>
+    /// Replace a provider's config. Re-creates the provider instance with
+    /// the new config map; state (enabled/disabled) is preserved across
+    /// the swap. Provider type is identified by name.
+    /// </summary>
+    private IResult UpdateProviderConfig(string name, [FromBody] Dictionary<string, object?>? body)
+    {
+        if (body is null) return BadRequest("invalid json body");
+        var config = ExtractStringMap(body, "config");
+        var result = _fab.UpdateProviderConfig(name, config);
+        return EditResultJson(result, new() { ["status"] = "updated", ["name"] = name });
+    }
+
+    private static IResult EditResultJson(Fabric.EditResult result, Dictionary<string, object?> okBody)
+    {
+        if (result.Ok) return Json(okBody);
+        var status = result.Reason.Contains("not found")
+                     || result.Reason.Contains("already exists")
+                     || result.Reason.Contains("unknown")
+            ? 409 : 400;
+        return JsonStatus(status, new Dictionary<string, object?> { ["error"] = result.Reason });
+    }
+
+    private static IResult BadRequest(string message)
+        => JsonStatus(400, new Dictionary<string, object?> { ["error"] = message });
+
+    /// Wrap CaravanJson.SerializeToString (AOT-safe source-gen) with a
+    /// chosen HTTP status. Results.Json with reflection-based
+    /// serialization would trip IL2026/IL3050 under AOT.
+    private static IResult JsonStatus(int status, object value)
+        => Results.Content(CaravanJson.SerializeToString(value), "application/json", null, status);
+
+    // System.Text.Json leaves nested object values as JsonElement when
+    // the outer container is Dictionary<string, object?>. We handle
+    // both JsonElement (the common case) and already-materialized
+    // collections (e.g. from tests constructing the dict directly).
+
+    private static Dictionary<string, string> ExtractStringMap(Dictionary<string, object?> body, string key)
+    {
+        var result = new Dictionary<string, string>();
+        if (!body.TryGetValue(key, out var raw) || raw is null) return result;
+        switch (raw)
+        {
+            case System.Text.Json.JsonElement je when je.ValueKind == System.Text.Json.JsonValueKind.Object:
+                foreach (var prop in je.EnumerateObject()) result[prop.Name] = JsonValueToString(prop.Value);
+                return result;
+            case Dictionary<string, object?> dict:
+                foreach (var (k, v) in dict) result[k] = v?.ToString() ?? "";
+                return result;
+        }
+        return result;
+    }
+
+    private static Dictionary<string, List<string>>? ExtractRelationshipMap(Dictionary<string, object?> body)
+    {
+        var rels = new Dictionary<string, List<string>>();
+        foreach (var (key, value) in body)
+        {
+            List<string>? targets = value switch
+            {
+                System.Text.Json.JsonElement je when je.ValueKind == System.Text.Json.JsonValueKind.Array
+                    => EnumerateStringArray(je),
+                System.Collections.IEnumerable enumerable when value is not string
+                    => EnumerateStrings(enumerable),
+                _ => null
+            };
+            if (targets is null) return null;
+            rels[key] = targets;
+        }
+        return rels;
+    }
+
+    private static List<string> EnumerateStringArray(System.Text.Json.JsonElement arr)
+    {
+        var out_ = new List<string>();
+        foreach (var el in arr.EnumerateArray()) out_.Add(JsonValueToString(el));
+        return out_;
+    }
+
+    private static List<string> EnumerateStrings(System.Collections.IEnumerable enumerable)
+    {
+        var out_ = new List<string>();
+        foreach (var item in enumerable) if (item is not null) out_.Add(item.ToString()!);
+        return out_;
+    }
+
+    private static string JsonValueToString(System.Text.Json.JsonElement value)
+        => value.ValueKind switch
+        {
+            System.Text.Json.JsonValueKind.String => value.GetString() ?? "",
+            System.Text.Json.JsonValueKind.Number => value.ToString(),
+            System.Text.Json.JsonValueKind.True => "true",
+            System.Text.Json.JsonValueKind.False => "false",
+            System.Text.Json.JsonValueKind.Null => "",
+            _ => value.GetRawText()
+        };
 
     // --- Provenance ---
 
