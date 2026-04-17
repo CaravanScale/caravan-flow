@@ -11,6 +11,7 @@ public sealed class ApiHandler
 {
     private readonly Fabric _fab;
     private string? _configPath;
+    private Overlay.Resolved? _resolvedOverlay;
 
     private static IResult Json(object value)
         => Results.Content(CaravanJson.SerializeToString(value), "application/json");
@@ -18,6 +19,14 @@ public sealed class ApiHandler
     public ApiHandler(Fabric fab) => _fab = fab;
 
     public void SetConfigPath(string path) => _configPath = path;
+
+    /// <summary>
+    /// Installs the overlay snapshot resolved at startup so the
+    /// <c>/api/overlays*</c> endpoints can surface layer provenance
+    /// and write secrets through to disk. Null when the worker booted
+    /// without a config file.
+    /// </summary>
+    public void SetResolvedOverlay(Overlay.Resolved? overlay) => _resolvedOverlay = overlay;
 
     public void MapRoutes(WebApplication app)
     {
@@ -47,6 +56,10 @@ public sealed class ApiHandler
         app.MapGet("/api/sources", Sources);
         app.MapPost("/api/sources/start", StartSource);
         app.MapPost("/api/sources/stop", StopSource);
+
+        // Overlay stack: base ← config.local.yaml ← secrets.yaml
+        app.MapGet("/api/overlays", Overlays);
+        app.MapPut("/api/overlays/secrets", WriteSecretsOverlay);
     }
 
     // --- Stats ---
@@ -236,6 +249,62 @@ public sealed class ApiHandler
         {
             return Json(new Dictionary<string, object?> { ["error"] = $"reload failed: {ex.Message}" });
         }
+    }
+
+    // --- Overlays ---
+
+    private IResult Overlays()
+    {
+        if (_resolvedOverlay is null)
+            return Json(new Dictionary<string, object?> { ["error"] = "overlay info unavailable — worker booted without a config loader" });
+
+        var layers = new List<Dictionary<string, object?>>();
+        foreach (var layer in _resolvedOverlay.Layers)
+        {
+            layers.Add(new Dictionary<string, object?>
+            {
+                ["role"] = layer.Role,
+                ["path"] = layer.Path,
+                ["present"] = layer.Present,
+                ["size"] = layer.Content.Count
+            });
+        }
+        return Json(new Dictionary<string, object?>
+        {
+            ["base"] = _resolvedOverlay.BasePath,
+            ["layers"] = layers,
+            ["effective"] = _resolvedOverlay.Effective,
+            ["provenance"] = _resolvedOverlay.Provenance
+        });
+    }
+
+    private async Task<IResult> WriteSecretsOverlay([FromBody] Dictionary<string, object?>? body)
+    {
+        if (_resolvedOverlay is null)
+            return Json(new Dictionary<string, object?> { ["error"] = "overlay info unavailable — worker booted without a config loader" });
+        if (body is null)
+            return Json(new Dictionary<string, object?> { ["error"] = "request body must be a JSON object" });
+
+        var secretsLayer = _resolvedOverlay.Layers.FirstOrDefault(l => l.Role == "secrets");
+        var secretsPath = secretsLayer?.Path;
+        if (string.IsNullOrEmpty(secretsPath))
+            return Json(new Dictionary<string, object?> { ["error"] = "no secrets path resolved" });
+
+        try
+        {
+            Overlay.WriteSecrets(secretsPath, body);
+            return Json(new Dictionary<string, object?>
+            {
+                ["status"] = "written",
+                ["path"] = secretsPath,
+                ["keys"] = body.Count
+            });
+        }
+        catch (Exception ex)
+        {
+            return Json(new Dictionary<string, object?> { ["error"] = $"failed to write secrets: {ex.Message}" });
+        }
+        finally { await Task.CompletedTask; }
     }
 
     // --- Provenance ---

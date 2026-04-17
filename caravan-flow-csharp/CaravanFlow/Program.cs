@@ -40,12 +40,24 @@ var configPath = Path.Combine(Directory.GetCurrentDirectory(), "config.yaml");
 if (!File.Exists(configPath))
     configPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "config.yaml");
 
+// Load config with optional overlays: base ← config.local.yaml ← secrets.yaml.
+// Overlay paths resolve from $CARAVANFLOW_CONFIG_LOCAL / $CARAVANFLOW_SECRETS_PATH
+// env vars first, then sibling-file defaults next to the base config. Missing
+// files are not errors — the layer contributes an empty map. The resolved
+// snapshot is kept around so `GET /api/overlays` can surface layer provenance.
+Overlay.Resolved? resolvedOverlay = null;
 Dictionary<string, object?> config;
 if (File.Exists(configPath))
 {
-    var yaml = File.ReadAllText(configPath);
-    config = YamlParser.Parse(yaml);
+    resolvedOverlay = Overlay.Load(configPath);
+    config = resolvedOverlay.Effective;
     Console.WriteLine($"Config loaded from {configPath}");
+    foreach (var layer in resolvedOverlay.Layers)
+    {
+        if (layer.Role == "base") continue; // already reported above
+        if (layer.Present)
+            Console.WriteLine($"  overlay [{layer.Role}] {layer.Path} ({layer.Content.Count} top-level keys)");
+    }
 }
 else
 {
@@ -255,6 +267,7 @@ app.MapPost("/", async (HttpRequest req, HttpResponse resp) =>
 // Management API — admin surface for processors/sources/providers
 var api = new ApiHandler(fab);
 api.SetConfigPath(configPath);
+api.SetResolvedOverlay(resolvedOverlay);
 api.MapRoutes(app);
 
 // Schema registry REST endpoints (Confluent path shapes under /api/schema-registry)
