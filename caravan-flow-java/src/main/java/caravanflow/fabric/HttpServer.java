@@ -24,14 +24,23 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.Executors;
 
-/// HTTP surface for caravan-flow-java. Phase 3 adds:
-///   * POST /             — ingest a FlowFile
+/// HTTP surface for caravan-flow-java:
+///   * GET  /             — dashboard (when the static file is on the classpath)
+///   * POST /             — ingest a FlowFile (body = raw payload, X-Flow-*
+///                          headers become attributes)
 ///   * GET  /health       — liveness probe
 ///   * GET  /api/stats    — running counters
 ///   * GET  /api/processors — list active processors + their type
 ///   * GET  /api/connections — full connection map
 ///   * GET  /api/flow     — full graph snapshot (processors + connections + stats)
 ///   * POST /api/reload   — hot-swap the graph from config.yaml on disk
+///   * plus the full admin surface: provenance, processor/source/provider
+///     mutation, overlays, plugin management, vc, identity.
+///
+/// HTTP ingest on the management port is a deliberate Java-track choice —
+/// enterprise deployments (NiFi shops, etc.) expect inbound HTTP on the
+/// worker itself. C# (AOT/edge track) uses a separate ListenHTTP source
+/// on its own port instead.
 ///
 /// Javalin 6 with Jetty 12 underneath — non-DI, minimal surface.
 public final class HttpServer {
@@ -91,9 +100,10 @@ public final class HttpServer {
                     cfg.jetty.threadPool = qtp;
                 })
                 // GET / serves the dashboard when the static file is on the
-                // classpath. POST / is ingest. Distinguishing by method is a
-                // caravanflow-isms since the original C# service followed the
-                // same convention.
+                // classpath. POST / is ingest — a Java-track choice for
+                // enterprise HTTP ingress on the worker itself. Distinguishing
+                // by method is a caravanflow-ism; C# uses a separate
+                // ListenHTTP source instead.
                 .get("/",                              this::handleDashboard)
                 .post("/",                             this::handleIngest)
                 .get("/dashboard",                     this::handleDashboard)
@@ -198,7 +208,25 @@ public final class HttpServer {
     }
 
     private void handleStats(Context ctx) throws Exception {
-        ctx.contentType("application/json").result(json.writeValueAsBytes(pipeline.stats().snapshot()));
+        ctx.contentType("application/json").result(json.writeValueAsBytes(summaryStats()));
+    }
+
+    /// Dashboard-friendly summary counters returned by {@code /api/stats}
+    /// and embedded in {@code /api/flow}'s {@code stats} field. Shape
+    /// matches caravan-flow-csharp's {@code Fabric.GetStats()}
+    /// (Fabric.cs:457-463) with camelCase:
+    /// {@code {processed, activeExecutions, processors, sources}}.
+    ///
+    /// Detailed counters (per-processor totals, drops, failures) stay
+    /// on {@code /api/processor-stats} and the internal
+    /// {@link Stats#snapshot()} method for programmatic consumers.
+    private Map<String, Object> summaryStats() {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("processed",        (Long) pipeline.stats().snapshot().get("totalProcessed"));
+        out.put("activeExecutions", pipeline.metrics().activeExecutions());
+        out.put("processors",       pipeline.graph().processors().size());
+        out.put("sources",          pipeline.sources().size());
+        return out;
     }
 
     private void handleProcessors(Context ctx) throws Exception {
@@ -255,10 +283,18 @@ public final class HttpServer {
         Map<String, Object> out = new LinkedHashMap<>();
         out.put("entryPoints", graph.entryPoints());
         out.put("processors",  processors);
+        // Top-level `connections` is a Java-track add-on (the current UI's
+        // FlowController + BfsLayout read from here). C# doesn't expose
+        // it; the same data is inline on each processor. Tracked as a
+        // C#-cohort candidate for consistency.
         out.put("connections", graph.connections());
         out.put("providers",   providers);
         out.put("sources",     srcs);
-        out.put("stats",       pipeline.stats().snapshot());
+        // Embedded stats match /api/stats summary shape (processed,
+        // activeExecutions, processors, sources) — not the detailed
+        // Stats.snapshot(). Dashboards only need the summary; callers
+        // that want totals/errors/drops go to /api/processor-stats.
+        out.put("stats",       summaryStats());
         ctx.contentType("application/json").result(json.writeValueAsBytes(out));
     }
 

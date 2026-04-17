@@ -91,6 +91,12 @@ public final class Metrics {
     void beginExecution() { activeExecutions.incrementAndGet(); }
     void endExecution()   { activeExecutions.decrementAndGet(); }
 
+    /// Current in-flight execution count. Surfaced through
+    /// {@code /api/stats} and {@code /api/flow}'s embedded stats so
+    /// operators can see live load without waiting for a Prometheus
+    /// scrape round-trip.
+    public int activeExecutions() { return activeExecutions.get(); }
+
     /// Bind a running-state gauge for a source. The gauge reads
     /// {@link Source#isRunning()} at scrape time, so start/stop
     /// transitions don't need explicit metric updates.

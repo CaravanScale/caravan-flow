@@ -53,6 +53,28 @@ public final class Main {
     private static final String DEFAULT_PORT     = "9092";
 
     public static void main(String[] args) throws IOException {
+        // Subcommand dispatch — mirrors caravan-flow-csharp's
+        // Program.cs top-of-main switch.
+        if (args.length > 0) {
+            String mode = args[0];
+            switch (mode) {
+                case "validate", "--validate" -> {
+                    int exit = runValidate(args.length > 1 ? args[1] : null);
+                    System.exit(exit);
+                    return;
+                }
+                case "bench", "--bench" -> {
+                    runBench();
+                    return;
+                }
+                case "help", "--help", "-h" -> {
+                    printUsage();
+                    return;
+                }
+                default -> { /* fall through — args[0] is a config path */ }
+            }
+        }
+
         Path configPath = resolveConfigPath(args);
         Registry registry = new Registry();
         SourceRegistry sourceRegistry = new SourceRegistry();
@@ -275,5 +297,105 @@ public final class Main {
                         Relationships.UNMATCHED,  List.of("tail")),
                 "elevate", Map.of(Relationships.SUCCESS,   List.of("tail")));
         return new PipelineGraph(processors, connections, List.of("ingress"));
+    }
+
+    /// Static validation without starting the worker. Exit codes match
+    /// caravan-flow-csharp: 0 = clean, 1 = errors, 2 = file not found.
+    /// Warnings are reported but don't affect the exit code.
+    static int runValidate(String pathArg) {
+        Path path = pathArg != null ? Path.of(pathArg) : Path.of("config.yaml");
+        if (!Files.isRegularFile(path)) {
+            System.err.println("validate: config file not found: " + path.toAbsolutePath());
+            return 2;
+        }
+
+        Registry registry = new Registry();
+        SourceRegistry sources = new SourceRegistry();
+        ProviderRegistry providers = new ProviderRegistry();
+        PluginLoader.loadSources(Main.class.getClassLoader(), sources);
+        PluginLoader.loadProviders(Main.class.getClassLoader(), providers);
+        ConfigLoader loader = new ConfigLoader(registry, new ProcessorContext(), sources, providers);
+
+        PipelineGraph graph;
+        try {
+            graph = loader.loadFromFile(path);
+        } catch (Exception ex) {
+            System.err.println("validate: " + path + " — " + ex.getMessage());
+            return 1;
+        }
+
+        caravanflow.fabric.FlowValidator.Result result =
+                caravanflow.fabric.FlowValidator.validate(graph.processors().keySet(), graph.connections());
+
+        System.out.println("validate: " + path);
+        if (result.errors().isEmpty() && result.warnings().isEmpty()) {
+            System.out.println("  no issues — config is valid");
+            return 0;
+        }
+        for (String err : result.errors())   System.out.println("  [error]   " + err);
+        for (String warn : result.warnings()) System.out.println("  [warning] " + warn);
+        System.out.println();
+        System.out.printf("summary: %d error(s), %d warning(s)%n",
+                result.errors().size(), result.warnings().size());
+        return result.errors().isEmpty() ? 0 : 1;
+    }
+
+    /// Throughput benchmark — two-hop UpdateAttribute pipeline, no HTTP,
+    /// no providers. Prints ff/s at several payload counts so Java and
+    /// C# track runs are directly comparable. Mirrors caravan-flow-csharp's
+    /// RunBenchmarks in Program.cs:332.
+    static void runBench() {
+        System.out.println("=== caravan-flow-java benchmark ===");
+        System.out.println("Runtime: " + System.getProperty("java.vm.name") + " "
+                + System.getProperty("java.runtime.version"));
+        System.out.println();
+
+        System.out.println("Warmup (JIT)...");
+        benchThroughput(10_000, /*quiet=*/true);
+
+        System.gc(); // best-effort pre-measurement settle
+        System.out.println();
+        System.out.println("Pipeline throughput (2-hop direct execution):");
+        benchThroughput(10_000,  false);
+        benchThroughput(50_000,  false);
+        benchThroughput(100_000, false);
+        benchThroughput(500_000, false);
+    }
+
+    private static void benchThroughput(int n, boolean quiet) {
+        Processor tag  = new UpdateAttribute("env",  "prod");
+        Processor sink = new UpdateAttribute("done", "true");
+        Map<String, Processor> procs = Map.of("tag", tag, "sink", sink);
+        Map<String, Map<String, List<String>>> conns = Map.of(
+                "tag", Map.of(Relationships.SUCCESS, List.of("sink")));
+        PipelineGraph graph = new PipelineGraph(procs, conns, List.of("tag"));
+        Pipeline pipeline = new Pipeline(graph);
+
+        byte[] payload = "bench payload data here".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        long start = System.nanoTime();
+        for (int i = 0; i < n; i++) {
+            pipeline.ingest(caravanflow.core.FlowFile.create(payload,
+                    Map.of("type", "order", "id", Integer.toString(i))));
+        }
+        long ms = (System.nanoTime() - start) / 1_000_000;
+
+        if (quiet) return;
+        if (ms > 0) {
+            long rate = (long) n * 1000L / ms;
+            System.out.printf("  %,d ff, 2 hops: %dms (%,d ff/s)%n", n, ms, rate);
+        } else {
+            System.out.printf("  %,d ff, 2 hops: <1ms%n", n);
+        }
+    }
+
+    private static void printUsage() {
+        System.out.println("caravan-flow-java — data flow engine");
+        System.out.println();
+        System.out.println("Usage:");
+        System.out.println("  caravan-flow                  Start the worker using ./config.yaml (default)");
+        System.out.println("  caravan-flow <path>           Start the worker using the given config file");
+        System.out.println("  caravan-flow validate [path]  Check a config without starting; exit 0 clean, 1 errors, 2 not found");
+        System.out.println("  caravan-flow bench            Run pipeline throughput benchmarks");
+        System.out.println("  caravan-flow help             Show this message");
     }
 }
