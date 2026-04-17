@@ -1,0 +1,57 @@
+{% extends "templates/layout.peb" %}
+{% block content %}
+<h1>Settings</h1>
+<p class="meta">Worker: <code>{{ workerUrl }}</code> — read-only overlay stack (editing lands in Phase 3)</p>
+
+{% if overlaysError %}
+    <article class="error">
+        <strong>Worker unreachable.</strong>
+        <pre>{{ overlaysError }}</pre>
+    </article>
+{% else %}
+    <section class="overlays">
+        <h2>Config layers</h2>
+        {% if overlays.base %}
+            <p>Base: <code>{{ overlays.base }}</code></p>
+        {% endif %}
+        <table class="overlay-stack">
+            <thead>
+                <tr>
+                    <th>Role</th>
+                    <th>Path</th>
+                    <th>Present</th>
+                    <th class="right">Keys</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for layer in overlays.layers %}
+                    <tr class="layer-{% if layer.present %}present{% else %}missing{% endif %}">
+                        <td><code>{{ layer.role }}</code></td>
+                        <td><code>{{ layer.path | default('—') }}</code></td>
+                        <td>{% if layer.present %}yes{% else %}no{% endif %}</td>
+                        <td class="right">{{ layer.size }}</td>
+                    </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </section>
+
+    {% if overlays.provenance | length > 0 %}
+        <section class="overlays">
+            <h2>Provenance</h2>
+            <p class="meta">Which layer each effective key came from.</p>
+            <table class="overlay-provenance">
+                <thead><tr><th>Key</th><th>Resolved from</th></tr></thead>
+                <tbody>
+                    {% for entry in overlays.provenance %}
+                        <tr>
+                            <td><code>{{ entry.key }}</code></td>
+                            <td><code>{{ entry.value }}</code></td>
+                        </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </section>
+    {% endif %}
+{% endif %}
+{% endblock %}

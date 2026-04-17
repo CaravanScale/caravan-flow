@@ -1,0 +1,38 @@
+{% extends "templates/layout.peb" %}
+{% block content %}
+<h1>Nodes</h1>
+<p class="meta">Worker: <code>{{ workerUrl }}</code></p>
+
+<article class="info">
+    <strong>Phase 1 — single-worker mode.</strong>
+    Multi-node fleet views ship in Phase 2. Currently showing 1 worker.
+</article>
+
+{% if identityError %}
+    <article class="error">
+        <strong>Worker unreachable.</strong>
+        <pre>{{ identityError }}</pre>
+    </article>
+{% else %}
+    <table class="node-table">
+        <thead>
+            <tr>
+                <th>Node ID</th>
+                <th>Hostname</th>
+                <th>Version</th>
+                <th class="right">Port</th>
+                <th class="right">Uptime (ms)</th>
+            </tr>
+        </thead>
+        <tbody>
+            <tr>
+                <td><code>{{ identity.nodeId }}</code></td>
+                <td><code>{{ identity.hostname }}</code></td>
+                <td>{{ identity.version }}</td>
+                <td class="right">{{ identity.port }}</td>
+                <td class="right">{{ identity.uptimeMillis }}</td>
+            </tr>
+        </tbody>
+    </table>
+{% endif %}
+{% endblock %}

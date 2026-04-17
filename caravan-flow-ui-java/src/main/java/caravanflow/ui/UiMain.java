@@ -9,6 +9,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import caravanflow.ui.views.FlowController;
 import caravanflow.ui.views.LineageController;
+import caravanflow.ui.views.NodesController;
+import caravanflow.ui.views.SettingsController;
 
 import java.net.URI;
 import java.util.LinkedHashMap;
@@ -66,6 +68,8 @@ public final class UiMain {
     public UiMain start(int port) {
         FlowController flow = new FlowController(fleet, pebble);
         LineageController lineage = new LineageController(fleet, pebble);
+        SettingsController settings = new SettingsController(fleet, pebble);
+        NodesController nodes = new NodesController(fleet, pebble);
         app = Javalin.create(javalin -> {
                     QueuedThreadPool qtp = new QueuedThreadPool();
                     qtp.setName("caravan-flow-ui-jetty");
@@ -83,6 +87,8 @@ public final class UiMain {
                 .get(UiRoutes.LINEAGE_LIST,  lineage::handleLineageList)
                 .get(UiRoutes.LINEAGE_ONE,   lineage::handleLineageDetail)
                 .get(UiRoutes.LINEAGE_ONE_EVENTS, lineage::handleLineageDetailEvents)
+                .get(UiRoutes.SETTINGS,      settings::handleSettings)
+                .get(UiRoutes.NODES,         nodes::handleNodes)
                 .start(port);
         boundPort = app.port();
         return this;

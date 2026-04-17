@@ -6,6 +6,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import caravanflow.shared.FlowSnapshot;
 import caravanflow.shared.Identity;
+import caravanflow.shared.OverlayInfo;
 import caravanflow.shared.ProvenanceEvent;
 import caravanflow.shared.RouteNames;
 
@@ -49,6 +50,7 @@ public final class FleetService {
     /// — the common path from HTMX polling. Non-default n values bypass
     /// the cache so an on-demand larger pull is never served stale data.
     private final AtomicReference<Cached<List<ProvenanceEvent>>> failuresCache = new AtomicReference<>();
+    private final AtomicReference<Cached<OverlayInfo>> overlaysCache = new AtomicReference<>();
 
     public FleetService(URI workerBaseUrl) {
         this(workerBaseUrl, Duration.ofSeconds(5));
@@ -98,6 +100,14 @@ public final class FleetService {
     /// hit keeps the view honest.
     public List<ProvenanceEvent> lineage(long flowFileId) {
         return fetchList(RouteNames.API_PROVENANCE_LINEAGE + flowFileId, ProvenanceEvent.class);
+    }
+
+    /// Current overlay stack from the worker — base YAML plus any
+    /// role-specific layers and secrets — as assembled by
+    /// {@code ConfigLoader}. Read-only surface; editing will land in
+    /// Phase 3.
+    public OverlayInfo overlays() {
+        return readCached(overlaysCache, RouteNames.API_OVERLAYS, OverlayInfo.class);
     }
 
     /// Probe the worker — returns {@code true} when {@code /api/identity}

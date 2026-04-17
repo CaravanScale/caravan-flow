@@ -96,3 +96,30 @@ li.evt-created   .evt-type { background: #dff6e4; color: #1a6b34; }
 li.evt-processed .evt-type { background: #e5edf8; color: #1f3d70; }
 li.evt-routed    .evt-type { background: #efe1f8; color: #5a2e83; }
 li.evt-dropped   .evt-type { background: #fff1d4; color: #7a5200; }
+
+article.info {
+    padding: 0.75rem 1rem; border: 1px solid #bfd4e8;
+    background: #e9f2fa; color: #234; border-radius: 6px;
+    margin-bottom: 1.25rem;
+}
+
+section.overlays { margin-top: 1.5rem; }
+section.overlays h2 { font-size: 1.1rem; margin: 0 0 0.5rem; color: #345; }
+section.overlays p.meta { margin-top: 0; }
+
+table.overlay-stack, table.overlay-provenance, table.node-table {
+    width: 100%; border-collapse: collapse; font-size: 0.9rem;
+    margin-top: 0.5rem;
+}
+table.overlay-stack th, table.overlay-stack td,
+table.overlay-provenance th, table.overlay-provenance td,
+table.node-table th, table.node-table td {
+    text-align: left; padding: 0.45rem 0.7rem;
+    border-bottom: 1px solid #e5e8ec; vertical-align: top;
+}
+table.overlay-stack th, table.overlay-provenance th, table.node-table th {
+    color: #556; font-weight: 600; background: #f4f7fa;
+}
+table th.right, table td.right { text-align: right; font-variant-numeric: tabular-nums; color: #667; }
+tr.layer-missing td { color: #99a; }
+tr.layer-missing td code { opacity: 0.6; }

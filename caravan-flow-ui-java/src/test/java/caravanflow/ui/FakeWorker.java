@@ -46,6 +46,27 @@ final class FakeWorker {
         return this;
     }
 
+    FakeWorker withOverlays(Map<String, Object> body) {
+        app.get("/api/overlays", ctx ->
+                ctx.contentType("application/json").result(JSON.writeValueAsBytes(body)));
+        return this;
+    }
+
+    static Map<String, Object> sampleOverlays() {
+        Map<String, Object> base = new LinkedHashMap<>();
+        base.put("base", "/etc/caravan/config.yaml");
+        base.put("layers", java.util.List.of(
+                Map.of("role", "base",    "path", "/etc/caravan/config.yaml",    "present", true,  "size", 3),
+                Map.of("role", "local",   "path", "/etc/caravan/config.local.yaml","present", true,  "size", 1),
+                Map.of("role", "secrets", "path", "/etc/caravan/secrets.yaml",   "present", false, "size", 0)));
+        base.put("effective", Map.of("flow", Map.of("entryPoints", java.util.List.of("ingress")),
+                                     "http", Map.of("port", 9092)));
+        base.put("provenance", Map.of(
+                "flow.entryPoints", "base",
+                "http.port",        "local"));
+        return base;
+    }
+
     static Map<String, Object> event(long flowFileId, String type, String component, String details, long ts) {
         Map<String, Object> e = new LinkedHashMap<>();
         e.put("flowFileId", flowFileId);

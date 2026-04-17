@@ -3,6 +3,7 @@ package caravanflow.ui;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import caravanflow.shared.Identity;
+import caravanflow.shared.OverlayInfo;
 import caravanflow.shared.ProvenanceEvent;
 
 import java.net.URI;
@@ -96,5 +97,20 @@ final class FleetServiceTest {
         var fleet = new FleetService(URI.create("http://localhost:1"), Duration.ofMillis(300));
         assertThrows(IllegalArgumentException.class, () -> fleet.failures(0));
         assertThrows(IllegalArgumentException.class, () -> fleet.failures(-1));
+    }
+
+    @Test
+    void overlaysParsesStackAndLayers() {
+        worker = new FakeWorker().withOverlays(FakeWorker.sampleOverlays()).start();
+        var fleet = new FleetService(worker.url(), Duration.ofSeconds(2));
+
+        OverlayInfo overlays = fleet.overlays();
+        assertEquals("/etc/caravan/config.yaml", overlays.base());
+        assertEquals(3, overlays.layers().size());
+        assertEquals("base",    overlays.layers().get(0).role());
+        assertTrue (overlays.layers().get(0).present());
+        assertFalse(overlays.layers().get(2).present(), "secrets layer should report missing");
+        assertEquals("base",  overlays.provenance().get("flow.entryPoints"));
+        assertEquals("local", overlays.provenance().get("http.port"));
     }
 }
