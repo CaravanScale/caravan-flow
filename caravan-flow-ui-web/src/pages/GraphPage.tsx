@@ -14,6 +14,7 @@ import { layoutFlow, type ProcessorNodeData, type RelEdgeData } from '../lib/lay
 import { ProcessorNode } from '../components/ProcessorNode'
 import { RelationshipEdge } from '../components/RelationshipEdge'
 import { ProcessorDrawer } from '../components/ProcessorDrawer'
+import { AddProcessorDialog } from '../components/AddProcessorDialog'
 import type { Processor } from '../api/types'
 
 const nodeTypes = { processor: ProcessorNode }
@@ -42,6 +43,7 @@ export function GraphPage() {
   })
 
   const [selected, setSelected] = useState<string | null>(null)
+  const [addOpen, setAddOpen] = useState(false)
 
   // Lay out from the topology, then fold in live stats so the node
   // cards show fresh numbers without forcing a new dagre pass.
@@ -112,20 +114,62 @@ export function GraphPage() {
           />
         </ReactFlow>
       </div>
-      <div className="pointer-events-none absolute left-4 top-4 z-10">
-        <h1 className="text-base font-semibold text-white">Graph</h1>
-        {topology.data && (
-          <p className="mt-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>
-            {topology.data.processors.length} processors ·{' '}
-            {topology.data.processors.reduce(
-              (a, p) => a + Object.values(p.connections ?? {}).reduce((b, xs) => b + xs.length, 0),
-              0,
-            )}{' '}
-            connections · {topology.data.entryPoints.length} entry points
-          </p>
-        )}
-        {topology.isError && <p className="text-[11px] text-red-400">failed to load /api/flow</p>}
+      <div className="absolute left-4 right-4 top-4 z-10 flex items-start justify-between">
+        <div className="pointer-events-none">
+          <h1 className="text-base font-semibold text-white">Graph</h1>
+          {topology.data && (
+            <p className="mt-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+              {topology.data.processors.length} processors ·{' '}
+              {topology.data.processors.reduce(
+                (a, p) => a + Object.values(p.connections ?? {}).reduce((b, xs) => b + xs.length, 0),
+                0,
+              )}{' '}
+              connections · {topology.data.entryPoints.length} entry points
+            </p>
+          )}
+          {topology.isError && <p className="text-[11px]" style={{ color: 'var(--error)' }}>failed to load /api/flow</p>}
+        </div>
+        <button
+          onClick={() => setAddOpen(true)}
+          className="rounded px-3 py-1 text-[12px]"
+          style={{ background: '#0f3460', border: '1px solid var(--accent)', color: '#fff' }}
+          title="add processor to runtime graph"
+        >
+          + add processor
+        </button>
       </div>
+
+      {/* Empty-state CTA — shows when the flow has no processors. The
+          canvas is behind this but invisible; operators land here
+          rather than on a blank black rectangle. */}
+      {topology.isSuccess && topology.data.processors.length === 0 && (
+        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
+          <div
+            className="pointer-events-auto flex flex-col items-center gap-3 rounded-lg border px-8 py-6 text-center"
+            style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}
+          >
+            <h2 className="text-sm font-semibold text-white">Your flow is empty</h2>
+            <p className="max-w-sm text-[12px]" style={{ color: 'var(--text-muted)' }}>
+              Add a processor to begin. Sources + sinks are available through the same
+              dialog — pick the type that matches what the processor does (e.g. GetFile
+              source, PutFile sink, UpdateAttribute transform).
+            </p>
+            <button
+              onClick={() => setAddOpen(true)}
+              className="rounded px-4 py-1.5 text-[12px]"
+              style={{ background: '#0f3460', border: '1px solid var(--accent)', color: '#fff' }}
+            >
+              + add your first processor
+            </button>
+          </div>
+        </div>
+      )}
+
+      <AddProcessorDialog
+        open={addOpen}
+        existingNames={topology.data?.processors.map((p) => p.name) ?? []}
+        onClose={() => setAddOpen(false)}
+      />
       {selectedProcessor && topology.data && (
         <ProcessorDrawer
           processor={selectedProcessor}
