@@ -1,0 +1,121 @@
+@inject FlowApiClient Api
+@implements IDisposable
+@using System.Text.Json
+
+@*
+    Top-level "Save to config" button + VC status badge.
+
+    Single button → single worker call:
+      - POST /api/flow/save writes config.yaml from the current
+        runtime graph.
+      - If a VersionControlProvider is enabled server-side, the
+        same call commits + (optionally) pushes. UI just shows the
+        response.
+
+    Badge polls /api/vc/status every 30 s and immediately after each
+    save so the ahead/behind counters stay honest.
+*@
+
+<div class="save-bar">
+    @if (_vc is null) { <span class="vc-pill muted">VC: …</span> }
+    else if (!_vcEnabled) { <span class="vc-pill disk-only" title="VersionControlProvider not enabled — saves hit disk only">disk-only</span> }
+    else
+    {
+        <span class="vc-pill @(_clean ? "clean" : "dirty")" title="branch: @_branch">
+            VC: @_branch
+            @if (_ahead > 0) { <text> ↑@_ahead</text> }
+            @if (_behind > 0) { <text> ↓@_behind</text> }
+            @if (_clean && _ahead == 0 && _behind == 0) { <text> ✓</text> }
+        </span>
+    }
+
+    <button class="btn-primary" @onclick="Save" disabled="@_busy" title="writes config.yaml; commits+pushes if VC enabled">
+        @(_busy ? "saving…" : "Save to config")
+    </button>
+    @if (_status is not null) { <span class="@(_statusError ? "error" : "muted")">@_status</span> }
+</div>
+
+@code {
+    private JsonElement? _vc;
+    private bool _vcEnabled;
+    private bool _clean;
+    private int _ahead;
+    private int _behind;
+    private string _branch = "";
+    private Timer? _timer;
+    private bool _busy;
+    private string? _status;
+    private bool _statusError;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshVc();
+        _timer = new Timer(async _ => { await RefreshVc(); await InvokeAsync(StateHasChanged); },
+            null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
+    }
+
+    private async Task RefreshVc()
+    {
+        try
+        {
+            var vc = await Api.GetVcStatusAsync();
+            _vc = vc;
+            _vcEnabled = vc.TryGetProperty("enabled", out var en) && en.ValueKind == JsonValueKind.True;
+            _clean = vc.TryGetProperty("clean", out var c) && c.ValueKind == JsonValueKind.True;
+            _branch = vc.TryGetProperty("branch", out var b) && b.ValueKind == JsonValueKind.String ? b.GetString()! : "";
+            _ahead = vc.TryGetProperty("ahead", out var a) && a.ValueKind == JsonValueKind.Number ? a.GetInt32() : 0;
+            _behind = vc.TryGetProperty("behind", out var bh) && bh.ValueKind == JsonValueKind.Number ? bh.GetInt32() : 0;
+        }
+        catch { /* silent */ }
+    }
+
+    private async Task Save()
+    {
+        _busy = true; _status = null; _statusError = false;
+        try
+        {
+            var resp = await Api.SaveFlowAsync(message: "flow: update via UI", push: true);
+            if (resp.IsSuccessStatusCode)
+            {
+                var body = await resp.Content.ReadFromJsonAsync<JsonElement>();
+                _status = BuildSaveSummary(body);
+                _statusError = false;
+            }
+            else
+            {
+                _status = $"failed: {(int)resp.StatusCode}";
+                _statusError = true;
+            }
+            await RefreshVc();
+        }
+        catch (Exception ex)
+        {
+            _status = $"error: {ex.Message}";
+            _statusError = true;
+        }
+        finally
+        {
+            _busy = false;
+            _ = Task.Run(async () =>
+            {
+                await Task.Delay(TimeSpan.FromSeconds(6));
+                _status = null;
+                await InvokeAsync(StateHasChanged);
+            });
+        }
+    }
+
+    private static string BuildSaveSummary(JsonElement body)
+    {
+        var parts = new List<string> { "saved" };
+        if (body.TryGetProperty("bytes", out var b) && b.ValueKind == JsonValueKind.Number)
+            parts[0] = $"saved {b.GetInt64()}B";
+        if (body.TryGetProperty("committed", out var c) && c.ValueKind == JsonValueKind.True)
+            parts.Add("committed");
+        if (body.TryGetProperty("pushed", out var p) && p.ValueKind == JsonValueKind.True)
+            parts.Add("pushed");
+        return string.Join(" · ", parts);
+    }
+
+    public void Dispose() => _timer?.Dispose();
+}
