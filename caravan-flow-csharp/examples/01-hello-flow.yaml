@@ -19,11 +19,6 @@ logging:
 content:
   dir: /tmp/caravan-flow-csharp/content
 
-sources:
-  listen_http:
-    port: 9092
-    path: /
-
 flow:
   processors:
 

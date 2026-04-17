@@ -14,11 +14,6 @@ defaults:
   maxHops: 50
   maxConcurrentExecutions: 100
 
-sources:
-  listen_http:
-    port: 9092
-    path: /
-
 flow:
   processors:
     tag-env:

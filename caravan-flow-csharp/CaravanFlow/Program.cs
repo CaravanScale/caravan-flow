@@ -136,10 +136,10 @@ if (!string.IsNullOrEmpty(fileInputDir))
     fab.AddSource(new GetFile("file-ingest", fileInputDir, pattern, pollMs, store, unpackV3));
 }
 
-// ListenHTTP source — default ingest on port 9092, configurable
-var ingestPort = GetConfigString(config, "sources.listen_http.port", "9092");
-var ingestPath = GetConfigString(config, "sources.listen_http.path", "/");
-fab.AddSource(new ListenHTTP("http-ingest", int.Parse(ingestPort), ingestPath, store));
+// HTTP ingest is now POST / on the management API (ApiHandler path
+// below) — same port as the dashboard and admin routes. The previous
+// ListenHTTP source running on its own port has been removed; one
+// canonical HTTP ingress per worker matches caravan-flow-java's shape.
 
 // GenerateFlowFile source — optional, for testing/heartbeats
 var genContent = GetConfigString(config, "sources.generate.content", "");
@@ -190,7 +190,42 @@ if (dashboardPath is not null)
     app.MapGet("/", () => Results.Content(dashHtml, "text/html"));
 }
 
-// Management API — ingestion goes through source connectors
+// POST / — HTTP ingest on the management port. Body is the raw
+// FlowFile payload; X-Flow-* headers become FlowFile attributes.
+// Mirrors caravan-flow-java's handler; wraps Fabric.IngestAndExecute
+// which was already the internal ingest path used by source connectors.
+app.MapPost("/", async (HttpRequest req, HttpResponse resp) =>
+{
+    using var ms = new MemoryStream();
+    await req.Body.CopyToAsync(ms);
+    var body = ms.ToArray();
+
+    var attrs = new Dictionary<string, string>();
+    foreach (var h in req.Headers)
+    {
+        var lower = h.Key.ToLowerInvariant();
+        if (lower.StartsWith("x-flow-"))
+        {
+            attrs[lower.Substring("x-flow-".Length)] = h.Value.ToString();
+        }
+    }
+
+    var ff = FlowFile.Create(body, attrs);
+    try
+    {
+        fab.IngestAndExecute(ff);
+        resp.StatusCode = 202;
+        await resp.WriteAsync(ff.Id);
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"ingest failed for {ff.Id}: {ex.Message}");
+        resp.StatusCode = 500;
+        await resp.WriteAsync("pipeline error: " + ex.Message);
+    }
+});
+
+// Management API — admin surface for processors/sources/providers
 var api = new ApiHandler(fab);
 api.SetConfigPath(configPath);
 api.MapRoutes(app);
@@ -219,46 +254,11 @@ var sweepMs = ConfigHelpers.ParseIntRaw(
 var appCts = new CancellationTokenSource();
 cleanup.StartPeriodicSweep(sweepMs, appCts.Token);
 
-// Hot reload: watch config.yaml for changes
-if (File.Exists(configPath))
-{
-    var configDir = Path.GetDirectoryName(Path.GetFullPath(configPath))!;
-    var configFile = Path.GetFileName(configPath);
-    var watcher = new FileSystemWatcher(configDir, configFile);
-    var reloadTimer = new System.Threading.Timer(_ =>
-    {
-        try
-        {
-            Console.WriteLine("[hot-reload] config.yaml changed, reloading...");
-            var yaml = File.ReadAllText(configPath);
-            var newConfig = YamlParser.Parse(yaml);
-            var errors = ConfigValidator.Validate(newConfig, reg);
-            if (errors.Count > 0)
-            {
-                Console.Error.WriteLine("[hot-reload] validation warnings:");
-                foreach (var err in errors)
-                    Console.Error.WriteLine($"  {err}");
-            }
-            fab.ReloadFlow(newConfig);
-
-            // Re-apply schemas: section. Additive upsert — identical schemas
-            // are no-ops, changed schemas become new versions, missing
-            // subjects are left in place (DELETE via REST or restart to remove).
-            var newSchemasSection = CaravanFlow.Fabric.Fabric.AsStringDict(newConfig.GetValueOrDefault("schemas"));
-            var added = embeddedRegistry.LoadFromConfig(newSchemasSection, schemaConfigDir);
-            if (added > 0)
-                Console.WriteLine($"[hot-reload] schemas re-applied ({added} subjects)");
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"[hot-reload] reload failed: {ex.Message}");
-        }
-    });
-    watcher.Changed += (_, _) => reloadTimer.Change(500, Timeout.Infinite);
-    watcher.NotifyFilter = NotifyFilters.LastWrite;
-    watcher.EnableRaisingEvents = true;
-    Console.WriteLine($"[hot-reload] watching {configPath}");
-}
+// File-system-watch auto-reload has been removed — the UI / operator
+// triggers reload explicitly via POST /api/reload on both tracks, so
+// a background watcher is redundant. The reload endpoint in ApiHandler
+// reads config.yaml on demand; the schema-registry re-apply happens
+// there as well.
 
 Console.WriteLine($"Listening on port {port}");
 

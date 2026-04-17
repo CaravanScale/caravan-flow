@@ -5,7 +5,7 @@ namespace CaravanFlow.Core;
 /// Lifecycle: Start → Running → Stop → Stopped.
 ///
 /// Two patterns:
-///   Event-driven (ListenHTTP, GetNats) — implement IConnectorSource directly,
+///   Event-driven (GetNats, etc.) — implement IConnectorSource directly,
 ///     use library's native threading, call ingest() when data arrives.
 ///   Polling (GetFile, GetFTP) — extend PollingSource, implement Poll(),
 ///     framework handles scheduling, lifecycle, backpressure.

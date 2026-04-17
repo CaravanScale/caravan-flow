@@ -223,20 +223,21 @@ public static class E2ETests
             };
 
             fab.LoadFlow(config);
-
-            // Add ListenHTTP source on an OS-assigned port (no collisions on parallel CI).
-            var port = Helpers.FreePort();
-            var listenSource = new ListenHTTP("e2e-listen", port, "/", store);
-            fab.AddSource(listenSource);
-
             fab.StartAsync();
-            Helpers.WaitForHttpReady($"http://localhost:{port}/health", timeoutMs: 5000);
 
-            // POST data to ListenHTTP
-            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-            var response = client.PostAsync($"http://localhost:{port}/",
-                new StringContent("{\"e2e\":true}", Encoding.UTF8, "application/json")).GetAwaiter().GetResult();
-            AssertTrue("ingest accepted", response.IsSuccessStatusCode);
+            // HTTP ingest has moved into Program.cs's management port
+            // (`POST /`) so it's not exercised from the Fabric unit
+            // layer anymore. Drive ingest directly through the same
+            // method the HTTP handler calls — IngestAndExecute — which
+            // is what we're actually testing here anyway.
+            var payload = Encoding.UTF8.GetBytes("{\"e2e\":true}");
+            var ff = FlowFile.Create(payload, new Dictionary<string, string>
+            {
+                ["http.content.type"] = "application/json",
+                ["source"] = "e2e-http"
+            });
+            var accepted = fab.IngestAndExecute(ff);
+            AssertTrue("ingest accepted", accepted);
 
             // Wait for the pipeline to land at least one output file.
             Helpers.WaitFor(() => Directory.GetFiles(outputDir).Length >= 1, timeoutMs: 5000);
@@ -250,12 +251,7 @@ public static class E2ETests
             AssertTrue("provenance captured", recent.Count >= 1);
             AssertTrue("writer processed", recent.Any(e => e.Component == "writer" && e.EventType == ProvenanceEventType.Processed));
 
-            // Verify sources API
-            var sources = fab.GetSources();
-            AssertTrue("source registered", sources.Any(s => s.Name == "e2e-listen" && s.Running));
-
             fab.StopAsync();
-            Helpers.WaitFor(() => !listenSource.IsRunning, timeoutMs: 3000);
         }
         finally
         {

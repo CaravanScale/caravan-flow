@@ -15,7 +15,8 @@ public static class SourceTests
         TestPutStdout();
         TestConnectorSourceLifecycle();
         TestGetFile();
-        TestListenHTTP();
+        // ListenHTTP source removed; HTTP ingest is now POST / on the
+        // management port (tested end-to-end via Program.cs, not here).
         TestStructuredLogging();
         TestConfigValidation();
         TestProvenance();
@@ -144,50 +145,6 @@ public static class SourceTests
         finally
         {
             Directory.Delete(tmpDir, true);
-        }
-    }
-
-    static void TestListenHTTP()
-    {
-        Console.WriteLine("--- ListenHTTP Source ---");
-        var store = new MemoryContentStore();
-        var port = FreePort();
-        var source = new ListenHTTP("test-listen", port, "/ingest", store);
-
-        AssertTrue("not running initially", !source.IsRunning);
-        AssertTrue("type is ListenHTTP", source.SourceType == "ListenHTTP");
-
-        var ingested = new List<FlowFile>();
-        using var cts = new CancellationTokenSource();
-        source.Start(ff => { lock (ingested) { ingested.Add(ff); } return true; }, cts.Token);
-
-        // Wait for the server to bind the port
-        var ready = WaitForHttpReady($"http://localhost:{port}/health", timeoutMs: 5000);
-        AssertTrue("server bound", ready);
-        AssertTrue("running after start", source.IsRunning);
-
-        try
-        {
-            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-            var response = client.PostAsync($"http://localhost:{port}/ingest",
-                new StringContent("{\"key\":\"value\"}", System.Text.Encoding.UTF8, "application/json")).GetAwaiter().GetResult();
-            AssertTrue("accepted 200", response.IsSuccessStatusCode);
-
-            WaitFor(() => { lock (ingested) return ingested.Count >= 1; }, timeoutMs: 2000);
-            AssertTrue("ingested 1 flowfile", ingested.Count >= 1);
-            if (ingested.Count > 0)
-            {
-                AssertTrue("source attr set", ingested[0].Attributes.TryGetValue("source", out var src) && src == "test-listen");
-            }
-
-            var health = client.GetAsync($"http://localhost:{port}/health").GetAwaiter().GetResult();
-            AssertTrue("health ok", health.IsSuccessStatusCode);
-        }
-        finally
-        {
-            source.Stop();
-            WaitFor(() => !source.IsRunning, timeoutMs: 5000);
-            AssertTrue("stopped after stop", !source.IsRunning);
         }
     }
 

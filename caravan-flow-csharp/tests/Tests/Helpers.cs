@@ -130,7 +130,7 @@ public static class Helpers
 
     /// <summary>
     /// Convenience: wait for an HTTP endpoint to start accepting connections.
-    /// Used to wait for ListenHTTP/SchemaRegistryHandler servers to bind.
+    /// Used to wait for the management API / SchemaRegistryHandler to bind.
     /// </summary>
     public static bool WaitForHttpReady(string url, int timeoutMs = 5000)
     {

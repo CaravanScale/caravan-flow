@@ -69,9 +69,11 @@ schemas:                     # optional — pre-load the embedded schema registr
         {"name":"ts","type":{"type":"long","logicalType":"timestamp-millis"}}]}
 
 sources:                     # ingest connectors
-  listen_http: { port: 9092, path: / }
   file:        { inputDir: /in, pattern: "*.avro", pollIntervalMs: 1000 }
   generate:    { content: "tick", pollIntervalMs: 5000 }   # for testing
+
+# HTTP ingest is built into the management port — POST raw bytes to /
+# with X-Flow-* headers for attributes; no separate listen source needed.
 
 flow:
   processors:

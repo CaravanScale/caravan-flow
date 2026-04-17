@@ -31,13 +31,8 @@ sources:
     pollIntervalMs: 1000
     unpackV3: true       # default; sniffs magic header and unwraps if present
 
-  # ListenHTTP also accepts V3 frames now — Content-Type
-  # `application/flowfile-v3` (preferred) or `application/octet-stream` triggers
-  # FlowFileV3.UnpackAll on the body. Plain JSON/CSV/etc. POSTs still work
-  # normally — they just become single FlowFiles with X-Flow-* attributes.
-  listen_http:
-    port: 9092
-    path: /
+  # HTTP ingest is now POST / on the management port — use
+  # UnpackageFlowFileV3 in your flow if the POSTed body is V3-framed.
 
 flow:
   processors:
