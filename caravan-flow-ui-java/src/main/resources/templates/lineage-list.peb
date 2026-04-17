@@ -1,0 +1,32 @@
+{% if lineageError %}
+    <article class="error">
+        <strong>Worker unreachable.</strong>
+        <pre>{{ lineageError }}</pre>
+    </article>
+{% elseif failures is empty %}
+    <article class="empty">
+        <strong>No failures.</strong>
+        <p>Every FlowFile that's reached a processor recently has been acknowledged.</p>
+    </article>
+{% else %}
+    <table class="lineage-inbox">
+        <thead>
+            <tr>
+                <th>FlowFile</th>
+                <th>Component</th>
+                <th>Details</th>
+                <th class="right">When</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for e in failures %}
+                <tr>
+                    <td><a href="/lineage/{{ e.flowFileId }}"><code>ff-{{ e.flowFileId }}</code></a></td>
+                    <td><code>{{ e.component }}</code></td>
+                    <td class="details">{{ e.details }}</td>
+                    <td class="right timestamp" data-ts="{{ e.timestampMillis }}">{{ e.timestampMillis }}</td>
+                </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+{% endif %}

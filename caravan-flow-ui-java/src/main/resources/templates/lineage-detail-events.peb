@@ -1,0 +1,26 @@
+{% if lineageError %}
+    <article class="error">
+        <strong>Worker unreachable.</strong>
+        <pre>{{ lineageError }}</pre>
+    </article>
+{% elseif events is empty %}
+    <article class="empty">
+        <strong>No events recorded for ff-{{ flowFileId }}.</strong>
+        <p>Either the FlowFile id is wrong, or provenance retention has rolled over past it.</p>
+    </article>
+{% else %}
+    <ol class="timeline">
+        {% for e in events %}
+            <li class="timeline-event evt-{{ e.type | lower }}">
+                <div class="when timestamp" data-ts="{{ e.timestampMillis }}">{{ e.timestampMillis }}</div>
+                <div class="what">
+                    <span class="evt-type">{{ e.type }}</span>
+                    <code>{{ e.component }}</code>
+                    {% if e.details is not empty %}
+                        <div class="details">{{ e.details }}</div>
+                    {% endif %}
+                </div>
+            </li>
+        {% endfor %}
+    </ol>
+{% endif %}

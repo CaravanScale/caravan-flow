@@ -1,0 +1,12 @@
+{% extends "templates/layout.peb" %}
+{% block content %}
+<h1>Lineage</h1>
+<p class="meta">Worker: <code>{{ workerUrl }}</code> — recent failures (newest first)</p>
+
+<div id="lineage-list"
+     hx-get="{{ lineageListUrl }}"
+     hx-trigger="every 2s"
+     hx-swap="innerHTML">
+    {% include "templates/lineage-list.peb" %}
+</div>
+{% endblock %}

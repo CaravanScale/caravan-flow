@@ -383,11 +383,11 @@ public final class HttpServer {
         List<Map<String, Object>> out = new ArrayList<>(events.size());
         for (ProvenanceProvider.Event e : events) {
             out.add(Map.of(
-                    "flowfile",  "ff-" + e.flowFileId(),
-                    "type",      e.type().name(),
-                    "component", e.component(),
-                    "details",   e.details(),
-                    "timestamp", e.timestampMillis()));
+                    "flowFileId",      e.flowFileId(),
+                    "type",            e.type().name(),
+                    "component",       e.component(),
+                    "details",         e.details(),
+                    "timestampMillis", e.timestampMillis()));
         }
         return out;
     }

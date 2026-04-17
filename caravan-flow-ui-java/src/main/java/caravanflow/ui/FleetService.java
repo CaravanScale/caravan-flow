@@ -1,10 +1,12 @@
 package caravanflow.ui;
 
+import com.fasterxml.jackson.databind.JavaType;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import caravanflow.shared.FlowSnapshot;
 import caravanflow.shared.Identity;
+import caravanflow.shared.ProvenanceEvent;
 import caravanflow.shared.RouteNames;
 
 import java.net.URI;
@@ -12,6 +14,7 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -27,6 +30,10 @@ public final class FleetService {
 
     private static final Logger log = LoggerFactory.getLogger(FleetService.class);
 
+    /// Default failure inbox size when callers don't pass one. Matches
+    /// the NiFi bulletin-style window the UI shows.
+    public static final int DEFAULT_FAILURES_N = 50;
+
     /// Cache TTL for every fetched resource. Keeps the worker
     /// pressure down when multiple HTMX polls hit simultaneously.
     public static final Duration CACHE_TTL = Duration.ofMillis(1500);
@@ -38,6 +45,10 @@ public final class FleetService {
 
     private final AtomicReference<Cached<Identity>> identityCache = new AtomicReference<>();
     private final AtomicReference<Cached<FlowSnapshot>> flowCache = new AtomicReference<>();
+    /// Shared cache for the default (DEFAULT_FAILURES_N) failures fetch
+    /// — the common path from HTMX polling. Non-default n values bypass
+    /// the cache so an on-demand larger pull is never served stale data.
+    private final AtomicReference<Cached<List<ProvenanceEvent>>> failuresCache = new AtomicReference<>();
 
     public FleetService(URI workerBaseUrl) {
         this(workerBaseUrl, Duration.ofSeconds(5));
@@ -64,6 +75,31 @@ public final class FleetService {
         return readCached(flowCache, RouteNames.API_FLOW, FlowSnapshot.class);
     }
 
+    /// Recent FAILED provenance events from the worker, newest first.
+    /// Only the default-size fetch is cached — callers requesting a
+    /// different {@code n} (e.g. a deeper ad-hoc pull) always see a
+    /// fresh response.
+    public List<ProvenanceEvent> failures() {
+        return failures(DEFAULT_FAILURES_N);
+    }
+
+    public List<ProvenanceEvent> failures(int n) {
+        if (n <= 0) throw new IllegalArgumentException("n must be positive, got " + n);
+        String path = RouteNames.API_PROVENANCE_FAILURES + "?n=" + n;
+        if (n == DEFAULT_FAILURES_N) {
+            return readCachedList(failuresCache, path, ProvenanceEvent.class);
+        }
+        return fetchList(path, ProvenanceEvent.class);
+    }
+
+    /// Every provenance event recorded for a single FlowFile, in the
+    /// order the provider returns them (chronological per source). Not
+    /// cached — detail pages are user-triggered, so a fresh read per
+    /// hit keeps the view honest.
+    public List<ProvenanceEvent> lineage(long flowFileId) {
+        return fetchList(RouteNames.API_PROVENANCE_LINEAGE + flowFileId, ProvenanceEvent.class);
+    }
+
     /// Probe the worker — returns {@code true} when {@code /api/identity}
     /// responded 2xx within the request timeout. Used by the UI's
     /// {@code /health} handler.
@@ -77,12 +113,26 @@ public final class FleetService {
     private <T> T readCached(AtomicReference<Cached<T>> ref, String path, Class<T> type) {
         Cached<T> c = ref.get();
         if (c != null && !c.expired()) return c.value;
-        T fresh = fetch(path, type);
+        T fresh = fetch(path, json.constructType(type));
         ref.set(new Cached<>(fresh, System.nanoTime() + CACHE_TTL.toNanos()));
         return fresh;
     }
 
-    private <T> T fetch(String path, Class<T> type) {
+    private <E> List<E> readCachedList(AtomicReference<Cached<List<E>>> ref, String path, Class<E> elementType) {
+        Cached<List<E>> c = ref.get();
+        if (c != null && !c.expired()) return c.value;
+        List<E> fresh = fetchList(path, elementType);
+        ref.set(new Cached<>(fresh, System.nanoTime() + CACHE_TTL.toNanos()));
+        return fresh;
+    }
+
+    private <E> List<E> fetchList(String path, Class<E> elementType) {
+        JavaType type = json.getTypeFactory().constructCollectionType(List.class, elementType);
+        return fetch(path, type);
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T> T fetch(String path, JavaType type) {
         URI target = workerBaseUrl.resolve(path);
         HttpRequest req = HttpRequest.newBuilder(target).timeout(requestTimeout).GET().build();
         try {
@@ -90,7 +140,7 @@ public final class FleetService {
             if (resp.statusCode() / 100 != 2) {
                 throw new RuntimeException("worker " + target + " returned " + resp.statusCode());
             }
-            return json.readValue(resp.body(), type);
+            return (T) json.readValue(resp.body(), type);
         } catch (RuntimeException ex) {
             throw ex;
         } catch (Exception ex) {

@@ -60,3 +60,39 @@ section.infra ul { list-style: none; padding: 0; margin: 0; display: flex; flex-
 section.infra li { font-size: 0.9rem; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
 
 code { background: #f0f4fa; padding: 0 0.25rem; border-radius: 3px; font-size: 0.9em; }
+
+article.empty {
+    padding: 0.9rem 1rem; border: 1px dashed #b8c2cc; border-radius: 6px;
+    background: #fbfcfd; color: #556;
+}
+article.empty p { margin: 0.4rem 0 0; font-size: 0.9rem; }
+
+table.lineage-inbox { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+table.lineage-inbox th, table.lineage-inbox td {
+    text-align: left; padding: 0.45rem 0.7rem; border-bottom: 1px solid #e5e8ec;
+    vertical-align: top;
+}
+table.lineage-inbox th { color: #556; font-weight: 600; background: #f4f7fa; }
+table.lineage-inbox tr:hover td { background: #fafcfe; }
+table.lineage-inbox td.details { color: #6b3131; font-family: ui-monospace, monospace; font-size: 0.85rem; word-break: break-word; }
+table.lineage-inbox td.right, table.lineage-inbox th.right { text-align: right; font-variant-numeric: tabular-nums; color: #667; }
+
+ol.timeline { list-style: none; padding: 0; margin: 1rem 0 0; border-left: 2px solid #d0d8e3; }
+li.timeline-event {
+    display: grid; grid-template-columns: 11rem 1fr; gap: 1rem;
+    padding: 0.6rem 0 0.6rem 1rem; position: relative; margin-left: -1px;
+    border-left: 3px solid transparent;
+}
+li.timeline-event .when { color: #667; font-size: 0.85rem; font-variant-numeric: tabular-nums; }
+li.timeline-event .evt-type {
+    display: inline-block; margin-right: 0.5rem;
+    padding: 0.1rem 0.5rem; border-radius: 999px;
+    font-size: 0.75rem; font-weight: 600; background: #eef1f5; color: #455;
+}
+li.timeline-event .details { color: #455; font-size: 0.85rem; margin-top: 0.25rem; font-family: ui-monospace, monospace; }
+li.evt-failed    { border-left-color: #d33; }
+li.evt-failed    .evt-type { background: #fde1e1; color: #8b1c1c; }
+li.evt-created   .evt-type { background: #dff6e4; color: #1a6b34; }
+li.evt-processed .evt-type { background: #e5edf8; color: #1f3d70; }
+li.evt-routed    .evt-type { background: #efe1f8; color: #5a2e83; }
+li.evt-dropped   .evt-type { background: #fff1d4; color: #7a5200; }

@@ -8,6 +8,7 @@ import org.eclipse.jetty.util.thread.QueuedThreadPool;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import caravanflow.ui.views.FlowController;
+import caravanflow.ui.views.LineageController;
 
 import java.net.URI;
 import java.util.LinkedHashMap;
@@ -64,6 +65,7 @@ public final class UiMain {
 
     public UiMain start(int port) {
         FlowController flow = new FlowController(fleet, pebble);
+        LineageController lineage = new LineageController(fleet, pebble);
         app = Javalin.create(javalin -> {
                     QueuedThreadPool qtp = new QueuedThreadPool();
                     qtp.setName("caravan-flow-ui-jetty");
@@ -71,10 +73,16 @@ public final class UiMain {
                     javalin.jetty.threadPool = qtp;
                     javalin.staticFiles.add(cfg -> { cfg.hostedPath = "/static"; cfg.directory = "/static"; });
                 })
-                .get(UiRoutes.ROOT,       ctx -> ctx.redirect(UiRoutes.FLOW))
-                .get(UiRoutes.HEALTH,     this::handleHealth)
-                .get(UiRoutes.FLOW,       flow::handleFlow)
-                .get(UiRoutes.FLOW_CARDS, flow::handleFlowCards)
+                .get(UiRoutes.ROOT,          ctx -> ctx.redirect(UiRoutes.FLOW))
+                .get(UiRoutes.HEALTH,        this::handleHealth)
+                .get(UiRoutes.FLOW,          flow::handleFlow)
+                .get(UiRoutes.FLOW_CARDS,    flow::handleFlowCards)
+                // Register literal /lineage/list before /lineage/{id} so
+                // the partial path doesn't get captured as id="list".
+                .get(UiRoutes.LINEAGE,       lineage::handleLineage)
+                .get(UiRoutes.LINEAGE_LIST,  lineage::handleLineageList)
+                .get(UiRoutes.LINEAGE_ONE,   lineage::handleLineageDetail)
+                .get(UiRoutes.LINEAGE_ONE_EVENTS, lineage::handleLineageDetailEvents)
                 .start(port);
         boundPort = app.port();
         return this;

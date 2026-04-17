@@ -3,9 +3,11 @@ package caravanflow.ui;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import caravanflow.shared.Identity;
+import caravanflow.shared.ProvenanceEvent;
 
 import java.net.URI;
 import java.time.Duration;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -54,5 +56,45 @@ final class FleetServiceTest {
         // port 1 is almost certainly not listening — connect refused.
         var fleet = new FleetService(URI.create("http://localhost:1"), Duration.ofMillis(300));
         assertThrows(RuntimeException.class, fleet::identity);
+    }
+
+    @Test
+    void failuresParsesProvenanceEventList() {
+        worker = new FakeWorker()
+                .withFailures(List.of(
+                        FakeWorker.event(42, "FAILED", "parser",  "bad json", 1000L),
+                        FakeWorker.event(43, "FAILED", "enricher","timeout",  2000L)))
+                .start();
+        var fleet = new FleetService(worker.url(), Duration.ofSeconds(2));
+
+        List<ProvenanceEvent> out = fleet.failures();
+        assertEquals(2, out.size());
+        assertEquals(42L,       out.get(0).flowFileId());
+        assertEquals("FAILED",  out.get(0).type());
+        assertEquals("parser",  out.get(0).component());
+        assertEquals("bad json",out.get(0).details());
+        assertEquals(1000L,     out.get(0).timestampMillis());
+    }
+
+    @Test
+    void lineageParsesProvenanceEventList() {
+        worker = new FakeWorker()
+                .withLineage(42, List.of(
+                        FakeWorker.event(42, "CREATED",   "ingress", "",       1000L),
+                        FakeWorker.event(42, "PROCESSED", "stage",   "",       1500L)))
+                .start();
+        var fleet = new FleetService(worker.url(), Duration.ofSeconds(2));
+
+        List<ProvenanceEvent> out = fleet.lineage(42);
+        assertEquals(2, out.size());
+        assertEquals("CREATED",   out.get(0).type());
+        assertEquals("PROCESSED", out.get(1).type());
+    }
+
+    @Test
+    void failuresRejectsNonPositiveN() {
+        var fleet = new FleetService(URI.create("http://localhost:1"), Duration.ofMillis(300));
+        assertThrows(IllegalArgumentException.class, () -> fleet.failures(0));
+        assertThrows(IllegalArgumentException.class, () -> fleet.failures(-1));
     }
 }

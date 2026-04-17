@@ -1,0 +1,12 @@
+{% extends "templates/layout.peb" %}
+{% block content %}
+<h1>Lineage — ff-{{ flowFileId }}</h1>
+<p class="meta"><a href="/lineage">&larr; back to inbox</a> — Worker: <code>{{ workerUrl }}</code></p>
+
+<div id="lineage-events"
+     hx-get="{{ detailEventsUrl }}"
+     hx-trigger="every 2s"
+     hx-swap="innerHTML">
+    {% include "templates/lineage-detail-events.peb" %}
+</div>
+{% endblock %}

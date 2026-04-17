@@ -34,6 +34,28 @@ final class FakeWorker {
         return this;
     }
 
+    FakeWorker withFailures(java.util.List<Map<String, Object>> body) {
+        app.get("/api/provenance/failures", ctx ->
+                ctx.contentType("application/json").result(JSON.writeValueAsBytes(body)));
+        return this;
+    }
+
+    FakeWorker withLineage(long id, java.util.List<Map<String, Object>> body) {
+        app.get("/api/provenance/lineage/" + id, ctx ->
+                ctx.contentType("application/json").result(JSON.writeValueAsBytes(body)));
+        return this;
+    }
+
+    static Map<String, Object> event(long flowFileId, String type, String component, String details, long ts) {
+        Map<String, Object> e = new LinkedHashMap<>();
+        e.put("flowFileId", flowFileId);
+        e.put("type", type);
+        e.put("component", component);
+        e.put("details", details);
+        e.put("timestampMillis", ts);
+        return e;
+    }
+
     FakeWorker start() {
         app.start(0);
         boundPort = app.port();
