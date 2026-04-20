@@ -219,13 +219,20 @@ public sealed class PutHTTP : IProcessor
     private readonly string _format;
     private readonly IContentStore _store;
     private readonly HttpClient _client;
+    private readonly int _retries;
+    private readonly int _retryInitialDelayMs;
+    private readonly int _retryMaxDelayMs;
 
-    public PutHTTP(string endpoint, string format, IContentStore store)
+    public PutHTTP(string endpoint, string format, IContentStore store,
+        int retries = 3, int retryInitialDelayMs = 200, int retryMaxDelayMs = 5_000)
     {
         _endpoint = endpoint;
         _format = format;
         _store = store;
         _client = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        _retries = retries < 0 ? 0 : retries;
+        _retryInitialDelayMs = retryInitialDelayMs > 0 ? retryInitialDelayMs : 200;
+        _retryMaxDelayMs = retryMaxDelayMs > 0 ? retryMaxDelayMs : 5_000;
     }
 
     public ProcessorResult Process(FlowFile ff)
@@ -276,26 +283,78 @@ public sealed class PutHTTP : IProcessor
                 httpContent.Headers.TryAddWithoutValidation($"X-Flow-{k}", v);
             }
 
-            var response = _client.PostAsync(_endpoint, httpContent).GetAwaiter().GetResult();
-
-            if (!response.IsSuccessStatusCode)
+            // Retry on transient failures (5xx / 429 / network errors)
+            // with exponential backoff. Attempts = retries + 1. Final
+            // failure routes to the 'failure' relationship, matching the
+            // pre-retry behavior.
+            HttpResponseMessage? response = null;
+            string? lastError = null;
+            var delayMs = _retryInitialDelayMs;
+            for (int attempt = 0; attempt <= _retries; attempt++)
             {
-                if ((int)response.StatusCode == 429)
-                    return FailureResult.Rent($"backpressure: {response.StatusCode}", ff);
-                return FailureResult.Rent($"HTTP {(int)response.StatusCode}: {response.ReasonPhrase}", ff);
+                try
+                {
+                    response = _client.PostAsync(_endpoint, httpContent).GetAwaiter().GetResult();
+                    if (response.IsSuccessStatusCode) { lastError = null; break; }
+                    var code = (int)response.StatusCode;
+                    if (code == 429 || code >= 500)
+                    {
+                        lastError = $"HTTP {code}: {response.ReasonPhrase}";
+                        if (attempt < _retries)
+                        {
+                            Thread.Sleep(delayMs);
+                            delayMs = Math.Min(delayMs * 2, _retryMaxDelayMs);
+                            continue;
+                        }
+                    }
+                    lastError = $"HTTP {code}: {response.ReasonPhrase}";
+                    break;
+                }
+                catch (TaskCanceledException)
+                {
+                    lastError = $"timeout delivering to {_endpoint}";
+                    if (attempt < _retries)
+                    {
+                        Thread.Sleep(delayMs);
+                        delayMs = Math.Min(delayMs * 2, _retryMaxDelayMs);
+                        continue;
+                    }
+                    break;
+                }
+                catch (HttpRequestException ex)
+                {
+                    lastError = $"delivery failed: {ex.Message}";
+                    if (attempt < _retries)
+                    {
+                        Thread.Sleep(delayMs);
+                        delayMs = Math.Min(delayMs * 2, _retryMaxDelayMs);
+                        continue;
+                    }
+                    break;
+                }
+            }
+
+            if (lastError != null || response is null || !response.IsSuccessStatusCode)
+            {
+                // Preserve the "backpressure:" prefix on 429 so downstream
+                // failure-routing rules can detect rate-limit semantics
+                // distinctly from generic 5xx errors.
+                var code = response is null ? 0 : (int)response.StatusCode;
+                var msg = code == 429
+                    ? $"backpressure: {response!.StatusCode}"
+                    : lastError ?? "delivery failed";
+                return FailureResult.Rent(msg, ff);
             }
 
             var delivered = FlowFile.WithAttribute(ff, "delivery.status", ((int)response.StatusCode).ToString());
             delivered = FlowFile.WithAttribute(delivered, "delivery.endpoint", _endpoint);
             return SingleResult.Rent(delivered);
         }
-        catch (TaskCanceledException)
+        catch (Exception ex)
         {
-            return FailureResult.Rent($"timeout delivering to {_endpoint}", ff);
-        }
-        catch (HttpRequestException ex)
-        {
-            return FailureResult.Rent($"delivery failed: {ex.Message}", ff);
+            // Body-building exceptions (resolve content, v3 pack, header parse)
+            // aren't retryable — fail straight through.
+            return FailureResult.Rent($"delivery setup failed: {ex.Message}", ff);
         }
     }
 }

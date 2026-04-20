@@ -107,7 +107,11 @@ var configProvider = new ConfigProvider(config);
 configProvider.Enable();
 
 var loggingProvider = new LoggingProvider();
-loggingProvider.JsonOutput = GetConfigString(config, "logging.format", "text") == "json";
+// CARAVANFLOW_LOG_FORMAT env takes precedence over the YAML key so k8s
+// operators can switch to structured logs without touching config.yaml.
+var logFormat = Environment.GetEnvironmentVariable("CARAVANFLOW_LOG_FORMAT")
+    ?? GetConfigString(config, "logging.format", "text");
+loggingProvider.JsonOutput = logFormat == "json";
 loggingProvider.Enable();
 
 var provenanceProvider = new ProvenanceProvider();
@@ -287,6 +291,33 @@ builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
 var app = builder.Build();
 app.UseCors();
 
+// Bearer-token auth on /api/* when CARAVANFLOW_AUTH_TOKEN is set.
+// Off by default so standalone edge mode stays frictionless; k8s
+// deployments set the env and the sidecar / operator injects tokens.
+// /health, /readyz, /metrics stay open so k8s probes and Prometheus
+// scraping don't need credentials. UI assets (/, /assets/*) also open.
+var authToken = Environment.GetEnvironmentVariable("CARAVANFLOW_AUTH_TOKEN");
+if (!string.IsNullOrEmpty(authToken))
+{
+    Console.WriteLine("[auth] bearer-token auth enabled on /api/*");
+    var expected = "Bearer " + authToken;
+    app.Use(async (ctx, next) =>
+    {
+        var path = ctx.Request.Path.Value ?? "";
+        if (path.StartsWith("/api/"))
+        {
+            if (!ctx.Request.Headers.TryGetValue("Authorization", out var h)
+                || h.ToString() != expected)
+            {
+                ctx.Response.StatusCode = 401;
+                await ctx.Response.WriteAsync("{\"error\":\"unauthorized\"}");
+                return;
+            }
+        }
+        await next();
+    });
+}
+
 // Blazor WASM bundle — CaravanFlow.UI's `dotnet publish` drops its
 // wwwroot/ into CaravanFlow/wwwroot/ (via build-ui.sh) and its
 // endpoint manifest into CaravanFlow/CaravanFlow.staticwebassets.endpoints.json.
@@ -418,9 +449,28 @@ Console.WriteLine($"Listening on port {port}");
 var lifetime = app.Lifetime;
 lifetime.ApplicationStopping.Register(() =>
 {
-    Console.WriteLine("Shutdown signal received");
+    Console.WriteLine("Shutdown signal received — graceful drain");
+    // Phase 1: stop all sources so no new FlowFiles enter the pipeline.
+    fab.StopSources();
+    Console.WriteLine("[shutdown] sources stopped");
+
+    // Phase 2: wait for in-flight executions to finish. Operators can tune
+    // the timeout via CARAVANFLOW_DRAIN_TIMEOUT_MS (default 30 s); k8s
+    // terminationGracePeriodSeconds should be set above this value.
+    var drainTimeoutMs = int.TryParse(
+        Environment.GetEnvironmentVariable("CARAVANFLOW_DRAIN_TIMEOUT_MS"),
+        out var t) && t > 0 ? t : 30_000;
+    var deadline = Environment.TickCount64 + drainTimeoutMs;
+    while (fab.GetActiveExecutions() > 0 && Environment.TickCount64 < deadline)
+        Thread.Sleep(50);
+    var remaining = fab.GetActiveExecutions();
+    if (remaining > 0)
+        Console.WriteLine($"[shutdown] drain timeout — {remaining} executions still in flight");
+    else
+        Console.WriteLine("[shutdown] drain complete");
+
+    // Phase 3: cancel everything else and tear down providers.
     fab.StopAsync();
-    Thread.Sleep(2000);
     globalCtx.ShutdownAll();
     Console.WriteLine("Shutdown complete");
 });

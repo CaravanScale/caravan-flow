@@ -85,10 +85,21 @@ public abstract class PollingSource : IConnectorSource
 
     private async Task RunLoop(CancellationToken ct)
     {
+        // Consecutive-error backoff: double the delay after each failed Poll,
+        // capped at 60s. A single successful poll resets. Keeps a source that
+        // hits a transient problem (network partition, disk full) from
+        // hammering the log every tick; matches the resilience guarantee in
+        // the rock-solid-core plan.
+        int backoffMs = 0;
         try
         {
             while (await _timer!.WaitForNextTickAsync(ct))
             {
+                if (backoffMs > 0)
+                {
+                    try { await Task.Delay(backoffMs, ct); }
+                    catch (OperationCanceledException) { break; }
+                }
                 try
                 {
                     var batch = Poll(ct);
@@ -100,11 +111,13 @@ public abstract class PollingSource : IConnectorSource
                         else
                             OnRejected(ff);
                     }
+                    backoffMs = 0;
                 }
                 catch (OperationCanceledException) { break; }
                 catch (Exception ex)
                 {
-                    Console.Error.WriteLine($"[{SourceType}] {Name} poll error: {ex.Message}");
+                    backoffMs = backoffMs == 0 ? 1000 : Math.Min(backoffMs * 2, 60_000);
+                    Console.Error.WriteLine($"[{SourceType}] {Name} poll error (retry in {backoffMs}ms): {ex.Message}");
                 }
             }
         }

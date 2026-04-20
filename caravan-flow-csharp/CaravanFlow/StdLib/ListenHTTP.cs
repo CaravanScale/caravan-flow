@@ -25,17 +25,19 @@ public sealed class ListenHTTP : IConnectorSource
 
     private readonly int _port;
     private readonly string _path;
+    private readonly long _maxBodyBytes;
     private HttpListener? _listener;
     private CancellationTokenSource? _cts;
     private Func<FlowFile, bool>? _ingest;
 
-    public ListenHTTP(string name, int port, string path)
+    public ListenHTTP(string name, int port, string path, long maxBodyBytes = 16 * 1024 * 1024)
     {
         Name = name;
         _port = port;
         var normalized = string.IsNullOrEmpty(path) ? "/" : (path.StartsWith("/") ? path : "/" + path);
         // HttpListener prefixes require a trailing slash.
         _path = normalized.EndsWith("/") ? normalized : normalized + "/";
+        _maxBodyBytes = maxBodyBytes > 0 ? maxBodyBytes : 16 * 1024 * 1024;
     }
 
     public void Start(Func<FlowFile, bool> ingest, CancellationToken ct)
@@ -94,10 +96,32 @@ public sealed class ListenHTTP : IConnectorSource
                 return;
             }
 
+            // Reject over-limit uploads before allocating a buffer for them.
+            // Content-Length isn't authoritative for chunked encoding so we
+            // also cap the copy below with a running-total check.
+            if (req.ContentLength64 > _maxBodyBytes)
+            {
+                res.StatusCode = 413;
+                return;
+            }
+
             byte[] bytes;
             using (var ms = new MemoryStream())
             {
-                await req.InputStream.CopyToAsync(ms, ct);
+                var buf = new byte[8192];
+                long total = 0;
+                while (true)
+                {
+                    int n = await req.InputStream.ReadAsync(buf.AsMemory(0, buf.Length), ct);
+                    if (n <= 0) break;
+                    total += n;
+                    if (total > _maxBodyBytes)
+                    {
+                        res.StatusCode = 413;
+                        return;
+                    }
+                    ms.Write(buf, 0, n);
+                }
                 bytes = ms.ToArray();
             }
 

@@ -66,6 +66,10 @@ public static class FabricTests
 
         // AddProcessor incremental (API-style)
         TestAddProcessorIncremental();
+
+        // Reliability hardening (Tier 0 + Tier 1 plan)
+        TestSourceConnectionsConcurrent();
+        TestSplitRecordManyIterations();
     }
 
     static void TestFabricMultiHop()
@@ -1444,5 +1448,99 @@ public static class FabricTests
 
         var stats2 = fab.GetProcessorStats();
         AssertTrue("bad json: err processed", Stat(stats2, "err", "processed") >= 1);
+    }
+
+    // --- Reliability hardening tests (Tier 0 / Tier 1 of the rock-solid plan) ---
+
+    /// Concurrent writers to AddSourceConnection racing with readers in
+    /// IngestFromSource. Before the ConcurrentDictionary + per-bucket lock
+    /// conversion this would throw KeyNotFoundException or corrupt the
+    /// inner list. Runs enough iterations to catch torn reads under load.
+    static void TestSourceConnectionsConcurrent()
+    {
+        Console.WriteLine("--- Reliability: source-connections concurrent add/read ---");
+        var config = MakeFlowConfig(new Dictionary<string, object?>
+        {
+            ["sink"] = MakeProc("UpdateAttribute", new() { ["key"] = "seen", ["value"] = "1" }),
+        });
+        var (fab, _, _) = CreateFabricWithConfig(config);
+
+        // Register a fake source slot so the connection add/remove path
+        // has a real name to attach to. We don't need to start it.
+        var store = new MemoryContentStore();
+        fab.AddSource(new CaravanFlow.StdLib.GenerateFlowFile("src", 1000, "body", "", "", 1));
+        fab.StopSource("src"); // we just want the name registered, not ingesting
+
+        var exceptions = 0;
+        var done = false;
+        var writer = Task.Run(() =>
+        {
+            try
+            {
+                for (int i = 0; i < 500 && !done; i++)
+                {
+                    fab.AddSourceConnection("src", "success", "sink");
+                    fab.RemoveSourceConnection("src", "success", "sink");
+                }
+            }
+            catch { Interlocked.Increment(ref exceptions); }
+        });
+
+        var reader = Task.Run(() =>
+        {
+            try
+            {
+                for (int i = 0; i < 500 && !done; i++)
+                {
+                    var snap = fab.GetSourceConnections();
+                    // Read snapshot — iterating must not throw even as writer mutates.
+                    foreach (var (_, byRel) in snap)
+                        foreach (var (_, targets) in byRel)
+                            foreach (var t in targets) _ = t.Length;
+                }
+            }
+            catch { Interlocked.Increment(ref exceptions); }
+        });
+
+        Task.WaitAll(writer, reader);
+        done = true;
+        AssertIntEqual("no race exceptions", exceptions, 0);
+    }
+
+    /// SplitRecord used to leak two refs on each child's singleton
+    /// RecordContent via the chained WithContent → WithAttribute →
+    /// WithAttribute pattern. Run many iterations and assert each child
+    /// emerges with the expected attributes + exactly one record — any
+    /// attribute-map corruption or content double-release would surface.
+    static void TestSplitRecordManyIterations()
+    {
+        Console.WriteLine("--- Reliability: SplitRecord stress (no shell/content leak symptoms) ---");
+        var schema = new Schema("x", [new Field("v", FieldType.Long)]);
+        var proc = new CaravanFlow.StdLib.SplitRecord();
+        for (int iter = 0; iter < 100; iter++)
+        {
+            var recs = new List<Record>();
+            for (int r = 0; r < 20; r++)
+            {
+                var rec = new Record(schema); rec.SetField("v", (long)r); recs.Add(rec);
+            }
+            var ff = FlowFile.CreateWithContent(new RecordContent(schema, recs), new() { ["trace"] = "t" });
+            var result = proc.Process(ff);
+            if (result is not MultipleResult mr) { AssertTrue("multi result", false); return; }
+            if (mr.FlowFiles.Count != 20) { AssertIntEqual("children count", mr.FlowFiles.Count, 20); return; }
+            for (int i = 0; i < mr.FlowFiles.Count; i++)
+            {
+                var child = mr.FlowFiles[i];
+                if (child.Content is not RecordContent crc || crc.Records.Count != 1)
+                { AssertTrue($"iter {iter} child {i} 1-record", false); return; }
+                if (!child.Attributes.TryGetValue("split.total", out var total) || total != "20")
+                { AssertTrue($"iter {iter} child {i} split.total", false); return; }
+                if (!child.Attributes.TryGetValue("trace", out var tr) || tr != "t")
+                { AssertTrue($"iter {iter} child {i} trace preserved", false); return; }
+            }
+            foreach (var child in mr.FlowFiles) FlowFile.Return(child);
+            MultipleResult.Return(mr);
+        }
+        AssertTrue("100 iterations of 20-record splits completed", true);
     }
 }

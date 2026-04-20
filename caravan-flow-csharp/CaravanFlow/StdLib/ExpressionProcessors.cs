@@ -400,15 +400,23 @@ public sealed class SplitRecord : IProcessor
         var totalStr = total.ToString();
         for (int i = 0; i < total; i++)
         {
+            // Build each child in a single Rent call with the attribute
+            // overlay chained directly on AttributeMap. Chaining
+            // FlowFile.WithContent → WithAttribute → WithAttribute here
+            // orphans two intermediate FF shells and leaks two AddRefs on
+            // the singleton content per child — the new content has
+            // refcount 1 but three FF shells end up holding a reference
+            // to it, of which only one is ever Returned.
             var singletonContent = new RecordContent(rc.Schema, new List<Record> { rc.Records[i] });
-            var child = FlowFile.WithContent(ff, singletonContent);
-            child = FlowFile.WithAttribute(child, "split.index", i.ToString().PadLeft(width, '0'));
-            child = FlowFile.WithAttribute(child, "split.total", totalStr);
+            var childAttrs = ff.Attributes
+                .With("split.index", i.ToString().PadLeft(width, '0'))
+                .With("split.total", totalStr);
+            var child = FlowFile.Rent(ff.NumericId, childAttrs, singletonContent, ff.Timestamp, ff.HopCount);
             result.FlowFiles.Add(child);
         }
 
-        // Release the original FlowFile shell + its RecordContent (children
-        // hold their own singleton RecordContents).
+        // Release the original FlowFile shell + its (now-unreferenced)
+        // RecordContent. Children each own a fresh singleton RecordContent.
         FlowFile.Return(ff);
         return result;
     }

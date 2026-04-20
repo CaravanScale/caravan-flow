@@ -45,13 +45,16 @@ public static class BuiltinSources
         reg.Register(
             new SourceInfo("ListenHTTP",
                 "Binds an HTTP listener on {port}{path}; each POST body becomes a FlowFile.",
-                ["port", "path"]),
+                ["port", "path", "maxBodyBytes"]),
             (name, config, store) =>
             {
                 var port = ConfigHelpers.ParseInt(config.GetValueOrDefault("port"), "port", 0);
                 if (port <= 0) return null; // disabled — must opt in with a port
                 var path = config.GetValueOrDefault("path", "/");
-                return new ListenHTTP(name, port, path);
+                // Default 16 MiB keeps an unauthenticated endpoint from being
+                // turned into an OOM vector. Override per-source via config.
+                var maxBytes = ConfigHelpers.ParseInt(config.GetValueOrDefault("maxBodyBytes"), "maxBodyBytes", 16 * 1024 * 1024);
+                return new ListenHTTP(name, port, path, maxBytes);
             });
     }
 }

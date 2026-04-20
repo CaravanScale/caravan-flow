@@ -68,11 +68,20 @@ public static class BuiltinProcessors
             new ProcessorInfo("PutHTTP", "POST FlowFile to downstream HTTP endpoint", "Sink",
                 [P("endpoint", required: true, placeholder: "http://localhost:8080/ingest"),
                  P("format", kind: ParamKind.Enum, def: "raw", choices: ["raw", "v3"],
-                   description: "raw = content bytes; v3 = NiFi V3 framing (preserves attrs)")]),
+                   description: "raw = content bytes; v3 = NiFi V3 framing (preserves attrs)"),
+                 P("retries", kind: ParamKind.Integer, def: "3",
+                   description: "retry count on 5xx / 429 / connect errors"),
+                 P("retryInitialDelayMs", kind: ParamKind.Integer, def: "200",
+                   description: "initial backoff between retries, doubled each attempt"),
+                 P("retryMaxDelayMs", kind: ParamKind.Integer, def: "5000",
+                   description: "cap on the exponential backoff delay")]),
             (ctx, config) => new PutHTTP(
                 ConfigHelpers.RequireString(config, "endpoint"),
                 ConfigHelpers.GetString(config, "format", "raw"),
-                ctx.GetContentStoreOrDefault()));
+                ctx.GetContentStoreOrDefault(),
+                ConfigHelpers.ParseInt(config.GetValueOrDefault("retries"), "retries", 3),
+                ConfigHelpers.ParseInt(config.GetValueOrDefault("retryInitialDelayMs"), "retryInitialDelayMs", 200),
+                ConfigHelpers.ParseInt(config.GetValueOrDefault("retryMaxDelayMs"), "retryMaxDelayMs", 5_000)));
 
         reg.Register(
             new ProcessorInfo("PutFile", "Write FlowFile content to directory", "Sink",

@@ -26,6 +26,8 @@ public static class PutHTTPTests
         TestServer429RoutesToFailure();
         TestServer500RoutesToFailure();
         TestUnreachableEndpointFails();
+        TestRetriesThenSucceeds();
+        TestZeroRetriesFailsFast();
     }
 
     /// <summary>
@@ -176,8 +178,43 @@ public static class PutHTTPTests
     {
         Console.WriteLine("--- PutHTTP: unreachable endpoint → FailureResult, no crash ---");
         var deadPort = FreePort();  // grab a port and don't bind to it — guaranteed connection-refused
-        var put = new PutHTTP($"http://127.0.0.1:{deadPort}/", "raw", Store());
+        var put = new PutHTTP($"http://127.0.0.1:{deadPort}/", "raw", Store(),
+            retries: 0); // no retries — test measures the fast-fail path
         var result = put.Process(FlowFile.Create("x"u8.ToArray(), new()));
         AssertTrue("unreachable → FailureResult", result is FailureResult);
+    }
+
+    static void TestRetriesThenSucceeds()
+    {
+        Console.WriteLine("--- PutHTTP: 503 twice then 200 — retry succeeds ---");
+        using var mock = new MockReceiver(FreePort());
+        int n = 0;
+        mock.Handler = ctx =>
+        {
+            n++;
+            if (n <= 2) ctx.Response.StatusCode = 503;
+            else ctx.Response.StatusCode = 200;
+            return Task.CompletedTask;
+        };
+
+        // Tight retry timings so the test doesn't drag.
+        var put = new PutHTTP(mock.BaseUrl, "raw", Store(),
+            retries: 3, retryInitialDelayMs: 10, retryMaxDelayMs: 100);
+        var result = put.Process(FlowFile.Create("x"u8.ToArray(), new()));
+        AssertTrue("retry → SingleResult", result is SingleResult);
+        AssertEqual("attempt count", n.ToString(), "3");
+    }
+
+    static void TestZeroRetriesFailsFast()
+    {
+        Console.WriteLine("--- PutHTTP: retries=0 → first 503 routes to failure, no retry ---");
+        using var mock = new MockReceiver(FreePort());
+        int n = 0;
+        mock.Handler = ctx => { n++; ctx.Response.StatusCode = 503; return Task.CompletedTask; };
+
+        var put = new PutHTTP(mock.BaseUrl, "raw", Store(), retries: 0);
+        var result = put.Process(FlowFile.Create("x"u8.ToArray(), new()));
+        AssertTrue("503 → FailureResult", result is FailureResult);
+        AssertEqual("single attempt", n.ToString(), "1");
     }
 }

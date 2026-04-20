@@ -14,12 +14,12 @@ public sealed class Fabric
     private readonly ProcessorContext _globalCtx;
     private readonly Dictionary<string, IConnectorSource> _sources = new();
     // Per-source outbound connections: sourceName → relationship → target
-    // processor names. Sources are first-class graph nodes in the tighter
-    // visual-FP model — a source's FlowFile flows to its declared
-    // downstreams via the regular connection mechanism, not via a shared
-    // entryPoints fan-out. When a source has no connections declared,
-    // the fabric falls back to the legacy entryPoints list for back-compat.
-    private readonly Dictionary<string, Dictionary<string, List<string>>> _sourceConnections = new();
+    // processor names. ConcurrentDictionary because API threads mutate while
+    // source threads read during ingest — a plain Dictionary would throw
+    // KeyNotFoundException or silently return stale data. The inner map is
+    // still a plain Dictionary but we lock on the source-name slot for
+    // read-modify-write in AddSourceConnection / RemoveSourceConnection.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, Dictionary<string, List<string>>> _sourceConnections = new();
     private readonly CancellationTokenSource _cts = new();
     // Replaceable in LoadFlow when defaults.maxConcurrentExecutions is set.
     // Safe on initial load (no in-flight Execute yet). On hot reload, the swap
@@ -300,10 +300,18 @@ public sealed class Fabric
                 continue;
             }
 
-            // Processor lookup
+            // Processor lookup. If the target vanished between when we
+            // enqueued the work item and now (hot reload removed it),
+            // record a FAILED provenance event so operators can see the
+            // data loss in /api/provenance/failures rather than only in
+            // the log stream. The upstream "from" processor is already
+            // gone from context at this point, so we attribute to the
+            // missing processor itself.
             if (!graph.Processors.TryGetValue(procName, out var processor))
             {
-                _log?.Log("ERROR", "fabric", $"unknown processor '{procName}', dropping ff-{currentFf.NumericId}");
+                _log?.Log("ERROR", "fabric", $"processor '{procName}' removed by reload, dropping ff-{currentFf.NumericId}");
+                _provenance?.Record(currentFf.NumericId, ProvenanceEventType.Failed, procName,
+                    "target processor removed by reload");
                 FlowFile.Return(currentFf);
                 continue;
             }
@@ -478,15 +486,23 @@ public sealed class Fabric
     /// </summary>
     public bool IngestFromSource(string sourceName, FlowFile ff)
     {
-        if (_sourceConnections.TryGetValue(sourceName, out var connsByRel) && connsByRel.Count > 0)
+        if (_sourceConnections.TryGetValue(sourceName, out var connsByRel))
         {
-            // "success" is the default output relationship for sources.
-            var targets = connsByRel.GetValueOrDefault("success", new List<string>());
-            if (targets.Count == 0)
+            // Snapshot "success" targets under lock so concurrent
+            // AddSourceConnection / RemoveSourceConnection calls can't
+            // mutate the list while we iterate.
+            List<string> targets;
+            lock (connsByRel)
             {
-                _log?.Log("WARN", "fabric", $"source '{sourceName}' has connections but none on 'success' — dropping ff-{ff.NumericId}");
-                FlowFile.Return(ff);
-                return false;
+                if (!connsByRel.TryGetValue("success", out var live) || live.Count == 0)
+                {
+                    if (connsByRel.Count == 0)
+                        return IngestAndExecute(ff);
+                    _log?.Log("WARN", "fabric", $"source '{sourceName}' has connections but none on 'success' — dropping ff-{ff.NumericId}");
+                    FlowFile.Return(ff);
+                    return false;
+                }
+                targets = new List<string>(live);
             }
             if (targets.Count == 1) return Execute(ff, targets[0]);
             for (int i = 1; i < targets.Count; i++)
@@ -503,7 +519,20 @@ public sealed class Fabric
     // --- Per-source connection management ---
 
     public Dictionary<string, Dictionary<string, List<string>>> GetSourceConnections()
-        => new(_sourceConnections);
+    {
+        // Snapshot the outer map + inner maps so callers see a stable view.
+        var snapshot = new Dictionary<string, Dictionary<string, List<string>>>();
+        foreach (var (name, byRel) in _sourceConnections)
+        {
+            lock (byRel)
+            {
+                var copy = new Dictionary<string, List<string>>(byRel.Count);
+                foreach (var (rel, targets) in byRel) copy[rel] = new List<string>(targets);
+                snapshot[name] = copy;
+            }
+        }
+        return snapshot;
+    }
 
     public EditResult AddSourceConnection(string sourceName, string relationship, string target)
     {
@@ -512,11 +541,13 @@ public sealed class Fabric
         if (string.IsNullOrEmpty(target)) return EditResult.Fail("to must not be blank");
         if (!_sources.ContainsKey(sourceName)) return EditResult.Fail($"source '{sourceName}' not found");
         if (!_graph.Processors.ContainsKey(target)) return EditResult.Fail($"processor '{target}' not found");
-        var byRel = _sourceConnections.GetValueOrDefault(sourceName) ?? new Dictionary<string, List<string>>();
-        var targets = byRel.GetValueOrDefault(relationship) ?? new List<string>();
-        if (!targets.Contains(target)) targets.Add(target);
-        byRel[relationship] = targets;
-        _sourceConnections[sourceName] = byRel;
+        var byRel = _sourceConnections.GetOrAdd(sourceName, _ => new Dictionary<string, List<string>>());
+        lock (byRel)
+        {
+            var targets = byRel.GetValueOrDefault(relationship) ?? new List<string>();
+            if (!targets.Contains(target)) targets.Add(target);
+            byRel[relationship] = targets;
+        }
         return EditResult.Success();
     }
 
@@ -524,11 +555,14 @@ public sealed class Fabric
     {
         if (!_sourceConnections.TryGetValue(sourceName, out var byRel))
             return EditResult.Fail($"source '{sourceName}' has no connections");
-        if (!byRel.TryGetValue(relationship, out var targets))
-            return EditResult.Fail($"no '{relationship}' connection");
-        return targets.Remove(target)
-            ? EditResult.Success()
-            : EditResult.Fail($"'{target}' not in '{relationship}' connections");
+        lock (byRel)
+        {
+            if (!byRel.TryGetValue(relationship, out var targets))
+                return EditResult.Fail($"no '{relationship}' connection");
+            return targets.Remove(target)
+                ? EditResult.Success()
+                : EditResult.Fail($"'{target}' not in '{relationship}' connections");
+        }
     }
 
     public void SetSourceConnections(string sourceName, Dictionary<string, List<string>> connections)
@@ -555,8 +589,68 @@ public sealed class Fabric
             Console.WriteLine($"[fabric] source started: {name} (type={source.SourceType})");
         }
 
+        // Supervisor: every 5s check for dead sources (e.g. ListenHTTP bind
+        // failure, HttpListener dispose cascade, unrecoverable poll) and
+        // restart them with exponential backoff per source. Runs for the
+        // lifetime of the fabric via _cts.
+        _ = Task.Run(() => SourceSupervisorLoop(_cts.Token));
+
         _log?.Log("INFO", "fabric", $"started: {_graph.ProcessorNames.Count} processors, {_sources.Count} sources");
         Console.WriteLine($"[fabric] started ({_graph.ProcessorNames.Count} processors, {_sources.Count} sources)");
+    }
+
+    private readonly ConcurrentDictionary<string, int> _sourceRestartBackoffMs = new();
+    private readonly ConcurrentDictionary<string, long> _sourceRestartCounts = new();
+
+    public long GetSourceRestartCount(string name) => _sourceRestartCounts.GetValueOrDefault(name);
+
+    private async Task SourceSupervisorLoop(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested && _running)
+        {
+            try { await Task.Delay(5_000, ct); }
+            catch (OperationCanceledException) { break; }
+
+            foreach (var (name, source) in _sources)
+            {
+                if (source.IsRunning)
+                {
+                    _sourceRestartBackoffMs[name] = 0;
+                    continue;
+                }
+                var backoff = _sourceRestartBackoffMs.GetValueOrDefault(name, 0);
+                if (backoff > 0)
+                {
+                    // Wait one tick; supervisor runs every 5s, that's the
+                    // minimum restart cadence. We scale backoff upward from
+                    // consecutive failures.
+                    _sourceRestartBackoffMs[name] = Math.Max(0, backoff - 5_000);
+                    continue;
+                }
+                try
+                {
+                    var sourceName = name;
+                    source.Start(ff => IngestFromSource(sourceName, ff), _cts.Token);
+                    if (source.IsRunning)
+                    {
+                        _sourceRestartCounts.AddOrUpdate(name, 1, (_, v) => v + 1);
+                        _log?.Log("INFO", "fabric", $"source '{name}' restarted by supervisor");
+                        _sourceRestartBackoffMs[name] = 0;
+                    }
+                    else
+                    {
+                        var next = _sourceRestartBackoffMs.GetValueOrDefault(name, 0);
+                        _sourceRestartBackoffMs[name] = next == 0 ? 5_000 : Math.Min(next * 2, 60_000);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _log?.Log("ERROR", "fabric", $"source '{name}' restart threw: {ex.Message}");
+                    var next = _sourceRestartBackoffMs.GetValueOrDefault(name, 0);
+                    _sourceRestartBackoffMs[name] = next == 0 ? 5_000 : Math.Min(next * 2, 60_000);
+                }
+            }
+        }
     }
 
     public void StopAsync()
@@ -566,6 +660,20 @@ public sealed class Fabric
             source.Stop();
         _cts.Cancel();
     }
+
+    /// Stop only the connector sources so no new FlowFiles enter the
+    /// pipeline, while leaving the execution loop running to drain the
+    /// in-flight work. Used by Program.cs's graceful-shutdown phase
+    /// before the full StopAsync().
+    public void StopSources()
+    {
+        foreach (var source in _sources.Values)
+        {
+            try { source.Stop(); } catch { /* tolerate broken source on shutdown */ }
+        }
+    }
+
+    public int GetActiveExecutions() => Volatile.Read(ref _activeExecutions);
 
     // --- Connector source management ---
 
@@ -583,7 +691,10 @@ public sealed class Fabric
     {
         if (!_sources.TryGetValue(name, out var source)) return false;
         if (!source.IsRunning)
-            source.Start(IngestAndExecute, _cts.Token);
+        {
+            var sourceName = name;
+            source.Start(ff => IngestFromSource(sourceName, ff), _cts.Token);
+        }
         return true;
     }
 

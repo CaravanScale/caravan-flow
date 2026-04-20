@@ -59,6 +59,7 @@ public sealed class ApiHandler
         app.MapPost("/api/providers/disable", DisableProvider);
 
         app.MapGet("/health", Health);
+        app.MapGet("/readyz", Readyz);
         app.MapGet("/api/provenance", ProvenanceRecent);
         app.MapGet("/api/provenance/{id}", ProvenanceById);
 
@@ -329,12 +330,35 @@ public sealed class ApiHandler
 
     private IResult Health()
     {
+        // Liveness: the process is alive. Distinct from /readyz which
+        // checks whether the pipeline is loaded + sources started.
         var sources = _fab.GetSources();
         return Json(new Dictionary<string, object?>
         {
             ["status"] = "healthy",
             ["sources"] = sources.Select(s => new Dictionary<string, object?> { ["name"] = s.Name, ["type"] = s.Type, ["running"] = s.Running }).ToList()
         });
+    }
+
+    private IResult Readyz()
+    {
+        // Readiness = process alive + graph loaded (≥1 processor) + every
+        // registered source is actually running. K8s uses this to gate
+        // service traffic until the worker is in a position to do work.
+        var procCount = _fab.GetProcessorNames().Count;
+        var sources = _fab.GetSources();
+        var notRunning = sources.Where(s => !s.Running).Select(s => s.Name).ToList();
+        var ready = procCount > 0 && notRunning.Count == 0;
+        var body = new Dictionary<string, object?>
+        {
+            ["ready"] = ready,
+            ["processors"] = procCount,
+            ["sourcesTotal"] = sources.Count,
+            ["sourcesNotRunning"] = notRunning,
+        };
+        if (ready)
+            return Results.Content(CaravanJson.SerializeToString(body), "application/json", statusCode: 200);
+        return Results.Content(CaravanJson.SerializeToString(body), "application/json", statusCode: 503);
     }
 
     // --- Hot reload ---
@@ -881,6 +905,13 @@ public sealed class ApiHandler
         if (body is null)
             return Json(new Dictionary<string, object?> { ["error"] = "request body must be a JSON object" });
 
+        // CARAVANFLOW_MAX_INGEST_BYTES caps the accepted body size. Default
+        // 16 MiB; shared with ListenHTTP's per-source default so operators
+        // have a single dial. 413 is the right code here.
+        var maxBytes = int.TryParse(
+            Environment.GetEnvironmentVariable("CARAVANFLOW_MAX_INGEST_BYTES"),
+            out var m) && m > 0 ? m : 16 * 1024 * 1024;
+
         byte[] data;
         if (body.TryGetValue("contentBase64", out var b64) && b64 is string b64Str && b64Str.Length > 0)
         {
@@ -894,6 +925,15 @@ public sealed class ApiHandler
         else
         {
             data = Array.Empty<byte>();
+        }
+
+        if (data.Length > maxBytes)
+        {
+            return Results.Content(
+                CaravanJson.SerializeToString(new Dictionary<string, object?>
+                {
+                    ["error"] = $"body {data.Length} bytes exceeds CARAVANFLOW_MAX_INGEST_BYTES={maxBytes}",
+                }), "application/json", statusCode: 413);
         }
 
         var attrs = new Dictionary<string, string>();
