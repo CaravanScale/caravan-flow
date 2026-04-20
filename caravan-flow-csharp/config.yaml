@@ -26,5 +26,6 @@ flow:
       success: [tag-source]
     tag-source:
       success: [logger]
+      failure: [sink]
     logger:
       success: [sink]

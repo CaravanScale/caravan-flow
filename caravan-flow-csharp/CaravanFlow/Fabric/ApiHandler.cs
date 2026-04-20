@@ -83,6 +83,14 @@ public sealed class ApiHandler
         // Save runtime graph to config.yaml (VC-aware — commits+pushes
         // when VersionControlProvider is enabled)
         app.MapPost("/api/flow/save", FlowSave);
+        app.MapGet("/api/flow/status", FlowStatus);
+
+        // Sibling layout file: per-deployment shared view (node positions).
+        // Stored alongside config.yaml — loaded by the UI as a fallback when
+        // localStorage is empty (new browser / teammate). Individual users
+        // can still override by dragging, and their localStorage wins.
+        app.MapGet("/api/layout", GetLayout);
+        app.MapPost("/api/layout", SaveLayout);
 
         // Recent failed provenance events (errors view)
         app.MapGet("/api/provenance/failures", ProvenanceFailures);
@@ -494,6 +502,9 @@ public sealed class ApiHandler
             return Json(new Dictionary<string, object?> { ["error"] = $"write failed: {ex.Message}" });
         }
 
+        // Writing to disk clears the dirty flag regardless of commit outcome.
+        _fab.MarkSaved();
+
         var response = new Dictionary<string, object?>
         {
             ["status"] = "saved",
@@ -503,9 +514,14 @@ public sealed class ApiHandler
             ["pushed"] = false,
         };
 
-        // VC-aware: if a VersionControlProvider is enabled, also commit +
-        // push. Push defaults to true; body can opt out with {push: false}
-        // or override the commit message with {message: "..."}.
+        // Default behavior preserves back-compat: commit+push when VC is
+        // enabled. New {commit: false} in the request body opts out so
+        // the UI's debounced auto-save doesn't spam git history.
+        var commitRequested = !(body is not null && body.TryGetValue("commit", out var cObj)
+                                && cObj is bool cb && cb == false);
+        if (!commitRequested)
+            return Json(response);
+
         var vc = ResolveVcProvider();
         if (vc is not null)
         {
@@ -531,6 +547,96 @@ public sealed class ApiHandler
         }
 
         return Json(response);
+    }
+
+    private string LayoutPath() =>
+        string.IsNullOrEmpty(_configPath)
+            ? ""
+            : Path.Combine(Path.GetDirectoryName(_configPath) ?? "", "layout.yaml");
+
+    private IResult GetLayout()
+    {
+        var path = LayoutPath();
+        if (string.IsNullOrEmpty(path) || !File.Exists(path))
+            return Json(new Dictionary<string, object?> { ["positions"] = new Dictionary<string, object?>() });
+        try
+        {
+            var yaml = File.ReadAllText(path);
+            var parsed = YamlParser.Parse(yaml);
+            // Expected shape: { positions: { name: { x: <num>, y: <num> } } }
+            var positions = new Dictionary<string, object?>();
+            if (parsed.TryGetValue("positions", out var raw) && raw is Dictionary<string, object?> posMap)
+            {
+                foreach (var (name, val) in posMap)
+                {
+                    if (val is Dictionary<string, object?> p
+                        && p.TryGetValue("x", out var xo) && xo is not null
+                        && p.TryGetValue("y", out var yo) && yo is not null
+                        && double.TryParse(xo.ToString(), out var x)
+                        && double.TryParse(yo.ToString(), out var y))
+                    {
+                        positions[name] = new Dictionary<string, object?> { ["x"] = x, ["y"] = y };
+                    }
+                }
+            }
+            return Json(new Dictionary<string, object?> { ["positions"] = positions, ["path"] = path });
+        }
+        catch (Exception ex)
+        {
+            return Json(new Dictionary<string, object?> { ["error"] = $"layout read failed: {ex.Message}" });
+        }
+    }
+
+    private IResult SaveLayout([FromBody] Dictionary<string, object?>? body)
+    {
+        var path = LayoutPath();
+        if (string.IsNullOrEmpty(path))
+            return Json(new Dictionary<string, object?> { ["error"] = "config path not set — nowhere to write layout.yaml" });
+        if (body is null || !body.TryGetValue("positions", out var posObj) || posObj is not Dictionary<string, object?> positions)
+            return Json(new Dictionary<string, object?> { ["error"] = "body must be { positions: { name: { x, y } } }" });
+
+        // Validate + normalize before writing so we don't persist garbage.
+        var clean = new Dictionary<string, object?>();
+        foreach (var (name, val) in positions)
+        {
+            if (val is Dictionary<string, object?> p
+                && p.TryGetValue("x", out var xo) && xo is not null
+                && p.TryGetValue("y", out var yo) && yo is not null
+                && double.TryParse(xo.ToString(), out var x)
+                && double.TryParse(yo.ToString(), out var y))
+            {
+                clean[name] = new Dictionary<string, object?> { ["x"] = Math.Round(x, 2), ["y"] = Math.Round(y, 2) };
+            }
+        }
+
+        try
+        {
+            var bytes = YamlEmitter.Emit(new Dictionary<string, object?> { ["positions"] = clean });
+            File.WriteAllBytes(path, bytes);
+            return Json(new Dictionary<string, object?>
+            {
+                ["status"] = "saved",
+                ["path"] = path,
+                ["bytes"] = bytes.Length,
+                ["positions"] = clean.Count,
+            });
+        }
+        catch (Exception ex)
+        {
+            return Json(new Dictionary<string, object?> { ["error"] = $"layout write failed: {ex.Message}" });
+        }
+    }
+
+    private IResult FlowStatus()
+    {
+        var (dirty, muts, saved, savedTick) = _fab.GetDirtyState();
+        return Json(new Dictionary<string, object?>
+        {
+            ["dirty"] = dirty,
+            ["mutationCounter"] = muts,
+            ["lastSavedCounter"] = saved,
+            ["lastSavedAgoMs"] = savedTick == 0 ? (long?)null : Environment.TickCount64 - savedTick,
+        });
     }
 
     private VersionControlProvider? ResolveVcProvider()

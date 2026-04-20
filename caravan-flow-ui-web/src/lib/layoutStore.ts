@@ -1,14 +1,20 @@
-// Per-user processor layout persistence. NiFi-style UX: domain experts
-// arrange boxes themselves, and that arrangement is a UI preference, not
-// a flow property (see memory/project_ui_layout_is_ephemeral.md). We keep
-// it in localStorage keyed by processor name; unknown processors fall
-// back to dagre auto-layout on load.
+// Two-layer layout persistence:
+//   - localStorage — per-user preference (user's own arrangement wins)
+//   - server layout.yaml — team-shared fallback loaded at startup
+//
+// Read order on layoutFlow: localStorage → server → dagre auto-layout.
+// Saving a drag updates localStorage immediately + debounced POST to the
+// server so teammates opening the flow see a coherent default view.
 
 const STORAGE_KEY = 'caravan.graph.positions.v1'
 
 export interface Pos { x: number; y: number }
 
 type PositionMap = Record<string, Pos>
+
+// Server-sourced positions cached in-memory for the lifetime of the tab.
+// GraphPage seeds this on mount via layoutStore.setServerPositions().
+let serverPositions: PositionMap = {}
 
 function read(): PositionMap {
   try {
@@ -27,10 +33,11 @@ function write(next: PositionMap) {
 
 export const layoutStore = {
   get(name: string): Pos | undefined {
-    return read()[name]
+    return read()[name] ?? serverPositions[name]
   },
   getAll(): PositionMap {
-    return read()
+    // Merge: server is the baseline, localStorage overrides per-user.
+    return { ...serverPositions, ...read() }
   },
   set(name: string, pos: Pos) {
     const all = read()
@@ -51,5 +58,13 @@ export const layoutStore = {
       if (!existingNames.has(k)) { delete all[k]; changed = true }
     }
     if (changed) write(all)
+  },
+  // Merged snapshot to push to the server. Server writes what the user
+  // sees, so teammates get the same view on first load.
+  setServerPositions(positions: PositionMap) {
+    serverPositions = positions ?? {}
+  },
+  getServerPositions(): PositionMap {
+    return serverPositions
   },
 }

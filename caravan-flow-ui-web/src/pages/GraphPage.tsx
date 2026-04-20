@@ -53,6 +53,19 @@ function GraphPageInner() {
     refetchInterval: TOPOLOGY_POLL_MS,
     staleTime: TOPOLOGY_POLL_MS,
   })
+  // Layout sibling: loaded once, populates layoutStore's server layer so
+  // new users (empty localStorage) see the same view as whoever arranged
+  // the graph last.
+  const serverLayout = useQuery({
+    queryKey: ['layout'],
+    queryFn: api.layout,
+    staleTime: Infinity,
+  })
+  useEffect(() => {
+    if (serverLayout.data?.positions) {
+      layoutStore.setServerPositions(serverLayout.data.positions)
+    }
+  }, [serverLayout.data])
   const stats = useQuery({
     queryKey: ['processor-stats'],
     queryFn: api.processorStats,
@@ -197,8 +210,15 @@ function GraphPageInner() {
     }
   }, [addProc, addSrc, rf, topology.data, registry.data])
 
+  // Debounce layout.yaml writes so a sequence of drags coalesces into
+  // one POST. localStorage gets updated immediately.
+  const layoutSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const onNodeDragStop = useCallback((_: unknown, node: Node<ProcessorNodeData>) => {
     layoutStore.set(node.id, { x: node.position.x, y: node.position.y })
+    if (layoutSaveTimer.current) clearTimeout(layoutSaveTimer.current)
+    layoutSaveTimer.current = setTimeout(() => {
+      api.saveLayout(layoutStore.getAll()).catch(() => { /* surface via poll */ })
+    }, 1000)
   }, [])
 
   // React Flow controlled state. useNodesState / useEdgesState give us the

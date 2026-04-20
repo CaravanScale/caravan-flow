@@ -84,12 +84,26 @@ export const api = {
   vcStatus: () => getJson<VcStatus>('/api/vc/status'),
 
   // --- flow save / reload ---
-  saveFlow: (body: { message?: string; push?: boolean } = {}) =>
+  // saveFlow defaults to "write disk + commit + push" (the explicit dev
+  // action). Auto-save callers pass {commit: false} to skip VC.
+  saveFlow: (body: { message?: string; push?: boolean; commit?: boolean } = {}) =>
     send('POST', '/api/flow/save', {
       message: body.message ?? 'flow: update via UI',
       push: body.push ?? true,
+      commit: body.commit ?? true,
     }),
+  flowStatus: () => getJson<{
+    dirty: boolean
+    mutationCounter: number
+    lastSavedCounter: number
+    lastSavedAgoMs: number | null
+  }>('/api/flow/status'),
   reloadFlow: () => send('POST', '/api/reload'),
+
+  // --- Layout sibling (team-shared node positions) ---
+  layout: () => getJson<{ positions: Record<string, { x: number; y: number }>; path?: string }>('/api/layout'),
+  saveLayout: (positions: Record<string, { x: number; y: number }>) =>
+    send('POST', '/api/layout', { positions }),
 
   // --- sources ---
   sources: () => getJson<SourceInfo[]>('/api/sources'),

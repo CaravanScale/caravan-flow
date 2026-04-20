@@ -17,6 +17,9 @@ function useFlowMutation<TVars, TData>(
       await qc.invalidateQueries({ queryKey: ['flow'] })
       await qc.invalidateQueries({ queryKey: ['processor-stats'] })
       await qc.invalidateQueries({ queryKey: ['vc-status'] })
+      // Also flow-status so the dirty pill flips the instant a mutation
+      // lands, not 2s later when the background poll fires.
+      await qc.invalidateQueries({ queryKey: ['flow-status'] })
       opts?.onSuccess?.(...args)
     },
   })
@@ -78,7 +81,7 @@ export function useSetEntryPoints() {
 }
 
 export function useSaveFlow() {
-  return useFlowMutation<{ message?: string; push?: boolean }, Record<string, unknown>>(
+  return useFlowMutation<{ message?: string; push?: boolean; commit?: boolean }, Record<string, unknown>>(
     async (body) => {
       const resp = await unwrap(await api.saveFlow(body))
       return (await resp.json()) as Record<string, unknown>

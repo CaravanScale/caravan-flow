@@ -36,6 +36,26 @@ public sealed class Fabric
     private int _activeExecutions;
     private long _totalProcessed;
 
+    // Dirty tracking — monotonic counter bumped on every runtime mutation
+    // and on successful config.yaml write. UI polls GetDirtyState() to
+    // show whether in-memory graph matches what's on disk.
+    private long _mutationCounter;
+    private long _lastSavedCounter;
+    private long _lastSavedTick;
+
+    public void MarkDirty() => Interlocked.Increment(ref _mutationCounter);
+    public void MarkSaved()
+    {
+        _lastSavedCounter = Interlocked.Read(ref _mutationCounter);
+        _lastSavedTick = Environment.TickCount64;
+    }
+
+    public (bool Dirty, long MutationCounter, long LastSavedCounter, long LastSavedTick) GetDirtyState()
+        => (Interlocked.Read(ref _mutationCounter) > Interlocked.Read(ref _lastSavedCounter),
+            Interlocked.Read(ref _mutationCounter),
+            Interlocked.Read(ref _lastSavedCounter),
+            _lastSavedTick);
+
     private volatile bool _running;
 
     // Defaults (overridable from config)
@@ -250,6 +270,9 @@ public sealed class Fabric
 
         // Build and swap graph
         _graph = new PipelineGraph(processors, connections, effectiveEntries, processorNames, processorStates, processorDefs);
+        // LoadFlow reflects disk truth, so the in-memory graph is clean
+        // relative to the config file we just parsed.
+        MarkSaved();
     }
 
     // --- Pipeline execution ---
@@ -548,6 +571,7 @@ public sealed class Fabric
             if (!targets.Contains(target)) targets.Add(target);
             byRel[relationship] = targets;
         }
+        MarkDirty();
         return EditResult.Success();
     }
 
@@ -559,15 +583,19 @@ public sealed class Fabric
         {
             if (!byRel.TryGetValue(relationship, out var targets))
                 return EditResult.Fail($"no '{relationship}' connection");
-            return targets.Remove(target)
-                ? EditResult.Success()
-                : EditResult.Fail($"'{target}' not in '{relationship}' connections");
+            if (targets.Remove(target))
+            {
+                MarkDirty();
+                return EditResult.Success();
+            }
+            return EditResult.Fail($"'{target}' not in '{relationship}' connections");
         }
     }
 
     public void SetSourceConnections(string sourceName, Dictionary<string, List<string>> connections)
     {
         _sourceConnections[sourceName] = connections;
+        MarkDirty();
     }
 
     // --- Async start/stop ---
@@ -685,6 +713,7 @@ public sealed class Fabric
             var sourceName = source.Name;
             source.Start(ff => IngestFromSource(sourceName, ff), _cts.Token);
         }
+        MarkDirty();
     }
 
     public bool StartSource(string name)
@@ -830,6 +859,7 @@ public sealed class Fabric
         var graph = _graph;
         if (!graph.Processors.ContainsKey(name)) return false;
         graph.ProcessorStates[name] = ComponentState.Enabled;
+        MarkDirty();
         return true;
     }
 
@@ -838,6 +868,7 @@ public sealed class Fabric
         var graph = _graph;
         if (!graph.Processors.ContainsKey(name)) return false;
         graph.ProcessorStates[name] = ComponentState.Disabled;
+        MarkDirty();
         return true;
     }
 
@@ -903,6 +934,7 @@ public sealed class Fabric
 
         _processorCounts.TryAdd(name, 0);
         _processorErrors.TryAdd(name, 0);
+        MarkDirty();
         return true;
     }
 
@@ -938,6 +970,7 @@ public sealed class Fabric
         var newEntries = graph.EntryPoints.Where(ep => ep != name).ToList();
 
         _graph = new PipelineGraph(newProcessors, newConnections, newEntries, newNames, newStates, newDefs);
+        MarkDirty();
         return true;
     }
 
@@ -986,6 +1019,7 @@ public sealed class Fabric
         // for warnings elsewhere; not authoritative here.
         _graph = new PipelineGraph(graph.Processors, newConns, graph.EntryPoints,
             graph.ProcessorNames, graph.ProcessorStates, graph.ProcessorDefs);
+        MarkDirty();
         return EditResult.Success();
     }
 
@@ -1023,6 +1057,7 @@ public sealed class Fabric
         // for warnings elsewhere; not authoritative here.
         _graph = new PipelineGraph(graph.Processors, newConns, graph.EntryPoints,
             graph.ProcessorNames, graph.ProcessorStates, graph.ProcessorDefs);
+        MarkDirty();
         return EditResult.Success();
     }
 
@@ -1064,6 +1099,7 @@ public sealed class Fabric
         // for warnings elsewhere; not authoritative here.
         _graph = new PipelineGraph(graph.Processors, newConns, graph.EntryPoints,
             graph.ProcessorNames, graph.ProcessorStates, graph.ProcessorDefs);
+        MarkDirty();
         return EditResult.Success();
     }
 
@@ -1082,6 +1118,7 @@ public sealed class Fabric
         }
         _graph = new PipelineGraph(graph.Processors, graph.Connections, new List<string>(names),
             graph.ProcessorNames, graph.ProcessorStates, graph.ProcessorDefs);
+        MarkDirty();
         return EditResult.Success();
     }
 
@@ -1164,6 +1201,7 @@ public sealed class Fabric
         };
         _graph = new PipelineGraph(newProcessors, graph.Connections, graph.EntryPoints,
             graph.ProcessorNames, graph.ProcessorStates, newDefs);
+        MarkDirty();
         return EditResult.Success();
     }
 
@@ -1297,6 +1335,8 @@ public sealed class Fabric
         else
             Console.WriteLine("[hot-reload] no changes detected");
 
+        // Hot reload syncs the in-memory graph to disk truth; clean.
+        MarkSaved();
         return (added, removed, updated, connectionsChanged);
     }
 
