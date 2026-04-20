@@ -29,7 +29,7 @@ export function AppShell({ current, onNavigate, children }: Props) {
           className="flex items-center gap-2 px-3 py-2"
           style={{ borderBottom: '1px solid var(--border)' }}
         >
-          <img src="/logo-192.png" alt="" width={32} height={22} style={{ objectFit: 'contain' }} />
+          <img src="/logo-mark.png" alt="" width={44} height={28} style={{ objectFit: 'contain' }} />
           <span className="text-[14px] font-semibold" style={{ color: 'var(--accent)' }}>
             caravan-flow
           </span>
