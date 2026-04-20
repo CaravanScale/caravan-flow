@@ -26,7 +26,7 @@ import { SourcesPanel } from '../components/SourcesPanel'
 import { TestFlowFileDialog } from '../components/TestFlowFileDialog'
 import { ProcessorPalette, PALETTE_MIME } from '../components/ProcessorPalette'
 import { EdgeRelationshipPicker } from '../components/EdgeRelationshipPicker'
-import { useAddConnection, useAddProcessor, useReloadFlow } from '../lib/mutations'
+import { useAddConnection, useAddProcessor, useAddSource, useReloadFlow } from '../lib/mutations'
 import type { Processor, RegistryEntry } from '../api/types'
 
 const nodeTypes = { processor: ProcessorNode }
@@ -76,6 +76,7 @@ function GraphPageInner() {
   const reload = useReloadFlow()
   const addConn = useAddConnection()
   const addProc = useAddProcessor()
+  const addSrc = useAddSource()
   const rf = useReactFlow()
   const paneRef = useRef<HTMLDivElement | null>(null)
 
@@ -176,17 +177,25 @@ function GraphPageInner() {
     const existingNames = new Set((topology.data?.processors ?? []).map((p) => p.name))
     const name = uniqueName(type, existingNames)
 
-    // Persist the drop position first — the flow refresh triggered by
-    // useAddProcessor's invalidation will pick this up in layoutFlow.
+    // Persist position first; the flow refresh triggered by the add
+    // mutation picks it up in layoutFlow. Branch on registry kind:
+    // processor → /api/processors/add, source → /api/sources/add.
     layoutStore.set(name, position)
 
+    const entry = (registry.data ?? []).find((r) => r.name === type)
+    const isSource = entry?.kind === 'source'
+
     try {
-      await addProc.mutateAsync({ name, type, config: {}, connections: {} })
+      if (isSource) {
+        await addSrc.mutateAsync({ name, type, config: {} })
+      } else {
+        await addProc.mutateAsync({ name, type, config: {}, connections: {} })
+      }
     } catch (err) {
       layoutStore.delete(name)
       setReloadMsg(`add failed: ${(err as Error).message}`)
     }
-  }, [addProc, rf, topology.data])
+  }, [addProc, addSrc, rf, topology.data, registry.data])
 
   const onNodeDragStop = useCallback((_: unknown, node: Node<ProcessorNodeData>) => {
     layoutStore.set(node.id, { x: node.position.x, y: node.position.y })

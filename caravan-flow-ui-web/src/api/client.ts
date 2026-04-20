@@ -95,6 +95,8 @@ export const api = {
   sources: () => getJson<SourceInfo[]>('/api/sources'),
   startSource: (name: string) => send('POST', '/api/sources/start', { name }),
   stopSource: (name: string) => send('POST', '/api/sources/stop', { name }),
+  addSource: (body: { name: string; type: string; config?: Record<string, unknown> }) =>
+    send('POST', '/api/sources/add', body),
 
   // --- per-processor ---
   resetProcessorStats: (name: string) =>

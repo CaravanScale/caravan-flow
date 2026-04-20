@@ -41,5 +41,17 @@ public static class BuiltinSources
                 var pollMs = ConfigHelpers.ParseInt(config.GetValueOrDefault("pollIntervalMs"), "pollIntervalMs", 1000);
                 return new GenerateFlowFile(name, pollMs, content, contentType, attrs, batchSize);
             });
+
+        reg.Register(
+            new SourceInfo("ListenHTTP",
+                "Binds an HTTP listener on {port}{path}; each POST body becomes a FlowFile.",
+                ["port", "path"]),
+            (name, config, store) =>
+            {
+                var port = ConfigHelpers.ParseInt(config.GetValueOrDefault("port"), "port", 0);
+                if (port <= 0) return null; // disabled — must opt in with a port
+                var path = config.GetValueOrDefault("path", "/");
+                return new ListenHTTP(name, port, path);
+            });
     }
 }

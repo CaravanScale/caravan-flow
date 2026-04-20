@@ -93,6 +93,13 @@ export function useReloadFlow() {
   })
 }
 
+export function useAddSource() {
+  return useFlowMutation<
+    { name: string; type: string; config?: Record<string, unknown> },
+    Response
+  >(async (body) => unwrap(await api.addSource(body)))
+}
+
 export function useStartSource() {
   return useFlowMutation<string, Response>(async (name) => unwrap(await api.startSource(name)))
 }

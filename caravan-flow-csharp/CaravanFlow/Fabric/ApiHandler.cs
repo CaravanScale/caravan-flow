@@ -12,6 +12,8 @@ public sealed class ApiHandler
     private readonly Fabric _fab;
     private string? _configPath;
     private Overlay.Resolved? _resolvedOverlay;
+    private SourceRegistry? _sourceRegistry;
+    private IContentStore? _contentStore;
 
     private static IResult Json(object value)
         => Results.Content(CaravanJson.SerializeToString(value), "application/json");
@@ -19,6 +21,17 @@ public sealed class ApiHandler
     public ApiHandler(Fabric fab) => _fab = fab;
 
     public void SetConfigPath(string path) => _configPath = path;
+
+    /// <summary>
+    /// Wire the source registry + content store so the API can list
+    /// source types alongside processors in <c>/api/registry</c> and add
+    /// new source instances at runtime via <c>/api/sources/add</c>.
+    /// </summary>
+    public void SetSourceRegistry(SourceRegistry sourceRegistry, IContentStore contentStore)
+    {
+        _sourceRegistry = sourceRegistry;
+        _contentStore = contentStore;
+    }
 
     /// <summary>
     /// Installs the overlay snapshot resolved at startup so the
@@ -89,6 +102,9 @@ public sealed class ApiHandler
 
         // Test flowfile injection (push a synthetic FlowFile at an entry point)
         app.MapPost("/api/flowfiles/ingest", IngestFlowFile);
+
+        // Add a new source instance at runtime (palette drop target)
+        app.MapPost("/api/sources/add", AddSource);
     }
 
     // --- Stats ---
@@ -99,28 +115,67 @@ public sealed class ApiHandler
 
     private IResult RegistryList()
     {
-        var infos = _fab.GetRegistry().List();
-        return Json(infos.Select(i => new Dictionary<string, object?>
+        var results = new List<Dictionary<string, object?>>();
+
+        foreach (var i in _fab.GetRegistry().List())
         {
-            ["name"] = i.Name,
-            ["description"] = i.Description,
-            ["category"] = i.Category,
-            ["configKeys"] = i.ConfigKeys,
-            ["parameters"] = i.Parameters.Select(p => new Dictionary<string, object?>
+            results.Add(new Dictionary<string, object?>
             {
-                ["name"] = p.Name,
-                ["label"] = p.Label,
-                ["description"] = p.Description,
-                ["kind"] = p.Kind.ToString(),
-                ["required"] = p.Required,
-                ["default"] = p.Default,
-                ["placeholder"] = p.Placeholder,
-                ["choices"] = p.Choices,
-                ["valueKind"] = p.ValueKind?.ToString(),
-                ["entryDelim"] = p.EntryDelim,
-                ["pairDelim"] = p.PairDelim,
-            }).ToList()
-        }));
+                ["name"] = i.Name,
+                ["description"] = i.Description,
+                ["category"] = i.Category,
+                ["kind"] = "processor",
+                ["configKeys"] = i.ConfigKeys,
+                ["parameters"] = i.Parameters.Select(p => new Dictionary<string, object?>
+                {
+                    ["name"] = p.Name,
+                    ["label"] = p.Label,
+                    ["description"] = p.Description,
+                    ["kind"] = p.Kind.ToString(),
+                    ["required"] = p.Required,
+                    ["default"] = p.Default,
+                    ["placeholder"] = p.Placeholder,
+                    ["choices"] = p.Choices,
+                    ["valueKind"] = p.ValueKind?.ToString(),
+                    ["entryDelim"] = p.EntryDelim,
+                    ["pairDelim"] = p.PairDelim,
+                }).ToList()
+            });
+        }
+
+        // Source types share the palette — in a visual-FP tool a source
+        // is just a processor with no inbound edges. We tag the entry
+        // kind="source" so the UI drop handler picks the right add endpoint.
+        if (_sourceRegistry is not null)
+        {
+            foreach (var s in _sourceRegistry.List())
+            {
+                results.Add(new Dictionary<string, object?>
+                {
+                    ["name"] = s.TypeName,
+                    ["description"] = s.Description,
+                    ["category"] = "Source",
+                    ["kind"] = "source",
+                    ["configKeys"] = s.ConfigKeys,
+                    ["parameters"] = s.ConfigKeys.Select(k => new Dictionary<string, object?>
+                    {
+                        ["name"] = k,
+                        ["label"] = k,
+                        ["description"] = "",
+                        ["kind"] = "String",
+                        ["required"] = false,
+                        ["default"] = null,
+                        ["placeholder"] = null,
+                        ["choices"] = null,
+                        ["valueKind"] = null,
+                        ["entryDelim"] = ";",
+                        ["pairDelim"] = "=",
+                    }).ToList()
+                });
+            }
+        }
+
+        return Json(results);
     }
 
     private IResult Connections()
@@ -737,6 +792,51 @@ public sealed class ApiHandler
     }
 
     // --- Per-processor stats reset ---
+
+    /// Runtime source creation. Accepts {name, type, config} and registers
+    /// the source with the fabric. Started immediately if the fabric is
+    /// already running (matches how GetFile/GenerateFlowFile boot when the
+    /// worker starts after reading config.yaml).
+    private IResult AddSource([FromBody] Dictionary<string, object?>? body)
+    {
+        if (_sourceRegistry is null || _contentStore is null)
+            return Json(new Dictionary<string, object?> { ["error"] = "source registry not wired" });
+        if (body is null)
+            return Json(new Dictionary<string, object?> { ["error"] = "body must be a JSON object" });
+
+        var name = body.GetValueOrDefault("name") as string ?? "";
+        var type = body.GetValueOrDefault("type") as string ?? "";
+        if (string.IsNullOrEmpty(name))
+            return Json(new Dictionary<string, object?> { ["error"] = "name required" });
+        if (string.IsNullOrEmpty(type))
+            return Json(new Dictionary<string, object?> { ["error"] = "type required" });
+        if (!_sourceRegistry.Has(type))
+            return Json(new Dictionary<string, object?> { ["error"] = $"unknown source type '{type}'" });
+
+        var cfg = new Dictionary<string, string>();
+        if (body.GetValueOrDefault("config") is Dictionary<string, object?> rawCfg)
+        {
+            foreach (var (k, v) in rawCfg)
+                cfg[k] = v?.ToString() ?? "";
+        }
+
+        var source = _sourceRegistry.Create(type, name, cfg, _contentStore);
+        if (source is null)
+            return Json(new Dictionary<string, object?>
+            {
+                ["status"] = "skipped",
+                ["name"] = name,
+                ["reason"] = "factory returned null — likely required config missing"
+            });
+
+        _fab.AddSource(source);
+        return Json(new Dictionary<string, object?>
+        {
+            ["status"] = "added",
+            ["name"] = name,
+            ["type"] = type,
+        });
+    }
 
     private IResult ResetProcessorStats(string name)
     {

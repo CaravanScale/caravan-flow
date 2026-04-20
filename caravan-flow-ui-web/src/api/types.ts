@@ -102,6 +102,9 @@ export interface RegistryEntry {
   name: string
   description: string
   category?: string
+  // 'processor' | 'source' — controls drop-handler branching. Missing on
+  // older workers; treat as 'processor' for back-compat.
+  kind?: string
   configKeys: string[]
   parameters?: ParamInfo[]
 }

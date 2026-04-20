@@ -26,11 +26,35 @@ if (mode == "--help" || mode == "-h" || mode == "help")
     Console.WriteLine();
     Console.WriteLine("Usage:");
     Console.WriteLine("  caravan-flow                  Start the server using ./config.yaml (default)");
+    Console.WriteLine("  caravan-flow --mode=standalone Serve API + UI (default)");
+    Console.WriteLine("  caravan-flow --mode=headless  Serve API only; do not mount the UI (k8s worker pod)");
     Console.WriteLine("  caravan-flow validate [path]  Check a config without starting; exit 0 on success, 1 on errors");
     Console.WriteLine("  caravan-flow bench            Run pipeline throughput benchmarks");
     Console.WriteLine("  caravan-flow help             Show this message");
     return;
 }
+
+// --mode=standalone | --mode=headless  (default: standalone)
+//
+// In k8s worker pods the UI is served by a separate controller — the
+// worker runs headless (API only). Matches the k8s operator + multi-worker
+// design doc. $CARAVANFLOW_MODE is honored as a fallback for operators
+// that prefer env vars over CLI flags.
+string uiMode = Environment.GetEnvironmentVariable("CARAVANFLOW_MODE") ?? "standalone";
+foreach (var arg in args)
+{
+    if (arg.StartsWith("--mode="))
+        uiMode = arg.Substring("--mode=".Length);
+    else if (arg == "--headless")
+        uiMode = "headless";
+}
+if (uiMode != "standalone" && uiMode != "headless")
+{
+    Console.Error.WriteLine($"invalid --mode '{uiMode}'; expected 'standalone' or 'headless'");
+    Environment.Exit(2);
+    return;
+}
+bool headless = uiMode == "headless";
 
 // --- Production server mode ---
 Console.WriteLine("caravan-flow-csharp starting");
@@ -276,7 +300,11 @@ app.UseCors();
 // (Blazor's magic manifest endpoint) is deliberately NOT used here:
 // we hit a content-encoding negotiation bug on .NET 10 where .br/.gz
 // variants got served with the wrong Content-Encoding header.
-bool uiHosted = manifestRoot is not null && Directory.Exists(Path.Combine(manifestRoot, "wwwroot"));
+bool uiHosted = !headless && manifestRoot is not null && Directory.Exists(Path.Combine(manifestRoot, "wwwroot"));
+if (headless)
+{
+    Console.WriteLine("[ui] headless mode — UI assets not mounted (only API endpoints are served)");
+}
 if (uiHosted)
 {
     app.UseStaticFiles(new Microsoft.AspNetCore.Builder.StaticFileOptions
@@ -351,6 +379,7 @@ app.MapPost("/", async (HttpRequest req, HttpResponse resp) =>
 var api = new ApiHandler(fab);
 api.SetConfigPath(configPath);
 api.SetResolvedOverlay(resolvedOverlay);
+api.SetSourceRegistry(sourceRegistry, store);
 api.MapRoutes(app);
 
 // Schema registry REST endpoints (Confluent path shapes under /api/schema-registry)
