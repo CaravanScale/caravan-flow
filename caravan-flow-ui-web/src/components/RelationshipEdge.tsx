@@ -1,4 +1,4 @@
-import { BaseEdge, EdgeLabelRenderer, getSmoothStepPath, type EdgeProps } from '@xyflow/react'
+import { BaseEdge, EdgeLabelRenderer, getBezierPath, type EdgeProps } from '@xyflow/react'
 import type { RelEdgeData } from '../lib/layout'
 
 function colorFor(rel: string): string {
@@ -22,14 +22,14 @@ export function RelationshipEdge({
   const color = colorFor(rel)
   const dash = rel === 'failure' ? '6 3' : undefined
 
-  const [path, labelX, labelY] = getSmoothStepPath({
+  const [path, labelX, labelY] = getBezierPath({
     sourceX,
     sourceY,
     sourcePosition,
     targetX,
     targetY,
     targetPosition,
-    borderRadius: 10,
+    curvature: 0.3,
   })
 
   return (
