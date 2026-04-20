@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 using CaravanFlow.Core;
+using CaravanFlow.StdLib;
 
 namespace CaravanFlow.Fabric;
 
@@ -90,6 +91,11 @@ public sealed class ApiHandler
 
         // Per-processor sample ring (Peek — feeds drawer sample tab + wizards)
         app.MapGet("/api/processors/{name}/samples", ProcessorSamples);
+
+        // Expression builder live-parse endpoint (Phase D of the wizard push).
+        // Single source of truth — wizards evaluate via the same engine
+        // processors use, so "it preview-ran green" guarantees runtime parity.
+        app.MapPost("/api/expression/parse", ExpressionParse);
 
         // Sibling layout file: per-deployment shared view (node positions).
         // Stored alongside config.yaml — loaded by the UI as a fallback when
@@ -631,6 +637,61 @@ public sealed class ApiHandler
         {
             return Json(new Dictionary<string, object?> { ["error"] = $"layout write failed: {ex.Message}" });
         }
+    }
+
+    /// Parse + optional-evaluate an expression. Body:
+    ///   { expression: "...", context?: { attributes: {...}, record: {...} } }
+    /// Returns { ok, error?, kind?, value? }. If context.record is present,
+    /// its fields merge with context.attributes into a DictValueResolver
+    /// so builder previews can show the value against a real sample.
+    private IResult ExpressionParse([FromBody] Dictionary<string, object?>? body)
+    {
+        if (body is null)
+            return Json(new Dictionary<string, object?> { ["ok"] = false, ["error"] = "body required" });
+
+        var expression = body.GetValueOrDefault("expression") as string ?? "";
+        if (string.IsNullOrEmpty(expression))
+            return Json(new Dictionary<string, object?> { ["ok"] = false, ["error"] = "expression must not be blank" });
+
+        CompiledExpression compiled;
+        try { compiled = ExpressionEngine.Compile(expression); }
+        catch (Exception ex)
+        {
+            return Json(new Dictionary<string, object?>
+            {
+                ["ok"] = false,
+                ["error"] = ex.Message,
+            });
+        }
+
+        var merged = new Dictionary<string, object?>();
+        if (body.GetValueOrDefault("context") is Dictionary<string, object?> ctx)
+        {
+            if (ctx.GetValueOrDefault("attributes") is Dictionary<string, object?> attrs)
+                foreach (var (k, v) in attrs) merged[k] = v;
+            if (ctx.GetValueOrDefault("record") is Dictionary<string, object?> rec)
+                foreach (var (k, v) in rec) merged[k] = v;
+        }
+
+        EvalValue value;
+        try { value = compiled.Eval(new DictValueResolver(merged)); }
+        catch (Exception ex)
+        {
+            return Json(new Dictionary<string, object?>
+            {
+                ["ok"] = true,
+                ["parse"] = "ok",
+                ["eval"] = "error",
+                ["error"] = ex.Message,
+            });
+        }
+
+        return Json(new Dictionary<string, object?>
+        {
+            ["ok"] = true,
+            ["kind"] = value.Type.ToString(),
+            ["value"] = value.AsString(),
+        });
     }
 
     private IResult EdgeStats()

@@ -104,6 +104,24 @@ export const api = {
   edgeStats: () =>
     getJson<Record<string, { processed: number }>>('/api/edge-stats'),
 
+  // --- Expression builder live-parse ---
+  expressionParse: (body: {
+    expression: string
+    context?: { attributes?: Record<string, unknown>; record?: Record<string, unknown> }
+  }) =>
+    fetch('/api/expression/parse', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).then((r) => r.json() as Promise<{
+      ok: boolean
+      error?: string
+      kind?: string
+      value?: string
+      parse?: string
+      eval?: string
+    }>),
+
   // --- Per-processor sample ring (Peek) ---
   processorSamples: (name: string) =>
     getJson<{

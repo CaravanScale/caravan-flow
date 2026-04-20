@@ -1,5 +1,6 @@
-import { useEffect, useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { ParamInfo, ParamKind } from '../api/types'
+import { ExpressionBuilder } from './ExpressionBuilder'
 
 // Listen for Peek field-pick events (fired by SamplePanel chip clicks).
 // When the operator has focus in a text input / textarea, insert the
@@ -49,13 +50,28 @@ interface Props {
   parameters: ParamInfo[]
   values: Record<string, string>
   onChange: (next: Record<string, string>) => void
+  // Source of samples for the Expression builder's field picker + live
+  // preview. Optional because add-processor-dialog forms don't have a
+  // running processor yet; the builder degrades to an editor + palette
+  // without sample-aware preview.
+  processorName?: string
 }
 
 const INPUT_CLASS = 'w-full rounded border px-2 py-1'
 const INPUT_STYLE = { background: '#0a0a14', borderColor: 'var(--border)', color: 'var(--text)' } as const
 
-export function ProcessorConfigForm({ parameters, values, onChange }: Props) {
+export function ProcessorConfigForm({ parameters, values, onChange, processorName }: Props) {
   useFieldPickListener()
+  // Expression builder modal state. Only one builder open at a time;
+  // a save-callback routes the assembled expression back to whichever
+  // input opened it (tracked by a path like "paramName" or
+  // "paramName:rowIdx"). Simpler than per-input modal state and keeps
+  // the component tree flat.
+  const [builderTarget, setBuilderTarget] = useState<{
+    initial: string
+    save: (v: string) => void
+  } | null>(null)
+
   if (parameters.length === 0) {
     return (
       <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
@@ -69,8 +85,26 @@ export function ProcessorConfigForm({ parameters, values, onChange }: Props) {
   return (
     <div className="flex flex-col gap-3">
       {parameters.map((p) => (
-        <ParamField key={p.name} param={p} value={values[p.name] ?? ''} onChange={(v) => set(p.name, v)} />
+        <ParamField
+          key={p.name}
+          param={p}
+          value={values[p.name] ?? ''}
+          onChange={(v) => set(p.name, v)}
+          onOpenBuilder={setBuilderTarget}
+        />
       ))}
+      {builderTarget && (
+        <ExpressionBuilder
+          open
+          initialValue={builderTarget.initial}
+          processorName={processorName}
+          onSave={(v) => {
+            builderTarget.save(v)
+            setBuilderTarget(null)
+          }}
+          onCancel={() => setBuilderTarget(null)}
+        />
+      )}
     </div>
   )
 }
@@ -79,16 +113,30 @@ interface FieldProps {
   param: ParamInfo
   value: string
   onChange: (v: string) => void
+  onOpenBuilder?: (target: { initial: string; save: (v: string) => void }) => void
 }
 
-function ParamField({ param, value, onChange }: FieldProps) {
+function ParamField({ param, value, onChange, onOpenBuilder }: FieldProps) {
   return (
     <div>
-      <label className="mb-1 flex items-baseline gap-2 text-[10px] uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>
-        <span>{param.label || param.name}</span>
-        {param.required && <span style={{ color: 'var(--error)' }}>required</span>}
+      <label className="mb-1 flex items-baseline justify-between gap-2 text-[10px] uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>
+        <span className="flex items-baseline gap-2">
+          <span>{param.label || param.name}</span>
+          {param.required && <span style={{ color: 'var(--error)' }}>required</span>}
+        </span>
+        {param.kind === 'Expression' && onOpenBuilder && (
+          <button
+            onClick={() => onOpenBuilder({ initial: value, save: onChange })}
+            className="rounded border px-1.5 py-0.5 text-[9px]"
+            style={{ background: 'transparent', borderColor: 'var(--accent)', color: 'var(--accent)' }}
+            title="open expression builder"
+            type="button"
+          >
+            ✎ builder
+          </button>
+        )}
       </label>
-      <FieldInput param={param} value={value} onChange={onChange} />
+      <FieldInput param={param} value={value} onChange={onChange} onOpenBuilder={onOpenBuilder} />
       {param.description && (
         <p className="mt-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>
           {param.description}
@@ -98,7 +146,7 @@ function ParamField({ param, value, onChange }: FieldProps) {
   )
 }
 
-function FieldInput({ param, value, onChange }: FieldProps) {
+function FieldInput({ param, value, onChange, onOpenBuilder }: FieldProps) {
   switch (param.kind) {
     case 'Multiline':
     case 'Expression':
@@ -165,7 +213,7 @@ function FieldInput({ param, value, onChange }: FieldProps) {
     case 'StringList':
       return <StringListInput param={param} value={value} onChange={onChange} />
     case 'KeyValueList':
-      return <KeyValueListInput param={param} value={value} onChange={onChange} />
+      return <KeyValueListInput param={param} value={value} onChange={onChange} onOpenBuilder={onOpenBuilder} />
     case 'String':
     default:
       return (
@@ -239,9 +287,10 @@ interface Row {
   value: string
 }
 
-function KeyValueListInput({ param, value, onChange }: FieldProps) {
+function KeyValueListInput({ param, value, onChange, onOpenBuilder }: FieldProps) {
   const rows = useMemo(() => parseKeyValueList(value, param.entryDelim, param.pairDelim), [value, param.entryDelim, param.pairDelim])
   const valueKind: ParamKind = param.valueKind ?? 'String'
+  const expressionValue = valueKind === 'Expression'
 
   const update = (next: Row[]) =>
     onChange(next.map((r) => `${r.key}${param.pairDelim}${r.value}`).join(param.entryDelim))
@@ -250,6 +299,13 @@ function KeyValueListInput({ param, value, onChange }: FieldProps) {
     const next = rows.map((r, j) => (j === i ? { ...r, ...patch } : r))
     update(next)
   }
+
+  // For rows with Expression values, add a third column with a "✎"
+  // builder-open button. Keeps the raw textarea editable too — power
+  // users can still type; anyone else hits the wizard.
+  const rowCols = expressionValue
+    ? 'minmax(0,1fr) minmax(0,1.6fr) 24px 24px'
+    : 'minmax(0,1fr) minmax(0,1.6fr) 24px'
 
   return (
     <div className="flex flex-col gap-1.5">
@@ -262,7 +318,7 @@ function KeyValueListInput({ param, value, onChange }: FieldProps) {
         <div
           key={i}
           className="grid items-start gap-2"
-          style={{ gridTemplateColumns: 'minmax(0,1fr) minmax(0,1.6fr) 24px' }}
+          style={{ gridTemplateColumns: rowCols }}
         >
           <input
             type="text"
@@ -290,6 +346,20 @@ function KeyValueListInput({ param, value, onChange }: FieldProps) {
               className="rounded border px-2 py-1"
               style={INPUT_STYLE}
             />
+          )}
+          {expressionValue && onOpenBuilder && (
+            <button
+              onClick={() => onOpenBuilder({
+                initial: row.value,
+                save: (v: string) => setRow(i, { value: v }),
+              })}
+              className="self-center text-[12px]"
+              style={{ color: 'var(--accent)' }}
+              title="open expression builder"
+              type="button"
+            >
+              ✎
+            </button>
           )}
           <button
             onClick={() => update(rows.filter((_, j) => j !== i))}
