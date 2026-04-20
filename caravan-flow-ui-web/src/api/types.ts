@@ -24,6 +24,7 @@ export interface Source {
   name: string
   type: string
   running: boolean
+  connections?: Record<string, string[]> | null
 }
 
 export interface Provider {

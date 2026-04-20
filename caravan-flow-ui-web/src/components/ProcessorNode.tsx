@@ -9,10 +9,12 @@ function formatNum(n: number): string {
 }
 
 export function ProcessorNode({ data, selected }: NodeProps<Node<ProcessorNodeData>>) {
-  const { processor, isEntry, isSink } = data
+  const { processor, kind, isEntry, isSink } = data
   const processed = processor.stats?.processed ?? 0
   const errors = processor.stats?.errors ?? 0
   const hasErrors = errors > 0
+  const isSource = kind === 'source'
+  const isTerminal = kind === 'sink'
 
   const fill = hasErrors
     ? 'rgba(231, 76, 60, 0.10)'
@@ -49,16 +51,18 @@ export function ProcessorNode({ data, selected }: NodeProps<Node<ProcessorNodeDa
         cursor: 'grab',
       }}
     >
-      <Handle
-        type="target"
-        position={Position.Top}
-        style={{
-          width: 10,
-          height: 10,
-          background: 'var(--accent)',
-          border: '2px solid var(--surface)',
-        }}
-      />
+      {!isSource && (
+        <Handle
+          type="target"
+          position={Position.Top}
+          style={{
+            width: 10,
+            height: 10,
+            background: 'var(--accent)',
+            border: '2px solid var(--surface)',
+          }}
+        />
+      )}
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
           <div className="truncate text-[13px] font-semibold text-white" title={processor.name}>
@@ -68,7 +72,15 @@ export function ProcessorNode({ data, selected }: NodeProps<Node<ProcessorNodeDa
             {processor.type}
           </div>
         </div>
-        {isEntry && (
+        {isSource && (
+          <span
+            className="rounded-sm px-1 text-[9px] font-semibold"
+            style={{ color: 'var(--entry)' }}
+          >
+            SOURCE
+          </span>
+        )}
+        {!isSource && isEntry && (
           <span
             className="rounded-sm px-1 text-[9px] font-semibold"
             style={{ color: 'var(--entry)' }}
@@ -76,12 +88,20 @@ export function ProcessorNode({ data, selected }: NodeProps<Node<ProcessorNodeDa
             ENTRY
           </span>
         )}
-        {!isEntry && isSink && (
+        {isTerminal && (
           <span
             className="rounded-sm px-1 text-[9px] font-semibold"
             style={{ color: 'var(--warning)' }}
           >
             SINK
+          </span>
+        )}
+        {!isTerminal && !isSource && isSink && (
+          <span
+            className="rounded-sm px-1 text-[9px] font-semibold"
+            style={{ color: 'var(--text-muted)' }}
+          >
+            TERMINAL
           </span>
         )}
       </div>
@@ -96,16 +116,18 @@ export function ProcessorNode({ data, selected }: NodeProps<Node<ProcessorNodeDa
           </>
         )}
       </div>
-      <Handle
-        type="source"
-        position={Position.Bottom}
-        style={{
-          width: 10,
-          height: 10,
-          background: 'var(--success)',
-          border: '2px solid var(--surface)',
-        }}
-      />
+      {!isTerminal && (
+        <Handle
+          type="source"
+          position={Position.Bottom}
+          style={{
+            width: 10,
+            height: 10,
+            background: 'var(--success)',
+            border: '2px solid var(--surface)',
+          }}
+        />
+      )}
     </div>
   )
 }

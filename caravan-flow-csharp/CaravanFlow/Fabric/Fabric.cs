@@ -13,6 +13,13 @@ public sealed class Fabric
     private readonly Registry _reg;
     private readonly ProcessorContext _globalCtx;
     private readonly Dictionary<string, IConnectorSource> _sources = new();
+    // Per-source outbound connections: sourceName → relationship → target
+    // processor names. Sources are first-class graph nodes in the tighter
+    // visual-FP model — a source's FlowFile flows to its declared
+    // downstreams via the regular connection mechanism, not via a shared
+    // entryPoints fan-out. When a source has no connections declared,
+    // the fabric falls back to the legacy entryPoints list for back-compat.
+    private readonly Dictionary<string, Dictionary<string, List<string>>> _sourceConnections = new();
     private readonly CancellationTokenSource _cts = new();
     // Replaceable in LoadFlow when defaults.maxConcurrentExecutions is set.
     // Safe on initial load (no in-flight Execute yet). On hot reload, the swap
@@ -429,11 +436,13 @@ public sealed class Fabric
         work.Push((ff, targets[0], hops));
     }
 
-    // --- Ingest callback for sources ---
+    // --- Ingest callbacks for sources ---
 
     /// <summary>
-    /// Callback passed to connector sources. Fans out to all entry-point processors.
-    /// Returns false on backpressure.
+    /// Legacy callback used by sources that have no outbound connections
+    /// configured. Fans a FlowFile out to the graph's entryPoints list —
+    /// the pre-tightening model. Kept so existing config.yaml files with
+    /// entryPoints but no source-connections continue to work.
     /// </summary>
     public bool IngestAndExecute(FlowFile ff)
     {
@@ -450,7 +459,6 @@ public sealed class Fabric
         if (entryPoints.Count == 1)
             return Execute(ff, entryPoints[0]);
 
-        // Multiple entry points: clone for each, execute all
         for (int i = 1; i < entryPoints.Count; i++)
         {
             ff.Content.AddRef();
@@ -460,17 +468,90 @@ public sealed class Fabric
         return Execute(ff, entryPoints[0]);
     }
 
+    /// <summary>
+    /// Route a FlowFile out of a named source to its declared outbound
+    /// connections. Preferred over <see cref="IngestAndExecute"/> — uses
+    /// the source's own connections instead of a shared entryPoints list,
+    /// so each source independently decides where its output goes. If
+    /// the source has no connections declared, falls back to entryPoints
+    /// so legacy configs keep working.
+    /// </summary>
+    public bool IngestFromSource(string sourceName, FlowFile ff)
+    {
+        if (_sourceConnections.TryGetValue(sourceName, out var connsByRel) && connsByRel.Count > 0)
+        {
+            // "success" is the default output relationship for sources.
+            var targets = connsByRel.GetValueOrDefault("success", new List<string>());
+            if (targets.Count == 0)
+            {
+                _log?.Log("WARN", "fabric", $"source '{sourceName}' has connections but none on 'success' — dropping ff-{ff.NumericId}");
+                FlowFile.Return(ff);
+                return false;
+            }
+            if (targets.Count == 1) return Execute(ff, targets[0]);
+            for (int i = 1; i < targets.Count; i++)
+            {
+                ff.Content.AddRef();
+                var clone = FlowFile.Rent(ff.NumericId, ff.Attributes, ff.Content, ff.Timestamp, ff.HopCount);
+                Execute(clone, targets[i]);
+            }
+            return Execute(ff, targets[0]);
+        }
+        return IngestAndExecute(ff);
+    }
+
+    // --- Per-source connection management ---
+
+    public Dictionary<string, Dictionary<string, List<string>>> GetSourceConnections()
+        => new(_sourceConnections);
+
+    public EditResult AddSourceConnection(string sourceName, string relationship, string target)
+    {
+        if (string.IsNullOrEmpty(sourceName)) return EditResult.Fail("from must not be blank");
+        if (string.IsNullOrEmpty(relationship)) return EditResult.Fail("relationship must not be blank");
+        if (string.IsNullOrEmpty(target)) return EditResult.Fail("to must not be blank");
+        if (!_sources.ContainsKey(sourceName)) return EditResult.Fail($"source '{sourceName}' not found");
+        if (!_graph.Processors.ContainsKey(target)) return EditResult.Fail($"processor '{target}' not found");
+        var byRel = _sourceConnections.GetValueOrDefault(sourceName) ?? new Dictionary<string, List<string>>();
+        var targets = byRel.GetValueOrDefault(relationship) ?? new List<string>();
+        if (!targets.Contains(target)) targets.Add(target);
+        byRel[relationship] = targets;
+        _sourceConnections[sourceName] = byRel;
+        return EditResult.Success();
+    }
+
+    public EditResult RemoveSourceConnection(string sourceName, string relationship, string target)
+    {
+        if (!_sourceConnections.TryGetValue(sourceName, out var byRel))
+            return EditResult.Fail($"source '{sourceName}' has no connections");
+        if (!byRel.TryGetValue(relationship, out var targets))
+            return EditResult.Fail($"no '{relationship}' connection");
+        return targets.Remove(target)
+            ? EditResult.Success()
+            : EditResult.Fail($"'{target}' not in '{relationship}' connections");
+    }
+
+    public void SetSourceConnections(string sourceName, Dictionary<string, List<string>> connections)
+    {
+        _sourceConnections[sourceName] = connections;
+    }
+
     // --- Async start/stop ---
 
     public void StartAsync()
     {
         _running = true;
 
-        // Start all connector sources — they call IngestAndExecute directly
+        // Each source gets a per-source ingest callback that routes via
+        // that source's declared connections (with entryPoints fallback).
+        // This keeps source→processor flow explicit in the graph.
         foreach (var (name, source) in _sources)
         {
             if (!source.IsRunning)
-                source.Start(IngestAndExecute, _cts.Token);
+            {
+                var sourceName = name;
+                source.Start(ff => IngestFromSource(sourceName, ff), _cts.Token);
+            }
             Console.WriteLine($"[fabric] source started: {name} (type={source.SourceType})");
         }
 
@@ -492,7 +573,10 @@ public sealed class Fabric
     {
         _sources[source.Name] = source;
         if (_running)
-            source.Start(IngestAndExecute, _cts.Token);
+        {
+            var sourceName = source.Name;
+            source.Start(ff => IngestFromSource(sourceName, ff), _cts.Token);
+        }
     }
 
     public bool StartSource(string name)

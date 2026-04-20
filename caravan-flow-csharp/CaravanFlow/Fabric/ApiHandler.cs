@@ -197,7 +197,13 @@ public sealed class ApiHandler
                 ["connections"] = _fab.GetConnections().GetValueOrDefault(name)
             }).ToList(),
             ["entryPoints"] = _fab.GetEntryPoints(),
-            ["sources"] = _fab.GetSources().Select(s => new Dictionary<string, object?> { ["name"] = s.Name, ["type"] = s.Type, ["running"] = s.Running }).ToList(),
+            ["sources"] = _fab.GetSources().Select(s => new Dictionary<string, object?>
+            {
+                ["name"] = s.Name,
+                ["type"] = s.Type,
+                ["running"] = s.Running,
+                ["connections"] = _fab.GetSourceConnections().GetValueOrDefault(s.Name),
+            }).ToList(),
             ["providers"] = _fab.GetContext().ListProviders().Select(name =>
             {
                 var p = _fab.GetContext().GetProvider(name);
@@ -548,6 +554,14 @@ public sealed class ApiHandler
         var from = body.TryGetValue("from", out var f) ? f?.ToString() ?? "" : "";
         var rel = body.TryGetValue("relationship", out var r) ? r?.ToString() ?? "" : "";
         var to = body.TryGetValue("to", out var t) ? t?.ToString() ?? "" : "";
+        // If `from` names a source, dispatch to the per-source connection
+        // map rather than the processor connection map.
+        if (_fab.GetSources().Any(s => s.Name == from))
+        {
+            return EditResultJson(
+                _fab.AddSourceConnection(from, rel, to),
+                new() { ["status"] = "added", ["from"] = from, ["relationship"] = rel, ["to"] = to });
+        }
         return EditResultJson(
             _fab.AddConnection(from, rel, to),
             new() { ["status"] = "added", ["from"] = from, ["relationship"] = rel, ["to"] = to });
@@ -559,6 +573,12 @@ public sealed class ApiHandler
         var from = body.TryGetValue("from", out var f) ? f?.ToString() ?? "" : "";
         var rel = body.TryGetValue("relationship", out var r) ? r?.ToString() ?? "" : "";
         var to = body.TryGetValue("to", out var t) ? t?.ToString() ?? "" : "";
+        if (_fab.GetSources().Any(s => s.Name == from))
+        {
+            return EditResultJson(
+                _fab.RemoveSourceConnection(from, rel, to),
+                new() { ["status"] = "removed", ["from"] = from, ["relationship"] = rel, ["to"] = to });
+        }
         return EditResultJson(
             _fab.RemoveConnection(from, rel, to),
             new() { ["status"] = "removed", ["from"] = from, ["relationship"] = rel, ["to"] = to });
