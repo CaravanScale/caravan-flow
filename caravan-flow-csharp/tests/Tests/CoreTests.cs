@@ -82,7 +82,7 @@ public static class CoreTests
         var (data1, err1) = ContentHelpers.Resolve(store, new ClaimContent("nonexistent", 100));
         AssertIntEqual("missing claim returns empty", data1.Length, 0);
 
-        var (_, err2) = ContentHelpers.Resolve(store, new RecordContent(new Schema("empty", []), new List<GenericRecord>()));
+        var (_, err2) = ContentHelpers.Resolve(store, new RecordContent(new Schema("empty", []), new List<Record>()));
         AssertTrue("records resolve has error", err2 != "");
 
         var cid = store.Store("claimed data"u8.ToArray());

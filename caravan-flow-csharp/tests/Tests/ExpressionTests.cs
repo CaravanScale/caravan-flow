@@ -268,7 +268,7 @@ public static class ExpressionTests
             new Field("quantity", FieldType.Long),
             new Field("customer", FieldType.String)
         ]);
-        var rec = new GenericRecord(schema);
+        var rec = new Record(schema);
         rec.SetField("price", 9.99);
         rec.SetField("quantity", 3L);
         rec.SetField("customer", "Alice");

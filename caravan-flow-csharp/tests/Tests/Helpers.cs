@@ -183,7 +183,7 @@ public static class Helpers
             byte[]? data = null;
             if (ff.Content is Raw raw)
                 data = raw.Data.ToArray();
-            List<GenericRecord>? records = null;
+            List<Record>? records = null;
             if (ff.Content is RecordContent rc)
                 records = rc.Records;
             lock (_lock) _captured.Add(new CapturedFlowFile(attrs, data, records));
@@ -194,7 +194,7 @@ public static class Helpers
     public record CapturedFlowFile(
         Dictionary<string, string> Attrs,
         byte[]? Data,
-        List<GenericRecord>? Records
+        List<Record>? Records
     )
     {
         public string Text => Data is not null ? Encoding.UTF8.GetString(Data) : "";

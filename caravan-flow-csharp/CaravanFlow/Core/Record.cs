@@ -1,6 +1,9 @@
 namespace CaravanFlow.Core;
 
-// --- Avro field types ---
+// Record model for in-process dataflow. The field types and logical types here
+// are structurally Avro-compatible (so converters to/from Avro OCF, Kafka, etc.
+// stay trivial) but this is NOT an Avro runtime — nothing in this file knows
+// how to serialize. It is a dict-with-schema that flows between processors.
 
 public enum FieldType
 {
@@ -8,31 +11,29 @@ public enum FieldType
     Array, Map, Record, Enum, Union
 }
 
-// --- Logical types: semantic annotations on top of primitives.
-// Storage stays on the underlying primitive (long for timestamps, int for dates,
-// string for uuid, bytes for decimal); the tag travels with the schema so OCF
-// roundtrips preserve intent. Use LogicalTypeHelpers for conversions.
+// Logical types: semantic annotations on top of primitives. Storage stays on
+// the underlying primitive (long for timestamps, int for dates, string for
+// uuid, bytes for decimal); the tag travels with the schema so OCF roundtrips
+// preserve intent. Use LogicalTypeHelpers for conversions.
 public enum LogicalType
 {
     None,
-    TimestampMillis,   // long: millis since Unix epoch (UTC)
-    TimestampMicros,   // long: micros since Unix epoch (UTC)
-    Date,              // int: days since Unix epoch
-    TimeMillis,        // int: millis past midnight
-    TimeMicros,        // long: micros past midnight
-    Uuid,              // string: RFC 4122
-    Decimal            // bytes: two's complement big-endian; uses Precision/Scale
+    TimestampMillis,
+    TimestampMicros,
+    Date,
+    TimeMillis,
+    TimeMicros,
+    Uuid,
+    Decimal
 }
-
-// --- Field: named, typed column ---
 
 public sealed class Field
 {
     public string Name { get; }
     public FieldType FieldType { get; }
     public LogicalType LogicalType { get; }
-    public int Precision { get; }       // Decimal only
-    public int Scale { get; }           // Decimal only
+    public int Precision { get; }
+    public int Scale { get; }
     public object? DefaultValue { get; }
 
     public Field(string name, FieldType fieldType, object? defaultValue = null,
@@ -47,8 +48,6 @@ public sealed class Field
     }
 }
 
-// --- Schema: ordered list of fields ---
-
 public sealed class Schema
 {
     public string Name { get; }
@@ -61,20 +60,30 @@ public sealed class Schema
     }
 }
 
-// --- GenericRecord: schema-aware row of data ---
-
-public sealed class GenericRecord
+// Record: dict of named fields, optionally annotated with a Schema.
+// Semantically immutable — callers should use RecordHelpers.WithField rather
+// than SetField on shared records. SetField remains for hot-path builders
+// (e.g. format decoders populating a freshly-allocated Record).
+//
+// Schema is optional: a schemaless Record is a bag of fields with no type
+// declarations. Converters to wire formats (Avro, OCF) require schema;
+// schemaless converters (JSON without declared types) do not. Processors
+// that don't care about types (UpdateRecord, RouteRecord, SplitRecord)
+// work either way.
+public sealed class Record
 {
-    public Schema RecordSchema { get; }
+    public Schema? RecordSchema { get; }
     internal readonly Dictionary<string, object?> _values = new();
 
-    public GenericRecord(Schema schema) => RecordSchema = schema;
+    public Record() => RecordSchema = null;
+
+    public Record(Schema? schema) => RecordSchema = schema;
 
     public void SetField(string key, object? value) => _values[key] = value;
 
     public object? GetField(string key) => _values.GetValueOrDefault(key);
 
-    public Schema GetSchema() => RecordSchema;
+    public Schema? GetSchema() => RecordSchema;
 
     public Dictionary<string, object?> ToDictionary()
     {
@@ -84,68 +93,75 @@ public sealed class GenericRecord
         return dict;
     }
 
-    public GenericRecord Clone()
+    public Record Clone()
     {
-        var copy = new GenericRecord(RecordSchema);
+        var copy = new Record(RecordSchema);
         foreach (var (k, v) in _values)
             copy._values[k] = v;
         return copy;
     }
 }
 
-// --- Record interfaces ---
-
 public interface IRecordReader
 {
-    List<GenericRecord> Read(byte[] data, Schema schema);
+    List<Record> Read(byte[] data, Schema schema);
 }
 
 public interface IRecordWriter
 {
-    byte[] Write(List<GenericRecord> records, Schema schema);
+    byte[] Write(List<Record> records, Schema schema);
 }
 
 public interface IRecordProcessor
 {
-    GenericRecord ProcessRecord(GenericRecord record, Schema schema);
+    Record ProcessRecord(Record record, Schema schema);
 }
-
-// --- Helpers ---
 
 public static class RecordHelpers
 {
     public static Schema SchemaFromFields(string name, List<Field> fields) => new(name, fields);
 
-    public static GenericRecord NewRecord(Schema schema, Dictionary<string, object?> values)
+    public static Record NewRecord(Schema schema, Dictionary<string, object?> values)
     {
-        var record = new GenericRecord(schema);
+        var record = new Record(schema);
         foreach (var (key, value) in values)
             record.SetField(key, value);
         return record;
     }
 
-    public static string GetFieldString(GenericRecord record, string fieldName)
+    public static string GetFieldString(Record record, string fieldName)
     {
         var val = record.GetField(fieldName);
         return val?.ToString() ?? "";
     }
 
-    public static GenericRecord WithField(GenericRecord record, string fieldName, object? value)
+    public static Record WithField(Record record, string fieldName, object? value)
     {
         var schema = record.GetSchema();
-        var copy = new GenericRecord(schema);
-        foreach (var f in schema.Fields)
-            copy.SetField(f.Name, record.GetField(f.Name));
+        var copy = new Record(schema);
+        // When a schema is attached, iterate it so the schema's declared field
+        // order is preserved. Schemaless records just carry over whatever is
+        // in the value dict.
+        if (schema is not null)
+        {
+            foreach (var f in schema.Fields)
+                copy.SetField(f.Name, record.GetField(f.Name));
+        }
+        else
+        {
+            foreach (var (k, v) in record._values)
+                copy._values[k] = v;
+        }
         copy.SetField(fieldName, value);
         return copy;
     }
 
     /// <summary>
-    /// Reads a field value via dotted path (e.g., "address.city"). Walks GenericRecord
+    /// Reads a field value via dotted path (e.g., "address.city"). Walks Record
     /// values and Dictionary&lt;string, object?&gt; values transparently. Returns null
     /// if any intermediate segment is missing or not a navigable container.
     /// </summary>
-    public static object? GetByPath(GenericRecord record, string path)
+    public static object? GetByPath(Record record, string path)
     {
         if (string.IsNullOrEmpty(path)) return null;
         if (!path.Contains('.')) return record.GetField(path);
@@ -157,7 +173,7 @@ public static class RecordHelpers
             switch (cur)
             {
                 case null: return null;
-                case GenericRecord gr: cur = gr.GetField(parts[i]); break;
+                case Record gr: cur = gr.GetField(parts[i]); break;
                 case IDictionary<string, object?> dict:
                     cur = dict.TryGetValue(parts[i], out var v) ? v : null;
                     break;
@@ -168,13 +184,11 @@ public static class RecordHelpers
     }
 
     /// <summary>
-    /// Writes a field value via dotted path. Walks existing GenericRecord intermediates;
-    /// missing intermediates are created as empty-schema GenericRecords. Returns true
-    /// if the write reached its target. Callers should not rely on the schema being
-    /// updated for newly-created intermediate records — use this for ad-hoc nested set,
-    /// not for cases where strict schema fidelity matters.
+    /// Writes a field value via dotted path. Walks existing Record intermediates;
+    /// missing intermediates are created as empty-schema Records. Returns true
+    /// if the write reached its target.
     /// </summary>
-    public static bool SetByPath(GenericRecord record, string path, object? value)
+    public static bool SetByPath(Record record, string path, object? value)
     {
         if (string.IsNullOrEmpty(path)) return false;
         if (!path.Contains('.')) { record.SetField(path, value); return true; }
@@ -184,9 +198,8 @@ public static class RecordHelpers
         for (int i = 0; i < parts.Length - 1; i++)
         {
             var next = cur.GetField(parts[i]);
-            if (next is GenericRecord gr) { cur = gr; continue; }
-            // Create a new empty sub-record and attach it.
-            var sub = new GenericRecord(new Schema(parts[i], []));
+            if (next is Record gr) { cur = gr; continue; }
+            var sub = new Record(new Schema(parts[i], []));
             cur.SetField(parts[i], sub);
             cur = sub;
         }

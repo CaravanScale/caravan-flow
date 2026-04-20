@@ -5,7 +5,7 @@ using CaravanFlow.Core;
 namespace CaravanFlow.StdLib;
 
 /// <summary>
-/// CSV RecordReader: parses CSV bytes into GenericRecords.
+/// CSV RecordReader: parses CSV bytes into Records.
 /// Handles quoted fields (RFC 4180), configurable delimiter, optional header row.
 /// </summary>
 public sealed class CsvRecordReader : IRecordReader
@@ -19,7 +19,7 @@ public sealed class CsvRecordReader : IRecordReader
         _hasHeader = hasHeader;
     }
 
-    public List<GenericRecord> Read(byte[] data, Schema schema)
+    public List<Record> Read(byte[] data, Schema schema)
     {
         if (data.Length == 0) return [];
 
@@ -63,12 +63,12 @@ public sealed class CsvRecordReader : IRecordReader
             fieldTypes[i] = match?.FieldType ?? FieldType.String;
         }
 
-        var records = new List<GenericRecord>(lines.Count - dataStart);
+        var records = new List<Record>(lines.Count - dataStart);
         for (int i = dataStart; i < lines.Count; i++)
         {
             if (string.IsNullOrWhiteSpace(lines[i])) continue;
             var fields = ParseFields(lines[i]);
-            var record = new GenericRecord(effectiveSchema);
+            var record = new Record(effectiveSchema);
             for (int j = 0; j < Math.Min(headers.Count, fields.Count); j++)
                 record.SetField(headers[j], CoerceValue(fields[j], fieldTypes[j]));
             records.Add(record);
@@ -186,7 +186,7 @@ public sealed class CsvRecordReader : IRecordReader
 }
 
 /// <summary>
-/// CSV RecordWriter: serializes GenericRecords to CSV bytes.
+/// CSV RecordWriter: serializes Records to CSV bytes.
 /// Quotes fields that contain the delimiter, quotes, or newlines.
 /// </summary>
 public sealed class CsvRecordWriter : IRecordWriter
@@ -200,7 +200,7 @@ public sealed class CsvRecordWriter : IRecordWriter
         _includeHeader = includeHeader;
     }
 
-    public byte[] Write(List<GenericRecord> records, Schema schema)
+    public byte[] Write(List<Record> records, Schema schema)
     {
         if (records.Count == 0) return [];
 

@@ -294,15 +294,17 @@ public sealed class Raw : Content
 
 public sealed class RecordContent : Content
 {
-    public Schema Schema { get; }
-    public List<GenericRecord> Records { get; }
+    public Schema? Schema { get; }
+    public List<Record> Records { get; }
     public override int Size => Records.Count;
 
-    public RecordContent(Schema schema, List<GenericRecord> records)
+    public RecordContent(Schema? schema, List<Record> records)
     {
         Schema = schema;
         Records = records;
     }
+
+    public RecordContent(List<Record> records) : this(null, records) { }
 }
 
 public sealed class ClaimContent : Content
@@ -474,6 +476,28 @@ public sealed class RoutedResult : ProcessorResult
         r.Route = "";
         r.FlowFile = null!;
         Pool<RoutedResult>.Return(r);
+    }
+}
+
+public sealed class MultiRoutedResult : ProcessorResult
+{
+    public List<(string Route, FlowFile FlowFile)> Outputs;
+
+    public MultiRoutedResult() { Outputs = new List<(string, FlowFile)>(); }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static MultiRoutedResult Rent()
+    {
+        var r = Pool<MultiRoutedResult>.Rent();
+        r.Outputs.Clear();
+        return r;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void Return(MultiRoutedResult r)
+    {
+        r.Outputs.Clear();
+        Pool<MultiRoutedResult>.Return(r);
     }
 }
 

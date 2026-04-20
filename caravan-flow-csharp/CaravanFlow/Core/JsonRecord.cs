@@ -2,11 +2,11 @@ using System.Text.Json;
 
 namespace CaravanFlow.Core;
 
-// --- JSON RecordReader: JSON array → GenericRecords ---
+// --- JSON RecordReader: JSON array → Records ---
 
 public sealed class JsonRecordReader : IRecordReader
 {
-    public List<GenericRecord> Read(byte[] data, Schema schema)
+    public List<Record> Read(byte[] data, Schema schema)
     {
         if (data.Length == 0) return [];
 
@@ -46,10 +46,10 @@ public sealed class JsonRecordReader : IRecordReader
         if (schema.Fields.Count == 0)
             effectiveSchema = InferSchema(schema.Name, rawList[0]);
 
-        var records = new List<GenericRecord>(rawList.Count);
+        var records = new List<Record>(rawList.Count);
         foreach (var raw in rawList)
         {
-            var record = new GenericRecord(effectiveSchema);
+            var record = new Record(effectiveSchema);
             foreach (var f in effectiveSchema.Fields)
             {
                 if (raw.TryGetValue(f.Name, out var val))
@@ -119,11 +119,11 @@ public sealed class JsonRecordReader : IRecordReader
     }
 }
 
-// --- JSON RecordWriter: GenericRecords → JSON array ---
+// --- JSON RecordWriter: Records → JSON array ---
 
 public sealed class JsonRecordWriter : IRecordWriter
 {
-    public byte[] Write(List<GenericRecord> records, Schema schema)
+    public byte[] Write(List<Record> records, Schema? schema)
     {
         using var ms = new MemoryStream();
         using (var writer = new Utf8JsonWriter(ms))
@@ -132,12 +132,28 @@ public sealed class JsonRecordWriter : IRecordWriter
             foreach (var record in records)
             {
                 writer.WriteStartObject();
-                foreach (var f in schema.Fields)
+                if (schema is not null)
                 {
-                    var val = record.GetField(f.Name);
-                    if (val is null) continue;
-                    writer.WritePropertyName(f.Name);
-                    CaravanJson.WriteValue(writer, val);
+                    // Use declared schema order — deterministic output, aligns with
+                    // downstream expectations when a schema is present.
+                    foreach (var f in schema.Fields)
+                    {
+                        var val = record.GetField(f.Name);
+                        if (val is null) continue;
+                        writer.WritePropertyName(f.Name);
+                        CaravanJson.WriteValue(writer, val);
+                    }
+                }
+                else
+                {
+                    // Schemaless: emit whatever fields the record carries in
+                    // insertion order.
+                    foreach (var (name, val) in record._values)
+                    {
+                        if (val is null) continue;
+                        writer.WritePropertyName(name);
+                        CaravanJson.WriteValue(writer, val);
+                    }
                 }
                 writer.WriteEndObject();
             }

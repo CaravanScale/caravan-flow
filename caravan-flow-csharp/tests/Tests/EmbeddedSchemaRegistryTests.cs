@@ -202,7 +202,7 @@ public static class EmbeddedSchemaRegistryTests
             new Field("id", FieldType.Long),
             new Field("name", FieldType.String)
         ]);
-        var rec = new GenericRecord(writer);
+        var rec = new Record(writer);
         rec.SetField("id", 7L);
         rec.SetField("name", "Eve");
         var ocfBytes = new OCFWriter().Write([rec], writer);
@@ -349,7 +349,7 @@ public static class EmbeddedSchemaRegistryTests
             new Field("ts", FieldType.Long),
             new Field("payload", FieldType.String)
         ]);
-        var rec = new GenericRecord(writer);
+        var rec = new Record(writer);
         rec.SetField("ts", 1234L);
         rec.SetField("payload", "hello");
         var ocfBytes = new OCFWriter().Write([rec], writer);
@@ -381,7 +381,7 @@ public static class EmbeddedSchemaRegistryTests
         content.Enable();
 
         var writer = new Schema("event", [new Field("x", FieldType.Long)]);
-        var rec = new GenericRecord(writer);
+        var rec = new Record(writer);
         rec.SetField("x", 1L);
         var ocfBytes = new OCFWriter().Write([rec], writer);
 
@@ -403,12 +403,12 @@ public static class EmbeddedSchemaRegistryTests
         content.Enable();
 
         var writer1 = new Schema("event", [new Field("x", FieldType.Long)]);
-        var rec1 = new GenericRecord(writer1);
+        var rec1 = new Record(writer1);
         rec1.SetField("x", 1L);
         var ocf1 = new OCFWriter().Write([rec1], writer1);
 
         var writer2 = new Schema("event", [new Field("x", FieldType.Long), new Field("y", FieldType.String)]);
-        var rec2 = new GenericRecord(writer2);
+        var rec2 = new Record(writer2);
         rec2.SetField("x", 1L);
         rec2.SetField("y", "a");
         var ocf2 = new OCFWriter().Write([rec2], writer2);
@@ -432,7 +432,7 @@ public static class EmbeddedSchemaRegistryTests
         var content = new ContentProvider("content", new MemoryContentStore());
         content.Enable();
         var writer = new Schema("event", [new Field("x", FieldType.Long)]);
-        var rec = new GenericRecord(writer);
+        var rec = new Record(writer);
         rec.SetField("x", 1L);
         var ocfBytes = new OCFWriter().Write([rec], writer);
 

@@ -75,9 +75,9 @@ public static class SchemaResolver
     /// Applies field-by-field promotion and fills missing fields from reader defaults.
     /// Caller must verify Check(reader, writer).IsCompatible first.
     /// </summary>
-    public static GenericRecord Project(GenericRecord source, Schema readerSchema, Schema writerSchema)
+    public static Record Project(Record source, Schema readerSchema, Schema writerSchema)
     {
-        var target = new GenericRecord(readerSchema);
+        var target = new Record(readerSchema);
         var writerByName = writerSchema.Fields.ToDictionary(f => f.Name);
 
         foreach (var rField in readerSchema.Fields)

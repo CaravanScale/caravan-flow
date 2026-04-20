@@ -88,7 +88,7 @@ public static class CodecTests
             new Field("active", FieldType.Boolean)
         ]);
 
-        var record = new GenericRecord(schema);
+        var record = new Record(schema);
         record.SetField("name", "Alice");
         record.SetField("amount", 42);
         record.SetField("price", 19.99);
@@ -115,10 +115,10 @@ public static class CodecTests
             new Field("label", FieldType.String)
         ]);
 
-        var records = new List<GenericRecord>();
+        var records = new List<Record>();
         for (int i = 0; i < 5; i++)
         {
-            var r = new GenericRecord(schema);
+            var r = new Record(schema);
             r.SetField("id", (long)i);
             r.SetField("label", $"item-{i}");
             records.Add(r);
@@ -143,11 +143,11 @@ public static class CodecTests
             new Field("city", FieldType.String)
         ]);
 
-        var records = new List<GenericRecord>();
-        var r1 = new GenericRecord(schema);
+        var records = new List<Record>();
+        var r1 = new Record(schema);
         r1.SetField("name", "Alice"); r1.SetField("age", "30"); r1.SetField("city", "Portland");
         records.Add(r1);
-        var r2 = new GenericRecord(schema);
+        var r2 = new Record(schema);
         r2.SetField("name", "Bob"); r2.SetField("age", "25"); r2.SetField("city", "Seattle");
         records.Add(r2);
 
@@ -248,7 +248,7 @@ public static class CodecTests
             new Field("name", FieldType.String),
             new Field("qty", FieldType.Int)
         ]);
-        var rec = new GenericRecord(schema);
+        var rec = new Record(schema);
         rec.SetField("name", "Widget");
         rec.SetField("qty", 10);
         var avroBytes = new AvroRecordWriter().Write([rec], schema);
@@ -272,7 +272,7 @@ public static class CodecTests
             new Field("item", FieldType.String),
             new Field("count", FieldType.Int)
         ]);
-        var rec1 = new GenericRecord(avroSchema);
+        var rec1 = new Record(avroSchema);
         rec1.SetField("item", "Gadget");
         rec1.SetField("count", 5);
         var rc = new RecordContent(avroSchema, [rec1]);
@@ -308,10 +308,10 @@ public static class CodecTests
             new Field("x", FieldType.String),
             new Field("y", FieldType.String)
         ]);
-        var csvRec1 = new GenericRecord(csvSchema);
+        var csvRec1 = new Record(csvSchema);
         csvRec1.SetField("x", "hello");
         csvRec1.SetField("y", "world");
-        var csvRec2 = new GenericRecord(csvSchema);
+        var csvRec2 = new Record(csvSchema);
         csvRec2.SetField("x", "foo");
         csvRec2.SetField("y", "bar");
         var rc = new RecordContent(csvSchema, [csvRec1, csvRec2]);
@@ -415,7 +415,7 @@ public static class CodecTests
             new Field("age", FieldType.String),
             new Field("temp", FieldType.String)
         ]);
-        var trRec = new GenericRecord(trSchema);
+        var trRec = new Record(trSchema);
         trRec.SetField("first_name", "alice");
         trRec.SetField("age", "30");
         trRec.SetField("temp", "x");
@@ -469,10 +469,10 @@ public static class CodecTests
             new Field("name", FieldType.String),
             new Field("score", FieldType.Double)
         ]);
-        var records = new List<GenericRecord>();
+        var records = new List<Record>();
         for (int i = 0; i < 3; i++)
         {
-            var r = new GenericRecord(schema);
+            var r = new Record(schema);
             r.SetField("id", (long)(i + 1));
             r.SetField("name", $"user-{i}");
             r.SetField("score", i * 1.5);
@@ -498,11 +498,11 @@ public static class CodecTests
             new Field("ts", FieldType.Long),
             new Field("message", FieldType.String)
         ]);
-        var records = new List<GenericRecord>();
+        var records = new List<Record>();
         // Many repetitive records so deflate compresses meaningfully.
         for (int i = 0; i < 50; i++)
         {
-            var r = new GenericRecord(schema);
+            var r = new Record(schema);
             r.SetField("ts", (long)(1700000000 + i));
             r.SetField("message", "login success login success login success");
             records.Add(r);
@@ -607,7 +607,7 @@ public static class CodecTests
             new Field("ts", FieldType.Long, logicalType: LogicalType.TimestampMillis),
             new Field("event_date", FieldType.Int, logicalType: LogicalType.Date)
         ]);
-        var rec = new GenericRecord(schema);
+        var rec = new Record(schema);
         var g = Guid.NewGuid();
         var dt = new DateTime(2024, 6, 15, 12, 0, 0, DateTimeKind.Utc);
         var d = new DateOnly(2024, 6, 15);
@@ -653,7 +653,7 @@ public static class CodecTests
             new Field("quantity", FieldType.Long),
             new Field("region", FieldType.String)
         ]);
-        var rec = new GenericRecord(schema);
+        var rec = new Record(schema);
         rec.SetField("price", 9.99);
         rec.SetField("quantity", 3L);
         rec.SetField("region", "US");
@@ -697,7 +697,7 @@ public static class CodecTests
             new Field("balance", FieldType.Double),
             new Field("active", FieldType.Boolean)
         ]);
-        var rec = new GenericRecord(schema);
+        var rec = new Record(schema);
         rec.SetField("id", 12345L);
         rec.SetField("name", "alice");
         rec.SetField("age", 30);
@@ -727,7 +727,7 @@ public static class CodecTests
     {
         Console.WriteLine("--- TransformRecord: chained compute sees prior writes ---");
         var schema = new Schema("calc", [new Field("x", FieldType.Long)]);
-        var rec = new GenericRecord(schema);
+        var rec = new Record(schema);
         rec.SetField("x", 10L);
         var ff = FlowFile.CreateWithContent(new RecordContent(schema, [rec]), new());
 
@@ -749,10 +749,10 @@ public static class CodecTests
             new Field("ts", FieldType.Long),
             new Field("payload", FieldType.String)
         ]);
-        var records = new List<GenericRecord>();
+        var records = new List<Record>();
         for (int i = 0; i < 100; i++)
         {
-            var r = new GenericRecord(schema);
+            var r = new Record(schema);
             r.SetField("ts", (long)(1700000000 + i));
             r.SetField("payload", "the quick brown fox jumps over the lazy dog");
             records.Add(r);
@@ -772,10 +772,10 @@ public static class CodecTests
     {
         Console.WriteLine("--- OCF: zstd actually compresses repetitive data ---");
         var schema = new Schema("log", [new Field("line", FieldType.String)]);
-        var records = new List<GenericRecord>();
+        var records = new List<Record>();
         for (int i = 0; i < 1000; i++)
         {
-            var r = new GenericRecord(schema);
+            var r = new Record(schema);
             r.SetField("line", "INFO 2024-06-15 connection established to upstream service");
             records.Add(r);
         }
@@ -847,7 +847,7 @@ public static class CodecTests
         var compat = SchemaResolver.Check(reader, writer);
         AssertTrue("promotion compat", compat.IsCompatible);
 
-        var rec = new GenericRecord(writer);
+        var rec = new Record(writer);
         rec.SetField("count", 42);
         rec.SetField("amount", 1000L);
         rec.SetField("rate", 1.5f);
@@ -872,7 +872,7 @@ public static class CodecTests
         AssertTrue("add-with-default compat", compat.IsCompatible);
         AssertTrue("warning for missing-from-writer", compat.Warnings.Any(w => w.Contains("status") && w.Contains("default")));
 
-        var rec = new GenericRecord(writer);
+        var rec = new Record(writer);
         rec.SetField("name", "Bob");
         var projected = SchemaResolver.Project(rec, reader, writer);
         AssertEqual("name preserved", projected.GetField("name")?.ToString() ?? "", "Bob");
@@ -904,7 +904,7 @@ public static class CodecTests
         AssertTrue("drop is compat", compat.IsCompatible);
         AssertTrue("warning for dropped field", compat.Warnings.Any(w => w.Contains("dropped") && w.Contains("writer-only")));
 
-        var rec = new GenericRecord(writer);
+        var rec = new Record(writer);
         rec.SetField("name", "Carol");
         rec.SetField("dropped", 999L);
         var projected = SchemaResolver.Project(rec, reader, writer);
@@ -929,7 +929,7 @@ public static class CodecTests
             new Field("name", FieldType.String),
             new Field("age", FieldType.Int)
         ]);
-        var rec = new GenericRecord(v1);
+        var rec = new Record(v1);
         rec.SetField("name", "Dan");
         rec.SetField("age", 25);
         var bytes = new OCFWriter().Write([rec], v1);
@@ -964,7 +964,7 @@ public static class CodecTests
         AssertTrue("incompatible reader throws", threw);
     }
 
-    static GenericRecord BuildNestedRecord()
+    static Record BuildNestedRecord()
     {
         // Outer: { user: { profile: { name: "Alice", age: 30 }, country: "US" }, score: 99.5 }
         var profileSchema = new Schema("profile", [
@@ -979,13 +979,13 @@ public static class CodecTests
             new Field("user", FieldType.Record),
             new Field("score", FieldType.Double)
         ]);
-        var profile = new GenericRecord(profileSchema);
+        var profile = new Record(profileSchema);
         profile.SetField("name", "Alice");
         profile.SetField("age", 30);
-        var user = new GenericRecord(userSchema);
+        var user = new Record(userSchema);
         user.SetField("profile", profile);
         user.SetField("country", "US");
-        var root = new GenericRecord(rootSchema);
+        var root = new Record(rootSchema);
         root.SetField("user", user);
         root.SetField("score", 99.5);
         return root;
@@ -1008,12 +1008,12 @@ public static class CodecTests
     {
         Console.WriteLine("--- QueryRecord: nested-path predicate ---");
         var schema = new Schema("event", [new Field("user", FieldType.Record), new Field("score", FieldType.Double)]);
-        var records = new List<GenericRecord>();
+        var records = new List<Record>();
         for (int i = 0; i < 3; i++)
         {
             var rec = BuildNestedRecord();
             // Override country and score for each
-            ((GenericRecord)rec.GetField("user")!).SetField("country", i == 1 ? "CA" : "US");
+            ((Record)rec.GetField("user")!).SetField("country", i == 1 ? "CA" : "US");
             rec.SetField("score", 50.0 + i * 25);
             records.Add(rec);
         }
@@ -1063,7 +1063,7 @@ public static class CodecTests
     {
         Console.WriteLine("--- RecordHelpers: SetByPath creates missing intermediates ---");
         var schema = new Schema("event", [new Field("score", FieldType.Double)]);
-        var rec = new GenericRecord(schema);
+        var rec = new Record(schema);
         rec.SetField("score", 10.0);
 
         var ok = RecordHelpers.SetByPath(rec, "user.profile.name", "Bob");

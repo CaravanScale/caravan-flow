@@ -135,12 +135,12 @@ public static class AvroEncoding
 }
 
 /// <summary>
-/// Encodes GenericRecords to Avro binary format.
+/// Encodes Records to Avro binary format.
 /// Writes records with no container framing (raw Avro binary, not Object Container File).
 /// </summary>
 public sealed class AvroBinaryWriter
 {
-    public void WriteRecord(MemoryStream ms, GenericRecord record, Schema schema)
+    public void WriteRecord(MemoryStream ms, Record record, Schema schema)
     {
         foreach (var field in schema.Fields)
         {
@@ -212,22 +212,26 @@ public sealed class AvroBinaryWriter
                 AvroEncoding.WriteVarint(ms, 0);
                 break;
             case FieldType.Record:
-                if (value is GenericRecord nested)
+                if (value is Record nested)
+                {
+                    if (nested.RecordSchema is null)
+                        throw new InvalidOperationException("Avro requires schema on nested records; got schemaless Record");
                     WriteRecord(ms, nested, nested.RecordSchema);
+                }
                 break;
         }
     }
 }
 
 /// <summary>
-/// Decodes Avro binary data into GenericRecords using a provided schema.
+/// Decodes Avro binary data into Records using a provided schema.
 /// Reads raw Avro binary (not Object Container File).
 /// </summary>
 public sealed class AvroBinaryReader
 {
-    public (GenericRecord Record, int BytesRead) ReadRecord(ReadOnlySpan<byte> data, Schema schema)
+    public (Record Record, int BytesRead) ReadRecord(ReadOnlySpan<byte> data, Schema schema)
     {
-        var record = new GenericRecord(schema);
+        var record = new Record(schema);
         int offset = 0;
         foreach (var field in schema.Fields)
         {
@@ -355,13 +359,13 @@ public sealed class AvroBinaryReader
 /// </summary>
 public sealed class AvroRecordReader : IRecordReader
 {
-    public List<GenericRecord> Read(byte[] data, Schema schema)
+    public List<Record> Read(byte[] data, Schema schema)
     {
         if (data.Length == 0 || schema.Fields.Count == 0)
             return [];
 
         var reader = new AvroBinaryReader();
-        var records = new List<GenericRecord>();
+        var records = new List<Record>();
         int offset = 0;
         var span = data.AsSpan();
 
@@ -389,7 +393,7 @@ public sealed class AvroRecordReader : IRecordReader
 /// </summary>
 public sealed class AvroRecordWriter : IRecordWriter
 {
-    public byte[] Write(List<GenericRecord> records, Schema schema)
+    public byte[] Write(List<Record> records, Schema schema)
     {
         if (records.Count == 0)
             return [];

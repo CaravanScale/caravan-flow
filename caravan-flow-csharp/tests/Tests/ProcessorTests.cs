@@ -27,6 +27,16 @@ public static class ProcessorTests
         TestRouteOnAttributeMatch();
         TestRouteOnAttributeNoMatch();
         TestRouteOnAttributeMultipleRoutes();
+        TestRouteRecordBasic();
+        TestRouteRecordUnmatched();
+        TestRouteRecordFirstMatchWins();
+        TestRouteRecordNonRecordContent();
+        TestUpdateRecordBasic();
+        TestUpdateRecordSequential();
+        TestUpdateRecordSchemaless();
+        TestSplitRecordFanout();
+        TestSplitRecordSingle();
+        TestSplitRecordNonRecordContent();
         TestExtractRecordField();
         TestExtractRecordFieldMissing();
         TestQueryRecordFilter();
@@ -74,7 +84,7 @@ public static class ProcessorTests
     {
         Console.WriteLine("--- ConvertRecordToJSON ---");
         var jsonSchema = new Schema("test", [new Field("name", FieldType.String)]);
-        var jsonRec = new GenericRecord(jsonSchema);
+        var jsonRec = new Record(jsonSchema);
         jsonRec.SetField("name", "Bob");
         var rc = new RecordContent(jsonSchema, [jsonRec]);
         var ff = FlowFile.CreateWithContent(rc, new());
@@ -91,7 +101,7 @@ public static class ProcessorTests
     {
         Console.WriteLine("--- Processor: JSON Roundtrip ---");
         var geoSchema = new Schema("geo", [new Field("city", FieldType.String)]);
-        var geoRec = new GenericRecord(geoSchema);
+        var geoRec = new Record(geoSchema);
         geoRec.SetField("city", "Portland");
         var rc = new RecordContent(geoSchema, [geoRec]);
         var ff = FlowFile.CreateWithContent(rc, new());
@@ -294,13 +304,209 @@ public static class ProcessorTests
         AssertEqual("bulk route", ((RoutedResult)result3).Route, "bulk");
     }
 
+    // --- RouteRecord tests ---
+
+    static RecordContent MakePeopleRecords()
+    {
+        var schema = new Schema("person", [
+            new Field("name", FieldType.String),
+            new Field("age", FieldType.Long),
+            new Field("tier", FieldType.String),
+        ]);
+        var rows = new (string name, long age, string tier)[]
+        {
+            ("alice", 30, "gold"),
+            ("bob",   12, "silver"),
+            ("cara",  45, "silver"),
+            ("dan",    8, "bronze"),
+        };
+        var recs = new List<Record>();
+        foreach (var r in rows)
+        {
+            var rec = new Record(schema);
+            rec.SetField("name", r.name);
+            rec.SetField("age", r.age);
+            rec.SetField("tier", r.tier);
+            recs.Add(rec);
+        }
+        return new RecordContent(schema, recs);
+    }
+
+    static void TestRouteRecordBasic()
+    {
+        Console.WriteLine("--- RouteRecord: partition by predicate ---");
+        var proc = new RouteRecord("minors: age < 18; adults: age >= 18");
+        var ff = FlowFile.CreateWithContent(MakePeopleRecords(), new());
+        var result = proc.Process(ff);
+        AssertTrue("returns multi-routed", result is MultiRoutedResult);
+        var mr = (MultiRoutedResult)result;
+        AssertEqual("two buckets", mr.Outputs.Count.ToString(), "2");
+
+        var byRoute = mr.Outputs.ToDictionary(o => o.Route, o => (RecordContent)o.FlowFile.Content);
+        AssertTrue("has minors route", byRoute.ContainsKey("minors"));
+        AssertTrue("has adults route", byRoute.ContainsKey("adults"));
+        AssertEqual("minors count", byRoute["minors"].Records.Count.ToString(), "2");
+        AssertEqual("adults count", byRoute["adults"].Records.Count.ToString(), "2");
+        AssertEqual("minor name 0", (string)byRoute["minors"].Records[0].GetField("name")!, "bob");
+        AssertEqual("minor name 1", (string)byRoute["minors"].Records[1].GetField("name")!, "dan");
+        AssertEqual("adult name 0", (string)byRoute["adults"].Records[0].GetField("name")!, "alice");
+        AssertEqual("adult name 1", (string)byRoute["adults"].Records[1].GetField("name")!, "cara");
+    }
+
+    static void TestRouteRecordUnmatched()
+    {
+        Console.WriteLine("--- RouteRecord: unmatched bucket for non-matching records ---");
+        var proc = new RouteRecord("gold: tier == \"gold\"");
+        var ff = FlowFile.CreateWithContent(MakePeopleRecords(), new());
+        var result = proc.Process(ff);
+        AssertTrue("returns multi-routed", result is MultiRoutedResult);
+        var byRoute = ((MultiRoutedResult)result).Outputs.ToDictionary(o => o.Route, o => (RecordContent)o.FlowFile.Content);
+        AssertTrue("has gold route", byRoute.ContainsKey("gold"));
+        AssertTrue("has unmatched route", byRoute.ContainsKey("unmatched"));
+        AssertEqual("gold count", byRoute["gold"].Records.Count.ToString(), "1");
+        AssertEqual("unmatched count", byRoute["unmatched"].Records.Count.ToString(), "3");
+        AssertEqual("gold record", (string)byRoute["gold"].Records[0].GetField("name")!, "alice");
+    }
+
+    static void TestRouteRecordFirstMatchWins()
+    {
+        Console.WriteLine("--- RouteRecord: first match wins ---");
+        // Both predicates would match an adult with tier=silver; minors wins by
+        // being declared first (so ordering in config matters, as documented).
+        var proc = new RouteRecord("seniors: age >= 40; silver: tier == \"silver\"");
+        var ff = FlowFile.CreateWithContent(MakePeopleRecords(), new());
+        var result = proc.Process(ff);
+        var byRoute = ((MultiRoutedResult)result).Outputs.ToDictionary(o => o.Route, o => (RecordContent)o.FlowFile.Content);
+        // cara is 45 and tier=silver — seniors should claim her, not silver.
+        AssertEqual("seniors count", byRoute["seniors"].Records.Count.ToString(), "1");
+        AssertEqual("seniors record", (string)byRoute["seniors"].Records[0].GetField("name")!, "cara");
+        // bob is tier=silver (age 12, doesn't hit seniors), so silver claims him.
+        AssertEqual("silver count", byRoute["silver"].Records.Count.ToString(), "1");
+        AssertEqual("silver record", (string)byRoute["silver"].Records[0].GetField("name")!, "bob");
+        // alice (gold) and dan (bronze) unmatched.
+        AssertEqual("unmatched count", byRoute["unmatched"].Records.Count.ToString(), "2");
+    }
+
+    static void TestRouteRecordNonRecordContent()
+    {
+        Console.WriteLine("--- RouteRecord: non-record content passes through ---");
+        var proc = new RouteRecord("x: age > 0");
+        var ff = FlowFile.Create("raw bytes"u8, new());
+        var result = proc.Process(ff);
+        AssertTrue("passthrough as single", result is SingleResult);
+    }
+
+    // --- UpdateRecord tests ---
+
+    static RecordContent MakeAmountRecords()
+    {
+        var schema = new Schema("order", [
+            new Field("amount", FieldType.Double),
+            new Field("region", FieldType.String),
+        ]);
+        var a = new Record(schema); a.SetField("amount", 100.0); a.SetField("region", "us");
+        var b = new Record(schema); b.SetField("amount", 50.0); b.SetField("region", "eu");
+        return new RecordContent(schema, [a, b]);
+    }
+
+    static void TestUpdateRecordBasic()
+    {
+        Console.WriteLine("--- UpdateRecord: derive single field ---");
+        // amount / 10 keeps the arithmetic FP-exact for string comparison.
+        var proc = new UpdateRecord("tax = amount / 10");
+        var ff = FlowFile.CreateWithContent(MakeAmountRecords(), new());
+        var result = proc.Process(ff);
+        AssertTrue("returns single", result is SingleResult);
+        var rc = (RecordContent)((SingleResult)result).FlowFile.Content;
+        AssertEqual("two records", rc.Records.Count.ToString(), "2");
+        AssertEqual("record 0 tax", rc.Records[0].GetField("tax")!.ToString(), "10");
+        AssertEqual("record 1 tax", rc.Records[1].GetField("tax")!.ToString(), "5");
+        AssertTrue("schema has tax", rc.Schema!.Fields.Any(f => f.Name == "tax"));
+    }
+
+    static void TestUpdateRecordSequential()
+    {
+        Console.WriteLine("--- UpdateRecord: later exprs see earlier writes ---");
+        var proc = new UpdateRecord("tax = amount / 10; total = amount + tax");
+        var ff = FlowFile.CreateWithContent(MakeAmountRecords(), new());
+        var result = proc.Process(ff);
+        var rc = (RecordContent)((SingleResult)result).FlowFile.Content;
+        AssertEqual("record 0 total", rc.Records[0].GetField("total")!.ToString(), "110");
+        AssertEqual("record 1 total", rc.Records[1].GetField("total")!.ToString(), "55");
+    }
+
+    static void TestUpdateRecordSchemaless()
+    {
+        Console.WriteLine("--- UpdateRecord: schemaless input → schemaless output ---");
+        var r = new Record();
+        r.SetField("x", 3L);
+        r.SetField("y", 4L);
+        var rc = new RecordContent([r]);
+        var ff = FlowFile.CreateWithContent(rc, new());
+        var proc = new UpdateRecord("sum = x + y");
+        var result = proc.Process(ff);
+        var outRc = (RecordContent)((SingleResult)result).FlowFile.Content;
+        AssertEqual("sum", outRc.Records[0].GetField("sum")!.ToString(), "7");
+    }
+
+    // --- SplitRecord tests ---
+
+    static void TestSplitRecordFanout()
+    {
+        Console.WriteLine("--- SplitRecord: N records -> N FlowFiles ---");
+        var ff = FlowFile.CreateWithContent(MakePeopleRecords(), new() { ["source"] = "upstream" });
+        var proc = new SplitRecord();
+        var result = proc.Process(ff);
+        AssertTrue("multiple result", result is MultipleResult);
+        var outs = ((MultipleResult)result).FlowFiles;
+        AssertEqual("four children", outs.Count.ToString(), "4");
+        for (int i = 0; i < outs.Count; i++)
+        {
+            var child = outs[i];
+            AssertTrue($"child {i} is record content", child.Content is RecordContent);
+            var childRc = (RecordContent)child.Content;
+            AssertEqual($"child {i} has 1 record", childRc.Records.Count.ToString(), "1");
+            AssertTrue($"child {i} preserves source attr",
+                child.Attributes.TryGetValue("source", out var s) && s == "upstream");
+            AssertTrue($"child {i} has split.total",
+                child.Attributes.TryGetValue("split.total", out var t) && t == "4");
+            AssertTrue($"child {i} has split.index",
+                child.Attributes.TryGetValue("split.index", out var _));
+        }
+        // Records preserve their order.
+        AssertEqual("child 0 name", (string)((RecordContent)outs[0].Content).Records[0].GetField("name")!, "alice");
+        AssertEqual("child 3 name", (string)((RecordContent)outs[3].Content).Records[0].GetField("name")!, "dan");
+    }
+
+    static void TestSplitRecordSingle()
+    {
+        Console.WriteLine("--- SplitRecord: 1 record -> 1 FlowFile ---");
+        var schema = new Schema("x", [new Field("v", FieldType.Long)]);
+        var r = new Record(schema); r.SetField("v", 42L);
+        var ff = FlowFile.CreateWithContent(new RecordContent(schema, [r]), new());
+        var result = new SplitRecord().Process(ff);
+        AssertTrue("multiple result", result is MultipleResult);
+        var outs = ((MultipleResult)result).FlowFiles;
+        AssertEqual("one child", outs.Count.ToString(), "1");
+        AssertTrue("index zero-padded to width 1",
+            outs[0].Attributes.TryGetValue("split.index", out var i) && i == "0");
+    }
+
+    static void TestSplitRecordNonRecordContent()
+    {
+        Console.WriteLine("--- SplitRecord: raw content passes through ---");
+        var ff = FlowFile.Create("bytes"u8, new());
+        var result = new SplitRecord().Process(ff);
+        AssertTrue("passes through as single", result is SingleResult);
+    }
+
     // --- ExtractRecordField tests ---
 
     static void TestExtractRecordField()
     {
         Console.WriteLine("--- ExtractRecordField ---");
         var schema = new Schema("order", [new Field("name", FieldType.String), new Field("amount", FieldType.Double)]);
-        var rec = new GenericRecord(schema);
+        var rec = new Record(schema);
         rec.SetField("name", "Alice");
         rec.SetField("amount", 42.5);
         var rc = new RecordContent(schema, [rec]);
@@ -319,7 +525,7 @@ public static class ProcessorTests
     {
         Console.WriteLine("--- ExtractRecordField: Missing field ---");
         var schema = new Schema("order", [new Field("name", FieldType.String)]);
-        var rec = new GenericRecord(schema);
+        var rec = new Record(schema);
         rec.SetField("name", "Bob");
         var rc = new RecordContent(schema, [rec]);
         var ff = FlowFile.CreateWithContent(rc, new());
@@ -339,9 +545,9 @@ public static class ProcessorTests
     {
         Console.WriteLine("--- QueryRecord: Filter ---");
         var schema = new Schema("data", [new Field("name", FieldType.String), new Field("score", FieldType.Double)]);
-        var rec1 = new GenericRecord(schema); rec1.SetField("name", "Alice"); rec1.SetField("score", 85.0);
-        var rec2 = new GenericRecord(schema); rec2.SetField("name", "Bob"); rec2.SetField("score", 45.0);
-        var rec3 = new GenericRecord(schema); rec3.SetField("name", "Charlie"); rec3.SetField("score", 92.0);
+        var rec1 = new Record(schema); rec1.SetField("name", "Alice"); rec1.SetField("score", 85.0);
+        var rec2 = new Record(schema); rec2.SetField("name", "Bob"); rec2.SetField("score", 45.0);
+        var rec3 = new Record(schema); rec3.SetField("name", "Charlie"); rec3.SetField("score", 92.0);
         var rc = new RecordContent(schema, [rec1, rec2, rec3]);
         var ff = FlowFile.CreateWithContent(rc, new());
 
@@ -360,8 +566,8 @@ public static class ProcessorTests
     {
         Console.WriteLine("--- QueryRecord: No Match ---");
         var schema = new Schema("data", [new Field("name", FieldType.String), new Field("score", FieldType.Double)]);
-        var rec1 = new GenericRecord(schema); rec1.SetField("name", "Alice"); rec1.SetField("score", 30.0);
-        var rec2 = new GenericRecord(schema); rec2.SetField("name", "Bob"); rec2.SetField("score", 25.0);
+        var rec1 = new Record(schema); rec1.SetField("name", "Alice"); rec1.SetField("score", 30.0);
+        var rec2 = new Record(schema); rec2.SetField("name", "Bob"); rec2.SetField("score", 25.0);
         var rc = new RecordContent(schema, [rec1, rec2]);
         var ff = FlowFile.CreateWithContent(rc, new());
 
@@ -374,9 +580,9 @@ public static class ProcessorTests
     {
         Console.WriteLine("--- QueryRecord: Contains ---");
         var schema = new Schema("data", [new Field("name", FieldType.String), new Field("email", FieldType.String)]);
-        var rec1 = new GenericRecord(schema); rec1.SetField("name", "Alice"); rec1.SetField("email", "alice@test.com");
-        var rec2 = new GenericRecord(schema); rec2.SetField("name", "Bob"); rec2.SetField("email", "bob@other.org");
-        var rec3 = new GenericRecord(schema); rec3.SetField("name", "Charlie"); rec3.SetField("email", "charlie@test.com");
+        var rec1 = new Record(schema); rec1.SetField("name", "Alice"); rec1.SetField("email", "alice@test.com");
+        var rec2 = new Record(schema); rec2.SetField("name", "Bob"); rec2.SetField("email", "bob@other.org");
+        var rec3 = new Record(schema); rec3.SetField("name", "Charlie"); rec3.SetField("email", "charlie@test.com");
         var rc = new RecordContent(schema, [rec1, rec2, rec3]);
         var ff = FlowFile.CreateWithContent(rc, new());
 

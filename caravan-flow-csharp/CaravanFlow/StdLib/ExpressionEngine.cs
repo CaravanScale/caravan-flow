@@ -742,8 +742,8 @@ public static class ExpressionEngine
 /// <summary>Resolves identifiers against a record's fields. Supports dotted paths.</summary>
 public sealed class RecordValueResolver : IValueResolver
 {
-    private readonly CaravanFlow.Core.GenericRecord _record;
-    public RecordValueResolver(CaravanFlow.Core.GenericRecord record) => _record = record;
+    private readonly CaravanFlow.Core.Record _record;
+    public RecordValueResolver(CaravanFlow.Core.Record record) => _record = record;
     public EvalValue Resolve(string name) => EvalValue.FromObject(CaravanFlow.Core.RecordHelpers.GetByPath(_record, name));
 }
 
@@ -760,7 +760,7 @@ public sealed class AttributeValueResolver : IValueResolver
 /// Resolves identifiers against a mutable dictionary. Used inside processors that
 /// apply a sequence of operations to a record's field map and need each step to
 /// observe the prior step's writes. Supports dotted paths walking nested
-/// GenericRecord and Dictionary&lt;string, object?&gt; values.
+/// Record and Dictionary&lt;string, object?&gt; values.
 /// </summary>
 public sealed class DictValueResolver : IValueResolver
 {
@@ -779,7 +779,7 @@ public sealed class DictValueResolver : IValueResolver
             switch (cur)
             {
                 case null: return EvalValue.Null;
-                case CaravanFlow.Core.GenericRecord gr: cur = gr.GetField(parts[i]); break;
+                case CaravanFlow.Core.Record gr: cur = gr.GetField(parts[i]); break;
                 case IDictionary<string, object?> d:
                     cur = d.TryGetValue(parts[i], out var v) ? v : null;
                     break;

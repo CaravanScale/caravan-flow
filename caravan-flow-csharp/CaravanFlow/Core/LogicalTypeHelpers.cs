@@ -6,7 +6,7 @@ namespace CaravanFlow.Core;
 /// Conversions between Avro logical-type underlying primitives and the natural
 /// CLR types users want to work with (DateTime, DateOnly, TimeOnly, Guid, decimal).
 ///
-/// Storage in GenericRecord stays as the underlying primitive (long, int, string,
+/// Storage in Record stays as the underlying primitive (long, int, string,
 /// byte[]) so OCF roundtrips preserve byte-for-byte fidelity. These helpers are
 /// the seam where business code reads/writes the natural type.
 /// </summary>

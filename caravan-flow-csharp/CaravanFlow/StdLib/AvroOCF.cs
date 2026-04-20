@@ -37,7 +37,7 @@ public sealed class OCFReader
     /// schema embedded in the file isn't compatible with the reader schema.
     /// When omitted, returns records under the writer schema as decoded.
     /// </summary>
-    public (Schema Schema, List<GenericRecord> Records) Read(byte[] data, Schema? readerSchema = null)
+    public (Schema Schema, List<Record> Records) Read(byte[] data, Schema? readerSchema = null)
     {
         if (data.Length < AvroOCF.Magic.Length + 16)
             throw new InvalidOperationException("OCF truncated: missing magic or sync");
@@ -74,7 +74,7 @@ public sealed class OCFReader
 
         // Blocks
         var reader = new AvroBinaryReader();
-        var records = new List<GenericRecord>();
+        var records = new List<Record>();
         while (offset < span.Length)
         {
             var (count, nCount) = AvroEncoding.ReadVarint(span[offset..]);
@@ -113,7 +113,7 @@ public sealed class OCFReader
             var compat = SchemaResolver.Check(readerSchema, schema);
             if (!compat.IsCompatible)
                 throw new InvalidOperationException("OCF reader schema incompatible: " + string.Join("; ", compat.Errors));
-            var projected = new List<GenericRecord>(records.Count);
+            var projected = new List<Record>(records.Count);
             foreach (var r in records)
                 projected.Add(SchemaResolver.Project(r, readerSchema, schema));
             return (readerSchema, projected);
@@ -180,7 +180,7 @@ public sealed class OCFWriter
         _codec = codec;
     }
 
-    public byte[] Write(List<GenericRecord> records, Schema schema)
+    public byte[] Write(List<Record> records, Schema schema)
     {
         // Serialize all records to raw Avro binary
         var recordWriter = new AvroBinaryWriter();

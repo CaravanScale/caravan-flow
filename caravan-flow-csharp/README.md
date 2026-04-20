@@ -51,7 +51,7 @@ caravan-flow-csharp/
 │   │   ├── DLQ.cs         — Dead letter queue
 │   │   ├── Providers.cs   — Provider interface, ProcessorContext, ScopedContext
 │   │   ├── ContentStore.cs — FileContentStore, MemoryContentStore, offload to claim
-│   │   ├── Avro.cs        — Schema, GenericRecord
+│   │   ├── Avro.cs        — Schema, Record
 │   │   ├── JsonRecord.cs  — JSON record serde
 │   │   └── Binary.cs      — Big-endian encoding helpers
 │   ├── Fabric/

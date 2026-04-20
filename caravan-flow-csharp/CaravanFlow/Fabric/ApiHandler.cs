@@ -83,6 +83,12 @@ public sealed class ApiHandler
 
         // Provider config edits (new on both tracks)
         app.MapPut("/api/providers/{name}/config", UpdateProviderConfig);
+
+        // Per-processor stats reset
+        app.MapPost("/api/processors/{name}/stats/reset", ResetProcessorStats);
+
+        // Test flowfile injection (push a synthetic FlowFile at an entry point)
+        app.MapPost("/api/flowfiles/ingest", IngestFlowFile);
     }
 
     // --- Stats ---
@@ -98,7 +104,22 @@ public sealed class ApiHandler
         {
             ["name"] = i.Name,
             ["description"] = i.Description,
-            ["configKeys"] = i.ConfigKeys
+            ["category"] = i.Category,
+            ["configKeys"] = i.ConfigKeys,
+            ["parameters"] = i.Parameters.Select(p => new Dictionary<string, object?>
+            {
+                ["name"] = p.Name,
+                ["label"] = p.Label,
+                ["description"] = p.Description,
+                ["kind"] = p.Kind.ToString(),
+                ["required"] = p.Required,
+                ["default"] = p.Default,
+                ["placeholder"] = p.Placeholder,
+                ["choices"] = p.Choices,
+                ["valueKind"] = p.ValueKind?.ToString(),
+                ["entryDelim"] = p.EntryDelim,
+                ["pairDelim"] = p.PairDelim,
+            }).ToList()
         }));
     }
 
@@ -713,5 +734,78 @@ public sealed class ApiHandler
         return _fab.StopSource(name)
             ? Json(new Dictionary<string, object?> { ["status"] = "stopped", ["name"] = name })
             : Json(new Dictionary<string, object?> { ["error"] = "source not found" });
+    }
+
+    // --- Per-processor stats reset ---
+
+    private IResult ResetProcessorStats(string name)
+    {
+        if (string.IsNullOrEmpty(name))
+            return Json(new Dictionary<string, object?> { ["error"] = "name required" });
+        return _fab.ResetProcessorStats(name)
+            ? Json(new Dictionary<string, object?> { ["status"] = "reset", ["name"] = name })
+            : Json(new Dictionary<string, object?> { ["error"] = "processor not found" });
+    }
+
+    // --- Test flowfile injection ---
+    //
+    // Accepts {target, content|contentBase64, attributes}:
+    //   target        — processor name to inject at, or "*" / omitted to use
+    //                   graph entry points (same fan-out as a source would do).
+    //   content       — UTF-8 text payload (most convenient for UI textareas).
+    //   contentBase64 — binary payload as base64 (alternative to content).
+    //   attributes    — string→string attribute map (optional).
+    // Returns {status, flowfile, targets} on success.
+    private IResult IngestFlowFile([FromBody] Dictionary<string, object?>? body)
+    {
+        if (body is null)
+            return Json(new Dictionary<string, object?> { ["error"] = "request body must be a JSON object" });
+
+        byte[] data;
+        if (body.TryGetValue("contentBase64", out var b64) && b64 is string b64Str && b64Str.Length > 0)
+        {
+            try { data = Convert.FromBase64String(b64Str); }
+            catch (FormatException ex) { return Json(new Dictionary<string, object?> { ["error"] = $"contentBase64 invalid: {ex.Message}" }); }
+        }
+        else if (body.TryGetValue("content", out var txt) && txt is string s)
+        {
+            data = System.Text.Encoding.UTF8.GetBytes(s);
+        }
+        else
+        {
+            data = Array.Empty<byte>();
+        }
+
+        var attrs = new Dictionary<string, string>();
+        if (body.TryGetValue("attributes", out var a) && a is Dictionary<string, object?> aDict)
+        {
+            foreach (var (k, v) in aDict)
+                attrs[k] = v?.ToString() ?? "";
+        }
+
+        var target = body.GetValueOrDefault("target") as string ?? "";
+
+        var ff = FlowFile.Create(data, attrs);
+
+        if (string.IsNullOrEmpty(target) || target == "*")
+        {
+            var ok = _fab.IngestAndExecute(ff);
+            return Json(new Dictionary<string, object?>
+            {
+                ["status"] = ok ? "ingested" : "rejected",
+                ["flowfile"] = $"ff-{ff.NumericId}",
+                ["target"] = "entry-points",
+            });
+        }
+        else
+        {
+            var ok = _fab.Execute(ff, target);
+            return Json(new Dictionary<string, object?>
+            {
+                ["status"] = ok ? "ingested" : "rejected",
+                ["flowfile"] = $"ff-{ff.NumericId}",
+                ["target"] = target,
+            });
+        }
     }
 }

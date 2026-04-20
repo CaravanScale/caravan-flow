@@ -95,6 +95,8 @@ public sealed class ConvertRecordToAvro : IProcessor
     {
         if (ff.Content is not RecordContent rc || rc.Records.Count == 0)
             return SingleResult.Rent(ff);
+        if (rc.Schema is null)
+            return FailureResult.Rent("ConvertRecordToAvro: RecordContent has no schema — Avro requires a declared schema", ff);
 
         var bytes = _writer.Write(rc.Records, rc.Schema);
         var updated = FlowFile.WithContent(ff, Raw.Rent(bytes));
@@ -186,7 +188,7 @@ public sealed class ConvertOCFToRecord : IProcessor
         // can capture the writer schema for auto-registration. If a reader schema
         // is in play, project as a second step.
         Schema writerSchema;
-        List<GenericRecord> records;
+        List<Record> records;
         try
         {
             (writerSchema, records) = _reader.Read(data, readerSchema: null);
@@ -222,7 +224,7 @@ public sealed class ConvertOCFToRecord : IProcessor
             var compat = SchemaResolver.Check(readerSchema, writerSchema);
             if (!compat.IsCompatible)
                 return FailureResult.Rent("OCF reader schema incompatible: " + string.Join("; ", compat.Errors), ff);
-            var projected = new List<GenericRecord>(records.Count);
+            var projected = new List<Record>(records.Count);
             foreach (var r in records)
                 projected.Add(SchemaResolver.Project(r, readerSchema, writerSchema));
             records = projected;
@@ -266,6 +268,8 @@ public sealed class ConvertRecordToOCF : IProcessor
     {
         if (ff.Content is not RecordContent rc || rc.Records.Count == 0)
             return SingleResult.Rent(ff);
+        if (rc.Schema is null)
+            return FailureResult.Rent("ConvertRecordToOCF: RecordContent has no schema — OCF embeds a schema in its header", ff);
 
         byte[] bytes;
         try
@@ -356,6 +360,8 @@ public sealed class ConvertRecordToCSV : IProcessor
     {
         if (ff.Content is not RecordContent rc || rc.Records.Count == 0)
             return SingleResult.Rent(ff);
+        if (rc.Schema is null)
+            return FailureResult.Rent("ConvertRecordToCSV: RecordContent has no schema — CSV header/column order requires a declared schema", ff);
 
         var bytes = _writer.Write(rc.Records, rc.Schema);
         var updated = FlowFile.WithContent(ff, Raw.Rent(bytes));
@@ -364,7 +370,7 @@ public sealed class ConvertRecordToCSV : IProcessor
 }
 
 /// <summary>
-/// ExtractRecordField: extract field values from GenericRecord into FlowFile attributes.
+/// ExtractRecordField: extract field values from Record into FlowFile attributes.
 /// Config: fields (format "fieldName:attrName;fieldName2:attrName2"), recordIndex (default 0).
 /// </summary>
 public sealed class ExtractRecordField : IProcessor
@@ -423,7 +429,7 @@ public sealed class ExtractRecordField : IProcessor
 /// We mirror each incoming record into a System.Text.Json JsonElement
 /// wrapped in a root JSON array, ask JsonSelector for matching
 /// locations, then project those matches back to the original
-/// GenericRecord list by array index. Schema and original types are
+/// Record list by array index. Schema and original types are
 /// preserved — no re-materialization from JSON.
 ///
 /// Mirrors caravan-flow-java's QueryRecord — both tracks accept the
@@ -511,7 +517,7 @@ public sealed class QueryRecord : IProcessor
         if (kept.Count == 0)
             return DroppedResult.Instance;
 
-        var filtered = new List<GenericRecord>(kept.Count);
+        var filtered = new List<Record>(kept.Count);
         for (int i = 0; i < rc.Records.Count; i++)
             if (kept.Contains(i)) filtered.Add(rc.Records[i]);
 
@@ -534,7 +540,7 @@ public sealed class QueryRecord : IProcessor
 
     /// <summary>
     /// Serialize a record value into a Utf8JsonWriter without touching
-    /// reflection. Handles nested GenericRecord (recurse into its
+    /// reflection. Handles nested Record (recurse into its
     /// ToDictionary view), dictionaries, lists, and primitive scalars.
     /// </summary>
     private static void WriteValue(System.Text.Json.Utf8JsonWriter writer, object? value)
@@ -544,7 +550,7 @@ public sealed class QueryRecord : IProcessor
             case null:
                 writer.WriteNullValue();
                 break;
-            case GenericRecord gr:
+            case Record gr:
                 WriteValue(writer, gr.ToDictionary());
                 break;
             case Dictionary<string, object?> dict:

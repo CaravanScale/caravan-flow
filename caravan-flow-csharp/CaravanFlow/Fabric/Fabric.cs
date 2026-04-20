@@ -365,6 +365,14 @@ public sealed class Fabric
                     break;
                 }
 
+                case MultiRoutedResult multiRouted:
+                {
+                    foreach (var (route, outFf) in multiRouted.Outputs)
+                        PushDownstream(work, graph, outFf, procName, route, hops + 1);
+                    MultiRoutedResult.Return(multiRouted);
+                    break;
+                }
+
                 case DroppedResult:
                     _provenance?.Record(currentFf.NumericId, ProvenanceEventType.Dropped, procName);
                     FlowFile.Return(currentFf);
@@ -607,6 +615,14 @@ public sealed class Fabric
             };
         }
         return stats;
+    }
+
+    public bool ResetProcessorStats(string name)
+    {
+        if (!_graph.Processors.ContainsKey(name)) return false;
+        _processorCounts[name] = 0;
+        _processorErrors[name] = 0;
+        return true;
     }
 
     // --- Processor lifecycle ---
