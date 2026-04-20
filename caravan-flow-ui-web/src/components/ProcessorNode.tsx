@@ -35,18 +35,23 @@ export function ProcessorNode({ data, selected }: NodeProps<Node<ProcessorNodeDa
       className="relative rounded-lg px-3 py-2"
       style={{
         width: 220,
-        height: 88,
+        minHeight: 88,
         background: fill,
         border: `2px solid ${borderColor}`,
         boxShadow: selected ? '0 0 12px var(--selected)' : undefined,
         transition: 'filter 0.15s, box-shadow 0.15s',
-        cursor: 'pointer',
+        cursor: 'grab',
       }}
     >
       <Handle
         type="target"
         position={Position.Top}
-        style={{ background: 'transparent', border: 'none' }}
+        style={{
+          width: 10,
+          height: 10,
+          background: 'var(--accent)',
+          border: '2px solid var(--surface)',
+        }}
       />
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0 flex-1">
@@ -88,7 +93,12 @@ export function ProcessorNode({ data, selected }: NodeProps<Node<ProcessorNodeDa
       <Handle
         type="source"
         position={Position.Bottom}
-        style={{ background: 'transparent', border: 'none' }}
+        style={{
+          width: 10,
+          height: 10,
+          background: 'var(--success)',
+          border: '2px solid var(--surface)',
+        }}
       />
     </div>
   )

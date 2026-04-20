@@ -51,11 +51,16 @@ export function RelationshipEdge({
               position: 'absolute',
               transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
               background: 'var(--surface)',
-              padding: '1px 6px',
-              borderRadius: 3,
-              color: 'var(--text-muted)',
+              padding: '2px 7px',
+              borderRadius: 10,
+              border: `1px solid ${color}`,
+              color,
               fontSize: 10,
+              fontWeight: 600,
+              letterSpacing: '0.05em',
               pointerEvents: 'none',
+              whiteSpace: 'nowrap',
+              boxShadow: '0 1px 3px rgba(0,0,0,0.5)',
             }}
             className="nodrag nopan"
           >

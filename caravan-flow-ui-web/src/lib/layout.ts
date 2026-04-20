@@ -1,9 +1,10 @@
 import dagre from '@dagrejs/dagre'
 import type { Node, Edge } from '@xyflow/react'
 import type { Flow } from '../api/types'
+import { layoutStore } from './layoutStore'
 
-const NODE_W = 220
-const NODE_H = 88
+export const NODE_W = 220
+export const NODE_H = 88
 
 export interface ProcessorNodeData extends Record<string, unknown> {
   processor: Flow['processors'][number]
@@ -45,15 +46,22 @@ export function layoutFlow(flow: Flow): {
 
   dagre.layout(g)
 
+  // Persisted per-user positions win over dagre's auto-layout. dagre
+  // remains the fallback for processors that haven't been dragged yet
+  // (new flows, new processors dropped from the palette without an
+  // explicit position).
+  const saved = layoutStore.getAll()
+
   const nodes: Node<ProcessorNodeData>[] = flow.processors.map((p) => {
     const laid = g.node(p.name)
     const isSink = !p.connections
       ? true
       : Object.values(p.connections).every((t) => !t || t.length === 0)
+    const savedPos = saved[p.name]
     return {
       id: p.name,
       type: 'processor',
-      position: {
+      position: savedPos ?? {
         x: (laid?.x ?? 0) - NODE_W / 2,
         y: (laid?.y ?? 0) - NODE_H / 2,
       },
@@ -62,7 +70,7 @@ export function layoutFlow(flow: Flow): {
         isEntry: entrySet.has(p.name),
         isSink,
       },
-      draggable: false,
+      draggable: true,
       selectable: true,
       sourcePosition: 'bottom' as const as unknown as Node['sourcePosition'],
       targetPosition: 'top' as const as unknown as Node['targetPosition'],

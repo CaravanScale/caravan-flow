@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   ReactFlow,
   Background,
   Controls,
   MiniMap,
+  ReactFlowProvider,
+  useReactFlow,
   type Node,
   type Edge,
   type NodeMouseHandler,
@@ -12,7 +14,8 @@ import {
   type Connection,
 } from '@xyflow/react'
 import { api } from '../api/client'
-import { layoutFlow, type ProcessorNodeData, type RelEdgeData } from '../lib/layout'
+import { layoutFlow, type ProcessorNodeData, type RelEdgeData, NODE_W, NODE_H } from '../lib/layout'
+import { layoutStore } from '../lib/layoutStore'
 import { ProcessorNode } from '../components/ProcessorNode'
 import { RelationshipEdge } from '../components/RelationshipEdge'
 import { ProcessorDrawer } from '../components/ProcessorDrawer'
@@ -20,21 +23,29 @@ import { AddProcessorDialog } from '../components/AddProcessorDialog'
 import { EdgeDrawer, type EdgeSelection } from '../components/EdgeDrawer'
 import { SourcesPanel } from '../components/SourcesPanel'
 import { TestFlowFileDialog } from '../components/TestFlowFileDialog'
-import { useAddConnection, useReloadFlow } from '../lib/mutations'
-import type { Processor } from '../api/types'
+import { ProcessorPalette, PALETTE_MIME } from '../components/ProcessorPalette'
+import { EdgeRelationshipPicker } from '../components/EdgeRelationshipPicker'
+import { useAddConnection, useAddProcessor, useReloadFlow } from '../lib/mutations'
+import type { Processor, RegistryEntry } from '../api/types'
 
 const nodeTypes = { processor: ProcessorNode }
 const edgeTypes = { relationship: RelationshipEdge }
 
 // Topology poll (slow): 15 s. Stats poll (fast): 2 s.
-// Topology poll re-runs dagre only when the underlying shape changes
-// (dep on the query data through React Flow's nodes array identity).
-// Stats poll mutates node.data in place — React Flow re-renders the
-// node but doesn't re-layout.
+// Topology changes re-run dagre fallback; saved layoutStore positions win
+// when present. Stats poll mutates node.data in place.
 const TOPOLOGY_POLL_MS = 15_000
 const STATS_POLL_MS = 2_000
 
 export function GraphPage() {
+  return (
+    <ReactFlowProvider>
+      <GraphPageInner />
+    </ReactFlowProvider>
+  )
+}
+
+function GraphPageInner() {
   const topology = useQuery({
     queryKey: ['flow'],
     queryFn: api.flow,
@@ -47,6 +58,11 @@ export function GraphPage() {
     refetchInterval: STATS_POLL_MS,
     staleTime: STATS_POLL_MS,
   })
+  const registry = useQuery<RegistryEntry[]>({
+    queryKey: ['registry'],
+    queryFn: api.registry,
+    staleTime: 5 * 60_000,
+  })
 
   const [selected, setSelected] = useState<string | null>(null)
   const [selectedEdge, setSelectedEdge] = useState<EdgeSelection | null>(null)
@@ -54,15 +70,26 @@ export function GraphPage() {
   const [sourcesOpen, setSourcesOpen] = useState(false)
   const [testOpen, setTestOpen] = useState(false)
   const [reloadMsg, setReloadMsg] = useState<string | null>(null)
+  const [pendingEdge, setPendingEdge] = useState<{ conn: Connection; anchor: { x: number; y: number } } | null>(null)
 
   const reload = useReloadFlow()
   const addConn = useAddConnection()
+  const addProc = useAddProcessor()
+  const rf = useReactFlow()
+  const paneRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     if (!reloadMsg) return
     const t = setTimeout(() => setReloadMsg(null), 4000)
     return () => clearTimeout(t)
   }, [reloadMsg])
+
+  // Prune layoutStore entries for processors no longer in the flow.
+  useEffect(() => {
+    if (topology.data) {
+      layoutStore.prune(new Set(topology.data.processors.map((p) => p.name)))
+    }
+  }, [topology.data])
 
   const onReload = async () => {
     try {
@@ -80,20 +107,85 @@ export function GraphPage() {
     }
   }
 
-  // Inline edge drawing — React Flow emits onConnect when the user drags
-  // from one node's handle to another. We default to the "success"
-  // relationship; users can change it later via the edge drawer.
-  const onConnect = async (conn: Connection) => {
+  // Edge drawing: instead of committing "success" immediately, anchor the
+  // relationship picker near the drop point so the user can pick the
+  // right relationship for the source processor (success / failure /
+  // unmatched / custom).
+  const onConnect = useCallback((conn: Connection) => {
     if (!conn.source || !conn.target) return
+    const anchor = { x: (window.event as MouseEvent | undefined)?.clientX ?? 200,
+                     y: (window.event as MouseEvent | undefined)?.clientY ?? 200 }
+    setPendingEdge({ conn, anchor })
+  }, [])
+
+  const commitPendingEdge = async (relationship: string) => {
+    const pending = pendingEdge
+    if (!pending) return
+    setPendingEdge(null)
     try {
-      await addConn.mutateAsync({ from: conn.source, relationship: 'success', to: conn.target })
+      await addConn.mutateAsync({ from: pending.conn.source!, relationship, to: pending.conn.target! })
     } catch {
-      // mutation surfaces its own error; no-op here (drawer keeps working)
+      /* mutation surfaces its own error */
     }
   }
 
-  // Lay out from the topology, then fold in live stats so the node
-  // cards show fresh numbers without forcing a new dagre pass.
+  // Relationship suggestions: source processor's TypeInfo.relationships
+  // from the registry, filtered to ones that aren't already connected
+  // to this target (avoid duplicates).
+  const edgeSuggestions = useMemo(() => {
+    if (!pendingEdge || !registry.data || !topology.data) return ['success']
+    const src = topology.data.processors.find((p) => p.name === pendingEdge.conn.source)
+    const entry = registry.data.find((e) => e.name === src?.type)
+    const known = new Set<string>(['success', 'failure', ...(entry ? ((entry as unknown as { relationships?: string[] }).relationships ?? []) : [])])
+    const existing = src?.connections ?? {}
+    for (const [rel, targets] of Object.entries(existing)) {
+      if ((targets ?? []).includes(pendingEdge.conn.target!)) known.delete(rel)
+    }
+    return Array.from(known)
+  }, [pendingEdge, registry.data, topology.data])
+
+  // Drag-and-drop from palette. On drop:
+  //   1. read processor type from MIME payload
+  //   2. translate screen → flow coordinates via React Flow
+  //   3. persist the position before POSTing so the node lands where
+  //      the user released it, not dagre's grid slot
+  //   4. POST /api/processors/add with an auto-generated unique name
+  const onDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+  }, [])
+
+  const onDrop = useCallback(async (e: React.DragEvent) => {
+    e.preventDefault()
+    const type = e.dataTransfer.getData(PALETTE_MIME)
+    if (!type) return
+    const bounds = paneRef.current?.getBoundingClientRect()
+    if (!bounds) return
+    const position = rf.screenToFlowPosition({
+      x: e.clientX - NODE_W / 2,
+      y: e.clientY - NODE_H / 2,
+    })
+
+    const existingNames = new Set((topology.data?.processors ?? []).map((p) => p.name))
+    const name = uniqueName(type, existingNames)
+
+    // Persist the drop position first — the flow refresh triggered by
+    // useAddProcessor's invalidation will pick this up in layoutFlow.
+    layoutStore.set(name, position)
+
+    try {
+      await addProc.mutateAsync({ name, type, config: {}, connections: {} })
+    } catch (err) {
+      layoutStore.delete(name)
+      setReloadMsg(`add failed: ${(err as Error).message}`)
+    }
+  }, [addProc, rf, topology.data])
+
+  const onNodeDragStop = useCallback((_: unknown, node: Node<ProcessorNodeData>) => {
+    layoutStore.set(node.id, { x: node.position.x, y: node.position.y })
+  }, [])
+
+  // Layout + live stats overlay, same pattern as before.
   const { nodes, edges } = useMemo<{
     nodes: Node<ProcessorNodeData>[]
     edges: Edge<RelEdgeData>[]
@@ -119,15 +211,12 @@ export function GraphPage() {
     return { nodes: overlaid, edges: laid.edges }
   }, [topology.data, stats.data, selected])
 
-  // Close drawer when the selected processor vanishes from a refresh
-  // (deleted out from under us).
   useEffect(() => {
     if (selected && topology.data && !topology.data.processors.some((p) => p.name === selected)) {
       setSelected(null)
     }
   }, [topology.data, selected])
 
-  // Close edge drawer when that edge vanishes from a refresh.
   useEffect(() => {
     if (!selectedEdge || !topology.data) return
     const src = topology.data.processors.find((p) => p.name === selectedEdge.from)
@@ -153,137 +242,154 @@ export function GraphPage() {
     topology.data?.processors.find((p) => p.name === selected) ?? null
 
   return (
-    <div className="relative h-full w-full">
-      <div className="absolute inset-0">
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          nodeTypes={nodeTypes}
-          edgeTypes={edgeTypes}
-          nodesDraggable={false}
-          nodesConnectable={true}
-          elementsSelectable={true}
-          onConnect={onConnect}
-          fitView
-          fitViewOptions={{ padding: 0.2 }}
-          minZoom={0.2}
-          maxZoom={2}
-          onNodeClick={onNodeClick}
-          onEdgeClick={onEdgeClick}
-          onPaneClick={onPaneClick}
-          proOptions={{ hideAttribution: true }}
-        >
-          <Background color="#222244" gap={24} />
-          <Controls showInteractive={false} />
-          <MiniMap
-            nodeStrokeWidth={1}
-            nodeColor={() => '#0f3460'}
-            maskColor="rgba(15,15,26,0.6)"
-          />
-        </ReactFlow>
-      </div>
-      <div className="absolute left-4 right-4 top-4 z-10 flex items-start justify-between">
-        <div className="pointer-events-none">
-          <h1 className="text-base font-semibold text-white">Graph</h1>
-          {topology.data && (
-            <p className="mt-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>
-              {topology.data.processors.length} processors ·{' '}
-              {topology.data.processors.reduce(
-                (a, p) => a + Object.values(p.connections ?? {}).reduce((b, xs) => b + xs.length, 0),
-                0,
-              )}{' '}
-              connections · {topology.data.entryPoints.length} entry points
-            </p>
-          )}
-          {topology.isError && <p className="text-[11px]" style={{ color: 'var(--error)' }}>failed to load /api/flow</p>}
+    <div className="flex h-full w-full">
+      <ProcessorPalette />
+      <div className="relative flex-1">
+        <div className="absolute inset-0" ref={paneRef} onDragOver={onDragOver} onDrop={onDrop}>
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            nodeTypes={nodeTypes}
+            edgeTypes={edgeTypes}
+            nodesDraggable={true}
+            nodesConnectable={true}
+            elementsSelectable={true}
+            onConnect={onConnect}
+            onNodeDragStop={onNodeDragStop}
+            fitView
+            fitViewOptions={{ padding: 0.2 }}
+            minZoom={0.2}
+            maxZoom={2}
+            onNodeClick={onNodeClick}
+            onEdgeClick={onEdgeClick}
+            onPaneClick={onPaneClick}
+            proOptions={{ hideAttribution: true }}
+          >
+            <Background color="#222244" gap={24} />
+            <Controls showInteractive={false} />
+            <MiniMap
+              nodeStrokeWidth={1}
+              nodeColor={() => '#0f3460'}
+              maskColor="rgba(15,15,26,0.6)"
+            />
+          </ReactFlow>
         </div>
-        <div className="flex items-center gap-2">
-          {reloadMsg && (
-            <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
-              {reloadMsg}
-            </span>
-          )}
-          <button
-            onClick={onReload}
-            disabled={reload.isPending}
-            className="rounded border px-3 py-1 text-[12px]"
-            style={{ background: 'transparent', borderColor: 'var(--border)', color: 'var(--text-muted)' }}
-            title="re-parse config.yaml and diff against the running flow"
-          >
-            {reload.isPending ? 'reloading…' : 'reload'}
-          </button>
-          <button
-            onClick={() => setSourcesOpen(true)}
-            className="rounded border px-3 py-1 text-[12px]"
-            style={{ background: 'transparent', borderColor: 'var(--border)', color: 'var(--text-muted)' }}
-            title="start/stop connector sources"
-          >
-            sources
-          </button>
-          <button
-            onClick={() => setTestOpen(true)}
-            className="rounded border px-3 py-1 text-[12px]"
-            style={{ background: 'transparent', borderColor: 'var(--border)', color: 'var(--text-muted)' }}
-            title="push a synthetic FlowFile into the graph"
-          >
-            test flowfile
-          </button>
-          <button
-            onClick={() => setAddOpen(true)}
-            className="rounded px-3 py-1 text-[12px]"
-            style={{ background: '#0f3460', border: '1px solid var(--accent)', color: '#fff' }}
-            title="add processor to runtime graph"
-          >
-            + add processor
-          </button>
-        </div>
-      </div>
-
-      {/* Empty-state CTA — shows when the flow has no processors. The
-          canvas is behind this but invisible; operators land here
-          rather than on a blank black rectangle. */}
-      {topology.isSuccess && topology.data.processors.length === 0 && (
-        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
-          <div
-            className="pointer-events-auto flex flex-col items-center gap-3 rounded-lg border px-8 py-6 text-center"
-            style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}
-          >
-            <h2 className="text-sm font-semibold text-white">Your flow is empty</h2>
-            <p className="max-w-sm text-[12px]" style={{ color: 'var(--text-muted)' }}>
-              Add a processor to begin. Sources + sinks are available through the same
-              dialog — pick the type that matches what the processor does (e.g. GetFile
-              source, PutFile sink, UpdateAttribute transform).
-            </p>
+        <div className="pointer-events-none absolute left-4 right-4 top-4 z-10 flex items-start justify-between">
+          <div>
+            <h1 className="text-base font-semibold text-white">Graph</h1>
+            {topology.data && (
+              <p className="mt-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                {topology.data.processors.length} processors ·{' '}
+                {topology.data.processors.reduce(
+                  (a, p) => a + Object.values(p.connections ?? {}).reduce((b, xs) => b + xs.length, 0),
+                  0,
+                )}{' '}
+                connections · {topology.data.entryPoints.length} entry points
+              </p>
+            )}
+            {topology.isError && <p className="text-[11px]" style={{ color: 'var(--error)' }}>failed to load /api/flow</p>}
+          </div>
+          <div className="pointer-events-auto flex items-center gap-2">
+            {reloadMsg && (
+              <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+                {reloadMsg}
+              </span>
+            )}
+            <button
+              onClick={onReload}
+              disabled={reload.isPending}
+              className="rounded border px-3 py-1 text-[12px]"
+              style={{ background: 'transparent', borderColor: 'var(--border)', color: 'var(--text-muted)' }}
+              title="re-parse config.yaml and diff against the running flow"
+            >
+              {reload.isPending ? 'reloading…' : 'reload'}
+            </button>
+            <button
+              onClick={() => setSourcesOpen(true)}
+              className="rounded border px-3 py-1 text-[12px]"
+              style={{ background: 'transparent', borderColor: 'var(--border)', color: 'var(--text-muted)' }}
+              title="start/stop connector sources"
+            >
+              sources
+            </button>
+            <button
+              onClick={() => setTestOpen(true)}
+              className="rounded border px-3 py-1 text-[12px]"
+              style={{ background: 'transparent', borderColor: 'var(--border)', color: 'var(--text-muted)' }}
+              title="push a synthetic FlowFile into the graph"
+            >
+              test flowfile
+            </button>
             <button
               onClick={() => setAddOpen(true)}
-              className="rounded px-4 py-1.5 text-[12px]"
+              className="rounded px-3 py-1 text-[12px]"
               style={{ background: '#0f3460', border: '1px solid var(--accent)', color: '#fff' }}
+              title="add processor to runtime graph"
             >
-              + add your first processor
+              + add processor
             </button>
           </div>
         </div>
-      )}
 
-      <AddProcessorDialog
-        open={addOpen}
-        existingNames={topology.data?.processors.map((p) => p.name) ?? []}
-        onClose={() => setAddOpen(false)}
-      />
-      {selectedProcessor && topology.data && (
-        <ProcessorDrawer
-          processor={selectedProcessor}
-          allProcessorNames={topology.data.processors.map((p) => p.name)}
-          entryPoints={topology.data.entryPoints}
-          onClose={() => setSelected(null)}
+        {topology.isSuccess && topology.data.processors.length === 0 && (
+          <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
+            <div
+              className="pointer-events-auto flex flex-col items-center gap-3 rounded-lg border px-8 py-6 text-center"
+              style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}
+            >
+              <h2 className="text-sm font-semibold text-white">Your flow is empty</h2>
+              <p className="max-w-sm text-[12px]" style={{ color: 'var(--text-muted)' }}>
+                Drag a processor from the palette on the left, or use the <strong>+ add processor</strong>
+                {' '}button for a guided form.
+              </p>
+              <button
+                onClick={() => setAddOpen(true)}
+                className="rounded px-4 py-1.5 text-[12px]"
+                style={{ background: '#0f3460', border: '1px solid var(--accent)', color: '#fff' }}
+              >
+                + add your first processor
+              </button>
+            </div>
+          </div>
+        )}
+
+        <AddProcessorDialog
+          open={addOpen}
+          existingNames={topology.data?.processors.map((p) => p.name) ?? []}
+          onClose={() => setAddOpen(false)}
         />
-      )}
-      {selectedEdge && (
-        <EdgeDrawer edge={selectedEdge} onClose={() => setSelectedEdge(null)} />
-      )}
-      {sourcesOpen && <SourcesPanel onClose={() => setSourcesOpen(false)} />}
-      <TestFlowFileDialog open={testOpen} flow={topology.data} onClose={() => setTestOpen(false)} />
+        {selectedProcessor && topology.data && (
+          <ProcessorDrawer
+            processor={selectedProcessor}
+            allProcessorNames={topology.data.processors.map((p) => p.name)}
+            entryPoints={topology.data.entryPoints}
+            onClose={() => setSelected(null)}
+          />
+        )}
+        {selectedEdge && (
+          <EdgeDrawer edge={selectedEdge} onClose={() => setSelectedEdge(null)} />
+        )}
+        {sourcesOpen && <SourcesPanel onClose={() => setSourcesOpen(false)} />}
+        <TestFlowFileDialog open={testOpen} flow={topology.data} onClose={() => setTestOpen(false)} />
+        <EdgeRelationshipPicker
+          anchor={pendingEdge?.anchor ?? null}
+          suggestions={edgeSuggestions}
+          onPick={commitPendingEdge}
+          onCancel={() => setPendingEdge(null)}
+        />
+      </div>
     </div>
   )
 }
 
+// Auto-generate a unique processor name from its type. NiFi names things
+// like "UpdateAttribute", "UpdateAttribute 2" — we do the same so users
+// can drop multiple of the same type without naming every one.
+function uniqueName(type: string, existing: Set<string>): string {
+  if (!existing.has(type)) return type
+  for (let i = 2; i < 10_000; i++) {
+    const candidate = `${type} ${i}`
+    if (!existing.has(candidate)) return candidate
+  }
+  return `${type}-${Date.now()}`
+}
