@@ -1,5 +1,38 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo } from 'react'
 import type { ParamInfo, ParamKind } from '../api/types'
+
+// Listen for Peek field-pick events (fired by SamplePanel chip clicks).
+// When the operator has focus in a text input / textarea, insert the
+// field path at the cursor. The event is global; any mounted form
+// listens, and whichever input owns the focus wins. Avoids prop-
+// drilling a callback through every nested FieldInput.
+function useFieldPickListener() {
+  useEffect(() => {
+    const handler = (ev: Event) => {
+      const ce = ev as CustomEvent<{ path: string }>
+      const path = ce.detail?.path
+      if (!path) return
+      const el = document.activeElement as HTMLInputElement | HTMLTextAreaElement | null
+      if (!el || (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA')) return
+      const start = el.selectionStart ?? el.value.length
+      const end = el.selectionEnd ?? el.value.length
+      const next = el.value.slice(0, start) + path + el.value.slice(end)
+      // Setting .value bypasses React state; dispatch a synthetic input
+      // event so the controlled component sees the change.
+      const setter = Object.getOwnPropertyDescriptor(
+        el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype,
+        'value',
+      )?.set
+      setter?.call(el, next)
+      el.dispatchEvent(new Event('input', { bubbles: true }))
+      const caret = start + path.length
+      el.setSelectionRange(caret, caret)
+      el.focus()
+    }
+    window.addEventListener('caravan:field-pick', handler)
+    return () => window.removeEventListener('caravan:field-pick', handler)
+  }, [])
+}
 
 // Schema-driven processor config form. Renders an input per ParamInfo
 // based on its Kind. Keeps all state as strings in the parent
@@ -22,6 +55,7 @@ const INPUT_CLASS = 'w-full rounded border px-2 py-1'
 const INPUT_STYLE = { background: '#0a0a14', borderColor: 'var(--border)', color: 'var(--text)' } as const
 
 export function ProcessorConfigForm({ parameters, values, onChange }: Props) {
+  useFieldPickListener()
   if (parameters.length === 0) {
     return (
       <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>

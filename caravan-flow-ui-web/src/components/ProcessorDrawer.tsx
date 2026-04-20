@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { api } from '../api/client'
 import type { Processor } from '../api/types'
 import {
   useRemoveProcessor,
@@ -9,7 +11,7 @@ import {
   useUpdateProcessorConfig,
 } from '../lib/mutations'
 
-type Tab = 'config' | 'connections' | 'stats'
+type Tab = 'config' | 'connections' | 'stats' | 'sample'
 
 interface Props {
   processor: Processor
@@ -201,7 +203,7 @@ export function ProcessorDrawer({ processor, allProcessorNames, entryPoints, onC
       )}
 
       <nav className="flex border-b" style={{ borderColor: 'var(--border)', background: '#10102a' }}>
-        {(['config', 'connections', 'stats'] as Tab[]).map((t) => {
+        {(['config', 'connections', 'stats', 'sample'] as Tab[]).map((t) => {
           const active = tab === t
           return (
             <button
@@ -431,6 +433,8 @@ export function ProcessorDrawer({ processor, allProcessorNames, entryPoints, onC
             <StatsResetButton name={processor.name} />
           </>
         )}
+
+        {tab === 'sample' && <SamplePanel processorName={processor.name} />}
       </div>
 
       <footer
@@ -493,4 +497,116 @@ function StatsResetButton({ name }: { name: string }) {
       )}
     </div>
   )
+}
+
+// Peek: last 5 output samples from this processor. Each sample card
+// shows timestamp, content-type header, a preview of the content, and
+// a row of clickable field chips. Clicking a chip fires a window-level
+// event the config tab listens for — its focused Expression /
+// KeyValueList input appends the field path at the cursor. Keeping
+// the handoff as an event avoids prop-drilling through every input.
+function SamplePanel({ processorName }: { processorName: string }) {
+  const query = useQuery({
+    queryKey: ['processor-samples', processorName],
+    queryFn: () => api.processorSamples(processorName),
+    refetchInterval: 2_000,
+    staleTime: 2_000,
+  })
+
+  if (query.isLoading)
+    return <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>loading samples…</p>
+  if (query.isError)
+    return <p className="text-[12px]" style={{ color: 'var(--error)' }}>failed to load samples</p>
+
+  const data = query.data
+  if (!data || data.samples.length === 0) {
+    return (
+      <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+        {data?.sampling === false
+          ? 'sampling disabled — set sampling.enabled on the worker'
+          : 'no samples yet — send a flowfile through to peek at output'}
+      </p>
+    )
+  }
+
+  return (
+    <div className="flex flex-col gap-3">
+      {data.samples.map((s, idx) => {
+        const fields = extractFields(s.contentType, s.preview, s.attributes)
+        const ageMs = Date.now() - Math.floor((Date.now() - s.timestamp) / 1) // just display raw time diff
+        return (
+          <div
+            key={`${s.timestamp}-${idx}`}
+            className="rounded border p-2"
+            style={{ background: '#0a0a14', borderColor: 'var(--border)' }}
+          >
+            <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>
+              <span>{s.flowfile} · {s.contentType}</span>
+              <span>{fmtAge(ageMs)}</span>
+            </div>
+            {fields.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-1">
+                {fields.map((f) => (
+                  <button
+                    key={f}
+                    onClick={() => fireFieldPick(f)}
+                    className="rounded px-1.5 py-0.5 text-[11px]"
+                    style={{
+                      background: 'var(--surface-2)',
+                      border: '1px solid var(--border)',
+                      color: 'var(--accent)',
+                    }}
+                    title={`insert ${f} into focused expression input`}
+                  >
+                    {f}
+                  </button>
+                ))}
+              </div>
+            )}
+            <pre
+              className="max-h-[200px] overflow-auto whitespace-pre-wrap text-[11px]"
+              style={{ color: 'var(--text)' }}
+            >
+              {s.preview ?? '(binary — ' + (s.previewBase64?.length ?? 0) + ' base64 chars)'}
+            </pre>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function fmtAge(ms: number): string {
+  if (ms < 1000) return 'just now'
+  if (ms < 60_000) return `${Math.round(ms / 1000)}s ago`
+  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m ago`
+  return `${Math.round(ms / 3_600_000)}h ago`
+}
+
+function extractFields(
+  contentType: string,
+  preview: string | null,
+  attributes: Record<string, string>,
+): string[] {
+  const fields = new Set<string>()
+  // Attributes are always field candidates — EL reads them with bare names.
+  for (const k of Object.keys(attributes)) fields.add(k)
+  // For record/json previews, pull the top-level keys out so users can
+  // drop `amount`, `tier`, etc. directly into an expression.
+  if (contentType === 'records' && preview) {
+    try {
+      const parsed = JSON.parse(preview)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+        for (const k of Object.keys(parsed)) fields.add(k)
+    } catch { /* preview may be truncated; field chips degrade gracefully */ }
+  }
+  return Array.from(fields).sort()
+}
+
+// Single window event the config tab listens for. Passing via callbacks
+// would need to cross three layers of components (drawer → config tab →
+// every FieldInput); an event is both simpler and matches DOM focus
+// semantics — the currently-focused input picks up the insert.
+function fireFieldPick(path: string) {
+  window.dispatchEvent(new CustomEvent('caravan:field-pick', { detail: { path } }))
 }
