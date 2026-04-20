@@ -66,8 +66,42 @@ export interface ProvenanceEvent {
   details: string
 }
 
+export interface SourceInfo {
+  name: string
+  type: string
+  running: boolean
+}
+
+export type ParamKind =
+  | 'String'
+  | 'Multiline'
+  | 'Integer'
+  | 'Number'
+  | 'Boolean'
+  | 'Enum'
+  | 'Expression'
+  | 'KeyValueList'
+  | 'StringList'
+  | 'Secret'
+
+export interface ParamInfo {
+  name: string
+  label: string
+  description: string
+  kind: ParamKind
+  required: boolean
+  default: string | null
+  placeholder: string | null
+  choices: string[] | null
+  valueKind: ParamKind | null
+  entryDelim: string
+  pairDelim: string
+}
+
 export interface RegistryEntry {
   name: string
   description: string
+  category?: string
   configKeys: string[]
+  parameters?: ParamInfo[]
 }

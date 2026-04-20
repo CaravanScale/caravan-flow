@@ -85,3 +85,34 @@ export function useSaveFlow() {
     },
   )
 }
+
+export function useReloadFlow() {
+  return useFlowMutation<void, Record<string, unknown>>(async () => {
+    const resp = await unwrap(await api.reloadFlow())
+    return (await resp.json()) as Record<string, unknown>
+  })
+}
+
+export function useStartSource() {
+  return useFlowMutation<string, Response>(async (name) => unwrap(await api.startSource(name)))
+}
+
+export function useStopSource() {
+  return useFlowMutation<string, Response>(async (name) => unwrap(await api.stopSource(name)))
+}
+
+export function useResetProcessorStats() {
+  return useFlowMutation<string, Response>(async (name) =>
+    unwrap(await api.resetProcessorStats(name)),
+  )
+}
+
+export function useIngestFlowFile() {
+  return useFlowMutation<
+    { target: string; content?: string; contentBase64?: string; attributes?: Record<string, string> },
+    Record<string, unknown>
+  >(async (body) => {
+    const resp = await unwrap(await api.ingestFlowFile(body))
+    return (await resp.json()) as Record<string, unknown>
+  })
+}

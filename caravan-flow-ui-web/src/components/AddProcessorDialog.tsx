@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import { useAddProcessor } from '../lib/mutations'
 import type { RegistryEntry } from '../api/types'
+import { ProcessorConfigForm } from './ProcessorConfigForm'
 
 interface Props {
   open: boolean
@@ -10,12 +11,12 @@ interface Props {
   onClose: () => void
 }
 
-// Add-processor dialog. Registry (fetched once on open) populates the
-// type dropdown + seeds config rows when a type is picked so the
-// operator has a starting point for required keys. Free-form config
-// additions supported for schema-drift / experimental processors.
+// Add-processor dialog. Registry (fetched once on open) drives the type
+// dropdown and, when a type is picked, the config form. Processors that
+// advertise typed parameters get a schema-driven form; legacy entries
+// (no parameters array) fall through to the generic key/value grid.
 
-interface Row { key: string; value: string }
+interface LegacyRow { key: string; value: string }
 
 export function AddProcessorDialog({ open, existingNames, onClose }: Props) {
   const registry = useQuery<RegistryEntry[]>({
@@ -28,13 +29,14 @@ export function AddProcessorDialog({ open, existingNames, onClose }: Props) {
 
   const [name, setName] = useState('')
   const [type, setType] = useState('')
-  const [rows, setRows] = useState<Row[]>([])
+  const [values, setValues] = useState<Record<string, string>>({})
+  const [legacyRows, setLegacyRows] = useState<LegacyRow[]>([])
   const [query, setQuery] = useState('')
   const [err, setErr] = useState<string | null>(null)
 
   useEffect(() => {
     if (!open) {
-      setName(''); setType(''); setRows([]); setQuery(''); setErr(null)
+      setName(''); setType(''); setValues({}); setLegacyRows([]); setQuery(''); setErr(null)
     }
   }, [open])
 
@@ -45,24 +47,53 @@ export function AddProcessorDialog({ open, existingNames, onClose }: Props) {
     return list.filter((e) => e.name.toLowerCase().includes(q) || (e.description ?? '').toLowerCase().includes(q))
   }, [registry.data, query])
 
+  const selectedEntry = useMemo(
+    () => (registry.data ?? []).find((e) => e.name === type),
+    [registry.data, type]
+  )
+  const hasTypedParams = (selectedEntry?.parameters?.length ?? 0) > 0
+
   const onPickType = (t: string) => {
     setType(t)
     const entry = (registry.data ?? []).find((e) => e.name === t)
-    setRows(entry ? entry.configKeys.map((k) => ({ key: k, value: '' })) : [])
+    if (entry?.parameters?.length) {
+      const seed: Record<string, string> = {}
+      for (const p of entry.parameters) seed[p.name] = p.default ?? ''
+      setValues(seed)
+      setLegacyRows([])
+    } else {
+      setValues({})
+      setLegacyRows(entry ? entry.configKeys.map((k) => ({ key: k, value: '' })) : [])
+    }
   }
+
+  const requiredSatisfied = useMemo(() => {
+    if (!selectedEntry?.parameters?.length) return true
+    return selectedEntry.parameters.every((p) => !p.required || (values[p.name] ?? '').trim().length > 0)
+  }, [selectedEntry, values])
 
   const canSubmit =
     name.trim().length > 0 &&
     !existingNames.includes(name.trim()) &&
     type.trim().length > 0 &&
+    requiredSatisfied &&
     !addProc.isPending
 
   const submit = async () => {
     setErr(null)
     const cfg: Record<string, unknown> = {}
-    for (const r of rows) {
-      if (!r.key.trim()) continue
-      cfg[r.key] = r.value
+    if (hasTypedParams && selectedEntry?.parameters) {
+      for (const p of selectedEntry.parameters) {
+        const v = values[p.name]
+        if (v === undefined) continue
+        if (!p.required && v.trim().length === 0) continue
+        cfg[p.name] = v
+      }
+    } else {
+      for (const r of legacyRows) {
+        if (!r.key.trim()) continue
+        cfg[r.key] = r.value
+      }
     }
     try {
       await addProc.mutateAsync({
@@ -166,7 +197,17 @@ export function AddProcessorDialog({ open, existingNames, onClose }: Props) {
                           borderLeft: active ? '3px solid var(--accent)' : '3px solid transparent',
                         }}
                       >
-                        <span className="font-semibold text-white">{e.name}</span>
+                        <span className="flex w-full items-baseline justify-between gap-2">
+                          <span className="font-semibold text-white">{e.name}</span>
+                          {e.category && (
+                            <span
+                              className="text-[10px] uppercase tracking-widest"
+                              style={{ color: 'var(--text-muted)' }}
+                            >
+                              {e.category}
+                            </span>
+                          )}
+                        </span>
                         {e.description && (
                           <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
                             {e.description}
@@ -180,59 +221,22 @@ export function AddProcessorDialog({ open, existingNames, onClose }: Props) {
             )}
           </div>
 
-          <div className="mb-4">
-            <label className="mb-1 block text-[10px] uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>
-              config
-            </label>
-            {rows.length === 0 && (
-              <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
-                {type ? 'no known config keys — add any below' : 'pick a type to seed config keys'}
-              </p>
-            )}
-            <div className="flex flex-col gap-1.5">
-              {rows.map((row, i) => (
-                <div key={i} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)_24px] items-center gap-2">
-                  <input
-                    value={row.key}
-                    placeholder="key"
-                    onChange={(e) => {
-                      const next = [...rows]
-                      next[i] = { ...row, key: e.target.value }
-                      setRows(next)
-                    }}
-                    className="rounded border px-2 py-1"
-                    style={{ background: '#0a0a14', borderColor: 'var(--border)', color: 'var(--text)' }}
-                  />
-                  <input
-                    value={row.value}
-                    placeholder="value"
-                    onChange={(e) => {
-                      const next = [...rows]
-                      next[i] = { ...row, value: e.target.value }
-                      setRows(next)
-                    }}
-                    className="rounded border px-2 py-1"
-                    style={{ background: '#0a0a14', borderColor: 'var(--border)', color: 'var(--text)' }}
-                  />
-                  <button
-                    onClick={() => setRows(rows.filter((_, j) => j !== i))}
-                    className="text-lg leading-none"
-                    style={{ color: 'var(--text-muted)' }}
-                    aria-label="remove"
-                  >
-                    ×
-                  </button>
-                </div>
-              ))}
+          {type && (
+            <div className="mb-4">
+              <label className="mb-1 block text-[10px] uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>
+                config
+              </label>
+              {hasTypedParams ? (
+                <ProcessorConfigForm
+                  parameters={selectedEntry!.parameters!}
+                  values={values}
+                  onChange={setValues}
+                />
+              ) : (
+                <LegacyKeyValueGrid rows={legacyRows} setRows={setLegacyRows} typePicked={type.length > 0} />
+              )}
             </div>
-            <button
-              onClick={() => setRows([...rows, { key: '', value: '' }])}
-              className="mt-2 rounded border px-2 py-1 text-[11px]"
-              style={{ background: 'transparent', borderColor: 'var(--border)', color: 'var(--text-muted)' }}
-            >
-              + add key
-            </button>
-          </div>
+          )}
 
           {err && (
             <p className="text-[11px]" style={{ color: 'var(--error)' }}>
@@ -267,6 +271,69 @@ export function AddProcessorDialog({ open, existingNames, onClose }: Props) {
           </button>
         </footer>
       </div>
+    </>
+  )
+}
+
+interface LegacyProps {
+  rows: LegacyRow[]
+  setRows: (rows: LegacyRow[]) => void
+  typePicked: boolean
+}
+
+function LegacyKeyValueGrid({ rows, setRows, typePicked }: LegacyProps) {
+  return (
+    <>
+      {rows.length === 0 && (
+        <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+          {typePicked ? 'no known config keys — add any below' : 'pick a type to seed config keys'}
+        </p>
+      )}
+      <div className="flex flex-col gap-1.5">
+        {rows.map((row, i) => (
+          <div key={i} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)_24px] items-center gap-2">
+            <input
+              value={row.key}
+              placeholder="key"
+              onChange={(e) => {
+                const next = [...rows]
+                next[i] = { ...row, key: e.target.value }
+                setRows(next)
+              }}
+              className="rounded border px-2 py-1"
+              style={{ background: '#0a0a14', borderColor: 'var(--border)', color: 'var(--text)' }}
+            />
+            <input
+              value={row.value}
+              placeholder="value"
+              onChange={(e) => {
+                const next = [...rows]
+                next[i] = { ...row, value: e.target.value }
+                setRows(next)
+              }}
+              className="rounded border px-2 py-1"
+              style={{ background: '#0a0a14', borderColor: 'var(--border)', color: 'var(--text)' }}
+            />
+            <button
+              onClick={() => setRows(rows.filter((_, j) => j !== i))}
+              className="text-lg leading-none"
+              style={{ color: 'var(--text-muted)' }}
+              aria-label="remove"
+              type="button"
+            >
+              ×
+            </button>
+          </div>
+        ))}
+      </div>
+      <button
+        onClick={() => setRows([...rows, { key: '', value: '' }])}
+        className="mt-2 rounded border px-2 py-1 text-[11px]"
+        style={{ background: 'transparent', borderColor: 'var(--border)', color: 'var(--text-muted)' }}
+        type="button"
+      >
+        + add key
+      </button>
     </>
   )
 }

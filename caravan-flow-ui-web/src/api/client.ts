@@ -3,6 +3,7 @@ import type {
   ProcessorStatsMap,
   ProvenanceEvent,
   RegistryEntry,
+  SourceInfo,
   VcStatus,
 } from './types'
 
@@ -82,12 +83,30 @@ export const api = {
   overlays: () => getJson<unknown>('/api/overlays'),
   vcStatus: () => getJson<VcStatus>('/api/vc/status'),
 
-  // --- flow save ---
+  // --- flow save / reload ---
   saveFlow: (body: { message?: string; push?: boolean } = {}) =>
     send('POST', '/api/flow/save', {
       message: body.message ?? 'flow: update via UI',
       push: body.push ?? true,
     }),
+  reloadFlow: () => send('POST', '/api/reload'),
+
+  // --- sources ---
+  sources: () => getJson<SourceInfo[]>('/api/sources'),
+  startSource: (name: string) => send('POST', '/api/sources/start', { name }),
+  stopSource: (name: string) => send('POST', '/api/sources/stop', { name }),
+
+  // --- per-processor ---
+  resetProcessorStats: (name: string) =>
+    send('POST', `/api/processors/${encodeURIComponent(name)}/stats/reset`),
+
+  // --- test ingest ---
+  ingestFlowFile: (body: {
+    target: string
+    content?: string
+    contentBase64?: string
+    attributes?: Record<string, string>
+  }) => send('POST', '/api/flowfiles/ingest', body),
 
   // --- metrics ---
   metrics: () => getText('/metrics'),

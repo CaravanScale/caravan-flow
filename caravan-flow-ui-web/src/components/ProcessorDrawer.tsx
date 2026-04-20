@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { Processor } from '../api/types'
 import {
   useRemoveProcessor,
+  useResetProcessorStats,
   useSetConnections,
   useSetEntryPoints,
   useToggleProcessor,
@@ -418,14 +419,17 @@ export function ProcessorDrawer({ processor, allProcessorNames, entryPoints, onC
         )}
 
         {tab === 'stats' && (
-          <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1">
-            <dt style={{ color: 'var(--text-muted)' }}>processed</dt>
-            <dd>{processor.stats?.processed ?? 0}</dd>
-            <dt style={{ color: 'var(--text-muted)' }}>errors</dt>
-            <dd>{processor.stats?.errors ?? 0}</dd>
-            <dt style={{ color: 'var(--text-muted)' }}>state</dt>
-            <dd>{processor.state}</dd>
-          </dl>
+          <>
+            <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1">
+              <dt style={{ color: 'var(--text-muted)' }}>processed</dt>
+              <dd>{processor.stats?.processed ?? 0}</dd>
+              <dt style={{ color: 'var(--text-muted)' }}>errors</dt>
+              <dd>{processor.stats?.errors ?? 0}</dd>
+              <dt style={{ color: 'var(--text-muted)' }}>state</dt>
+              <dd>{processor.state}</dd>
+            </dl>
+            <StatsResetButton name={processor.name} />
+          </>
         )}
       </div>
 
@@ -453,5 +457,40 @@ export function ProcessorDrawer({ processor, allProcessorNames, entryPoints, onC
         {status && <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{status}</span>}
       </footer>
     </aside>
+  )
+}
+
+function StatsResetButton({ name }: { name: string }) {
+  const reset = useResetProcessorStats()
+  const [msg, setMsg] = useState<string | null>(null)
+  useEffect(() => {
+    if (!msg) return
+    const t = setTimeout(() => setMsg(null), 3000)
+    return () => clearTimeout(t)
+  }, [msg])
+  const onReset = async () => {
+    try {
+      await reset.mutateAsync(name)
+      setMsg('stats cleared')
+    } catch (e) {
+      setMsg(`error: ${(e as Error).message}`)
+    }
+  }
+  return (
+    <div className="mt-3 flex items-center gap-2">
+      <button
+        onClick={onReset}
+        disabled={reset.isPending}
+        className="rounded border px-2 py-1 text-[11px]"
+        style={{ background: 'transparent', borderColor: 'var(--border)', color: 'var(--text-muted)' }}
+      >
+        {reset.isPending ? 'resetting…' : 'reset counters'}
+      </button>
+      {msg && (
+        <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+          {msg}
+        </span>
+      )}
+    </div>
   )
 }

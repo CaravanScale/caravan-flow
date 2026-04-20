@@ -9,6 +9,7 @@ import {
   type Edge,
   type NodeMouseHandler,
   type EdgeMouseHandler,
+  type Connection,
 } from '@xyflow/react'
 import { api } from '../api/client'
 import { layoutFlow, type ProcessorNodeData, type RelEdgeData } from '../lib/layout'
@@ -17,6 +18,9 @@ import { RelationshipEdge } from '../components/RelationshipEdge'
 import { ProcessorDrawer } from '../components/ProcessorDrawer'
 import { AddProcessorDialog } from '../components/AddProcessorDialog'
 import { EdgeDrawer, type EdgeSelection } from '../components/EdgeDrawer'
+import { SourcesPanel } from '../components/SourcesPanel'
+import { TestFlowFileDialog } from '../components/TestFlowFileDialog'
+import { useAddConnection, useReloadFlow } from '../lib/mutations'
 import type { Processor } from '../api/types'
 
 const nodeTypes = { processor: ProcessorNode }
@@ -47,6 +51,46 @@ export function GraphPage() {
   const [selected, setSelected] = useState<string | null>(null)
   const [selectedEdge, setSelectedEdge] = useState<EdgeSelection | null>(null)
   const [addOpen, setAddOpen] = useState(false)
+  const [sourcesOpen, setSourcesOpen] = useState(false)
+  const [testOpen, setTestOpen] = useState(false)
+  const [reloadMsg, setReloadMsg] = useState<string | null>(null)
+
+  const reload = useReloadFlow()
+  const addConn = useAddConnection()
+
+  useEffect(() => {
+    if (!reloadMsg) return
+    const t = setTimeout(() => setReloadMsg(null), 4000)
+    return () => clearTimeout(t)
+  }, [reloadMsg])
+
+  const onReload = async () => {
+    try {
+      const body = await reload.mutateAsync()
+      if (body['error']) setReloadMsg(`error: ${body['error']}`)
+      else {
+        const parts: string[] = []
+        if (typeof body['added'] === 'number') parts.push(`+${body['added']}`)
+        if (typeof body['removed'] === 'number') parts.push(`-${body['removed']}`)
+        if (typeof body['updated'] === 'number') parts.push(`~${body['updated']}`)
+        setReloadMsg(`reloaded ${parts.join(' ')}`.trim())
+      }
+    } catch (e) {
+      setReloadMsg(`error: ${(e as Error).message}`)
+    }
+  }
+
+  // Inline edge drawing — React Flow emits onConnect when the user drags
+  // from one node's handle to another. We default to the "success"
+  // relationship; users can change it later via the edge drawer.
+  const onConnect = async (conn: Connection) => {
+    if (!conn.source || !conn.target) return
+    try {
+      await addConn.mutateAsync({ from: conn.source, relationship: 'success', to: conn.target })
+    } catch {
+      // mutation surfaces its own error; no-op here (drawer keeps working)
+    }
+  }
 
   // Lay out from the topology, then fold in live stats so the node
   // cards show fresh numbers without forcing a new dagre pass.
@@ -117,8 +161,9 @@ export function GraphPage() {
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
           nodesDraggable={false}
-          nodesConnectable={false}
+          nodesConnectable={true}
           elementsSelectable={true}
+          onConnect={onConnect}
           fitView
           fitViewOptions={{ padding: 0.2 }}
           minZoom={0.2}
@@ -152,14 +197,46 @@ export function GraphPage() {
           )}
           {topology.isError && <p className="text-[11px]" style={{ color: 'var(--error)' }}>failed to load /api/flow</p>}
         </div>
-        <button
-          onClick={() => setAddOpen(true)}
-          className="rounded px-3 py-1 text-[12px]"
-          style={{ background: '#0f3460', border: '1px solid var(--accent)', color: '#fff' }}
-          title="add processor to runtime graph"
-        >
-          + add processor
-        </button>
+        <div className="flex items-center gap-2">
+          {reloadMsg && (
+            <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>
+              {reloadMsg}
+            </span>
+          )}
+          <button
+            onClick={onReload}
+            disabled={reload.isPending}
+            className="rounded border px-3 py-1 text-[12px]"
+            style={{ background: 'transparent', borderColor: 'var(--border)', color: 'var(--text-muted)' }}
+            title="re-parse config.yaml and diff against the running flow"
+          >
+            {reload.isPending ? 'reloading…' : 'reload'}
+          </button>
+          <button
+            onClick={() => setSourcesOpen(true)}
+            className="rounded border px-3 py-1 text-[12px]"
+            style={{ background: 'transparent', borderColor: 'var(--border)', color: 'var(--text-muted)' }}
+            title="start/stop connector sources"
+          >
+            sources
+          </button>
+          <button
+            onClick={() => setTestOpen(true)}
+            className="rounded border px-3 py-1 text-[12px]"
+            style={{ background: 'transparent', borderColor: 'var(--border)', color: 'var(--text-muted)' }}
+            title="push a synthetic FlowFile into the graph"
+          >
+            test flowfile
+          </button>
+          <button
+            onClick={() => setAddOpen(true)}
+            className="rounded px-3 py-1 text-[12px]"
+            style={{ background: '#0f3460', border: '1px solid var(--accent)', color: '#fff' }}
+            title="add processor to runtime graph"
+          >
+            + add processor
+          </button>
+        </div>
       </div>
 
       {/* Empty-state CTA — shows when the flow has no processors. The
@@ -204,6 +281,8 @@ export function GraphPage() {
       {selectedEdge && (
         <EdgeDrawer edge={selectedEdge} onClose={() => setSelectedEdge(null)} />
       )}
+      {sourcesOpen && <SourcesPanel onClose={() => setSourcesOpen(false)} />}
+      <TestFlowFileDialog open={testOpen} flow={topology.data} onClose={() => setTestOpen(false)} />
     </div>
   )
 }
