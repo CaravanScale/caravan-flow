@@ -625,20 +625,42 @@ public sealed class ApiHandler
         var path = LayoutPath();
         if (string.IsNullOrEmpty(path))
             return Json(new Dictionary<string, object?> { ["error"] = "config path not set — nowhere to write layout.yaml" });
-        if (body is null || !body.TryGetValue("positions", out var posObj) || posObj is not Dictionary<string, object?> positions)
+        if (body is null || !body.TryGetValue("positions", out var posObj))
             return Json(new Dictionary<string, object?> { ["error"] = "body must be { positions: { name: { x, y } } }" });
 
-        // Validate + normalize before writing so we don't persist garbage.
+        // [FromBody] deserializes nested objects as JsonElement inside the
+        // outer Dictionary<string, object?>. Same shape fix we applied to
+        // AddSource/AddProcessor: walk the JSON tree by hand.
         var clean = new Dictionary<string, object?>();
-        foreach (var (name, val) in positions)
+        if (posObj is System.Text.Json.JsonElement posEl
+            && posEl.ValueKind == System.Text.Json.JsonValueKind.Object)
         {
-            if (val is Dictionary<string, object?> p
-                && p.TryGetValue("x", out var xo) && xo is not null
-                && p.TryGetValue("y", out var yo) && yo is not null
-                && double.TryParse(xo.ToString(), out var x)
-                && double.TryParse(yo.ToString(), out var y))
+            foreach (var prop in posEl.EnumerateObject())
             {
-                clean[name] = new Dictionary<string, object?> { ["x"] = Math.Round(x, 2), ["y"] = Math.Round(y, 2) };
+                if (prop.Value.ValueKind != System.Text.Json.JsonValueKind.Object) continue;
+                double? x = null, y = null;
+                foreach (var coord in prop.Value.EnumerateObject())
+                {
+                    if (coord.Name == "x" && coord.Value.TryGetDouble(out var xv)) x = xv;
+                    else if (coord.Name == "y" && coord.Value.TryGetDouble(out var yv)) y = yv;
+                }
+                if (x is not null && y is not null)
+                    clean[prop.Name] = new Dictionary<string, object?> { ["x"] = Math.Round(x.Value, 2), ["y"] = Math.Round(y.Value, 2) };
+            }
+        }
+        else if (posObj is Dictionary<string, object?> legacy)
+        {
+            // Back-compat for any caller that sends a pre-materialized dict.
+            foreach (var (name, val) in legacy)
+            {
+                if (val is Dictionary<string, object?> p
+                    && p.TryGetValue("x", out var xo) && xo is not null
+                    && p.TryGetValue("y", out var yo) && yo is not null
+                    && double.TryParse(xo.ToString(), out var x)
+                    && double.TryParse(yo.ToString(), out var y))
+                {
+                    clean[name] = new Dictionary<string, object?> { ["x"] = Math.Round(x, 2), ["y"] = Math.Round(y, 2) };
+                }
             }
         }
 
