@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   ReactFlow,
@@ -7,6 +7,8 @@ import {
   MiniMap,
   ReactFlowProvider,
   useReactFlow,
+  useNodesState,
+  useEdgesState,
   type Node,
   type Edge,
   type NodeMouseHandler,
@@ -190,31 +192,51 @@ function GraphPageInner() {
     layoutStore.set(node.id, { x: node.position.x, y: node.position.y })
   }, [])
 
-  // Layout + live stats overlay, same pattern as before.
-  const { nodes, edges } = useMemo<{
-    nodes: Node<ProcessorNodeData>[]
-    edges: Edge<RelEdgeData>[]
-  }>(() => {
-    if (!topology.data) return { nodes: [], edges: [] }
+  // React Flow controlled state. useNodesState / useEdgesState give us the
+  // onNodesChange / onEdgesChange handlers React Flow needs to commit
+  // drag-time position updates. Without these, setting nodesDraggable=true
+  // gives the appearance of being stuck (node only visibly moves after a
+  // full topology re-layout).
+  const [nodes, setNodes, onNodesChange] = useNodesState<Node<ProcessorNodeData>>([])
+  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge<RelEdgeData>>([])
+
+  // Re-layout on topology change. We preserve user-dragged positions
+  // via the layoutStore (which layoutFlow reads); dagre is the fallback
+  // for processors without a saved position.
+  useEffect(() => {
+    if (!topology.data) return
     const laid = layoutFlow(topology.data)
-    if (!stats.data) return laid
-    const overlaid = laid.nodes.map((n) => {
-      const s = stats.data[n.id]
-      if (!s) return n
-      return {
-        ...n,
-        data: {
-          ...n.data,
-          processor: {
-            ...n.data.processor,
-            stats: { processed: s.processed, errors: s.errors },
+    setNodes(laid.nodes)
+    setEdges(laid.edges)
+  }, [topology.data, setNodes, setEdges])
+
+  // Stats overlay — patch node.data.processor.stats in place so React
+  // Flow doesn't re-layout on every 2s stats tick.
+  useEffect(() => {
+    if (!stats.data) return
+    setNodes((prev) =>
+      prev.map((n) => {
+        const s = stats.data[n.id]
+        if (!s) return n
+        return {
+          ...n,
+          data: {
+            ...n.data,
+            processor: {
+              ...n.data.processor,
+              stats: { processed: s.processed, errors: s.errors },
+            },
           },
-        },
-        selected: n.id === selected,
-      }
-    })
-    return { nodes: overlaid, edges: laid.edges }
-  }, [topology.data, stats.data, selected])
+        }
+      }),
+    )
+  }, [stats.data, setNodes])
+
+  // Reflect drawer selection on the node (for the selected-ring styling)
+  // without forcing a re-layout.
+  useEffect(() => {
+    setNodes((prev) => prev.map((n) => (n.selected === (n.id === selected) ? n : { ...n, selected: n.id === selected })))
+  }, [selected, setNodes])
 
   useEffect(() => {
     if (selected && topology.data && !topology.data.processors.some((p) => p.name === selected)) {
@@ -259,6 +281,8 @@ function GraphPageInner() {
             nodesDraggable={true}
             nodesConnectable={true}
             elementsSelectable={true}
+            onNodesChange={onNodesChange}
+            onEdgesChange={onEdgesChange}
             onConnect={onConnect}
             onNodeDragStop={onNodeDragStop}
             fitView
