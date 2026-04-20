@@ -66,9 +66,6 @@ export const api = {
   setConnections: (from: string, relationships: Record<string, string[]>) =>
     send('PUT', `/api/connections/${encodeURIComponent(from)}`, relationships),
 
-  // --- entry points ---
-  setEntryPoints: (names: string[]) => send('PUT', '/api/entrypoints', { names }),
-
   // --- providers ---
   updateProviderConfig: (name: string, config: Record<string, unknown>) =>
     send('PUT', `/api/providers/${encodeURIComponent(name)}/config`, config),
@@ -148,6 +145,10 @@ export const api = {
   stopSource: (name: string) => send('POST', '/api/sources/stop', { name }),
   addSource: (body: { name: string; type: string; config?: Record<string, unknown> }) =>
     send('POST', '/api/sources/add', body),
+  updateSourceConfig: (name: string, config: Record<string, unknown>) =>
+    send('PUT', `/api/sources/${encodeURIComponent(name)}/config`, config),
+  removeSource: (name: string) =>
+    send('DELETE', `/api/sources/remove?name=${encodeURIComponent(name)}`),
 
   // --- per-processor ---
   resetProcessorStats: (name: string) =>

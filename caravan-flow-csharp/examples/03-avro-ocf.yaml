@@ -26,7 +26,6 @@ sources:
       pollIntervalMs: 1000
 
 flow:
-  entryPoints: [parse]
 
   processors:
     # OCF reader. With no readerSchema config, decodes using the writer

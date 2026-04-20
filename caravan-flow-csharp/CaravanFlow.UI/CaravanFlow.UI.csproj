@@ -13,7 +13,16 @@
       ~5x runtime performance — fine for an internal-ops UI.
     -->
     <RunAOTCompilation Condition="'$(EnableWasmAot)' == 'true'">true</RunAOTCompilation>
-    <BlazorEnableCompression>true</BlazorEnableCompression>
+    <!--
+      Compression disabled: .NET 10's MapStaticAssets has a broken
+      content-encoding selector when hosted from a vanilla minimal-API
+      app. It returns .gz bytes with a `Content-Encoding: br` header,
+      so browsers fail to decompress and the UI is stuck on "loading…".
+      Uncompressed bundle is ~12 MB; the bigger cost is acceptable for
+      an internal-ops UI. Revisit when MapStaticAssets is fixed
+      upstream or we move to a dedicated static host.
+    -->
+    <BlazorEnableCompression>false</BlazorEnableCompression>
     <InvariantGlobalization>true</InvariantGlobalization>
 
     <!--

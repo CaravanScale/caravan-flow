@@ -21,6 +21,10 @@ public sealed class Fabric
     // still a plain Dictionary but we lock on the source-name slot for
     // read-modify-write in AddSourceConnection / RemoveSourceConnection.
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, Dictionary<string, List<string>>> _sourceConnections = new();
+    // Source config snapshots so the drawer can display (and eventually
+    // edit) what was passed at AddSource time. IConnectorSource doesn't
+    // expose its config; we hold the raw map here instead.
+    private readonly Dictionary<string, Dictionary<string, string>> _sourceConfigs = new();
     private readonly CancellationTokenSource _cts = new();
     // Replaceable in LoadFlow when defaults.maxConcurrentExecutions is set.
     // Safe on initial load (no in-flight Execute yet). On hot reload, the swap
@@ -249,31 +253,15 @@ public sealed class Fabric
                 $"flow load failed with {loadErrors.Count} config error(s)",
                 loadErrors);
 
-        // Explicit entryPoints override inferred. Flag divergence so
-        // operators catch the common "I thought X was an entry but it's
-        // targeted from Y" bug. Explicit wins at runtime — that's the
-        // whole point of declaring intent.
-        var explicitEntries = flowDict is not null ? GetStringList(flowDict, "entryPoints") : null;
-        var effectiveEntries = (explicitEntries is not null && explicitEntries.Count > 0)
-            ? explicitEntries
-            : dagResult.EntryPoints;
-
-        if (explicitEntries is not null && explicitEntries.Count > 0)
+        // entryPoints is gone. A processor receives data iff a source or
+        // another processor wires an outbound connection to it. We still
+        // keep an empty list in PipelineGraph so the internal ctor stays
+        // compatible; it isn't read by any routing code.
+        var effectiveEntries = new List<string>();
+        if (flowDict is not null && GetStringList(flowDict, "entryPoints") is { Count: > 0 } legacy)
         {
-            var inferredSet = new HashSet<string>(dagResult.EntryPoints);
-            var explicitSet = new HashSet<string>(explicitEntries);
-            if (!inferredSet.SetEquals(explicitSet))
-            {
-                var explicitOnly = explicitSet.Except(inferredSet).ToList();
-                var inferredOnly = inferredSet.Except(explicitSet).ToList();
-                if (explicitOnly.Count > 0)
-                    Console.WriteLine($"[fabric] entry-point warning: explicit-only [{string.Join(", ", explicitOnly)}] — these are declared entry points but also have inbound connections");
-                if (inferredOnly.Count > 0)
-                    Console.WriteLine($"[fabric] entry-point warning: inferred-only [{string.Join(", ", inferredOnly)}] — these have no inbound connections but aren't in entryPoints: (add them or connect them)");
-            }
+            Console.WriteLine($"[fabric] config.yaml 'entryPoints: {string.Join(", ", legacy)}' is obsolete — sources now own their outbound connections. Drop the key; connect your source to the target processor instead.");
         }
-
-        Console.WriteLine($"[fabric] entry points: [{string.Join(", ", effectiveEntries)}]");
 
         // Initialize per-processor counters
         foreach (var name in processorNames)
@@ -610,74 +598,42 @@ public sealed class Fabric
 
     // --- Ingest callbacks for sources ---
 
-    /// <summary>
-    /// Legacy callback used by sources that have no outbound connections
-    /// configured. Fans a FlowFile out to the graph's entryPoints list —
-    /// the pre-tightening model. Kept so existing config.yaml files with
-    /// entryPoints but no source-connections continue to work.
-    /// </summary>
-    public bool IngestAndExecute(FlowFile ff)
+    /// Route a FlowFile out of a named source to its declared outbound
+    /// connections. Strict: a source without connections is a no-op — no
+    /// hidden entryPoints fallback. The DAG you see on the canvas is the
+    /// DAG data flows through.
+    public bool IngestFromSource(string sourceName, FlowFile ff)
     {
-        var graph = _graph;
-        var entryPoints = graph.EntryPoints;
-
-        if (entryPoints.Count == 0)
+        // Strict model: a source's FlowFile flows only along its declared
+        // outbound connections. No legacy entryPoints fallback — the graph
+        // is the program, and a source with no wired edges is a no-op until
+        // the operator draws one. Previously we fell back to the graph's
+        // entryPoints list, which made FFs appear to flow through
+        // processors the operator never connected to the source — visually
+        // confusing and semantically hidden.
+        if (!_sourceConnections.TryGetValue(sourceName, out var connsByRel))
         {
-            _log?.Log("WARN", "fabric", $"no entry-point processors, dropping ff-{ff.NumericId}");
             FlowFile.Return(ff);
             return false;
         }
-
-        if (entryPoints.Count == 1)
-            return Execute(ff, entryPoints[0]);
-
-        for (int i = 1; i < entryPoints.Count; i++)
+        List<string> targets;
+        lock (connsByRel)
+        {
+            if (!connsByRel.TryGetValue("success", out var live) || live.Count == 0)
+            {
+                FlowFile.Return(ff);
+                return false;
+            }
+            targets = new List<string>(live);
+        }
+        if (targets.Count == 1) return Execute(ff, targets[0]);
+        for (int i = 1; i < targets.Count; i++)
         {
             ff.Content.AddRef();
             var clone = FlowFile.Rent(ff.NumericId, ff.Attributes, ff.Content, ff.Timestamp, ff.HopCount);
-            Execute(clone, entryPoints[i]);
+            Execute(clone, targets[i]);
         }
-        return Execute(ff, entryPoints[0]);
-    }
-
-    /// <summary>
-    /// Route a FlowFile out of a named source to its declared outbound
-    /// connections. Preferred over <see cref="IngestAndExecute"/> — uses
-    /// the source's own connections instead of a shared entryPoints list,
-    /// so each source independently decides where its output goes. If
-    /// the source has no connections declared, falls back to entryPoints
-    /// so legacy configs keep working.
-    /// </summary>
-    public bool IngestFromSource(string sourceName, FlowFile ff)
-    {
-        if (_sourceConnections.TryGetValue(sourceName, out var connsByRel))
-        {
-            // Snapshot "success" targets under lock so concurrent
-            // AddSourceConnection / RemoveSourceConnection calls can't
-            // mutate the list while we iterate.
-            List<string> targets;
-            lock (connsByRel)
-            {
-                if (!connsByRel.TryGetValue("success", out var live) || live.Count == 0)
-                {
-                    if (connsByRel.Count == 0)
-                        return IngestAndExecute(ff);
-                    _log?.Log("WARN", "fabric", $"source '{sourceName}' has connections but none on 'success' — dropping ff-{ff.NumericId}");
-                    FlowFile.Return(ff);
-                    return false;
-                }
-                targets = new List<string>(live);
-            }
-            if (targets.Count == 1) return Execute(ff, targets[0]);
-            for (int i = 1; i < targets.Count; i++)
-            {
-                ff.Content.AddRef();
-                var clone = FlowFile.Rent(ff.NumericId, ff.Attributes, ff.Content, ff.Timestamp, ff.HopCount);
-                Execute(clone, targets[i]);
-            }
-            return Execute(ff, targets[0]);
-        }
-        return IngestAndExecute(ff);
+        return Execute(ff, targets[0]);
     }
 
     // --- Per-source connection management ---
@@ -848,13 +804,60 @@ public sealed class Fabric
 
     public void AddSource(IConnectorSource source)
     {
+        AddSource(source, new Dictionary<string, string>());
+    }
+
+    /// Overload that also stores the source's configuration map so the UI
+    /// can render it on the drawer's config tab. Config parity with
+    /// processors — without this, a dropped source is a black box.
+    public void AddSource(IConnectorSource source, Dictionary<string, string> config)
+    {
         _sources[source.Name] = source;
+        _sourceConfigs[source.Name] = new Dictionary<string, string>(config);
         if (_running)
         {
             var sourceName = source.Name;
             source.Start(ff => IngestFromSource(sourceName, ff), _cts.Token);
         }
         MarkDirty();
+    }
+
+    public Dictionary<string, string>? GetSourceConfig(string name)
+        => _sourceConfigs.TryGetValue(name, out var c) ? new Dictionary<string, string>(c) : null;
+
+    /// Remove a source from the fabric — stops it first so no lingering
+    /// inflight ingests, then drops its config + connections. Returns
+    /// false when the source isn't registered.
+    public bool RemoveSource(string name)
+    {
+        if (!_sources.TryGetValue(name, out var source)) return false;
+        try { source.Stop(); } catch { /* best-effort */ }
+        _sources.Remove(name);
+        _sourceConfigs.Remove(name);
+        _sourceConnections.TryRemove(name, out _);
+        MarkDirty();
+        return true;
+    }
+
+    /// Replace a running source's config without losing its outbound
+    /// connections. Caller supplies the freshly-constructed source (the
+    /// registry factory lives at the API layer); we stop the old instance,
+    /// swap it in, stash the new config, and restart if the fabric is
+    /// running. Returns false when the name isn't registered.
+    public bool ReplaceSource(IConnectorSource source, Dictionary<string, string> config)
+    {
+        var name = source.Name;
+        if (!_sources.TryGetValue(name, out var old)) return false;
+        try { old.Stop(); } catch { /* best-effort */ }
+        _sources[name] = source;
+        _sourceConfigs[name] = new Dictionary<string, string>(config);
+        if (_running)
+        {
+            var sourceName = name;
+            source.Start(ff => IngestFromSource(sourceName, ff), _cts.Token);
+        }
+        MarkDirty();
+        return true;
     }
 
     public bool StartSource(string name)
@@ -890,7 +893,9 @@ public sealed class Fabric
     public List<string> GetProcessorNames() => new(_graph.ProcessorNames);
     public Registry GetRegistry() => _reg;
     public Dictionary<string, Dictionary<string, List<string>>> GetConnections() => new(_graph.Connections);
-    public List<string> GetEntryPoints() => new(_graph.EntryPoints);
+    // EntryPoints removed from the public surface. Sources own their own
+    // outbound connections now; processors with no inbound connections are
+    // implicit entries only if a source wires to them.
     public string GetProcessorType(string name) => _graph.ProcessorDefs.TryGetValue(name, out var def) ? def.Type : "unknown";
 
     /// <summary>
@@ -952,12 +957,41 @@ public sealed class Fabric
 
         var flow = new Dictionary<string, object?>
         {
-            ["entryPoints"] = new List<string>(_graph.EntryPoints),
             ["processors"] = processors,
         };
         if (connections.Count > 0) flow["connections"] = connections;
 
-        return new Dictionary<string, object?> { ["flow"] = flow };
+        // Top-level sources: map of name → { type, config?, connections? }.
+        // Sources are first-class graph nodes — the canvas IS the
+        // program, so they must round-trip through YAML. They live at
+        // the config root (matching Program.cs's load path), not under
+        // flow.*.
+        var sources = new Dictionary<string, object?>();
+        foreach (var (sname, src) in _sources)
+        {
+            var srcEntry = new Dictionary<string, object?> { ["type"] = src.SourceType };
+            if (_sourceConfigs.TryGetValue(sname, out var scfg) && scfg.Count > 0)
+            {
+                var cfgCopy = new Dictionary<string, object?>(scfg.Count);
+                foreach (var (k, v) in scfg) cfgCopy[k] = v;
+                srcEntry["config"] = cfgCopy;
+            }
+            if (_sourceConnections.TryGetValue(sname, out var srels))
+            {
+                lock (srels)
+                {
+                    var relMap = new Dictionary<string, object?>();
+                    foreach (var (rel, targets) in srels)
+                        if (targets.Count > 0) relMap[rel] = new List<string>(targets);
+                    if (relMap.Count > 0) srcEntry["connections"] = relMap;
+                }
+            }
+            sources[sname] = srcEntry;
+        }
+
+        var root = new Dictionary<string, object?> { ["flow"] = flow };
+        if (sources.Count > 0) root["sources"] = sources;
+        return root;
     }
 
     public Dictionary<string, object> GetStats() => new()
@@ -1043,8 +1077,27 @@ public sealed class Fabric
     public bool AddProcessor(string name, string typeName, Dictionary<string, string> config,
         List<string>? requires = null, Dictionary<string, List<string>>? connections = null)
     {
+        return TryAddProcessor(name, typeName, config, requires, connections, out _);
+    }
+
+    /// Same as AddProcessor but surfaces factory-exception messages to
+    /// the caller. Palette drops route through here so the UI can turn
+    /// "Access to path denied" into a usable toast instead of a bare 500.
+    public bool TryAddProcessor(string name, string typeName, Dictionary<string, string> config,
+        List<string>? requires, Dictionary<string, List<string>>? connections, out string? error)
+    {
+        error = null;
         var graph = _graph;
-        if (graph.Processors.ContainsKey(name) || !_reg.Has(typeName)) return false;
+        if (graph.Processors.ContainsKey(name))
+        {
+            error = $"processor '{name}' already exists";
+            return false;
+        }
+        if (!_reg.Has(typeName))
+        {
+            error = $"unknown processor type '{typeName}'";
+            return false;
+        }
         requires ??= [];
         connections ??= new();
 
@@ -1052,7 +1105,13 @@ public sealed class Fabric
             _globalCtx.RegisterDependent(pn, name);
 
         var ctx = BuildScopedContext(requires);
-        var proc = _reg.Create(typeName, ctx, config);
+        IProcessor proc;
+        try { proc = _reg.Create(typeName, ctx, config); }
+        catch (Exception ex)
+        {
+            error = $"factory failed: {ex.Message}";
+            return false;
+        }
 
         // Build new graph with the additional processor
         var newProcessors = new Dictionary<string, IProcessor>(graph.Processors) { [name] = proc };
@@ -1062,16 +1121,8 @@ public sealed class Fabric
         var newDefs = new Dictionary<string, (string, Dictionary<string, string>, List<string>)>(graph.ProcessorDefs)
             { [name] = (typeName, new Dictionary<string, string>(config), new List<string>(requires)) };
 
-        // Preserve the graph's explicit EntryPoints across mutations —
-        // only SetEntryPoints changes them. DAG re-inference here
-        // would clobber an operator's explicit entry-points choice
-        // every time they added/removed a processor or connection.
-        // Add-processor implicitly adds it as a potential entry point
-        // only if the current list is empty (load-time inference).
-        var newEntries = new List<string>(graph.EntryPoints);
-        if (newEntries.Count == 0) newEntries.Add(name);
-
-        _graph = new PipelineGraph(newProcessors, newConnections, newEntries, newNames, newStates, newDefs);
+        // EntryPoints: empty list. Explicit sources wire to named processors.
+        _graph = new PipelineGraph(newProcessors, newConnections, new List<string>(), newNames, newStates, newDefs);
 
         _processorCounts.TryAdd(name, 0);
         _processorErrors.TryAdd(name, 0);
@@ -1106,11 +1157,8 @@ public sealed class Fabric
         newStates.Remove(name);
         var newDefs = new Dictionary<string, (string, Dictionary<string, string>, List<string>)>(graph.ProcessorDefs);
         newDefs.Remove(name);
-        // Filter the deleted name out of explicit entry points; preserve
-        // everything else so the operator's intent survives the edit.
-        var newEntries = graph.EntryPoints.Where(ep => ep != name).ToList();
 
-        _graph = new PipelineGraph(newProcessors, newConnections, newEntries, newNames, newStates, newDefs);
+        _graph = new PipelineGraph(newProcessors, newConnections, new List<string>(), newNames, newStates, newDefs);
         MarkDirty();
         return true;
     }
@@ -1154,11 +1202,8 @@ public sealed class Fabric
         rels[relationship] = targets;
         newConns[from] = rels;
 
-        // Connection-level mutations don't touch entry points —
-        // preserve whatever's there so explicit operator intent
-        // survives downstream edits. DagValidator stays available
-        // for warnings elsewhere; not authoritative here.
-        _graph = new PipelineGraph(graph.Processors, newConns, graph.EntryPoints,
+        // Sources own entry into the graph; no entry-points bookkeeping.
+        _graph = new PipelineGraph(graph.Processors, newConns, new List<string>(),
             graph.ProcessorNames, graph.ProcessorStates, graph.ProcessorDefs);
         MarkDirty();
         return EditResult.Success();
@@ -1192,11 +1237,8 @@ public sealed class Fabric
             if (!newConns.ContainsKey(name))
                 newConns[name] = new Dictionary<string, List<string>>();
 
-        // Connection-level mutations don't touch entry points —
-        // preserve whatever's there so explicit operator intent
-        // survives downstream edits. DagValidator stays available
-        // for warnings elsewhere; not authoritative here.
-        _graph = new PipelineGraph(graph.Processors, newConns, graph.EntryPoints,
+        // Sources own entry into the graph; no entry-points bookkeeping.
+        _graph = new PipelineGraph(graph.Processors, newConns, new List<string>(),
             graph.ProcessorNames, graph.ProcessorStates, graph.ProcessorDefs);
         MarkDirty();
         return EditResult.Success();
@@ -1234,34 +1276,14 @@ public sealed class Fabric
             if (!newConns.ContainsKey(name))
                 newConns[name] = new Dictionary<string, List<string>>();
 
-        // Connection-level mutations don't touch entry points —
-        // preserve whatever's there so explicit operator intent
-        // survives downstream edits. DagValidator stays available
-        // for warnings elsewhere; not authoritative here.
-        _graph = new PipelineGraph(graph.Processors, newConns, graph.EntryPoints,
+        // Sources own entry into the graph; no entry-points bookkeeping.
+        _graph = new PipelineGraph(graph.Processors, newConns, new List<string>(),
             graph.ProcessorNames, graph.ProcessorStates, graph.ProcessorDefs);
         MarkDirty();
         return EditResult.Success();
     }
 
-    /// <summary>
-    /// Replace the set of entry points. Every name must already be a
-    /// defined processor. Explicit override of the DAG-inferred set.
-    /// </summary>
-    public EditResult SetEntryPoints(List<string> names)
-    {
-        if (names is null) return EditResult.Fail("names must not be null");
-        var graph = _graph;
-        foreach (var name in names)
-        {
-            if (!graph.Processors.ContainsKey(name))
-                return EditResult.Fail($"processor '{name}' not found");
-        }
-        _graph = new PipelineGraph(graph.Processors, graph.Connections, new List<string>(names),
-            graph.ProcessorNames, graph.ProcessorStates, graph.ProcessorDefs);
-        MarkDirty();
-        return EditResult.Success();
-    }
+    // SetEntryPoints removed — sources on the graph are the only entry.
 
     /// <summary>
     /// Update a provider's live config. Scope is intentionally narrow —
@@ -1340,7 +1362,7 @@ public sealed class Fabric
         {
             [name] = (effectiveType, new Dictionary<string, string>(config), new List<string>(requires))
         };
-        _graph = new PipelineGraph(newProcessors, graph.Connections, graph.EntryPoints,
+        _graph = new PipelineGraph(newProcessors, graph.Connections, new List<string>(),
             graph.ProcessorNames, graph.ProcessorStates, newDefs);
         MarkDirty();
         return EditResult.Success();
@@ -1459,16 +1481,13 @@ public sealed class Fabric
             _processorErrors.TryAdd(name, 0);
         }
 
-        var dagResult = DagValidator.Validate(newConnections);
+        DagValidator.Validate(newConnections);
 
-        // Explicit entryPoints override; fall back to DAG inference.
-        var reloadExplicitEntries = flowDict is not null ? GetStringList(flowDict, "entryPoints") : null;
-        var reloadEffectiveEntries = (reloadExplicitEntries is not null && reloadExplicitEntries.Count > 0)
-            ? reloadExplicitEntries
-            : dagResult.EntryPoints;
+        if (flowDict is not null && GetStringList(flowDict, "entryPoints") is { Count: > 0 } legacyEntries)
+            Console.WriteLine($"[hot-reload] ignoring obsolete entryPoints: [{string.Join(", ", legacyEntries)}]");
 
         // Atomic swap
-        _graph = new PipelineGraph(newProcessors, newConnections, reloadEffectiveEntries, newNames, newStates, newProcessorDefs);
+        _graph = new PipelineGraph(newProcessors, newConnections, new List<string>(), newNames, newStates, newProcessorDefs);
 
         var total = added + removed + updated + connectionsChanged;
         if (total > 0)

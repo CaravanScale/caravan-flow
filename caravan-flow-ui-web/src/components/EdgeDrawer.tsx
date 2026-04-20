@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useRemoveConnection } from '../lib/mutations'
+import { ConfirmDialog } from './ConfirmDialog'
 
 export interface EdgeSelection {
   from: string
@@ -16,9 +17,13 @@ export function EdgeDrawer({ edge, onClose }: Props) {
   const remove = useRemoveConnection()
   const [status, setStatus] = useState<string | null>(null)
 
-  const onRemove = async () => {
+  const [confirmOpen, setConfirmOpen] = useState(false)
+  const onRemove = () => {
     setStatus(null)
-    if (!confirm(`Remove ${edge.from} --[${edge.relationship}]→ ${edge.to}?`)) return
+    setConfirmOpen(true)
+  }
+  const runRemove = async () => {
+    setConfirmOpen(false)
     try {
       await remove.mutateAsync(edge)
       onClose()
@@ -35,6 +40,16 @@ export function EdgeDrawer({ edge, onClose }: Props) {
         : 'var(--warning)'
 
   return (
+    <>
+    <ConfirmDialog
+      open={confirmOpen}
+      title="Remove connection?"
+      message={`${edge.from} --[${edge.relationship}]→ ${edge.to} will be dropped from the runtime graph.`}
+      confirmLabel="remove"
+      destructive
+      onConfirm={runRemove}
+      onCancel={() => setConfirmOpen(false)}
+    />
     <aside
       className="absolute right-0 top-0 z-20 flex h-full w-[360px] flex-col shadow-xl"
       style={{ background: 'var(--surface)', borderLeft: '1px solid var(--border)' }}
@@ -96,5 +111,6 @@ export function EdgeDrawer({ edge, onClose }: Props) {
         {status && <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{status}</span>}
       </footer>
     </aside>
+    </>
   )
 }

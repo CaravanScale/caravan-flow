@@ -37,7 +37,7 @@ public static class BuiltinSources
         reg.Register(
             new SourceInfo("GetFile",
                 "Polls a directory; emits one FlowFile per file (V3 bundles unpacked on sight).",
-                [P("inputDir", required: true, placeholder: "/var/spool/caravan-in"),
+                [P("inputDir", required: true, placeholder: "/tmp/caravan-in"),
                  P("pattern", def: "*", description: "glob pattern for files to pick up"),
                  P("pollIntervalMs", kind: ParamKind.Integer, def: "1000"),
                  P("unpackV3", kind: ParamKind.Boolean, def: "true",

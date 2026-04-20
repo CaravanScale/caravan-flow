@@ -25,6 +25,7 @@ export interface Source {
   type: string
   running: boolean
   connections?: Record<string, string[]> | null
+  config?: Record<string, string> | null
 }
 
 export interface Provider {
@@ -35,7 +36,6 @@ export interface Provider {
 
 export interface Flow {
   processors: Processor[]
-  entryPoints: string[]
   sources: Source[]
   providers: Provider[]
   stats: {
@@ -108,4 +108,7 @@ export interface RegistryEntry {
   kind?: string
   configKeys: string[]
   parameters?: ParamInfo[]
+  // Opt-in wizard id. When set, ProcessorConfigForm renders the named
+  // wizard instead of the generic per-kind form.
+  wizardComponent?: string | null
 }

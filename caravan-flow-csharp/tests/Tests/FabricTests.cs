@@ -1428,7 +1428,6 @@ public static class FabricTests
 
         // Verify graph state
         AssertIntEqual("3 processors", fab.GetProcessorNames().Count, 3);
-        AssertTrue("parser is entry point", fab.GetEntryPoints().Contains("parser"));
 
         // Execute with valid JSON — should flow: parser → sink
         var ff1 = FlowFile.Create(Encoding.UTF8.GetBytes("[{\"name\":\"Alice\"}]"), new() { ["type"] = "test" });

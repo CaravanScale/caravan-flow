@@ -113,7 +113,8 @@ public sealed class ApiHandler
         app.MapPost("/api/connections", AddConnection);
         app.MapDelete("/api/connections", DeleteConnection);
         app.MapPut("/api/connections/{from}", SetConnections);
-        app.MapPut("/api/entrypoints", SetEntryPoints);
+        // /api/entrypoints removed — explicit sources with explicit
+        // outbound connections replace the entry-points list entirely.
 
         // Provider config edits (new on both tracks)
         app.MapPut("/api/providers/{name}/config", UpdateProviderConfig);
@@ -126,6 +127,20 @@ public sealed class ApiHandler
 
         // Add a new source instance at runtime (palette drop target)
         app.MapPost("/api/sources/add", AddSource);
+        // Update a running source's config (drawer save)
+        app.MapPut("/api/sources/{name}/config", UpdateSourceConfig);
+        // Remove a source instance (drawer delete)
+        app.MapDelete("/api/sources/remove", RemoveSource);
+    }
+
+    private IResult RemoveSource(HttpRequest request, [FromBody] Dictionary<string, object?>? req)
+    {
+        var name = request.Query["name"].FirstOrDefault() ?? req?.GetValueOrDefault("name")?.ToString() ?? "";
+        if (string.IsNullOrEmpty(name))
+            return Json(new Dictionary<string, object?> { ["error"] = "name required" });
+        return _fab.RemoveSource(name)
+            ? Json(new Dictionary<string, object?> { ["status"] = "removed", ["name"] = name })
+            : Json(new Dictionary<string, object?> { ["error"] = $"source '{name}' not found" });
     }
 
     // --- Stats ---
@@ -146,6 +161,7 @@ public sealed class ApiHandler
                 ["description"] = i.Description,
                 ["category"] = i.Category,
                 ["kind"] = "processor",
+                ["wizardComponent"] = i.WizardComponent,
                 ["configKeys"] = i.ConfigKeys,
                 ["parameters"] = i.Parameters.Select(p => new Dictionary<string, object?>
                 {
@@ -217,13 +233,13 @@ public sealed class ApiHandler
                 ["stats"] = procStats.GetValueOrDefault(name),
                 ["connections"] = _fab.GetConnections().GetValueOrDefault(name)
             }).ToList(),
-            ["entryPoints"] = _fab.GetEntryPoints(),
             ["sources"] = _fab.GetSources().Select(s => new Dictionary<string, object?>
             {
                 ["name"] = s.Name,
                 ["type"] = s.Type,
                 ["running"] = s.Running,
                 ["connections"] = _fab.GetSourceConnections().GetValueOrDefault(s.Name),
+                ["config"] = _fab.GetSourceConfig(s.Name),
             }).ToList(),
             ["providers"] = _fab.GetContext().ListProviders().Select(name =>
             {
@@ -277,14 +293,19 @@ public sealed class ApiHandler
                 requires.Add(item.GetString() ?? "");
         }
 
-        return _fab.AddProcessor(name, type, config, requires, connections)
-            ? Json(new Dictionary<string, object?> { ["status"] = "created", ["name"] = name })
-            : Json(new Dictionary<string, object?> { ["error"] = "processor already exists or unknown type" });
+        if (_fab.TryAddProcessor(name, type, config, requires, connections, out var err))
+            return Json(new Dictionary<string, object?> { ["status"] = "created", ["name"] = name });
+        return Results.Content(
+            CaravanJson.SerializeToString(new Dictionary<string, object?> { ["error"] = err ?? "add failed" }),
+            "application/json", statusCode: 400);
     }
 
-    private IResult RemoveProcessor([FromBody] Dictionary<string, string>? req)
+    private IResult RemoveProcessor(HttpRequest request, [FromBody] Dictionary<string, string>? req)
     {
-        var name = req?.GetValueOrDefault("name") ?? "";
+        // Accept both ?name= query (what the React client sends for DELETE)
+        // and {"name": "..."} body (what command-line curl users do). DELETE
+        // with a body is spec-valid but a handful of clients strip it.
+        var name = request.Query["name"].FirstOrDefault() ?? req?.GetValueOrDefault("name") ?? "";
         if (name == "") return Json(new Dictionary<string, object?> { ["error"] = "name required" });
         return _fab.RemoveProcessor(name)
             ? Json(new Dictionary<string, object?> { ["status"] = "removed", ["name"] = name })
@@ -837,24 +858,7 @@ public sealed class ApiHandler
             new() { ["status"] = "replaced", ["from"] = from, ["relationships"] = rels });
     }
 
-    private IResult SetEntryPoints([FromBody] Dictionary<string, object?>? body)
-    {
-        if (body is null) return BadRequest("invalid json body");
-        if (!body.TryGetValue("names", out var namesObj) || namesObj is null)
-            return BadRequest("body must include a 'names' array");
-        List<string>? names = namesObj switch
-        {
-            System.Text.Json.JsonElement je when je.ValueKind == System.Text.Json.JsonValueKind.Array
-                => EnumerateStringArray(je),
-            System.Collections.IEnumerable raw when namesObj is not string
-                => EnumerateStrings(raw),
-            _ => null,
-        };
-        if (names is null) return BadRequest("body must include a 'names' array");
-        return EditResultJson(
-            _fab.SetEntryPoints(names),
-            new() { ["status"] = "replaced", ["names"] = names });
-    }
+    // SetEntryPoints removed — see comment on the old route registration.
 
     /// <summary>
     /// Replace a provider's config. Re-creates the provider instance with
@@ -1067,8 +1071,12 @@ public sealed class ApiHandler
         if (body is null)
             return Json(new Dictionary<string, object?> { ["error"] = "body must be a JSON object" });
 
-        var name = body.GetValueOrDefault("name") as string ?? "";
-        var type = body.GetValueOrDefault("type") as string ?? "";
+        // System.Text.Json deserializes into Dictionary<string, object?> where
+        // every leaf is a JsonElement, not a string. Use ToString() (which
+        // JsonElement implements to return the raw JSON value) the same way
+        // AddProcessor does, otherwise `as string` silently returns null.
+        var name = body.GetValueOrDefault("name")?.ToString() ?? "";
+        var type = body.GetValueOrDefault("type")?.ToString() ?? "";
         if (string.IsNullOrEmpty(name))
             return Json(new Dictionary<string, object?> { ["error"] = "name required" });
         if (string.IsNullOrEmpty(type))
@@ -1077,13 +1085,23 @@ public sealed class ApiHandler
             return Json(new Dictionary<string, object?> { ["error"] = $"unknown source type '{type}'" });
 
         var cfg = new Dictionary<string, string>();
-        if (body.GetValueOrDefault("config") is Dictionary<string, object?> rawCfg)
+        if (body.TryGetValue("config", out var cfgObj) && cfgObj is System.Text.Json.JsonElement je
+            && je.ValueKind == System.Text.Json.JsonValueKind.Object)
         {
-            foreach (var (k, v) in rawCfg)
-                cfg[k] = v?.ToString() ?? "";
+            foreach (var prop in je.EnumerateObject())
+                cfg[prop.Name] = prop.Value.ToString();
         }
 
-        var source = _sourceRegistry.Create(type, name, cfg, _contentStore);
+        IConnectorSource? source;
+        try { source = _sourceRegistry.Create(type, name, cfg, _contentStore); }
+        catch (Exception ex)
+        {
+            return Results.Content(
+                CaravanJson.SerializeToString(new Dictionary<string, object?>
+                {
+                    ["error"] = $"factory failed: {ex.Message}",
+                }), "application/json", statusCode: 400);
+        }
         if (source is null)
             return Json(new Dictionary<string, object?>
             {
@@ -1092,13 +1110,42 @@ public sealed class ApiHandler
                 ["reason"] = "factory returned null — likely required config missing"
             });
 
-        _fab.AddSource(source);
+        _fab.AddSource(source, cfg);
         return Json(new Dictionary<string, object?>
         {
             ["status"] = "added",
             ["name"] = name,
             ["type"] = type,
         });
+    }
+
+    private IResult UpdateSourceConfig(string name, [FromBody] Dictionary<string, object?>? body)
+    {
+        if (_sourceRegistry is null || _contentStore is null)
+            return Json(new Dictionary<string, object?> { ["error"] = "source registry not wired" });
+        if (string.IsNullOrEmpty(name))
+            return Json(new Dictionary<string, object?> { ["error"] = "name required" });
+        var existing = _fab.GetSources().FirstOrDefault(s => s.Name == name);
+        if (existing.Name is null)
+            return Json(new Dictionary<string, object?> { ["error"] = $"source '{name}' not found" });
+
+        var cfg = new Dictionary<string, string>();
+        if (body is not null)
+        {
+            foreach (var (k, v) in body)
+            {
+                if (k == "type") continue;
+                cfg[k] = v?.ToString() ?? "";
+            }
+        }
+
+        var rebuilt = _sourceRegistry.Create(existing.Type, name, cfg, _contentStore);
+        if (rebuilt is null)
+            return Json(new Dictionary<string, object?> { ["error"] = "factory returned null — likely required config missing" });
+
+        return _fab.ReplaceSource(rebuilt, cfg)
+            ? Json(new Dictionary<string, object?> { ["status"] = "updated", ["name"] = name })
+            : Json(new Dictionary<string, object?> { ["error"] = "replace failed" });
     }
 
     private IResult ResetProcessorStats(string name)
@@ -1168,13 +1215,16 @@ public sealed class ApiHandler
 
         if (string.IsNullOrEmpty(target) || target == "*")
         {
-            var ok = _fab.IngestAndExecute(ff);
-            return Json(new Dictionary<string, object?>
-            {
-                ["status"] = ok ? "ingested" : "rejected",
-                ["flowfile"] = $"ff-{ff.NumericId}",
-                ["target"] = "entry-points",
-            });
+            // No more "entry-points" fan-out. The test-ingest endpoint now
+            // matches the runtime model: every FF enters at a named node.
+            FlowFile.Return(ff);
+            return Results.Content(
+                CaravanJson.SerializeToString(new Dictionary<string, object?>
+                {
+                    ["error"] = "target required — pick a processor name; there is no implicit fan-out",
+                }),
+                "application/json",
+                statusCode: 400);
         }
         else
         {

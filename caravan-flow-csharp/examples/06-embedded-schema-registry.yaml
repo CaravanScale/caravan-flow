@@ -59,7 +59,6 @@ sources:
       pattern: "*.avro"
 
 flow:
-  entryPoints: [parse]
 
   processors:
     # Auto-capture writer schemas under the subject "discovered" as files arrive.

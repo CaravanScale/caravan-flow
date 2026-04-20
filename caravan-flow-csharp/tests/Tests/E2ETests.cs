@@ -225,18 +225,17 @@ public static class E2ETests
             fab.LoadFlow(config);
             fab.StartAsync();
 
-            // HTTP ingest has moved into Program.cs's management port
-            // (`POST /`) so it's not exercised from the Fabric unit
-            // layer anymore. Drive ingest directly through the same
-            // method the HTTP handler calls — IngestAndExecute — which
-            // is what we're actually testing here anyway.
+            // HTTP ingest is now a first-class source (ListenHTTP) on the
+            // graph — this test hits the target processor directly via
+            // Execute(name, ff), which is the same dispatch path sources
+            // ultimately call once they own outbound connections.
             var payload = Encoding.UTF8.GetBytes("{\"e2e\":true}");
             var ff = FlowFile.Create(payload, new Dictionary<string, string>
             {
                 ["http.content.type"] = "application/json",
                 ["source"] = "e2e-http"
             });
-            var accepted = fab.IngestAndExecute(ff);
+            var accepted = fab.Execute(ff, "writer");
             AssertTrue("ingest accepted", accepted);
 
             // Wait for the pipeline to land at least one output file.

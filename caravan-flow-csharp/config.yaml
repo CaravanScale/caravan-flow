@@ -1,31 +1,14 @@
 flow:
-  entryPoints: [tag-env]
   processors:
-    tag-env:
-      type: UpdateAttribute
+    FilterAttribute:
+      type: FilterAttribute
       config:
-        key: env
-        value: dev
-    tag-source:
-      type: UpdateAttribute
-      config:
-        key: source
-        value: api
-    logger:
-      type: LogAttribute
-      config:
-        prefix: flow
-    sink:
-      type: PutFile
-      config:
-        outputDir: /tmp/caravan-flow-csharp/output
-        namingAttribute: filename
-      requires: [content]
-  connections:
-    tag-env:
-      success: [tag-source]
-    tag-source:
-      success: [logger]
-      failure: [sink]
-    logger:
-      success: [sink]
+        mode: remove
+        attributes: http.headers;internal.tmp
+sources:
+  ListenHTTP:
+    type: ListenHTTP
+    config:
+      port: "9100"
+      path: /
+      maxBodyBytes: "16777216"

@@ -37,7 +37,6 @@ sources:
   # UnpackageFlowFileV3 in your flow if the POSTed body is V3-framed.
 
 flow:
-  entryPoints: [log]
 
   processors:
     # Visibility: log everything that came in, including all attributes.

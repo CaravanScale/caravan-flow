@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { ParamInfo, ParamKind } from '../api/types'
 import { ExpressionBuilder } from './ExpressionBuilder'
+import { wizardRegistry } from './wizards'
 
 // Listen for Peek field-pick events (fired by SamplePanel chip clicks).
 // When the operator has focus in a text input / textarea, insert the
@@ -55,12 +56,17 @@ interface Props {
   // running processor yet; the builder degrades to an editor + palette
   // without sample-aware preview.
   processorName?: string
+  // Opt-in processor-level wizard id (from RegistryEntry.wizardComponent).
+  // When set and known in wizardRegistry, the wizard replaces the
+  // generic per-kind form. An "advanced" toggle still exposes the
+  // generic fields as an escape hatch.
+  wizardComponent?: string | null
 }
 
 const INPUT_CLASS = 'w-full rounded border px-2 py-1'
 const INPUT_STYLE = { background: '#0a0a14', borderColor: 'var(--border)', color: 'var(--text)' } as const
 
-export function ProcessorConfigForm({ parameters, values, onChange, processorName }: Props) {
+export function ProcessorConfigForm({ parameters, values, onChange, processorName, wizardComponent }: Props) {
   useFieldPickListener()
   // Expression builder modal state. Only one builder open at a time;
   // a save-callback routes the assembled expression back to whichever
@@ -72,6 +78,12 @@ export function ProcessorConfigForm({ parameters, values, onChange, processorNam
     save: (v: string) => void
   } | null>(null)
 
+  // When a wizard is registered for this processor, render it in place
+  // of the generic form. Operators can still reach the raw parameters
+  // via the "advanced" disclosure so nothing is permanently hidden.
+  const [showAdvanced, setShowAdvanced] = useState(false)
+  const Wizard = wizardComponent ? wizardRegistry[wizardComponent] : undefined
+
   if (parameters.length === 0) {
     return (
       <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
@@ -81,6 +93,50 @@ export function ProcessorConfigForm({ parameters, values, onChange, processorNam
   }
 
   const set = (name: string, value: string) => onChange({ ...values, [name]: value })
+
+  if (Wizard) {
+    return (
+      <div className="flex flex-col gap-3">
+        <Wizard
+          processorName={processorName ?? ''}
+          values={values}
+          onChange={onChange}
+        />
+        <button
+          onClick={() => setShowAdvanced((v) => !v)}
+          className="self-start text-[10px] uppercase tracking-widest"
+          style={{ color: 'var(--text-muted)' }}
+        >
+          {showAdvanced ? '▾ advanced (raw)' : '▸ advanced (raw)'}
+        </button>
+        {showAdvanced && (
+          <div className="rounded border p-2" style={{ borderColor: 'var(--border)', background: '#0a0a14' }}>
+            {parameters.map((p) => (
+              <ParamField
+                key={p.name}
+                param={p}
+                value={values[p.name] ?? ''}
+                onChange={(v) => set(p.name, v)}
+                onOpenBuilder={setBuilderTarget}
+              />
+            ))}
+          </div>
+        )}
+        {builderTarget && (
+          <ExpressionBuilder
+            open
+            initialValue={builderTarget.initial}
+            processorName={processorName}
+            onSave={(v) => {
+              builderTarget.save(v)
+              setBuilderTarget(null)
+            }}
+            onCancel={() => setBuilderTarget(null)}
+          />
+        )}
+      </div>
+    )
+  }
 
   return (
     <div className="flex flex-col gap-3">
@@ -232,9 +288,26 @@ function FieldInput({ param, value, onChange, onOpenBuilder }: FieldProps) {
 // --- StringList ---
 
 function StringListInput({ param, value, onChange }: FieldProps) {
-  const entries = useMemo(() => parseStringList(value, param.entryDelim), [value, param.entryDelim])
+  // Local state as source of truth: a single empty entry serializes to ""
+  // (`[""].join(";")` = `""`), which would round-trip back to an empty
+  // list via parseStringList's early return and swallow the "+ add".
+  // Keeping entries locally lets the UI show empty rows while the
+  // parent holds the serialized string.
+  const [entries, setEntries] = useState<string[]>(() => parseStringList(value, param.entryDelim))
+  const lastExternal = useRef(value)
+  useEffect(() => {
+    if (value !== lastExternal.current) {
+      lastExternal.current = value
+      setEntries(parseStringList(value, param.entryDelim))
+    }
+  }, [value, param.entryDelim])
 
-  const update = (next: string[]) => onChange(next.join(param.entryDelim))
+  const update = (next: string[]) => {
+    setEntries(next)
+    const serialized = next.join(param.entryDelim)
+    lastExternal.current = serialized
+    onChange(serialized)
+  }
 
   return (
     <div className="flex flex-col gap-1.5">
@@ -288,12 +361,28 @@ interface Row {
 }
 
 function KeyValueListInput({ param, value, onChange, onOpenBuilder }: FieldProps) {
-  const rows = useMemo(() => parseKeyValueList(value, param.entryDelim, param.pairDelim), [value, param.entryDelim, param.pairDelim])
+  // Local state authoritative — same reason as StringListInput: an
+  // empty row serializes to "=" which parse still drops, so round-
+  // tripping via the string eats "+ add". Keep rows locally; serialize
+  // on mutation; re-sync only on genuine external change.
+  const [rows, setRows] = useState<Row[]>(() => parseKeyValueList(value, param.entryDelim, param.pairDelim))
+  const lastExternal = useRef(value)
+  useEffect(() => {
+    if (value !== lastExternal.current) {
+      lastExternal.current = value
+      setRows(parseKeyValueList(value, param.entryDelim, param.pairDelim))
+    }
+  }, [value, param.entryDelim, param.pairDelim])
+
   const valueKind: ParamKind = param.valueKind ?? 'String'
   const expressionValue = valueKind === 'Expression'
 
-  const update = (next: Row[]) =>
-    onChange(next.map((r) => `${r.key}${param.pairDelim}${r.value}`).join(param.entryDelim))
+  const update = (next: Row[]) => {
+    setRows(next)
+    const serialized = next.map((r) => `${r.key}${param.pairDelim}${r.value}`).join(param.entryDelim)
+    lastExternal.current = serialized
+    onChange(serialized)
+  }
 
   const setRow = (i: number, patch: Partial<Row>) => {
     const next = rows.map((r, j) => (j === i ? { ...r, ...patch } : r))
@@ -393,10 +482,10 @@ function KeyValueListInput({ param, value, onChange, onOpenBuilder }: FieldProps
 
 function parseStringList(raw: string, entryDelim: string): string[] {
   if (!raw) return []
-  return raw
-    .split(entryDelim)
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0)
+  // Keep empty entries — an empty row is a valid in-progress edit
+  // (operator just clicked "+ add" and hasn't typed yet). The backend
+  // parser trims empties on save so there's no round-trip surprise.
+  return raw.split(entryDelim).map((s) => s.trim())
 }
 
 function parseKeyValueList(raw: string, entryDelim: string, pairDelim: string): Row[] {
@@ -404,7 +493,8 @@ function parseKeyValueList(raw: string, entryDelim: string, pairDelim: string): 
   const out: Row[] = []
   for (const entry of raw.split(entryDelim)) {
     const trimmed = entry.trim()
-    if (!trimmed) continue
+    // Keep empty rows too — "+ add" needs to land a visible row
+    // even before the operator types a key. Backend trims on save.
     const idx = trimmed.indexOf(pairDelim)
     if (idx < 0) {
       out.push({ key: trimmed, value: '' })

@@ -69,15 +69,15 @@ export function useRemoveProcessor() {
   return useFlowMutation<string, Response>(async (name) => unwrap(await api.removeProcessor(name)))
 }
 
+export function useRemoveSource() {
+  return useFlowMutation<string, Response>(async (name) => unwrap(await api.removeSource(name)))
+}
+
 export function useAddProcessor() {
   return useFlowMutation<
     { name: string; type: string; config?: Record<string, unknown>; connections?: Record<string, string[]> },
     Response
   >(async (body) => unwrap(await api.addProcessor(body)))
-}
-
-export function useSetEntryPoints() {
-  return useFlowMutation<string[], Response>(async (names) => unwrap(await api.setEntryPoints(names)))
 }
 
 export function useSaveFlow() {
@@ -101,6 +101,13 @@ export function useAddSource() {
     { name: string; type: string; config?: Record<string, unknown> },
     Response
   >(async (body) => unwrap(await api.addSource(body)))
+}
+
+export function useUpdateSourceConfig() {
+  return useFlowMutation<
+    { name: string; config: Record<string, unknown> },
+    Response
+  >(async ({ name, config }) => unwrap(await api.updateSourceConfig(name, config)))
 }
 
 export function useStartSource() {

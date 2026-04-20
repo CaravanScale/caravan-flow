@@ -230,7 +230,22 @@ if (sourcesSection is not null)
         var source = sourceRegistry.Create(typeName, sourceName, cfgFlat, store);
         if (source is not null)
         {
-            fab.AddSource(source);
+            fab.AddSource(source, cfgFlat);
+            if (CaravanFlow.Fabric.Fabric.AsStringDict(spec.GetValueOrDefault("connections")) is { } connDict)
+            {
+                foreach (var (rel, targetsObj) in connDict)
+                {
+                    if (targetsObj is IEnumerable<object?> list)
+                    {
+                        foreach (var t in list)
+                        {
+                            var tname = t?.ToString();
+                            if (!string.IsNullOrEmpty(tname))
+                                fab.AddSourceConnection(sourceName, rel, tname);
+                        }
+                    }
+                }
+            }
             Console.WriteLine($"source {sourceName} ({typeName}) registered");
         }
         else
@@ -371,40 +386,9 @@ if (dashboardPath is not null)
     app.MapGet("/legacy", () => Results.Content(dashHtml, "text/html"));
 }
 
-// POST / — HTTP ingest on the management port. Body is the raw
-// FlowFile payload; X-Flow-* headers become FlowFile attributes.
-// Mirrors caravan-flow-java's handler; wraps Fabric.IngestAndExecute
-// which was already the internal ingest path used by source connectors.
-app.MapPost("/", async (HttpRequest req, HttpResponse resp) =>
-{
-    using var ms = new MemoryStream();
-    await req.Body.CopyToAsync(ms);
-    var body = ms.ToArray();
-
-    var attrs = new Dictionary<string, string>();
-    foreach (var h in req.Headers)
-    {
-        var lower = h.Key.ToLowerInvariant();
-        if (lower.StartsWith("x-flow-"))
-        {
-            attrs[lower.Substring("x-flow-".Length)] = h.Value.ToString();
-        }
-    }
-
-    var ff = FlowFile.Create(body, attrs);
-    try
-    {
-        fab.IngestAndExecute(ff);
-        resp.StatusCode = 202;
-        await resp.WriteAsync(ff.Id);
-    }
-    catch (Exception ex)
-    {
-        Console.Error.WriteLine($"ingest failed for {ff.Id}: {ex.Message}");
-        resp.StatusCode = 500;
-        await resp.WriteAsync("pipeline error: " + ex.Message);
-    }
-});
+// Root POST ingest removed. Drop a ListenHTTP source on the graph if
+// you want external HTTP ingress — everything must be visible on the
+// canvas. No magic fan-out entry.
 
 // Management API — admin surface for processors/sources/providers
 var api = new ApiHandler(fab);

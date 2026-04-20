@@ -1,22 +1,25 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
-import type { Processor } from '../api/types'
+import type { Processor, RegistryEntry } from '../api/types'
 import {
   useRemoveProcessor,
+  useRemoveSource,
   useResetProcessorStats,
   useSetConnections,
-  useSetEntryPoints,
   useToggleProcessor,
   useUpdateProcessorConfig,
+  useUpdateSourceConfig,
 } from '../lib/mutations'
+import { ProcessorConfigForm } from './ProcessorConfigForm'
+import { ConfirmDialog } from './ConfirmDialog'
 
 type Tab = 'config' | 'connections' | 'stats' | 'sample'
 
 interface Props {
   processor: Processor
   allProcessorNames: string[]
-  entryPoints: string[]
+  isSource?: boolean
   onClose: () => void
 }
 
@@ -28,6 +31,13 @@ function toConfigRows(p: Processor): ConfigRow[] {
   return Object.entries(p.config).map(([k, v]) => ({ key: k, value: v == null ? '' : String(v) }))
 }
 
+function toConfigValues(p: Processor): Record<string, string> {
+  const out: Record<string, string> = {}
+  if (!p.config) return out
+  for (const [k, v] of Object.entries(p.config)) out[k] = v == null ? '' : String(v)
+  return out
+}
+
 function toConnRows(p: Processor): ConnRow[] {
   if (!p.connections) return []
   const out: ConnRow[] = []
@@ -37,7 +47,7 @@ function toConnRows(p: Processor): ConnRow[] {
   return out
 }
 
-export function ProcessorDrawer({ processor, allProcessorNames, entryPoints, onClose }: Props) {
+export function ProcessorDrawer({ processor, allProcessorNames, isSource = false, onClose }: Props) {
   const [tab, setTab] = useState<Tab>('config')
 
   // View-model snapshot. Hydrated from the processor prop on mount +
@@ -45,11 +55,27 @@ export function ProcessorDrawer({ processor, allProcessorNames, entryPoints, onC
   // _dirty, upstream refreshes are queued and shown as a banner
   // instead of clobbering in-flight edits.
   const [configRows, setConfigRows] = useState<ConfigRow[]>(() => toConfigRows(processor))
+  const [configValues, setConfigValues] = useState<Record<string, string>>(() => toConfigValues(processor))
   const [connRows, setConnRows] = useState<ConnRow[]>(() => toConnRows(processor))
-  const [isEntry, setIsEntry] = useState<boolean>(() => entryPoints.includes(processor.name))
   const [dirty, setDirty] = useState(false)
   const [upstreamQueued, setUpstreamQueued] = useState(false)
   const [status, setStatus] = useState<string | null>(null)
+
+  // Registry drives the schema-aware config form (builder buttons on
+  // Expression inputs, enum dropdowns, boolean checkboxes). Falls back
+  // to the legacy row editor when the registry entry for this type
+  // has no parameter descriptors (unknown type, older worker).
+  const registry = useQuery<RegistryEntry[]>({
+    queryKey: ['registry'],
+    queryFn: api.registry,
+    staleTime: 5 * 60_000,
+  })
+  const registryEntry = useMemo(() => {
+    return (registry.data ?? []).find((e) => e.name === processor.type)
+  }, [registry.data, processor.type])
+  const schema = registryEntry?.parameters ?? []
+  const wizardComponent = registryEntry?.wizardComponent ?? null
+  const useSchemaForm = schema.length > 0
 
   const lastName = useRef(processor.name)
 
@@ -60,31 +86,33 @@ export function ProcessorDrawer({ processor, allProcessorNames, entryPoints, onC
       return
     }
     setConfigRows(toConfigRows(processor))
+    setConfigValues(toConfigValues(processor))
     setConnRows(toConnRows(processor))
-    setIsEntry(entryPoints.includes(processor.name))
     setDirty(false)
     setUpstreamQueued(false)
     setStatus(null)
     lastName.current = processor.name
-  }, [processor, entryPoints, dirty])
+  }, [processor, dirty])
 
   const updateConfig = useUpdateProcessorConfig()
+  const updateSourceCfg = useUpdateSourceConfig()
   const setConns = useSetConnections()
-  const setEntries = useSetEntryPoints()
   const toggleProc = useToggleProcessor()
   const removeProc = useRemoveProcessor()
+  const removeSrc = useRemoveSource()
 
   const busy =
     updateConfig.isPending ||
+    updateSourceCfg.isPending ||
     setConns.isPending ||
-    setEntries.isPending ||
     toggleProc.isPending ||
-    removeProc.isPending
+    removeProc.isPending ||
+    removeSrc.isPending
 
   const discardAndReload = () => {
     setConfigRows(toConfigRows(processor))
+    setConfigValues(toConfigValues(processor))
     setConnRows(toConnRows(processor))
-    setIsEntry(entryPoints.includes(processor.name))
     setDirty(false)
     setUpstreamQueued(false)
     setStatus(null)
@@ -93,18 +121,19 @@ export function ProcessorDrawer({ processor, allProcessorNames, entryPoints, onC
   const saveConfig = async () => {
     setStatus(null)
     const config: Record<string, unknown> = {}
-    for (const r of configRows) {
-      if (!r.key.trim()) continue
-      config[r.key] = r.value
+    if (useSchemaForm) {
+      for (const [k, v] of Object.entries(configValues)) config[k] = v
+    } else {
+      for (const r of configRows) {
+        if (!r.key.trim()) continue
+        config[r.key] = r.value
+      }
     }
     try {
-      await updateConfig.mutateAsync({ name: processor.name, type: processor.type, config })
-      const currentIsEntry = entryPoints.includes(processor.name)
-      if (currentIsEntry !== isEntry) {
-        const next = isEntry
-          ? Array.from(new Set([...entryPoints, processor.name]))
-          : entryPoints.filter((n) => n !== processor.name)
-        await setEntries.mutateAsync(next)
+      if (isSource) {
+        await updateSourceCfg.mutateAsync({ name: processor.name, config })
+      } else {
+        await updateConfig.mutateAsync({ name: processor.name, type: processor.type, config })
       }
       setDirty(false)
       setStatus('applied')
@@ -139,11 +168,16 @@ export function ProcessorDrawer({ processor, allProcessorNames, entryPoints, onC
     }
   }
 
-  const onDelete = async () => {
+  const [confirmOpen, setConfirmOpen] = useState(false)
+  const onDelete = () => {
     setStatus(null)
-    if (!confirm(`Remove ${processor.name} from the runtime graph?`)) return
+    setConfirmOpen(true)
+  }
+  const runDelete = async () => {
+    setConfirmOpen(false)
     try {
-      await removeProc.mutateAsync(processor.name)
+      if (isSource) await removeSrc.mutateAsync(processor.name)
+      else await removeProc.mutateAsync(processor.name)
       onClose()
     } catch (e) {
       setStatus(`error: ${(e as Error).message}`)
@@ -162,6 +196,16 @@ export function ProcessorDrawer({ processor, allProcessorNames, entryPoints, onC
   }, [processor.state])
 
   return (
+    <>
+    <ConfirmDialog
+      open={confirmOpen}
+      title={`Remove ${processor.name}?`}
+      message={`${isSource ? 'Source' : 'Processor'} '${processor.name}' will be removed from the runtime graph. Its outbound connections drop with it.`}
+      confirmLabel="remove"
+      destructive
+      onConfirm={runDelete}
+      onCancel={() => setConfirmOpen(false)}
+    />
     <aside
       className="absolute right-0 top-0 z-20 flex h-full w-[420px] flex-col shadow-xl"
       style={{ background: 'var(--surface)', borderLeft: '1px solid var(--border)' }}
@@ -225,18 +269,6 @@ export function ProcessorDrawer({ processor, allProcessorNames, entryPoints, onC
       <div className="flex-1 overflow-y-auto p-4 text-[12px]">
         {tab === 'config' && (
           <div className="flex flex-col gap-2">
-            <label className="flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={isEntry}
-                onChange={(e) => {
-                  setIsEntry(e.target.checked)
-                  setDirty(true)
-                }}
-              />
-              entry point
-            </label>
-
             <h4 className="mt-2 text-[10px] uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>
               type
             </h4>
@@ -247,6 +279,16 @@ export function ProcessorDrawer({ processor, allProcessorNames, entryPoints, onC
             <h4 className="mt-4 text-[10px] uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>
               config
             </h4>
+            {useSchemaForm ? (
+              <ProcessorConfigForm
+                parameters={schema}
+                values={configValues}
+                onChange={(next) => { setConfigValues(next); setDirty(true) }}
+                processorName={processor.name}
+                wizardComponent={wizardComponent}
+              />
+            ) : (
+              <>
             {configRows.length === 0 && (
               <p style={{ color: 'var(--text-muted)' }}>no config keys</p>
             )}
@@ -299,6 +341,8 @@ export function ProcessorDrawer({ processor, allProcessorNames, entryPoints, onC
             >
               + add key
             </button>
+              </>
+            )}
 
             <div className="mt-4 flex gap-2">
               <button
@@ -461,6 +505,7 @@ export function ProcessorDrawer({ processor, allProcessorNames, entryPoints, onC
         {status && <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{status}</span>}
       </footer>
     </aside>
+    </>
   )
 }
 

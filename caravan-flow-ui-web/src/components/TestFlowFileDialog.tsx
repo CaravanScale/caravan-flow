@@ -89,7 +89,7 @@ export function TestFlowFileDialog({ open, flow, onClose }: Props) {
               className="w-full rounded border px-2 py-1"
               style={{ background: '#0a0a14', borderColor: 'var(--border)', color: 'var(--text)' }}
             >
-              <option value="">{`(entry points — ${flow?.entryPoints.length ?? 0})`}</option>
+              <option value="">— pick a processor —</option>
               {targets.map((t) => (
                 <option key={t} value={t}>{t}</option>
               ))}

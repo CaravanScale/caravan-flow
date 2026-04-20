@@ -84,7 +84,7 @@ export function layoutFlow(flow: Flow): {
       type: s.type,
       state: s.running ? 'ENABLED' : 'DISABLED',
       connections: s.connections ?? undefined,
-      config: undefined,
+      config: s.config ?? undefined,
       stats: undefined,
     }
     return {

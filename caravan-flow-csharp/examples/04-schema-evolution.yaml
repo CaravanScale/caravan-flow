@@ -28,7 +28,6 @@ sources:
       pattern: "*.avro"
 
 flow:
-  entryPoints: [parse-evolved]
 
   processors:
     parse-evolved:

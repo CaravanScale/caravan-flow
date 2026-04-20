@@ -109,10 +109,15 @@ function GraphPageInner() {
     return () => clearTimeout(t)
   }, [reloadMsg])
 
-  // Prune layoutStore entries for processors no longer in the flow.
+  // Prune layoutStore entries for nodes no longer in the flow. Covers
+  // processors + sources (the full set of canvas nodes).
   useEffect(() => {
     if (topology.data) {
-      layoutStore.prune(new Set(topology.data.processors.map((p) => p.name)))
+      const alive = new Set<string>([
+        ...topology.data.processors.map((p) => p.name),
+        ...(topology.data.sources ?? []).map((s) => s.name),
+      ])
+      layoutStore.prune(alive)
     }
   }, [topology.data])
 
@@ -175,13 +180,13 @@ function GraphPageInner() {
   //   3. persist the position before POSTing so the node lands where
   //      the user released it, not dagre's grid slot
   //   4. POST /api/processors/add with an auto-generated unique name
-  // Only accept drops when the palette MIME is present. Unconditionally
-  // calling preventDefault() interferes with React Flow's own pointer-based
-  // node-drag: the pane starts accepting an HTML5 drop, which confuses
-  // React Flow into cancelling the drag mid-move. See the "node gets
-  // stuck" symptom that appeared after wiring the palette.
+  // HTML5 drag semantics: the browser only fires `drop` on a target that
+  // called preventDefault() in `dragover`. React Flow's node drag uses
+  // pointer events (not HTML5 drag) so always-preventDefault here is
+  // safe — it doesn't conflict with in-canvas node dragging, and some
+  // browsers hide MIME types from dataTransfer.types during dragover so
+  // gating on includes() was eating our own palette drops.
   const onDragOver = useCallback((e: React.DragEvent) => {
-    if (!e.dataTransfer.types.includes(PALETTE_MIME)) return
     e.preventDefault()
     e.dataTransfer.dropEffect = 'copy'
   }, [])
@@ -197,7 +202,10 @@ function GraphPageInner() {
       y: e.clientY - NODE_H / 2,
     })
 
-    const existingNames = new Set((topology.data?.processors ?? []).map((p) => p.name))
+    const existingNames = new Set<string>([
+      ...(topology.data?.processors ?? []).map((p) => p.name),
+      ...(topology.data?.sources ?? []).map((s) => s.name),
+    ])
     const name = uniqueName(type, existingNames)
 
     // Persist position first; the flow refresh triggered by the add
@@ -208,11 +216,22 @@ function GraphPageInner() {
     const entry = (registry.data ?? []).find((r) => r.name === type)
     const isSource = entry?.kind === 'source'
 
+    // Seed config from the registry's typed defaults + placeholders so a
+    // drop lands a working node instead of one the factory rejects. Sources
+    // with a required param but no default (e.g. ListenHTTP.port) get the
+    // placeholder as a hint — still valid numeric / string, and the user
+    // can tweak in the drawer config tab.
+    const seededConfig: Record<string, string> = {}
+    for (const p of entry?.parameters ?? []) {
+      if (p.default !== null && p.default !== undefined) seededConfig[p.name] = p.default
+      else if (p.required && p.placeholder) seededConfig[p.name] = p.placeholder
+    }
+
     try {
       if (isSource) {
-        await addSrc.mutateAsync({ name, type, config: {} })
+        await addSrc.mutateAsync({ name, type, config: seededConfig })
       } else {
-        await addProc.mutateAsync({ name, type, config: {}, connections: {} })
+        await addProc.mutateAsync({ name, type, config: seededConfig, connections: {} })
       }
     } catch (err) {
       layoutStore.delete(name)
@@ -239,12 +258,15 @@ function GraphPageInner() {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<ProcessorNodeData>>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge<RelEdgeData>>([])
 
-  // Re-layout on topology change. We preserve user-dragged positions
-  // via the layoutStore (which layoutFlow reads); dagre is the fallback
-  // for processors without a saved position.
+  // Re-layout on topology change. Freeze every node's computed position
+  // back into layoutStore so subsequent topology changes never re-dagre
+  // existing nodes — avoids the "delete one, others shift, dragged ones
+  // pin and edges stretch" pathology. Drops already call layoutStore.set
+  // before the mutation, so a fresh drop lands at exact mouse coords.
   useEffect(() => {
     if (!topology.data) return
     const laid = layoutFlow(topology.data)
+    for (const n of laid.nodes) layoutStore.set(n.id, { x: n.position.x, y: n.position.y })
     setNodes(laid.nodes)
     setEdges(laid.edges)
   }, [topology.data, setNodes, setEdges])
@@ -299,9 +321,10 @@ function GraphPageInner() {
   }, [selected, setNodes])
 
   useEffect(() => {
-    if (selected && topology.data && !topology.data.processors.some((p) => p.name === selected)) {
-      setSelected(null)
-    }
+    if (!selected || !topology.data) return
+    const inProcessors = topology.data.processors.some((p) => p.name === selected)
+    const inSources = (topology.data.sources ?? []).some((s) => s.name === selected)
+    if (!inProcessors && !inSources) setSelected(null)
   }, [topology.data, selected])
 
   useEffect(() => {
@@ -325,8 +348,27 @@ function GraphPageInner() {
     setSelectedEdge(null)
   }
 
-  const selectedProcessor: Processor | null =
-    topology.data?.processors.find((p) => p.name === selected) ?? null
+  // Selection → drawer target. Check processors first, then sources —
+  // sources appear as nodes on the canvas since the graph-core tightening,
+  // so clicking a source should open the same drawer (adapted for a
+  // source-shaped object).
+  const selectedProcessor: Processor | null = useMemo(() => {
+    if (!selected || !topology.data) return null
+    const proc = topology.data.processors.find((p) => p.name === selected)
+    if (proc) return proc
+    const src = topology.data.sources.find((s) => s.name === selected)
+    if (src) {
+      return {
+        name: src.name,
+        type: src.type,
+        state: src.running ? 'ENABLED' : 'DISABLED',
+        connections: src.connections ?? undefined,
+        config: src.config ?? undefined,
+        stats: undefined,
+      } as Processor
+    }
+    return null
+  }, [selected, topology.data])
 
   return (
     <div className="flex h-full w-full">
@@ -369,11 +411,12 @@ function GraphPageInner() {
             {topology.data && (
               <p className="mt-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>
                 {topology.data.processors.length} processors ·{' '}
+                {(topology.data.sources?.length ?? 0)} sources ·{' '}
                 {topology.data.processors.reduce(
                   (a, p) => a + Object.values(p.connections ?? {}).reduce((b, xs) => b + xs.length, 0),
                   0,
                 )}{' '}
-                connections · {topology.data.entryPoints.length} entry points
+                connections
               </p>
             )}
             {topology.isError && <p className="text-[11px]" style={{ color: 'var(--error)' }}>failed to load /api/flow</p>}
@@ -412,7 +455,10 @@ function GraphPageInner() {
           </div>
         </div>
 
-        {topology.isSuccess && topology.data.processors.length === 0 && (
+        {topology.isSuccess
+          && topology.data.processors.length === 0
+          && (topology.data.sources?.length ?? 0) === 0
+          && (
           <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
             <div
               className="flex flex-col items-center gap-2 rounded-lg border px-8 py-6 text-center"
@@ -430,7 +476,7 @@ function GraphPageInner() {
           <ProcessorDrawer
             processor={selectedProcessor}
             allProcessorNames={topology.data.processors.map((p) => p.name)}
-            entryPoints={topology.data.entryPoints}
+            isSource={topology.data.sources.some((s) => s.name === selectedProcessor.name)}
             onClose={() => setSelected(null)}
           />
         )}

@@ -55,6 +55,10 @@ public sealed class ProcessorInfo
     public string Category { get; }
     public IReadOnlyList<ParamInfo> Parameters { get; }
     public IReadOnlyList<string> ConfigKeys { get; }
+    /// Opt-in wizard id — when set, the UI renders the named wizard
+    /// component instead of the generic per-kind form. Null means use
+    /// the generic form (default).
+    public string? WizardComponent { get; init; }
 
     public ProcessorInfo(string name, string description, string category, IReadOnlyList<ParamInfo> parameters)
     {

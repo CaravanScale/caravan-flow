@@ -21,7 +21,6 @@ content:
   dir: /tmp/caravan-flow-csharp/content
 
 flow:
-  entryPoints: [parse]
 
   processors:
     parse:

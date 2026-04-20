@@ -85,7 +85,7 @@ public static class BuiltinProcessors
 
         reg.Register(
             new ProcessorInfo("PutFile", "Write FlowFile content to directory", "Sink",
-                [P("outputDir", required: true, placeholder: "/var/lib/caravan/out"),
+                [P("outputDir", required: true, placeholder: "/tmp/caravan-out"),
                  P("namingAttribute", def: "filename",
                    description: "FlowFile attribute that supplies the output filename"),
                  P("prefix", def: ""),
@@ -295,7 +295,8 @@ public static class BuiltinProcessors
             new ProcessorInfo("TransformRecord", "Field-level operations on records", "Transform",
                 [P("operations", kind: ParamKind.Multiline, required: true,
                    placeholder: "rename:oldName:newName; remove:badField; compute:total:amount*1.07",
-                   description: "semicolon-delimited op:arg1[:arg2] directives: rename, remove, add, copy, toUpper, toLower, default, compute")]),
+                   description: "semicolon-delimited op:arg1[:arg2] directives: rename, remove, add, copy, toUpper, toLower, default, compute")])
+            { WizardComponent = "TransformRecord" },
             (ctx, config) => new TransformRecord(config.GetValueOrDefault("operations", "")));
 
         reg.Register(
@@ -321,7 +322,8 @@ public static class BuiltinProcessors
                    placeholder: "amount:order.amount;region:tenant.region",
                    description: "fieldPath:attrName pairs"),
                  P("recordIndex", kind: ParamKind.Integer, def: "0",
-                   description: "which record in the batch to extract from")]),
+                   description: "which record in the batch to extract from")])
+            { WizardComponent = "ExtractRecordField" },
             (ctx, config) => new ExtractRecordField(
                 ConfigHelpers.RequireString(config, "fields"),
                 ConfigHelpers.ParseInt(config.GetValueOrDefault("recordIndex"), "recordIndex", 0)));
@@ -330,7 +332,8 @@ public static class BuiltinProcessors
             new ProcessorInfo("QueryRecord", "Filter records using a JsonPath query", "Record",
                 [P("query", kind: ParamKind.Expression, required: true,
                    placeholder: "$[?(@.amount > 100)]",
-                   description: "JsonPath filter against the record batch")]),
+                   description: "JsonPath filter against the record batch")])
+            { WizardComponent = "QueryRecord" },
             (ctx, config) => new QueryRecord(config.GetValueOrDefault("query", "$")));
 
         // --- Utility ---
@@ -361,7 +364,8 @@ public static class BuiltinProcessors
             new ProcessorInfo("RouteOnAttribute", "Route FlowFiles based on attribute predicates", "Routing",
                 [P("routes", kind: ParamKind.Multiline, required: true,
                    placeholder: "premium: tier EQ premium; bulk: tier EQ bulk",
-                   description: "semicolon-delimited 'name: attr OP value' entries; operators: EQ, NEQ, CONTAINS, STARTSWITH, ENDSWITH, EXISTS, GT, LT")]),
+                   description: "semicolon-delimited 'name: attr OP value' entries; operators: EQ, NEQ, CONTAINS, STARTSWITH, ENDSWITH, EXISTS, GT, LT")])
+            { WizardComponent = "RouteOnAttribute" },
             (ctx, config) => new RouteOnAttribute(config.GetValueOrDefault("routes", "")));
 
         reg.Register(
