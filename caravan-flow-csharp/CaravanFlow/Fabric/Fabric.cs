@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Runtime.CompilerServices;
 using CaravanFlow.Core;
 
 namespace CaravanFlow.Fabric;
@@ -33,8 +34,21 @@ public sealed class Fabric
     // Metrics
     private readonly ConcurrentDictionary<string, long> _processorCounts = new();
     private readonly ConcurrentDictionary<string, long> _processorErrors = new();
+    // Per-edge processed counter keyed by "from|rel|to". Incremented in
+    // PushDownstream. UI polls this to animate edges in proportion to
+    // their recent delta throughput (caravan-in-motion).
+    private readonly ConcurrentDictionary<string, long> _edgeCounts = new();
     private int _activeExecutions;
     private long _totalProcessed;
+
+    // Per-processor sample ring — a small bounded buffer of recent output
+    // previews. Powers the Peek sample tab in the drawer and the field
+    // picker every wizard relies on. Default-on in standalone; suppressed
+    // by sampling.enabled = false in performance-sensitive deployments.
+    private readonly ConcurrentDictionary<string, SampleRing> _samples = new();
+    private bool _samplingEnabled = true;
+    private const int SamplesPerProcessor = 5;
+    private const int SamplePreviewBytes = 4096;
 
     // Dirty tracking — monotonic counter bumped on every runtime mutation
     // and on successful config.yaml write. UI polls GetDirtyState() to
@@ -380,6 +394,7 @@ public sealed class Fabric
                 case SingleResult single:
                 {
                     var outFf = single.FlowFile;
+                    SampleFromFlowFile(procName, outFf);
                     SingleResult.Return(single);
                     PushDownstream(work, graph, outFf, procName, "success", hops + 1);
                     break;
@@ -387,6 +402,8 @@ public sealed class Fabric
 
                 case MultipleResult multiple:
                 {
+                    if (multiple.FlowFiles.Count > 0)
+                        SampleFromFlowFile(procName, multiple.FlowFiles[0]);
                     // Push downstream before returning to pool (Return clears FlowFiles)
                     foreach (var outFf in multiple.FlowFiles)
                         PushDownstream(work, graph, outFf, procName, "success", hops + 1);
@@ -398,6 +415,7 @@ public sealed class Fabric
                 {
                     var outFf = routed.FlowFile;
                     var route = routed.Route;
+                    SampleFromFlowFile(procName, outFf);
                     RoutedResult.Return(routed);
                     PushDownstream(work, graph, outFf, procName, route, hops + 1);
                     break;
@@ -405,6 +423,8 @@ public sealed class Fabric
 
                 case MultiRoutedResult multiRouted:
                 {
+                    if (multiRouted.Outputs.Count > 0)
+                        SampleFromFlowFile(procName, multiRouted.Outputs[0].FlowFile);
                     foreach (var (route, outFf) in multiRouted.Outputs)
                         PushDownstream(work, graph, outFf, procName, route, hops + 1);
                     MultiRoutedResult.Return(multiRouted);
@@ -461,10 +481,131 @@ public sealed class Fabric
             var clone = FlowFile.Rent(ff.NumericId, ff.Attributes, ff.Content, ff.Timestamp, ff.HopCount);
             _provenance?.Record(clone.NumericId, ProvenanceEventType.Routed, fromProcessor, targets[i]);
             work.Push((clone, targets[i], hops));
+            BumpEdge(fromProcessor, relationship, targets[i]);
         }
 
         _provenance?.Record(ff.NumericId, ProvenanceEventType.Routed, fromProcessor, targets[0]);
         work.Push((ff, targets[0], hops));
+        BumpEdge(fromProcessor, relationship, targets[0]);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void BumpEdge(string from, string rel, string to)
+        => _edgeCounts.AddOrUpdate($"{from}|{rel}|{to}", 1, (_, v) => v + 1);
+
+    public Dictionary<string, long> GetEdgeCounts() => new(_edgeCounts);
+
+    // --- Sample ring (Peek) ---
+
+    public void SetSamplingEnabled(bool enabled) => _samplingEnabled = enabled;
+    public bool IsSamplingEnabled() => _samplingEnabled;
+
+    private void SampleFromFlowFile(string procName, FlowFile ff)
+    {
+        if (!_samplingEnabled) return;
+        var ring = _samples.GetOrAdd(procName, _ => new SampleRing(SamplesPerProcessor));
+
+        string contentType;
+        byte[] preview;
+        switch (ff.Content)
+        {
+            case Raw raw:
+                contentType = "bytes";
+                var len = Math.Min(raw.Size, SamplePreviewBytes);
+                preview = raw.Data.Slice(0, len).ToArray();
+                break;
+            case RecordContent rc:
+                contentType = "records";
+                preview = SerializeRecordPreview(rc);
+                break;
+            case ClaimContent claim:
+                // Don't read from disk on the hot path. Operator can open the
+                // content store browser if they need the bytes.
+                contentType = "claim";
+                preview = System.Text.Encoding.UTF8.GetBytes($"(claim {claim.ClaimId}, {claim.Size} bytes)");
+                break;
+            default:
+                contentType = "unknown";
+                preview = Array.Empty<byte>();
+                break;
+        }
+
+        // Snapshot attributes. Flatten the overlay chain so the UI doesn't
+        // need to understand AttributeMap internals.
+        var attrs = ff.Attributes.ToDictionary();
+
+        ring.Push(new SampleEntry(
+            Timestamp: Environment.TickCount64,
+            FlowFileId: ff.NumericId,
+            ContentType: contentType,
+            Preview: preview,
+            Attributes: attrs));
+    }
+
+    private static byte[] SerializeRecordPreview(RecordContent rc)
+    {
+        // First record as JSON, capped at SamplePreviewBytes. Cheap enough
+        // for a drawer peek; not optimized for throughput-heavy flows
+        // which can switch off sampling via SetSamplingEnabled(false).
+        if (rc.Records.Count == 0) return "[]"u8.ToArray();
+        var first = rc.Records[0].ToDictionary();
+        var json = CaravanJson.SerializeToString(first);
+        var bytes = System.Text.Encoding.UTF8.GetBytes(json);
+        return bytes.Length <= SamplePreviewBytes
+            ? bytes
+            : bytes.AsSpan(0, SamplePreviewBytes).ToArray();
+    }
+
+    public List<SampleEntry> GetSamples(string procName)
+    {
+        if (!_samples.TryGetValue(procName, out var ring)) return new List<SampleEntry>();
+        return ring.Snapshot();
+    }
+
+    public sealed record SampleEntry(
+        long Timestamp,
+        long FlowFileId,
+        string ContentType,
+        byte[] Preview,
+        Dictionary<string, string> Attributes);
+
+    /// Small thread-safe ring buffer. Sized once at construction; Push is
+    /// O(1) amortized under lock; Snapshot copies oldest-first → newest.
+    public sealed class SampleRing
+    {
+        private readonly SampleEntry?[] _buf;
+        private int _head;
+        private int _count;
+        private readonly object _lock = new();
+
+        public SampleRing(int capacity) { _buf = new SampleEntry?[capacity]; }
+
+        public void Push(SampleEntry entry)
+        {
+            lock (_lock)
+            {
+                _buf[_head] = entry;
+                _head = (_head + 1) % _buf.Length;
+                if (_count < _buf.Length) _count++;
+            }
+        }
+
+        /// Newest first — that's what the UI wants to render.
+        public List<SampleEntry> Snapshot()
+        {
+            lock (_lock)
+            {
+                var result = new List<SampleEntry>(_count);
+                // Walk backwards from head to produce newest-first order.
+                int idx = _head == 0 ? _buf.Length - 1 : _head - 1;
+                for (int i = 0; i < _count; i++)
+                {
+                    if (_buf[idx] is { } e) result.Add(e);
+                    idx = idx == 0 ? _buf.Length - 1 : idx - 1;
+                }
+                return result;
+            }
+        }
     }
 
     // --- Ingest callbacks for sources ---

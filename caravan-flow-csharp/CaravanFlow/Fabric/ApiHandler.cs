@@ -85,6 +85,12 @@ public sealed class ApiHandler
         app.MapPost("/api/flow/save", FlowSave);
         app.MapGet("/api/flow/status", FlowStatus);
 
+        // Live-motion edge stats (caravan-in-motion)
+        app.MapGet("/api/edge-stats", EdgeStats);
+
+        // Per-processor sample ring (Peek — feeds drawer sample tab + wizards)
+        app.MapGet("/api/processors/{name}/samples", ProcessorSamples);
+
         // Sibling layout file: per-deployment shared view (node positions).
         // Stored alongside config.yaml — loaded by the UI as a fallback when
         // localStorage is empty (new browser / teammate). Individual users
@@ -625,6 +631,52 @@ public sealed class ApiHandler
         {
             return Json(new Dictionary<string, object?> { ["error"] = $"layout write failed: {ex.Message}" });
         }
+    }
+
+    private IResult EdgeStats()
+    {
+        // Keyed "from|rel|to" to match React Flow's "from::rel::to" edge ids
+        // after the UI normalizes the delimiter. Single flat map so the client
+        // can diff against its previous poll for motion animation.
+        var shaped = new Dictionary<string, object?>();
+        foreach (var (key, processed) in _fab.GetEdgeCounts())
+            shaped[key] = new Dictionary<string, object?> { ["processed"] = processed };
+        return Json(shaped);
+    }
+
+    private IResult ProcessorSamples(string name)
+    {
+        if (string.IsNullOrEmpty(name))
+            return Json(new Dictionary<string, object?> { ["error"] = "name required" });
+        var samples = _fab.GetSamples(name);
+        var shaped = samples.Select(s => new Dictionary<string, object?>
+        {
+            ["timestamp"] = s.Timestamp,
+            ["flowfile"] = $"ff-{s.FlowFileId}",
+            ["contentType"] = s.ContentType,
+            // UTF-8 preview when safe, base64 for binary. The UI decides
+            // how to render based on contentType.
+            ["preview"] = PreviewAsString(s.Preview, s.ContentType),
+            ["previewBase64"] = s.ContentType == "records"
+                ? null
+                : Convert.ToBase64String(s.Preview),
+            ["attributes"] = s.Attributes,
+        }).ToList();
+        return Json(new Dictionary<string, object?>
+        {
+            ["name"] = name,
+            ["sampling"] = _fab.IsSamplingEnabled(),
+            ["samples"] = shaped,
+        });
+    }
+
+    private static string? PreviewAsString(byte[] bytes, string contentType)
+    {
+        if (bytes.Length == 0) return "";
+        if (contentType == "records" || contentType == "claim")
+            return System.Text.Encoding.UTF8.GetString(bytes);
+        try { return System.Text.Encoding.UTF8.GetString(bytes); }
+        catch { return null; }
     }
 
     private IResult FlowStatus()

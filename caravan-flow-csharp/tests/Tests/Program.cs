@@ -8,6 +8,7 @@ CoreTests.RunAll();
 ProcessorTests.RunAll();
 RegistryMetadataTests.RunAll();
 CompressionTests.RunAll();
+MotionAndPeekTests.RunAll();
 CodecTests.RunAll();
 ExpressionTests.RunAll();
 ValidatorTests.RunAll();
