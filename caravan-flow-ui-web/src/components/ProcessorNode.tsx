@@ -38,7 +38,13 @@ export function ProcessorNode({ data, selected }: NodeProps<Node<ProcessorNodeDa
         minHeight: 88,
         background: fill,
         border: `2px solid ${borderColor}`,
-        boxShadow: selected ? '0 0 12px var(--selected)' : undefined,
+        // Opaque surface ensures edges passing behind the node don't
+        // bleed through. Selected nodes sit above all edges; unselected
+        // nodes still sit above them (z-index default on React Flow
+        // nodes is low enough that we only need a small bump here).
+        boxShadow: selected
+          ? '0 0 12px var(--selected), 0 2px 8px rgba(0,0,0,0.6)'
+          : '0 2px 8px rgba(0,0,0,0.6)',
         transition: 'filter 0.15s, box-shadow 0.15s',
         cursor: 'grab',
       }}

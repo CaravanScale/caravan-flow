@@ -6,12 +6,18 @@ import type { RegistryEntry } from '../api/types'
 // NiFi-style processor palette. Lists every registered type grouped by
 // category; each item is HTML5-draggable onto the canvas. The drop
 // handler (GraphPage) reads the MIME payload and creates the processor
-// at the cursor position. Collapsible so operators can focus on one
-// category at a time on small screens.
+// at the cursor position. Two-level collapse: each category's list can
+// fold, and the whole palette can collapse to a narrow rail so the
+// canvas gets the full viewport.
 
 export const PALETTE_MIME = 'application/x-caravan-processor-type'
 
-export function ProcessorPalette() {
+interface Props {
+  collapsed: boolean
+  onToggle: () => void
+}
+
+export function ProcessorPalette({ collapsed: collapsedAll, onToggle }: Props) {
   const registry = useQuery<RegistryEntry[]>({
     queryKey: ['registry'],
     queryFn: api.registry,
@@ -44,6 +50,36 @@ export function ProcessorPalette() {
     e.dataTransfer.effectAllowed = 'copy'
   }
 
+  if (collapsedAll) {
+    return (
+      <aside
+        className="flex h-full w-[32px] flex-col items-center"
+        style={{ background: 'var(--surface)', borderRight: '1px solid var(--border)' }}
+      >
+        <button
+          onClick={onToggle}
+          className="mt-2 flex h-7 w-7 items-center justify-center rounded"
+          style={{ background: 'var(--surface-2)', border: '1px solid var(--border)', color: 'var(--text-muted)' }}
+          title="expand palette"
+          aria-label="expand palette"
+        >
+          ▸
+        </button>
+        <div
+          className="mt-4 text-[10px] uppercase tracking-widest"
+          style={{
+            color: 'var(--text-muted)',
+            writingMode: 'vertical-rl',
+            transform: 'rotate(180deg)',
+            letterSpacing: '0.2em',
+          }}
+        >
+          processors
+        </div>
+      </aside>
+    )
+  }
+
   return (
     <aside
       className="flex h-full w-[240px] flex-col"
@@ -53,8 +89,19 @@ export function ProcessorPalette() {
         className="px-3 py-2"
         style={{ background: 'var(--surface-2)', borderBottom: '1px solid var(--border)' }}
       >
-        <div className="text-[11px] uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>
-          processors
+        <div className="flex items-center justify-between">
+          <div className="text-[11px] uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>
+            processors
+          </div>
+          <button
+            onClick={onToggle}
+            className="flex h-5 w-5 items-center justify-center rounded text-[11px]"
+            style={{ color: 'var(--text-muted)' }}
+            title="collapse palette"
+            aria-label="collapse palette"
+          >
+            ◂
+          </button>
         </div>
         <input
           value={query}

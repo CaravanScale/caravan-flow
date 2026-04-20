@@ -19,7 +19,6 @@ import { layoutStore } from '../lib/layoutStore'
 import { ProcessorNode } from '../components/ProcessorNode'
 import { RelationshipEdge } from '../components/RelationshipEdge'
 import { ProcessorDrawer } from '../components/ProcessorDrawer'
-import { AddProcessorDialog } from '../components/AddProcessorDialog'
 import { EdgeDrawer, type EdgeSelection } from '../components/EdgeDrawer'
 import { SourcesPanel } from '../components/SourcesPanel'
 import { TestFlowFileDialog } from '../components/TestFlowFileDialog'
@@ -66,10 +65,10 @@ function GraphPageInner() {
 
   const [selected, setSelected] = useState<string | null>(null)
   const [selectedEdge, setSelectedEdge] = useState<EdgeSelection | null>(null)
-  const [addOpen, setAddOpen] = useState(false)
   const [sourcesOpen, setSourcesOpen] = useState(false)
   const [testOpen, setTestOpen] = useState(false)
   const [reloadMsg, setReloadMsg] = useState<string | null>(null)
+  const [paletteCollapsed, setPaletteCollapsed] = useState(false)
   const [pendingEdge, setPendingEdge] = useState<{ conn: Connection; anchor: { x: number; y: number } } | null>(null)
 
   const reload = useReloadFlow()
@@ -150,15 +149,21 @@ function GraphPageInner() {
   //   3. persist the position before POSTing so the node lands where
   //      the user released it, not dagre's grid slot
   //   4. POST /api/processors/add with an auto-generated unique name
+  // Only accept drops when the palette MIME is present. Unconditionally
+  // calling preventDefault() interferes with React Flow's own pointer-based
+  // node-drag: the pane starts accepting an HTML5 drop, which confuses
+  // React Flow into cancelling the drag mid-move. See the "node gets
+  // stuck" symptom that appeared after wiring the palette.
   const onDragOver = useCallback((e: React.DragEvent) => {
+    if (!e.dataTransfer.types.includes(PALETTE_MIME)) return
     e.preventDefault()
     e.dataTransfer.dropEffect = 'copy'
   }, [])
 
   const onDrop = useCallback(async (e: React.DragEvent) => {
-    e.preventDefault()
     const type = e.dataTransfer.getData(PALETTE_MIME)
     if (!type) return
+    e.preventDefault()
     const bounds = paneRef.current?.getBoundingClientRect()
     if (!bounds) return
     const position = rf.screenToFlowPosition({
@@ -243,7 +248,7 @@ function GraphPageInner() {
 
   return (
     <div className="flex h-full w-full">
-      <ProcessorPalette />
+      <ProcessorPalette collapsed={paletteCollapsed} onToggle={() => setPaletteCollapsed((c) => !c)} />
       <div className="relative flex-1">
         <div className="absolute inset-0" ref={paneRef} onDragOver={onDragOver} onDrop={onDrop}>
           <ReactFlow
@@ -320,44 +325,23 @@ function GraphPageInner() {
             >
               test flowfile
             </button>
-            <button
-              onClick={() => setAddOpen(true)}
-              className="rounded px-3 py-1 text-[12px]"
-              style={{ background: '#0f3460', border: '1px solid var(--accent)', color: '#fff' }}
-              title="add processor to runtime graph"
-            >
-              + add processor
-            </button>
           </div>
         </div>
 
         {topology.isSuccess && topology.data.processors.length === 0 && (
           <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center">
             <div
-              className="pointer-events-auto flex flex-col items-center gap-3 rounded-lg border px-8 py-6 text-center"
+              className="flex flex-col items-center gap-2 rounded-lg border px-8 py-6 text-center"
               style={{ background: 'var(--surface)', borderColor: 'var(--border)' }}
             >
               <h2 className="text-sm font-semibold text-white">Your flow is empty</h2>
               <p className="max-w-sm text-[12px]" style={{ color: 'var(--text-muted)' }}>
-                Drag a processor from the palette on the left, or use the <strong>+ add processor</strong>
-                {' '}button for a guided form.
+                Drag a processor from the palette on the left onto the canvas to begin.
               </p>
-              <button
-                onClick={() => setAddOpen(true)}
-                className="rounded px-4 py-1.5 text-[12px]"
-                style={{ background: '#0f3460', border: '1px solid var(--accent)', color: '#fff' }}
-              >
-                + add your first processor
-              </button>
             </div>
           </div>
         )}
 
-        <AddProcessorDialog
-          open={addOpen}
-          existingNames={topology.data?.processors.map((p) => p.name) ?? []}
-          onClose={() => setAddOpen(false)}
-        />
         {selectedProcessor && topology.data && (
           <ProcessorDrawer
             processor={selectedProcessor}

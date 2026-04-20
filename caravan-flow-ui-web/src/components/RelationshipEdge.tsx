@@ -42,6 +42,11 @@ export function RelationshipEdge({
           stroke: color,
           strokeWidth: 2,
           strokeDasharray: dash,
+          // Slight transparency so an edge that crosses behind a node
+          // doesn't visually dominate. Nodes have opaque backgrounds
+          // with a shadow on top — the combined effect reads as
+          // "edge passes under node".
+          opacity: 0.85,
         }}
       />
       {rel !== 'success' && (
