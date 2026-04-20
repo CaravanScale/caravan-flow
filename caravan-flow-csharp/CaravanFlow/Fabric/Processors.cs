@@ -333,6 +333,28 @@ public static class BuiltinProcessors
                    description: "JsonPath filter against the record batch")]),
             (ctx, config) => new QueryRecord(config.GetValueOrDefault("query", "$")));
 
+        // --- Utility ---
+
+        reg.Register(
+            new ProcessorInfo("CompressContent", "Gzip- or zstd-compress FlowFile content; stamps compression.* attributes", "Utility",
+                [P("algorithm", kind: ParamKind.Enum, required: true, def: "gzip",
+                   choices: ["gzip", "zstd"]),
+                 P("level", kind: ParamKind.Enum, def: "balanced",
+                   choices: ["fastest", "balanced", "smallest"])]),
+            (ctx, config) => new CompressContent(
+                ConfigHelpers.RequireOneOf(config, "algorithm", "gzip", new[] { "gzip", "zstd" }),
+                ConfigHelpers.RequireOneOf(config, "level", "balanced", new[] { "fastest", "balanced", "smallest" }),
+                ctx.GetContentStoreOrDefault()));
+
+        reg.Register(
+            new ProcessorInfo("DecompressContent", "Decompress FlowFile content; auto reads compression.algorithm attribute", "Utility",
+                [P("algorithm", kind: ParamKind.Enum, def: "auto",
+                   choices: ["auto", "gzip", "zstd"],
+                   description: "auto follows the compression.algorithm attribute set by CompressContent")]),
+            (ctx, config) => new DecompressContent(
+                ConfigHelpers.RequireOneOf(config, "algorithm", "auto", new[] { "auto", "gzip", "zstd" }),
+                ctx.GetContentStoreOrDefault()));
+
         // --- Routing ---
 
         reg.Register(

@@ -7,6 +7,7 @@ Console.WriteLine();
 CoreTests.RunAll();
 ProcessorTests.RunAll();
 RegistryMetadataTests.RunAll();
+CompressionTests.RunAll();
 CodecTests.RunAll();
 ExpressionTests.RunAll();
 ValidatorTests.RunAll();

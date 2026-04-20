@@ -170,6 +170,6 @@ export function ProcessorPalette({ collapsed: collapsedAll, onToggle }: Props) {
 
 // Visual ordering for the palette. Unknown categories land at the end.
 const CATEGORY_ORDER = [
-  'Attribute', 'Routing', 'Transform', 'Record',
-  'Text', 'Conversion', 'Sink', 'V3', 'Other',
+  'Source', 'Attribute', 'Routing', 'Transform', 'Record',
+  'Text', 'Utility', 'Conversion', 'Sink', 'V3', 'Other',
 ]
