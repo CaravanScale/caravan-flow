@@ -1,107 +1,117 @@
+<p align="center">
+  <img src="logo.png" alt="Caravan Flow" width="320">
+</p>
+
 # Caravan Flow
 
-Lightweight, cloud-native data flow engine inspired by Apache NiFi and Apache Camel. Built in [Caravan](https://github.com/CaravanScale/caravan) and compiled via [caravan-csharp](https://github.com/CaravanScale/caravan/tree/master/caravan-csharp) to a .NET 10 AOT binary.
+Visual dataflow engine for domain experts. NiFi-style canvas, Camel-style
+composition, AOT-compiled edge runtime. Built on [Caravan](https://github.com/CaravanScale/caravan)
+and compiled via [caravan-csharp](https://github.com/CaravanScale/caravan/tree/master/caravan-csharp)
+to a 28 MB .NET 10 native binary that drops on a Raspberry Pi and also
+scales out as a stateless worker pod in k8s.
 
-## What is it?
+## What's in the box
 
-NiFi's processor model with Camel's direct pipeline execution and Caravan's simplicity.
+- **Visual programming for non-programmers.** Drag processors from a
+  palette onto a canvas; wire them with drag-to-connect edges;
+  configure each with typed form inputs (enums, booleans, key/value
+  repeaters — not raw expression strings). Sources are first-class
+  nodes with explicit outbound connections, not a hidden ingress.
+- **One binary, two deployment shapes.** Standalone edge mode serves
+  the UI + API from a single process. Headless mode (`--mode=headless`)
+  serves API only, for k8s worker pods behind an operator + aggregator
+  per `docs/design-k8s-operator.md`.
+- **Rock-solid core.** Graceful SIGTERM drain, source auto-restart with
+  exponential backoff, PutHTTP retries on transient failures, hot
+  reload with ghost-routing detection, bearer-token auth on `/api/*`,
+  Content-Length caps on ingress. `/readyz` distinct from `/health`
+  for k8s probes.
+- **Auto-save + git separation.** Runtime flow edits auto-save to disk
+  continuously; git commit + push stays an explicit dev action so
+  edge workers don't need network to persist local changes.
+- **Per-user layout.** Node positions survive reloads via localStorage;
+  a sibling `layout.yaml` gives teammates a shared default view
+  without polluting the flow config.
 
-- **Processors** are Caravan classes implementing `ProcessorFn` (1-in, 1-out)
-- **DAG connections** wire processors into a directed graph — FlowFiles flow synchronously through the pipeline
-- **Failure routing** — processors can return `FailureResult`, routed via "failure" connections to error handlers
-- **Providers** give processors scoped access to shared infrastructure (content store, config, logging)
-- **Lifecycle management** — enable/disable processors and providers at runtime
-- **Backpressure** — semaphore-gated concurrent executions, sources get 503 when full
-- **Hot reload** — atomic pipeline graph swap on config change, zero downtime
-- **C# .NET 10 AOT runtime** — 16MB stripped binary, 2M+ ff/s throughput
-
-## Quick Start
+## Quick start
 
 ```bash
 cd caravan-flow-csharp
-caravan build .
-./caravan-out/caravan-flow
+caravan-csharp build        # native AOT binary in build/
+./build/CaravanFlow         # starts on :9091, serves UI + API
 
-# Run the test suite
-caravan test .
+# Browse http://localhost:9091
 
-# Ingest a FlowFile
-curl -X POST http://localhost:9092/ -d '{"hello":"world"}' -H 'X-Flow-type: order'
+# API probes
+curl http://localhost:9091/health
+curl http://localhost:9091/readyz
+curl http://localhost:9091/api/registry   # processor + source catalog
 
-# Check stats
-curl http://localhost:9091/api/stats
-curl http://localhost:9091/api/flow
-curl http://localhost:9091/api/providers
+# Inject a synthetic FlowFile at the graph's entry points
+curl -X POST http://localhost:9091/api/flowfiles/ingest \
+  -H 'Content-Type: application/json' \
+  -d '{"content":"hello","attributes":{"env":"dev"}}'
+
+# Kubernetes worker pod (no UI served, API only)
+./build/CaravanFlow --mode=headless
 ```
 
-## Project Structure
+## Processor catalog
+
+| Category    | Processors |
+|-------------|-----------|
+| Attribute   | UpdateAttribute · LogAttribute · FilterAttribute |
+| Routing     | RouteOnAttribute · RouteRecord |
+| Transform   | EvaluateExpression · TransformRecord · UpdateRecord |
+| Record      | SplitRecord · ExtractRecordField · QueryRecord |
+| Text        | ReplaceText · ExtractText · SplitText |
+| Conversion  | ConvertJSONToRecord · ConvertRecordToJSON · ConvertCSVToRecord · ConvertRecordToCSV · ConvertAvroToRecord · ConvertRecordToAvro · ConvertOCFToRecord · ConvertRecordToOCF |
+| Utility     | CompressContent · DecompressContent |
+| Sink        | PutFile · PutHTTP · PutStdout |
+| V3 framing  | PackageFlowFileV3 · UnpackageFlowFileV3 |
+| Source      | GetFile · GenerateFlowFile · ListenHTTP |
+
+Every parameter carries a typed descriptor (`ParamKind`) so the UI
+renders enums as dropdowns, booleans as checkboxes, expression fields
+with monospace textareas, and key/value pairs as row repeaters. Details:
+`docs/design-ui-wizards.md` covers the next wave — domain-expert
+wizards that remove the need to write expression strings at all.
+
+## Project structure
 
 ```
 caravan-flow/
-├── caravan-flow-csharp/          — C# .NET 10 runtime (17 processors, 395 tests)
-├── processors/                — additional processor packages
-├── config.yaml                — Flow definition (processors, connections)
-├── caravan.toml                  — Project config
-├── docs/                      — Design and reference docs
-└── TODO.md                    — Roadmap
+├── caravan-flow-csharp/       — C# .NET 10 AOT runtime (golden track)
+├── caravan-flow-java/         — Java JVM runtime (enterprise extensibility)
+├── caravan-flow-ui-web/       — React graph canvas + palette (shared UI)
+├── caravan-flow-ui-java/      — legacy Java UI (pre-React)
+├── caravan-flow-shared/       — cross-track shared definitions
+├── docs/                      — design documents + architecture
+├── logo.png                   — Caravan brand
+└── README.md
 ```
 
-## Architecture
+## Design documents
 
-```
-Source (ListenHTTP / GetFile)
-    ↓
-IngestAndExecute(FlowFile)
-    ↓
-Entry-point processors (fan-out if multiple)
-    ↓
-Execute loop (iterative work-stack, depth-first):
-    Processor.Process(ff) → ProcessorResult
-        SingleResult   → follow "success" connections
-        MultipleResult → fan-out each output to "success" connections
-        RoutedResult   → follow named relationship connections
-        DroppedResult  → stop
-        FailureResult  → follow "failure" connections (or log+drop)
-    ↓
-Sink processors (no outgoing connections) — terminal
-```
-
-## API Endpoints
-
-| Method | Path | Description |
-|--------|------|-------------|
-| POST | (source port) | Ingest FlowFile via ListenHTTP (raw body or V3 binary) |
-| GET | /health | Health check + source status |
-| GET | /api/stats | Processing counters + active executions |
-| GET | /api/processors | List active processors |
-| GET | /api/processor-stats | Per-processor processed/error counts |
-| GET | /api/flow | Full flow graph (processors + connections + stats) |
-| GET | /api/connections | Processor connection map |
-| GET | /api/providers | List providers and states |
-| GET | /api/provenance | Recent provenance events |
-| GET | /api/sources | List connector sources |
-| GET | /metrics | Prometheus metrics |
-| POST | /api/processors/enable | Enable a processor |
-| POST | /api/processors/disable | Disable a processor |
-| POST | /api/processors/add | Add processor at runtime |
-| DELETE | /api/processors/remove | Remove a processor |
-| POST | /api/reload | Hot reload config.yaml |
-| POST | /api/providers/enable | Enable a provider |
-| POST | /api/providers/disable | Disable with cascade to dependent processors |
+- [docs/architecture.md](docs/architecture.md) — runtime architecture (execution model, types, pipeline graph, providers).
+- [docs/design-k8s-operator.md](docs/design-k8s-operator.md) — k8s operator + aggregator + `Flow` CRD for fleet mode.
+- [docs/design-ui-wizards.md](docs/design-ui-wizards.md) — three-wave plan for record sampling + expression builder + per-processor wizards.
+- [docs/data-engine-comparison.md](docs/data-engine-comparison.md) — comparison with NiFi, DeltaFi, Flink, Spark, Beam.
+- [docs/nifi-component-analysis.md](docs/nifi-component-analysis.md) — NiFi processor catalog reference.
 
 ## Status
 
-**Phase 2 — Useful Standalone** — direct pipeline executor, 17 processors, hot reload, Prometheus metrics, 438 tests. See [TODO.md](TODO.md) for the roadmap.
-
-## Design
-
-- [docs/architecture.md](docs/architecture.md) — canonical architecture document (execution model, types, pipeline graph, providers, deployment)
-- [docs/csharpism-audit.md](docs/csharpism-audit.md) — caravan/C# idiom alignment audit
-- [docs/data-engine-comparison.md](docs/data-engine-comparison.md) — comparison with NiFi, DeltaFi, Flink, Spark, Beam
-- [docs/nifi-component-analysis.md](docs/nifi-component-analysis.md) — NiFi processor catalog (reference for future StdLib expansion)
-- [docs/product-research-2026-04.md](docs/product-research-2026-04.md) — product research notes
+Core runtime is production-grade on both tracks. Visual programming
+surface (palette + drag-drop + typed forms) is usable end-to-end. The
+k8s operator + aggregator, domain-expert UI wizards, and additional
+integrations (MQTT, Kafka, SQL, S3) are scoped but gated on concrete
+requirements — see the roadmap docs above.
 
 ## Related
 
-- [Caravan Language](https://github.com/CaravanScale/caravan) — the language Caravan Flow is written in
-- [caravan-csharp](https://github.com/CaravanScale/caravan/tree/master/caravan-csharp) — C# build backend (installs .NET, reads caravan.toml, produces AOT binaries)
+- [Caravan](https://github.com/CaravanScale/caravan) — the language Caravan Flow is written in.
+- [caravan-csharp](https://github.com/CaravanScale/caravan/tree/master/caravan-csharp) — C# build backend.
+
+## License
+
+Apache License 2.0.

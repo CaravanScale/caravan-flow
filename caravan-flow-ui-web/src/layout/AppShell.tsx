@@ -26,10 +26,13 @@ export function AppShell({ current, onNavigate, children }: Props) {
         style={{ background: 'var(--surface)', borderRight: '1px solid var(--border)' }}
       >
         <div
-          className="px-4 py-3 text-[14px] font-semibold"
-          style={{ color: 'var(--accent)', borderBottom: '1px solid var(--border)' }}
+          className="flex items-center gap-2 px-3 py-2"
+          style={{ borderBottom: '1px solid var(--border)' }}
         >
-          caravan-flow
+          <img src="/logo-192.png" alt="" width={32} height={22} style={{ objectFit: 'contain' }} />
+          <span className="text-[14px] font-semibold" style={{ color: 'var(--accent)' }}>
+            caravan-flow
+          </span>
         </div>
         <nav className="flex flex-col">
           {NAV.map((item) => {
