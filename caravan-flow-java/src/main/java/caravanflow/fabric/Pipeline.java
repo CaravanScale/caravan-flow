@@ -489,6 +489,27 @@ public final class Pipeline {
         }
     }
 
+    /// Inject a FlowFile at a specific processor rather than fanning out to
+    /// entry points. Used by the UI's test-flowfile dialog and targeted
+    /// replay scenarios. Throws {@link IllegalArgumentException} if the
+    /// target isn't in the current graph.
+    public void ingestAt(FlowFile ff, String target) {
+        PipelineGraph g = graph;
+        if (!g.processors().containsKey(target)) {
+            throw new IllegalArgumentException("unknown target processor: " + target);
+        }
+        Metrics m = stats.metrics();
+        m.beginExecution();
+        try {
+            stats.recordIngested();
+            Deque<WorkItem> stack = new ArrayDeque<>();
+            stack.push(new WorkItem(target, ff));
+            drain(g, stack);
+        } finally {
+            m.endExecution();
+        }
+    }
+
     private void drain(PipelineGraph g, Deque<WorkItem> stack) {
         ProvenanceProvider prov = provenanceOrNoop();
         while (!stack.isEmpty()) {
@@ -552,6 +573,11 @@ public final class Pipeline {
             }
             case ProcessorResult.Routed(var route, var ff) ->
                 fanOut(g, stack, from, route, List.of(ff.bumpHop()));
+            case ProcessorResult.MultiRouted(var outputs) -> {
+                for (var entry : outputs) {
+                    fanOut(g, stack, from, entry.route(), List.of(entry.flowFile().bumpHop()));
+                }
+            }
             case ProcessorResult.Dropped d -> stats.recordDropped();
             case ProcessorResult.Failure(var reason, var ff) ->
                 dispatchFailure(g, stack, from, ff, reason);

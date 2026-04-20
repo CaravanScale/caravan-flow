@@ -147,6 +147,8 @@ public final class HttpServer {
                 .get("/api/identity",                  this::handleIdentity)
                 .put("/api/processors/{name}/config",      this::handleUpdateProcessorConfig)
                 .put("/api/processors/{name}/connections", this::handleSetProcessorConnections)
+                .post("/api/processors/{name}/stats/reset", this::handleResetProcessorStats)
+                .post("/api/flowfiles/ingest",             this::handleIngestFlowFile)
                 .get("/api/vc/status",                     this::handleVcStatus)
                 .post("/api/vc/commit",                    this::handleVcCommit)
                 .post("/api/vc/push",                      this::handleVcPush);
@@ -205,6 +207,82 @@ public final class HttpServer {
             log.error("ingest failed for {}: {}", ff.stringId(), ex.toString(), ex);
             ctx.status(500).result("pipeline error: " + ex.getMessage());
         }
+    }
+
+    /// UI-facing flowfile injection. Accepts JSON
+    /// {target, content|contentBase64, attributes} and pushes a synthetic
+    /// FlowFile through the graph. Mirrors the C# {@code POST /api/flowfiles/ingest}
+    /// so the shared React UI's test-flowfile dialog works on both tracks.
+    @SuppressWarnings("unchecked")
+    private void handleIngestFlowFile(Context ctx) throws Exception {
+        Map<String, Object> body;
+        try {
+            body = json.readValue(ctx.bodyAsBytes(), Map.class);
+        } catch (Exception ex) {
+            writeError(ctx, 400, "body must be a JSON object: " + ex.getMessage());
+            return;
+        }
+        if (body == null) { writeError(ctx, 400, "body must be a JSON object"); return; }
+
+        byte[] data;
+        Object b64 = body.get("contentBase64");
+        if (b64 instanceof String b64s && !b64s.isEmpty()) {
+            try { data = java.util.Base64.getDecoder().decode(b64s); }
+            catch (IllegalArgumentException ex) {
+                writeError(ctx, 400, "contentBase64 invalid: " + ex.getMessage());
+                return;
+            }
+        } else if (body.get("content") instanceof String s) {
+            data = s.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        } else {
+            data = new byte[0];
+        }
+
+        Map<String, String> attrs = new HashMap<>();
+        Object a = body.get("attributes");
+        if (a instanceof Map<?, ?> aMap) {
+            for (var e : aMap.entrySet()) {
+                if (e.getKey() != null)
+                    attrs.put(String.valueOf(e.getKey()), e.getValue() == null ? "" : String.valueOf(e.getValue()));
+            }
+        }
+
+        String target = body.get("target") instanceof String t ? t : "";
+        FlowFile ff = FlowFile.create(data, attrs);
+
+        try {
+            if (target.isEmpty() || "*".equals(target)) {
+                pipeline.ingest(ff);
+                ctx.contentType("application/json").result(json.writeValueAsBytes(Map.of(
+                        "status", "ingested",
+                        "flowfile", ff.stringId(),
+                        "target", "entry-points")));
+            } else {
+                pipeline.ingestAt(ff, target);
+                ctx.contentType("application/json").result(json.writeValueAsBytes(Map.of(
+                        "status", "ingested",
+                        "flowfile", ff.stringId(),
+                        "target", target)));
+            }
+        } catch (RuntimeException ex) {
+            writeError(ctx, 400, ex.getMessage());
+        }
+    }
+
+    private void handleResetProcessorStats(Context ctx) throws Exception {
+        String name = ctx.pathParam("name");
+        if (name == null || name.isEmpty()) {
+            writeError(ctx, 400, "name required");
+            return;
+        }
+        if (!pipeline.graph().processors().containsKey(name)) {
+            writeError(ctx, 404, "processor not found");
+            return;
+        }
+        pipeline.stats().resetProcessor(name);
+        ctx.contentType("application/json").result(json.writeValueAsBytes(Map.of(
+                "status", "reset",
+                "name", name)));
     }
 
     private void handleStats(Context ctx) throws Exception {
@@ -299,14 +377,23 @@ public final class HttpServer {
     }
 
     private void handleRegistry(Context ctx) throws Exception {
-        List<String> types;
-        if (pipeline.registry() == null) {
-            types = List.of();
-        } else {
-            types = new ArrayList<>(pipeline.registry().types());
-            java.util.Collections.sort(types);
+        Registry r = pipeline.registry();
+        List<Map<String, Object>> out = new ArrayList<>();
+        if (r != null) {
+            // Emit the latest version of each type, matching the C# worker's
+            // shape so the shared React UI consumes both uniformly.
+            var latestByName = new java.util.TreeMap<String, Registry.TypeInfo>();
+            for (Registry.TypeInfo info : r.listAll()) {
+                Registry.TypeInfo prev = latestByName.get(info.name());
+                if (prev == null || TypeRefs.compareVersions(info.version(), prev.version()) > 0) {
+                    latestByName.put(info.name(), info);
+                }
+            }
+            for (Registry.TypeInfo info : latestByName.values()) {
+                out.add(typeInfoToJson(info));
+            }
         }
-        ctx.contentType("application/json").result(json.writeValueAsBytes(types));
+        ctx.contentType("application/json").result(json.writeValueAsBytes(out));
     }
 
     private void handleMetrics(Context ctx) {
@@ -790,8 +877,28 @@ public final class HttpServer {
         out.put("name", info.name());
         out.put("version", info.version());
         out.put("description", info.description());
+        out.put("category", info.category());
         out.put("configKeys", info.configKeys());
         out.put("relationships", info.relationships());
+        List<Map<String, Object>> params = new ArrayList<>();
+        for (ParamInfo p : info.parameters()) params.add(paramInfoToJson(p));
+        out.put("parameters", params);
+        return out;
+    }
+
+    private static Map<String, Object> paramInfoToJson(ParamInfo p) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        out.put("name", p.name());
+        out.put("label", p.label());
+        out.put("description", p.description());
+        out.put("kind", p.kind().jsonName());
+        out.put("required", p.required());
+        out.put("default", p.defaultValue());
+        out.put("placeholder", p.placeholder());
+        out.put("choices", p.choices());
+        out.put("valueKind", p.valueKind() == null ? null : p.valueKind().jsonName());
+        out.put("entryDelim", p.entryDelim());
+        out.put("pairDelim", p.pairDelim());
         return out;
     }
 

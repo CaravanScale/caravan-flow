@@ -54,6 +54,22 @@ public final class Stats {
     public Map<String, Long> processorCountsSnapshot() { return mapSnapshot(processorCounts); }
     public Map<String, Long> processorErrorsSnapshot() { return mapSnapshot(processorErrors); }
 
+    /// Zero the per-processor counters for a single processor. Used by
+    /// {@code POST /api/processors/{name}/stats/reset}. Leaves pipeline-wide
+    /// totals untouched. Returns true if the processor had any counters to
+    /// reset (always true for processors that have ever been executed).
+    public boolean resetProcessor(String proc) {
+        boolean had = false;
+        AtomicLong c = processorCounts.get(proc);
+        if (c != null) { c.set(0); had = true; }
+        AtomicLong e = processorErrors.get(proc);
+        if (e != null) { e.set(0); had = true; }
+        // Seed zero entries so the snapshot shows the processor even pre-run.
+        processorCounts.computeIfAbsent(proc, _ -> new AtomicLong());
+        processorErrors.computeIfAbsent(proc, _ -> new AtomicLong());
+        return had;
+    }
+
     /// Snapshot suitable for JSON serialization through Jackson.
     public Map<String, Object> snapshot() {
         return Map.of(

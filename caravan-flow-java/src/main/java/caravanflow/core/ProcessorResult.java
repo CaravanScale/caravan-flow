@@ -8,6 +8,7 @@ import java.util.List;
 ///   <li>{@link Single} — one FlowFile flows to the processor's "success" connections
 ///   <li>{@link Multiple} — fan-out; every FlowFile in the list follows "success"
 ///   <li>{@link Routed} — named relationship (e.g. "matched", "not-matched")
+///   <li>{@link MultiRouted} — multiple FlowFiles, each with its own named relationship
 ///   <li>{@link Dropped} — terminate this branch; no downstream dispatch
 ///   <li>{@link Failure} — follow "failure" connections (or log+drop if none)
 /// </ul>
@@ -15,6 +16,7 @@ public sealed interface ProcessorResult
         permits ProcessorResult.Single,
                 ProcessorResult.Multiple,
                 ProcessorResult.Routed,
+                ProcessorResult.MultiRouted,
                 ProcessorResult.Dropped,
                 ProcessorResult.Failure {
 
@@ -38,6 +40,23 @@ public sealed interface ProcessorResult
         }
     }
 
+    /// Emit N FlowFiles on N different relationships. Used by record-level
+    /// routing primitives (e.g. RouteRecord) that partition one incoming
+    /// batch into several outputs, each tagged with its route name.
+    record MultiRouted(List<Entry> outputs) implements ProcessorResult {
+        public MultiRouted {
+            if (outputs == null) throw new IllegalArgumentException("outputs must not be null");
+            outputs = List.copyOf(outputs);
+        }
+
+        public record Entry(String route, FlowFile flowFile) {
+            public Entry {
+                if (route == null || route.isEmpty()) throw new IllegalArgumentException("route must not be blank");
+                if (flowFile == null) throw new IllegalArgumentException("flowFile must not be null");
+            }
+        }
+    }
+
     /// Singleton — no state, reuse the shared instance.
     enum Dropped implements ProcessorResult {
         INSTANCE
@@ -55,6 +74,7 @@ public sealed interface ProcessorResult
     static ProcessorResult single(FlowFile ff) { return new Single(ff); }
     static ProcessorResult multiple(List<FlowFile> ffs) { return new Multiple(ffs); }
     static ProcessorResult routed(String route, FlowFile ff) { return new Routed(route, ff); }
+    static ProcessorResult multiRouted(List<MultiRouted.Entry> outputs) { return new MultiRouted(outputs); }
     static ProcessorResult dropped() { return Dropped.INSTANCE; }
     static ProcessorResult failure(String reason, FlowFile ff) { return new Failure(reason, ff); }
 }
