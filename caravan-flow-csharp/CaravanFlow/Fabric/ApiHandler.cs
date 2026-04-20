@@ -158,19 +158,19 @@ public sealed class ApiHandler
                     ["category"] = "Source",
                     ["kind"] = "source",
                     ["configKeys"] = s.ConfigKeys,
-                    ["parameters"] = s.ConfigKeys.Select(k => new Dictionary<string, object?>
+                    ["parameters"] = s.Parameters.Select(p => new Dictionary<string, object?>
                     {
-                        ["name"] = k,
-                        ["label"] = k,
-                        ["description"] = "",
-                        ["kind"] = "String",
-                        ["required"] = false,
-                        ["default"] = null,
-                        ["placeholder"] = null,
-                        ["choices"] = null,
-                        ["valueKind"] = null,
-                        ["entryDelim"] = ";",
-                        ["pairDelim"] = "=",
+                        ["name"] = p.Name,
+                        ["label"] = p.Label,
+                        ["description"] = p.Description,
+                        ["kind"] = p.Kind.ToString(),
+                        ["required"] = p.Required,
+                        ["default"] = p.Default,
+                        ["placeholder"] = p.Placeholder,
+                        ["choices"] = p.Choices,
+                        ["valueKind"] = p.ValueKind?.ToString(),
+                        ["entryDelim"] = p.EntryDelim,
+                        ["pairDelim"] = p.PairDelim,
                     }).ToList()
                 });
             }

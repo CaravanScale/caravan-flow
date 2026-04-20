@@ -124,7 +124,8 @@ public static class BuiltinProcessors
 
         reg.Register(
             new ProcessorInfo("ReplaceText", "Regex find/replace on content", "Text",
-                [P("pattern", required: true, placeholder: @"\berror\b", description: "regex to match"),
+                [P("pattern", kind: ParamKind.Expression, required: true,
+                   placeholder: @"\berror\b", description: "regex to match"),
                  P("replacement", def: ""),
                  P("mode", kind: ParamKind.Enum, def: "all", choices: ["all", "first"])]),
             (ctx, config) => new ReplaceText(
@@ -135,7 +136,9 @@ public static class BuiltinProcessors
 
         reg.Register(
             new ProcessorInfo("ExtractText", "Regex capture groups → attributes", "Text",
-                [P("pattern", required: true, placeholder: @"(?<user>\w+)@(?<host>\w+)"),
+                [P("pattern", kind: ParamKind.Expression, required: true,
+                   placeholder: @"(?<user>\w+)@(?<host>\w+)",
+                   description: "regex with named or positional capture groups"),
                  P("groupNames", placeholder: "user,host",
                    description: "comma-separated names for positional groups")]),
             (ctx, config) => new ExtractText(
@@ -145,8 +148,10 @@ public static class BuiltinProcessors
 
         reg.Register(
             new ProcessorInfo("SplitText", "Split content by delimiter into multiple FlowFiles", "Text",
-                [P("delimiter", required: true, placeholder: @"\n\n"),
-                 P("headerLines", kind: ParamKind.Integer, def: "0")]),
+                [P("delimiter", required: true, placeholder: @"\n\n",
+                   description: "literal separator between records; supports escape sequences"),
+                 P("headerLines", kind: ParamKind.Integer, def: "0",
+                   description: "lines to skip at the start of the file")]),
             (ctx, config) =>
             {
                 var delim = ConfigHelpers.RequireString(config, "delimiter");

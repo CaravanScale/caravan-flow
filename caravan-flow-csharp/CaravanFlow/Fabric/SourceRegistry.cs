@@ -13,20 +13,31 @@ public delegate IConnectorSource? SourceFactory(string name, Dictionary<string, 
 
 /// <summary>
 /// Metadata about a registered source type — type name, human description,
-/// and the config keys the factory reads. Parallels ProcessorInfo.
+/// and the typed parameter list the UI needs to render form inputs.
+/// Mirrors ProcessorInfo so the palette treats sources and processors
+/// uniformly.
 /// </summary>
 public sealed class SourceInfo
 {
     public string TypeName { get; }
     public string Description { get; }
-    public List<string> ConfigKeys { get; }
+    public IReadOnlyList<ParamInfo> Parameters { get; }
+    public IReadOnlyList<string> ConfigKeys { get; }
 
-    public SourceInfo(string typeName, string description, List<string> configKeys)
+    public SourceInfo(string typeName, string description, IReadOnlyList<ParamInfo> parameters)
     {
         TypeName = typeName;
         Description = description;
-        ConfigKeys = configKeys;
+        Parameters = parameters;
+        ConfigKeys = parameters.Select(p => p.Name).ToList();
     }
+
+    // Legacy constructor — third-party plugins using the pre-ParamInfo
+    // shape still compile. Keys become String-kind params with no default.
+    public SourceInfo(string typeName, string description, List<string> configKeys)
+        : this(typeName, description,
+               configKeys.Select(k => new ParamInfo { Name = k, Label = k, Kind = ParamKind.String }).ToList())
+    { }
 }
 
 /// <summary>
