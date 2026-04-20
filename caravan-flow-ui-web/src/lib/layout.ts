@@ -19,6 +19,10 @@ export interface ProcessorNodeData extends Record<string, unknown> {
 
 export interface RelEdgeData extends Record<string, unknown> {
   relationship: string
+  // Recent-delta throughput for motion rendering. 0 = idle, positive =
+  // animate. Set by the edge-stats poll in GraphPage, patched into the
+  // edge's data without re-running dagre.
+  motionDelta?: number
 }
 
 // Processor types whose category is "Sink" in the registry. Populated on

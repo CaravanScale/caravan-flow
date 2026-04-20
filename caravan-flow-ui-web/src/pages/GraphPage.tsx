@@ -72,6 +72,16 @@ function GraphPageInner() {
     refetchInterval: STATS_POLL_MS,
     staleTime: STATS_POLL_MS,
   })
+  // Edge stats on a tighter cadence so motion animation feels alive.
+  // We diff against the last snapshot to get a per-poll delta; the
+  // bezier renderer uses delta to decide how many motion dots to show.
+  const edgeStats = useQuery({
+    queryKey: ['edge-stats'],
+    queryFn: api.edgeStats,
+    refetchInterval: 1_000,
+    staleTime: 1_000,
+  })
+  const prevEdgeStatsRef = useRef<Record<string, number>>({})
   const registry = useQuery<RegistryEntry[]>({
     queryKey: ['registry'],
     queryFn: api.registry,
@@ -238,6 +248,27 @@ function GraphPageInner() {
     setNodes(laid.nodes)
     setEdges(laid.edges)
   }, [topology.data, setNodes, setEdges])
+
+  // Edge motion overlay — diff against previous edge-stats snapshot and
+  // patch motionDelta onto each edge's data without re-layout.
+  useEffect(() => {
+    if (!edgeStats.data) return
+    const prev = prevEdgeStatsRef.current
+    const now: Record<string, number> = {}
+    for (const [k, v] of Object.entries(edgeStats.data)) now[k] = v.processed
+    setEdges((edges) =>
+      edges.map((e) => {
+        const d = e.data as RelEdgeData | undefined
+        const rel = d?.relationship ?? 'success'
+        // Backend key is "from|rel|to"; edge id is "from::rel::to".
+        const key = `${e.source}|${rel}|${e.target}`
+        const delta = Math.max(0, (now[key] ?? 0) - (prev[key] ?? 0))
+        if ((d?.motionDelta ?? 0) === delta) return e
+        return { ...e, data: { ...(d ?? { relationship: rel }), motionDelta: delta } }
+      }),
+    )
+    prevEdgeStatsRef.current = now
+  }, [edgeStats.data, setEdges])
 
   // Stats overlay — patch node.data.processor.stats in place so React
   // Flow doesn't re-layout on every 2s stats tick.

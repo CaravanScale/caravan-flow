@@ -100,6 +100,25 @@ export const api = {
   }>('/api/flow/status'),
   reloadFlow: () => send('POST', '/api/reload'),
 
+  // --- Live-motion edge stats (keyed "from|rel|to") ---
+  edgeStats: () =>
+    getJson<Record<string, { processed: number }>>('/api/edge-stats'),
+
+  // --- Per-processor sample ring (Peek) ---
+  processorSamples: (name: string) =>
+    getJson<{
+      name: string
+      sampling: boolean
+      samples: Array<{
+        timestamp: number
+        flowfile: string
+        contentType: string
+        preview: string | null
+        previewBase64: string | null
+        attributes: Record<string, string>
+      }>
+    }>(`/api/processors/${encodeURIComponent(name)}/samples`),
+
   // --- Layout sibling (team-shared node positions) ---
   layout: () => getJson<{ positions: Record<string, { x: number; y: number }>; path?: string }>('/api/layout'),
   saveLayout: (positions: Record<string, { x: number; y: number }>) =>
