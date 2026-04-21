@@ -108,18 +108,13 @@ nodes:
 
 ## What's deliberately missing (Slice 4)
 
-These are the "library gaps" I flagged up front — they're
-weeks-each to fill, and I wanted the shape solid before attacking
-them. Each is a `TODO` in the roadmap:
+Status update: **Zstd, Avro, and OCF are now all shipped.** Two of
+the three "week-each" library gaps are closed; the Avro work became
+its own publishable shard at `../crystal-avro/` (sibling to
+this directory).
 
-- **Avro** (`ConvertAvroToRecord`, `ConvertRecordToAvro`,
-  `ConvertOCFToRecord`, `ConvertRecordToOCF`) — Crystal has no mature
-  Avro shard. caravan-csharp already hand-rolls this for AOT; the port
-  would mean translating the Avro binary + OCF container + schema
-  registry client logic. ~1-2 weeks.
-- **Zstd** (`CompressContent`, `DecompressContent` at non-gzip algos)
-  — FFI binding against Alpine's `zstd-static`, ~1-2 days once the
-  build flags are sorted.
+Remaining gaps with scope estimates:
+
 - **JsonPath** (`QueryRecord`) — needs an RFC-9535 parser +
   evaluator. ~3-5 days for the subset caravan uses.
 - **NiFi V3 framing** (`PackageFlowFileV3`, `UnpackageFlowFileV3`) —
@@ -131,11 +126,16 @@ them. Each is a `TODO` in the roadmap:
 - **Config overlays** (base ← local ← env) — right now we load
   `config.yml` as a single source. Overlay merging is straightforward
   once we want it.
+- **Schema registry client** (`ConvertOCFToRecord` reader schema
+  lookup) — the C# sibling supports a `readerSchemaSubject`
+  parameter backed by Confluent REST. Left as a follow-up on
+  `crystal-avro`.
 
-The 21 processors that ARE here cover every design pattern the
+The 27 processors that ARE here cover every design pattern the
 registry hits: scalar params, enums, stringlists, keyvaluelists
 w/expression values, multiline DSLs, source semantics, record
-content, regex. The parts deferred are all *library availability*
+content, regex, compression, **Avro binary + OCF container** (via
+`crystal-avro`). The parts deferred are all *library availability*
 problems — none of them prove Crystal can't do this.
 
 ## Developer notes

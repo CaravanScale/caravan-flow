@@ -1,17 +1,18 @@
 # Two-stage build: Alpine + Crystal gives us a fully-static binary
-# (musl libc baked in + static-linked libgc / libpcre / libssl / libyaml),
-# so the resulting image — and the extracted binary — runs on any Linux
-# with a 2.6.32+ kernel: RHEL 8/9/10, bare metal, or scratch containers.
+# (musl libc baked in + static-linked libgc / libpcre / libssl / libyaml
+# / libzstd), so the resulting image — and the extracted binary —
+# runs on any Linux with a 2.6.32+ kernel.
 #
 # MT is on (-Dpreview_mt); CRYSTAL_WORKERS=N at runtime picks the
 # scheduler thread count.
+#
+# Build context: expects the repo root so both caravan-flow-crystal/
+# and crystal-avro/ are reachable (the `avro` shard is a path: dep).
+# `scripts/build-static.sh` runs `docker build` from the right place.
 
 # ---- build stage ----
 FROM crystallang/crystal:1.20.0-alpine AS build
 
-# Static-link prerequisites that aren't always pre-installed in the
-# Alpine base. yaml-static and libxml2-static are the ones most likely
-# to trip a --static build.
 RUN apk add --no-cache \
     yaml-static \
     libxml2-static \
@@ -22,18 +23,22 @@ RUN apk add --no-cache \
 
 WORKDIR /src
 
-COPY shard.yml ./
-RUN shards install --production || true
+# Sibling shard has to be in place before `shards install` resolves
+# the path: dep in caravan-flow-crystal/shard.yml.
+COPY crystal-avro /src/crystal-avro
+COPY caravan-flow-crystal/shard.yml /src/caravan-flow-crystal/shard.yml
+COPY caravan-flow-crystal/shard.lock /src/caravan-flow-crystal/shard.lock
 
-COPY src/ ./src/
-COPY spec/ ./spec/
+WORKDIR /src/caravan-flow-crystal
+RUN shards install --production
 
-# Run specs as part of the build — fail fast in CI. Specs use the
-# same MT flag so any MT-specific breakage shows here, not at runtime.
+COPY caravan-flow-crystal/src/ ./src/
+COPY caravan-flow-crystal/spec/ ./spec/
+
+# Specs run inside the container build — any regression breaks the
+# build, not just the runtime. (Same flag we use at runtime.)
 RUN crystal spec -Dpreview_mt
 
-# Release build. --static produces a single fully-relocatable binary;
-# --release enables LLVM optimizations; --no-debug strips DWARF.
 RUN mkdir -p /out \
  && crystal build src/caravan_flow.cr \
     -o /out/caravan-flow \
@@ -42,12 +47,10 @@ RUN mkdir -p /out \
  && ls -lh /out/caravan-flow
 
 # ---- runtime stage ----
-# Scratch = just the binary + config. No shell, no libc, no package
-# manager. The static binary brings everything it needs.
 FROM scratch
 
 COPY --from=build /out/caravan-flow /caravan-flow
-COPY config.yml /config.yml
+COPY caravan-flow-crystal/config.yml /config.yml
 
 EXPOSE 9092
 ENV CRYSTAL_WORKERS=4

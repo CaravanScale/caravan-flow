@@ -5,6 +5,11 @@ require "./registry"
 require "./fabric"
 require "./server"
 require "./layout_store"
+
+# Register the Zstd codec with crystal-avro before any processor
+# loads — OCF decoders may see codec="zstandard" on the first tick.
+require "./avro_zstd_adapter"
+
 require "./processors/all"
 
 def load_config(path : String) : YAML::Any
