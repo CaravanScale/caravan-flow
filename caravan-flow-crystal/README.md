@@ -150,9 +150,16 @@ MT: build with `-Dpreview_mt`, run with `CRYSTAL_WORKERS=N`. The
 fabric `spawn {}`s on every downstream dispatch, so with N workers
 the pool concurrently drains sibling fanouts.
 
-Known Crystal 1.20 parser quirks hit during this port (file bug
-upstream later): some combinations of trailing `if` + local
-variables named the same as later method args confuse the parser
-into "can't define def inside def" errors. Workaround: rewrite as
-explicit `if/end` blocks, or use `.try` chains (method-chaining
-parses cleanly).
+Known Crystal 1.20 parser quirks hit during this port — fully
+minimized and documented in [`docs/bug-reports/`](./docs/bug-reports/).
+
+- **`out` keyword shadows local variable after `return`/`next`/`break`**:
+  a 4-line reproducer. Surfaces as either `expecting variable or
+  instance variable after out` or a cascading `can't define def inside
+  def` further down the file. See
+  [`docs/bug-reports/01-out-keyword-shadows-local.md`](./docs/bug-reports/01-out-keyword-shadows-local.md).
+  Workaround: rename the local, or wrap with parens (`return (out)`).
+
+The runnable reproducers under `docs/bug-reports/reproducers/` have a
+`verify.sh` that re-runs them against the current Crystal — if any
+starts compiling, the bug is fixed and we should update the report.
