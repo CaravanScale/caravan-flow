@@ -107,10 +107,10 @@ export function ProcessorNode({ data, selected }: NodeProps<Node<ProcessorNodeDa
       </div>
       <div className="mt-1 text-[11px]">
         <span style={{ color: 'var(--success)' }}>{formatNum(processed)}</span>
-        <span style={{ color: '#555' }}> processed</span>
+        <span style={{ color: 'var(--text-muted)' }}> processed</span>
         {hasErrors && (
           <>
-            <span style={{ color: '#555' }}> · </span>
+            <span style={{ color: 'var(--text-muted)' }}> · </span>
             <span style={{ color: 'var(--error)' }}>{formatNum(errors)}</span>
             <span style={{ color: 'var(--error)' }}> errors</span>
           </>

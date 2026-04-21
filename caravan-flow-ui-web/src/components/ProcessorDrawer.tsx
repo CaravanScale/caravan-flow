@@ -189,7 +189,7 @@ export function ProcessorDrawer({ processor, allProcessorNames, isSource = false
       case 'ENABLED':
         return 'bg-[#0f3460] text-[var(--success)]'
       case 'STOPPED':
-        return 'bg-[#3a2f10] text-[var(--warning)]'
+        return 'bg-[#4a2f10] text-[var(--warning)]'
       default:
         return 'bg-[var(--surface-2)] text-[var(--text-muted)]'
     }
@@ -235,14 +235,17 @@ export function ProcessorDrawer({ processor, allProcessorNames, isSource = false
 
       {upstreamQueued && (
         <div
-          className="px-4 py-2 text-[11px]"
+          className="flex items-center gap-2 px-4 py-2 text-[11px]"
           style={{ background: '#2a2410', borderBottom: '1px solid var(--warning)', color: 'var(--warning)' }}
         >
-          upstream changed —{' '}
-          <button className="underline" onClick={discardAndReload}>
+          <span className="flex-1">upstream changed — refresh to see latest</span>
+          <button
+            onClick={discardAndReload}
+            className="rounded border px-2 py-0.5 text-[10px]"
+            style={{ background: 'transparent', borderColor: 'var(--warning)', color: 'var(--warning)' }}
+          >
             discard edits
-          </button>{' '}
-          to see latest
+          </button>
         </div>
       )}
 
@@ -366,7 +369,7 @@ export function ProcessorDrawer({ processor, allProcessorNames, isSource = false
                   discard
                 </button>
               )}
-              {status && <span style={{ color: 'var(--text-muted)' }}>{status}</span>}
+              {status && <span style={{ color: statusColor(status) }}>{statusLabel(status)}</span>}
             </div>
           </div>
         )}
@@ -393,26 +396,39 @@ export function ProcessorDrawer({ processor, allProcessorNames, isSource = false
                     setDirty(true)
                   }}
                 />
-                <select
-                  value={row.target}
-                  onChange={(e) => {
-                    const next = [...connRows]
-                    next[i] = { ...row, target: e.target.value }
-                    setConnRows(next)
-                    setDirty(true)
-                  }}
-                  className="rounded border px-2 py-1"
-                  style={{ background: '#0a0a14', borderColor: 'var(--border)', color: 'var(--text)' }}
-                >
-                  <option value="">-- target --</option>
-                  {allProcessorNames
-                    .filter((n) => n !== processor.name)
-                    .map((n) => (
-                      <option key={n} value={n}>
-                        {n}
-                      </option>
-                    ))}
-                </select>
+                {(() => {
+                  const stale = row.target.length > 0 && !allProcessorNames.includes(row.target)
+                  return (
+                    <select
+                      value={row.target}
+                      onChange={(e) => {
+                        const next = [...connRows]
+                        next[i] = { ...row, target: e.target.value }
+                        setConnRows(next)
+                        setDirty(true)
+                      }}
+                      className="rounded border px-2 py-1"
+                      style={{
+                        background: '#0a0a14',
+                        borderColor: stale ? 'var(--error)' : 'var(--border)',
+                        color: 'var(--text)',
+                      }}
+                      title={stale ? `target "${row.target}" no longer exists — pick another` : undefined}
+                    >
+                      <option value="">-- target --</option>
+                      {stale && (
+                        <option value={row.target}>{row.target} (removed)</option>
+                      )}
+                      {allProcessorNames
+                        .filter((n) => n !== processor.name)
+                        .map((n) => (
+                          <option key={n} value={n}>
+                            {n}
+                          </option>
+                        ))}
+                    </select>
+                  )
+                })()}
                 <button
                   onClick={() => {
                     setConnRows(connRows.filter((_, j) => j !== i))
@@ -459,7 +475,7 @@ export function ProcessorDrawer({ processor, allProcessorNames, isSource = false
                   discard
                 </button>
               )}
-              {status && <span style={{ color: 'var(--text-muted)' }}>{status}</span>}
+              {status && <span style={{ color: statusColor(status) }}>{statusLabel(status)}</span>}
             </div>
           </div>
         )}
@@ -502,7 +518,7 @@ export function ProcessorDrawer({ processor, allProcessorNames, isSource = false
           {processor.state === 'ENABLED' ? 'disable' : 'enable'}
         </button>
         <div className="flex-1" />
-        {status && <span className="text-[11px]" style={{ color: 'var(--text-muted)' }}>{status}</span>}
+        {status && <span className="text-[11px]" style={{ color: statusColor(status) }}>{statusLabel(status)}</span>}
       </footer>
     </aside>
     </>
@@ -619,6 +635,18 @@ function SamplePanel({ processorName }: { processorName: string }) {
       })}
     </div>
   )
+}
+
+function statusColor(s: string): string {
+  if (s.startsWith('error')) return 'var(--error)'
+  if (s === 'applied' || s === 'toggled') return 'var(--success)'
+  return 'var(--text-muted)'
+}
+
+function statusLabel(s: string): string {
+  if (s === 'applied') return '✓ applied'
+  if (s === 'toggled') return '✓ toggled'
+  return s
 }
 
 function fmtAge(ms: number): string {

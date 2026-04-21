@@ -237,7 +237,7 @@ function FieldInput({ param, value, onChange, onOpenBuilder }: FieldProps) {
             checked={value === 'true'}
             onChange={(e) => onChange(e.target.checked ? 'true' : 'false')}
           />
-          <span>{value === 'true' ? 'true' : 'false'}</span>
+          <span>{value === 'true' ? 'yes' : 'no'}</span>
         </label>
       )
     case 'Enum':

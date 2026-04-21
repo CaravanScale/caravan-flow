@@ -163,7 +163,7 @@ export function RouteOnAttributeWizard({ values, onChange }: WizardProps) {
         </summary>
         <pre
           className="mt-1 overflow-auto rounded p-2 text-[11px]"
-          style={{ background: '#0a0a14', border: '1px solid var(--border)', color: 'var(--text-muted)' }}
+          style={{ background: '#0a0a14', border: '1px solid var(--border)', color: 'var(--text)' }}
         >
           {serialized || '(empty)'}
         </pre>

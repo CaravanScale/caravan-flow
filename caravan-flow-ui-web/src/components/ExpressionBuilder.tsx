@@ -221,7 +221,7 @@ export function ExpressionBuilder({ open, initialValue, processorName, onSave, o
               ref={textareaRef}
               value={value}
               onChange={(e) => setValue(e.target.value)}
-              placeholder="age > 18  ·  tier == &quot;gold&quot;  ·  amount * 0.07"
+              placeholder={'age > 18  ·  tier == "gold"  ·  amount * 0.07'}
               className="flex-1 resize-none p-3 font-mono text-[13px] outline-none"
               style={{ background: '#0a0a14', color: 'var(--text)', minHeight: 140 }}
             />

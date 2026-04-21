@@ -71,7 +71,7 @@ export function SourcesPanel({ onClose }: Props) {
               >
                 <span
                   className="inline-block h-2 w-2 rounded-full"
-                  style={{ background: s.running ? 'var(--success, #4ade80)' : 'var(--text-muted)' }}
+                  style={{ background: s.running ? 'var(--success)' : 'var(--text-muted)' }}
                   aria-label={s.running ? 'running' : 'stopped'}
                 />
                 <div className="flex flex-1 flex-col">

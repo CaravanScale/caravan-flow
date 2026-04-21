@@ -40,6 +40,13 @@ export function AddProcessorDialog({ open, existingNames, onClose }: Props) {
     }
   }, [open])
 
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, onClose])
+
   const filteredRegistry = useMemo(() => {
     const list = registry.data ?? []
     if (!query.trim()) return list

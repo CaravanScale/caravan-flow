@@ -68,7 +68,7 @@ export function ProcessorPalette({ collapsed: collapsedAll, onToggle }: Props) {
         <div
           className="mt-4 text-[10px] uppercase tracking-widest"
           style={{
-            color: 'var(--text-muted)',
+            color: 'var(--text)',
             writingMode: 'vertical-rl',
             transform: 'rotate(180deg)',
             letterSpacing: '0.2em',
@@ -90,13 +90,13 @@ export function ProcessorPalette({ collapsed: collapsedAll, onToggle }: Props) {
         style={{ background: 'var(--surface-2)', borderBottom: '1px solid var(--border)' }}
       >
         <div className="flex items-center justify-between">
-          <div className="text-[11px] uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>
+          <div className="text-[11px] uppercase tracking-widest" style={{ color: 'var(--text)' }}>
             processors
           </div>
           <button
             onClick={onToggle}
             className="flex h-5 w-5 items-center justify-center rounded text-[11px]"
-            style={{ color: 'var(--text-muted)' }}
+            style={{ color: 'var(--text)' }}
             title="collapse palette"
             aria-label="collapse palette"
           >

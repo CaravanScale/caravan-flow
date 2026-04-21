@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 // Popover shown when the operator drops a new edge onto a target node.
 // Collects the relationship name — defaults to "success" which covers
@@ -26,7 +26,19 @@ export function EdgeRelationshipPicker({ anchor, suggestions, onPick, onCancel }
     return () => window.removeEventListener('keydown', onKey)
   }, [anchor, onCancel])
 
-  if (!anchor) return null
+  // Clamp the popover inside the viewport so drops near the right/bottom
+  // edge don't render it clipped. Computed at open time — a resize while
+  // the picker is visible is rare and self-correcting (just re-open).
+  const pos = useMemo(() => {
+    if (!anchor) return null
+    const W = 260, H = 220, M = 8
+    return {
+      left: Math.min(Math.max(anchor.x, M), window.innerWidth - W - M),
+      top: Math.min(Math.max(anchor.y, M), window.innerHeight - H - M),
+    }
+  }, [anchor])
+
+  if (!anchor || !pos) return null
 
   const uniqueSuggestions = Array.from(new Set(['success', 'failure', ...suggestions]))
 
@@ -42,8 +54,8 @@ export function EdgeRelationshipPicker({ anchor, suggestions, onPick, onCancel }
         aria-modal="true"
         className="fixed z-50 rounded-md shadow-2xl"
         style={{
-          left: anchor.x,
-          top: anchor.y,
+          left: pos.left,
+          top: pos.top,
           background: 'var(--surface)',
           border: '1px solid var(--border)',
           width: 260,
