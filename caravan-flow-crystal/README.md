@@ -5,20 +5,25 @@ system + `preview_mt` runtime for a NiFi-style processor fabric.
 
 ## What's here
 
-**21 processors** wired through a compile-time macro registry — one source
-of truth per param, no reflection, no hand-written factories:
+**32 processors — full parity with `caravan-flow-csharp`** — wired
+through a compile-time macro registry (one source of truth per param,
+no reflection, no hand-written factories):
 
 - Attribute: `UpdateAttribute`, `LogAttribute`, `FilterAttribute`
 - Text: `SplitText` (wizard), `ReplaceText`, `ExtractText`
 - Conversion: `ConvertJSONToRecord`, `ConvertRecordToJSON`,
-  `ConvertCSVToRecord` (wizard: RecordFields),
-  `ConvertRecordToCSV`
-- Record: `SplitRecord`, `ExtractRecordField` (wizard)
+  `ConvertCSVToRecord` (wizard: RecordFields), `ConvertRecordToCSV`,
+  `ConvertAvroToRecord` (wizard), `ConvertRecordToAvro` (wizard),
+  `ConvertOCFToRecord`, `ConvertRecordToOCF` (wizard)
+- Record: `SplitRecord`, `ExtractRecordField` (wizard),
+  `QueryRecord` (wizard — JSONPath filter via sibling `jsonpath` shard)
 - Transform: `EvaluateExpression` (wizard), `UpdateRecord` (wizard),
   `TransformRecord` (wizard), `RouteRecord` (wizard)
 - Routing: `RouteOnAttribute` (wizard)
-- Sink: `PutStdout`, `PutFile`
-- Source: `GenerateFlowFile`, `GetFile`
+- Sink: `PutStdout`, `PutFile`, `PutHTTP` (POST with retries + V3 framing)
+- Source: `GenerateFlowFile`, `GetFile`, `ListenHTTP` (own HTTP server)
+- Utility: `CompressContent`, `DecompressContent` (gzip + zstd via FFI)
+- V3: `PackageFlowFileV3`, `UnpackageFlowFileV3` (NiFi wire format)
 
 **Expression language** (`src/expression.cr`) — tree-walking interpreter
 for the EL variant used by `EvaluateExpression`, `UpdateRecord`,
@@ -106,37 +111,23 @@ nodes:
     config: {key: "env", value: "prod"}
 ```
 
-## What's deliberately missing (Slice 4)
+## Processor parity: done
 
-Status update: **Zstd, Avro, and OCF are now all shipped.** Two of
-the three "week-each" library gaps are closed; the Avro work became
-its own publishable shard at `../crystal-avro/` (sibling to
-this directory).
+All 32 processors from `caravan-flow-csharp` are ported. Four of the
+"week-each" library gaps closed in the process:
 
-Remaining gaps with scope estimates:
+- ✅ **Zstd** via an FFI binding (`CompressContent`/`DecompressContent`)
+- ✅ **Avro** binary + OCF container via the new `crystal-avro` sibling shard
+- ✅ **JSONPath** (RFC-9535 subset) via the new `crystal-jsonpath` sibling shard
+- ✅ **NiFi V3 framing** via `src/flowfile_v3.cr`
+- ✅ **HTTP source + sink** via `ListenHTTP` and `PutHTTP` on stdlib `HTTP::Server` / `HTTP::Client`
 
-- **JsonPath** (`QueryRecord`) — needs an RFC-9535 parser +
-  evaluator. ~3-5 days for the subset caravan uses.
-- **NiFi V3 framing** (`PackageFlowFileV3`, `UnpackageFlowFileV3`) —
-  custom binary format; ~2-3 days to translate from the C# impl.
-- **PutHTTP / ListenHTTP** — stdlib has `HTTP::Client` and
-  `HTTP::Server`; ~1-2 days each.
-- **Git integration** (`/api/vc/status` + `/api/flow/save` with
-  commit+push) — need a git2 shard or shell out to `git`.
-- **Config overlays** (base ← local ← env) — right now we load
-  `config.yml` as a single source. Overlay merging is straightforward
-  once we want it.
-- **Schema registry client** (`ConvertOCFToRecord` reader schema
-  lookup) — the C# sibling supports a `readerSchemaSubject`
-  parameter backed by Confluent REST. Left as a follow-up on
-  `crystal-avro`.
+Remaining non-processor gaps (infrastructure, not parity-blocking):
 
-The 27 processors that ARE here cover every design pattern the
-registry hits: scalar params, enums, stringlists, keyvaluelists
-w/expression values, multiline DSLs, source semantics, record
-content, regex, compression, **Avro binary + OCF container** (via
-`crystal-avro`). The parts deferred are all *library availability*
-problems — none of them prove Crystal can't do this.
+- **Git integration** (`/api/vc/status` + `/api/flow/save` with commit+push)
+- **Config overlays** (base ← local ← env)
+- **Schema registry client** (Confluent REST for `ConvertOCFToRecord`'s `readerSchemaSubject` lookup)
+- **Schema evolution resolver** (writer-schema → reader-schema projection; crystal-avro v0.3)
 
 ## Developer notes
 

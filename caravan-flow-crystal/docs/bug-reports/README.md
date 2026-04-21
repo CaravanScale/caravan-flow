@@ -14,6 +14,10 @@ be known.
 1. [**`out` keyword shadows local variables after `return`**](./01-out-keyword-shadows-local.md)
    — surfaces as `expecting variable or instance variable after out` or
    `can't define def inside def` cascades. Confirmed with a 4-line reproducer.
+2. [**Three more parser quirks hit during the `crystal-jsonpath` port**](./02-parser-quirks-jsonpath-session.md)
+   — `select` treated as fiber-select opener in call position; one-line
+   `if/then/;/end` rejects multiple statements; block type signatures
+   reject inline union-typed yielded args. All reproduce on 1.20.0.
 
 ## Filing process
 

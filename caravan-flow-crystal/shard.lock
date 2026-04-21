@@ -4,3 +4,7 @@ shards:
     path: ../crystal-avro
     version: 0.1.0
 
+  jsonpath:
+    path: ../crystal-jsonpath
+    version: 0.1.0
+

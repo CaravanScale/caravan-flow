@@ -13,11 +13,14 @@ targets:
     main: src/caravan_flow.cr
 
 dependencies:
-  # Local sibling shard — crystal-avro lives next to us in the monorepo.
-  # `shards install` creates lib/avro as a symlink. For the portable
-  # container build the Dockerfile copies both dirs into /src.
+  # Local sibling shards — crystal-avro and crystal-jsonpath live next
+  # to us in the monorepo. `shards install` creates lib/* symlinks. For
+  # the portable container build the Dockerfile copies all three dirs
+  # into /src.
   avro:
     path: "../crystal-avro"
+  jsonpath:
+    path: "../crystal-jsonpath"
 
 crystal: ">= 1.20.0"
 

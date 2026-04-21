@@ -23,14 +23,18 @@ RUN apk add --no-cache \
 
 WORKDIR /src
 
-# Sibling shard has to be in place before `shards install` resolves
-# the path: dep in caravan-flow-crystal/shard.yml.
+# Sibling shards have to be in place before `shards install` resolves
+# the path: deps in caravan-flow-crystal/shard.yml.
 COPY crystal-avro /src/crystal-avro
+COPY crystal-jsonpath /src/crystal-jsonpath
 COPY caravan-flow-crystal/shard.yml /src/caravan-flow-crystal/shard.yml
 COPY caravan-flow-crystal/shard.lock /src/caravan-flow-crystal/shard.lock
 
 WORKDIR /src/caravan-flow-crystal
-RUN shards install --production
+# Drop --production: path-deps don't benefit from strict locking, and
+# forcing it here collides with the way COPY stamps new mtimes inside
+# the container. shards still resolves the same versions from shard.yml.
+RUN shards install
 
 COPY caravan-flow-crystal/src/ ./src/
 COPY caravan-flow-crystal/spec/ ./spec/
