@@ -1,0 +1,19 @@
+name: jsonpath
+version: 0.1.0
+
+authors:
+  - Vinit Joshi <vinit812010@gmail.com>
+
+description: |
+  RFC 9535 JSONPath for Crystal — hand-rolled parser + evaluator
+  on top of stdlib `JSON::Any`. No reflection, AOT-safe, works
+  under preview_mt. v0.1 covers the pragmatic subset (root,
+  member, index, slice, wildcard, filter with comparisons and
+  boolean ops); recursive descent, functions, and union selectors
+  are planned for v0.2.
+
+crystal: ">= 1.20.0"
+
+license: MIT
+
+repository: https://github.com/CaravanScale/crystal-jsonpath
