@@ -47,8 +47,58 @@ function toConnRows(p: Processor): ConnRow[] {
   return out
 }
 
+const DRAWER_WIDTH_KEY = 'caravan:drawer-width'
+const DRAWER_MIN = 320
+const DRAWER_MAX = 960
+
+function loadDrawerWidth(): number {
+  if (typeof window === 'undefined') return 420
+  const raw = window.localStorage.getItem(DRAWER_WIDTH_KEY)
+  const n = raw ? parseInt(raw, 10) : NaN
+  if (!Number.isFinite(n)) return 420
+  return Math.max(DRAWER_MIN, Math.min(DRAWER_MAX, n))
+}
+
 export function ProcessorDrawer({ processor, allProcessorNames, isSource = false, onClose }: Props) {
   const [tab, setTab] = useState<Tab>('config')
+
+  // Resizable drawer: drag the left edge to widen. Width persists in
+  // localStorage so the operator's preference carries between sessions.
+  // draggingRef avoids re-renders on every mousemove; we only setState
+  // when a new width snaps in.
+  const [drawerWidth, setDrawerWidth] = useState<number>(loadDrawerWidth)
+  const draggingRef = useRef(false)
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!draggingRef.current) return
+      const w = Math.max(DRAWER_MIN, Math.min(DRAWER_MAX, window.innerWidth - e.clientX))
+      setDrawerWidth(w)
+    }
+    const onUp = () => {
+      if (draggingRef.current) {
+        draggingRef.current = false
+        document.body.style.cursor = ''
+        document.body.style.userSelect = ''
+      }
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+  }, [])
+  useEffect(() => {
+    window.localStorage.setItem(DRAWER_WIDTH_KEY, String(drawerWidth))
+  }, [drawerWidth])
+  const startDrag = (e: React.MouseEvent) => {
+    e.preventDefault()
+    draggingRef.current = true
+    // Cursor + selection lock on body so the whole window reflects the
+    // drag state, not just the handle. Restored in onUp.
+    document.body.style.cursor = 'ew-resize'
+    document.body.style.userSelect = 'none'
+  }
 
   // View-model snapshot. Hydrated from the processor prop on mount +
   // when the drawer is pointed at a different processor. While
@@ -207,9 +257,18 @@ export function ProcessorDrawer({ processor, allProcessorNames, isSource = false
       onCancel={() => setConfirmOpen(false)}
     />
     <aside
-      className="absolute right-0 top-0 z-20 flex h-full w-[420px] flex-col shadow-xl"
-      style={{ background: 'var(--surface)', borderLeft: '1px solid var(--border)' }}
+      className="absolute right-0 top-0 z-20 flex h-full flex-col shadow-xl"
+      style={{ width: drawerWidth, background: 'var(--surface)', borderLeft: '1px solid var(--border)' }}
     >
+      <div
+        onMouseDown={startDrag}
+        onDoubleClick={() => setDrawerWidth(420)}
+        className="absolute left-0 top-0 h-full cursor-ew-resize"
+        style={{ width: 6, marginLeft: -3, zIndex: 30 }}
+        title="drag to resize · double-click to reset"
+        aria-label="resize drawer"
+        role="separator"
+      />
       <header
         className="flex items-center justify-between px-4 py-3"
         style={{ background: 'var(--surface-2)', borderBottom: '1px solid var(--border)' }}

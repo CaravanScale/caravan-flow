@@ -3,6 +3,10 @@ import { TransformRecordWizard } from './TransformRecordWizard'
 import { RouteOnAttributeWizard } from './RouteOnAttributeWizard'
 import { ExtractRecordFieldWizard } from './ExtractRecordFieldWizard'
 import { QueryRecordWizard } from './QueryRecordWizard'
+import { RouteRecordWizard } from './RouteRecordWizard'
+import { EvaluateExpressionWizard, UpdateRecordWizard } from './ComputeWizards'
+import { RecordFieldsWizard } from './RecordFieldsWizard'
+import { SplitTextWizard } from './SplitTextWizard'
 
 // Processor-level wizards. Registry entries with
 // `wizardComponent: "TransformRecord"` (etc.) render the named wizard
@@ -24,4 +28,9 @@ export const wizardRegistry: Record<string, ComponentType<WizardProps>> = {
   RouteOnAttribute: RouteOnAttributeWizard,
   ExtractRecordField: ExtractRecordFieldWizard,
   QueryRecord: QueryRecordWizard,
+  RouteRecord: RouteRecordWizard,
+  EvaluateExpression: EvaluateExpressionWizard,
+  UpdateRecord: UpdateRecordWizard,
+  RecordFields: RecordFieldsWizard,
+  SplitText: SplitTextWizard,
 }

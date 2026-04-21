@@ -151,7 +151,8 @@ public static class BuiltinProcessors
                 [P("delimiter", required: true, placeholder: @"\n\n",
                    description: "literal separator between records; supports escape sequences"),
                  P("headerLines", kind: ParamKind.Integer, def: "0",
-                   description: "lines to skip at the start of the file")]),
+                   description: "lines to skip at the start of the file")])
+            { WizardComponent = "SplitText" },
             (ctx, config) =>
             {
                 var delim = ConfigHelpers.RequireString(config, "delimiter");
@@ -177,7 +178,8 @@ public static class BuiltinProcessors
             new ProcessorInfo("ConvertAvroToRecord", "Decode Avro binary into records", "Conversion",
                 [P("fields", placeholder: "id:long,name:string,amount:double",
                    description: "comma-separated name:type pairs describing the record schema"),
-                 P("schemaName", def: "default")]),
+                 P("schemaName", def: "default")])
+            { WizardComponent = "RecordFields" },
             (ctx, config) => new ConvertAvroToRecord(
                 config.GetValueOrDefault("schemaName", "default"),
                 config.GetValueOrDefault("fields", ""),
@@ -243,7 +245,8 @@ public static class BuiltinProcessors
                  P("hasHeader", kind: ParamKind.Boolean, def: "true"),
                  P("fields", placeholder: "id:long,name:string",
                    description: "comma-separated name:type pairs; overrides header-inferred names"),
-                 P("schemaName", def: "default")]),
+                 P("schemaName", def: "default")])
+            { WizardComponent = "RecordFields" },
             (ctx, config) =>
             {
                 var delim = ConfigHelpers.ParseSingleChar(config.GetValueOrDefault("delimiter"), "delimiter", ',');
@@ -275,7 +278,8 @@ public static class BuiltinProcessors
                    valueKind: ParamKind.Expression,
                    entry: ";", pair: "=",
                    placeholder: "tax=amount*0.07; label=upper(region)",
-                   description: "attr=expression pairs; later pairs see earlier writes")]),
+                   description: "attr=expression pairs; later pairs see earlier writes")])
+            { WizardComponent = "EvaluateExpression" },
             (ctx, config) =>
             {
                 var exprs = new Dictionary<string, string>();
@@ -305,7 +309,8 @@ public static class BuiltinProcessors
                    valueKind: ParamKind.Expression,
                    entry: ";", pair: "=",
                    placeholder: "tax=amount*0.07; total=amount+tax",
-                   description: "field=expression pairs; later pairs see earlier writes")]),
+                   description: "field=expression pairs; later pairs see earlier writes")])
+            { WizardComponent = "UpdateRecord" },
             (ctx, config) => new UpdateRecord(config.GetValueOrDefault("updates", "")));
 
         // --- Record ---
@@ -374,7 +379,8 @@ public static class BuiltinProcessors
                    valueKind: ParamKind.Expression,
                    entry: ";", pair: ":",
                    placeholder: "premium: tier == \"gold\"; minors: age < 18",
-                   description: "name:expression pairs; first-match wins; non-matching records go to 'unmatched'")]),
+                   description: "name:expression pairs; first-match wins; non-matching records go to 'unmatched'")])
+            { WizardComponent = "RouteRecord" },
             (ctx, config) => new RouteRecord(config.GetValueOrDefault("routes", "")));
     }
 }
