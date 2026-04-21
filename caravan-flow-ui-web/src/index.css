@@ -41,3 +41,5 @@ body {
 .react-flow__controls-button:hover { background: var(--surface-2); }
 .react-flow__minimap { background: var(--surface); }
 .react-flow__attribution { background: transparent; color: var(--text-muted); }
+
+.nav-btn:hover { background: var(--surface-2); color: var(--text); }

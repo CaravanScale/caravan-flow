@@ -31,9 +31,16 @@ export function ErrorsPage({ onOpenLineage }: Props) {
       </header>
 
       {q.isError && (
-        <p className="text-[12px]" style={{ color: 'var(--error)' }}>
-          failed to load /api/provenance/failures: {(q.error as Error).message}
-        </p>
+        <div className="flex items-center gap-2 text-[12px]" style={{ color: 'var(--error)' }}>
+          <span>failed to load /api/provenance/failures: {(q.error as Error).message}</span>
+          <button
+            onClick={() => q.refetch()}
+            className="rounded border px-2 py-0.5 text-[11px]"
+            style={{ background: 'transparent', borderColor: 'var(--error)', color: 'var(--error)' }}
+          >
+            retry
+          </button>
+        </div>
       )}
       {q.isLoading && (
         <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>loading…</p>
@@ -62,10 +69,10 @@ export function ErrorsPage({ onOpenLineage }: Props) {
                   className="border-t"
                   style={{ borderColor: 'var(--border)' }}
                 >
-                  <td className="px-3 py-1.5 font-mono text-[11px] whitespace-nowrap" style={{ color: 'var(--text-muted)' }}>
+                  <td className="px-3 py-1.5 font-mono text-[11px] whitespace-nowrap">
                     {fmtTs(e.timestamp)}
                   </td>
-                  <td className="px-3 py-1.5 font-mono text-[11px]">{e.component}</td>
+                  <td className="px-3 py-1.5 font-mono text-[11px] whitespace-nowrap">{e.component}</td>
                   <td className="px-3 py-1.5">
                     <button
                       onClick={() => onOpenLineage(e.flowfile)}
@@ -76,7 +83,7 @@ export function ErrorsPage({ onOpenLineage }: Props) {
                       {e.flowfile}
                     </button>
                   </td>
-                  <td className="px-3 py-1.5">{e.details}</td>
+                  <td className="max-w-md truncate px-3 py-1.5" title={e.details}>{e.details}</td>
                 </tr>
               ))}
             </tbody>

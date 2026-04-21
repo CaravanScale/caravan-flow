@@ -2,6 +2,13 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 import type { VcStatus } from '../api/types'
 
+function formatBytes(n: number): string {
+  if (!Number.isFinite(n) || n < 0) return '—'
+  if (n < 1024) return `${n} B`
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`
+}
+
 interface OverlayLayer {
   role?: string
   path?: string
@@ -34,7 +41,7 @@ export function SettingsPage() {
       <header className="mb-4">
         <h1 className="text-base font-semibold text-white">Settings</h1>
         <p className="mt-1 text-[11px]" style={{ color: 'var(--text-muted)' }}>
-          overlay stack: base ← local ← env (secrets no longer loaded from disk)
+          overlay stack: base ← local ← env
         </p>
       </header>
 
@@ -43,9 +50,16 @@ export function SettingsPage() {
           Overlays
         </h2>
         {overlays.isError && (
-          <p className="text-[12px]" style={{ color: 'var(--error)' }}>
-            failed to load /api/overlays: {(overlays.error as Error).message}
-          </p>
+          <div className="flex items-center gap-2 text-[12px]" style={{ color: 'var(--error)' }}>
+            <span>failed to load /api/overlays: {(overlays.error as Error).message}</span>
+            <button
+              onClick={() => overlays.refetch()}
+              className="rounded border px-2 py-0.5 text-[11px]"
+              style={{ background: 'transparent', borderColor: 'var(--error)', color: 'var(--error)' }}
+            >
+              retry
+            </button>
+          </div>
         )}
         {overlays.isLoading && (
           <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>loading…</p>
@@ -56,8 +70,8 @@ export function SettingsPage() {
           </p>
         )}
         {overlays.isSuccess && !overlays.data?.error && (
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-            {(['base', 'local', 'secrets'] as const).map((role) => {
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            {(['base', 'local'] as const).map((role) => {
               const layer = findLayer(overlays.data, role)
               return (
                 <div
@@ -67,14 +81,6 @@ export function SettingsPage() {
                 >
                   <div className="mb-2 flex items-center gap-2">
                     <h3 className="text-[12px] font-semibold text-white capitalize">{role}</h3>
-                    {role === 'secrets' && (
-                      <span
-                        className="rounded px-1.5 py-0.5 text-[9px] uppercase tracking-widest"
-                        style={{ background: 'var(--surface-2)', color: 'var(--error)', border: '1px solid var(--error)' }}
-                      >
-                        retired
-                      </span>
-                    )}
                   </div>
                   {!layer && (
                     <p className="text-[11px]" style={{ color: 'var(--text-muted)' }}>not reported</p>
@@ -96,7 +102,7 @@ export function SettingsPage() {
                       {typeof layer.size === 'number' && (
                         <>
                           <dt style={{ color: 'var(--text-muted)' }}>size</dt>
-                          <dd>{layer.size} B</dd>
+                          <dd>{formatBytes(layer.size)}</dd>
                         </>
                       )}
                     </dl>
@@ -108,66 +114,60 @@ export function SettingsPage() {
         )}
       </section>
 
-      <section className="mb-6">
-        <h2 className="mb-2 text-[10px] uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>
-          Secrets
-        </h2>
-        <div
-          className="rounded border p-3 text-[12px]"
-          style={{ background: '#2a1010', borderColor: 'var(--error)' }}
-        >
-          <p style={{ color: 'var(--error)' }}>
-            Secrets live in environment variables, not on disk.
-          </p>
-          <p className="mt-1" style={{ color: 'var(--text-muted)' }}>
-            The legacy <code>secrets.yaml</code> overlay and its editor were removed. Set
-            secret values via env vars on the worker process before launch.
-          </p>
-        </div>
-      </section>
-
       <section>
         <h2 className="mb-2 text-[10px] uppercase tracking-widest" style={{ color: 'var(--text-muted)' }}>
           Version control
         </h2>
         {vc.isError && (
-          <p className="text-[12px]" style={{ color: 'var(--error)' }}>
-            failed to load /api/vc/status: {(vc.error as Error).message}
-          </p>
+          <div className="flex items-center gap-2 text-[12px]" style={{ color: 'var(--error)' }}>
+            <span>failed to load /api/vc/status: {(vc.error as Error).message}</span>
+            <button
+              onClick={() => vc.refetch()}
+              className="rounded border px-2 py-0.5 text-[11px]"
+              style={{ background: 'transparent', borderColor: 'var(--error)', color: 'var(--error)' }}
+            >
+              retry
+            </button>
+          </div>
         )}
         {vc.isLoading && (
           <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>loading…</p>
         )}
-        {vc.isSuccess && (
+        {vc.isSuccess && !vc.data.enabled && (
+          <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>
+            Version control is disabled. Set <code>vc.enabled: true</code> in <code>config.yaml</code> to track flow changes in git.
+          </p>
+        )}
+        {vc.isSuccess && vc.data.enabled && (
           <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-[12px]">
-            <dt style={{ color: 'var(--text-muted)' }}>enabled</dt>
-            <dd>{String(vc.data.enabled)}</dd>
-            {vc.data.enabled && (
+            {vc.data.branch && (
               <>
-                {vc.data.branch && (
-                  <>
-                    <dt style={{ color: 'var(--text-muted)' }}>branch</dt>
-                    <dd className="font-mono">{vc.data.branch}</dd>
-                  </>
-                )}
-                {vc.data.clean !== undefined && (
-                  <>
-                    <dt style={{ color: 'var(--text-muted)' }}>clean</dt>
-                    <dd>{String(vc.data.clean)}</dd>
-                  </>
-                )}
-                {typeof vc.data.ahead === 'number' && (
-                  <>
-                    <dt style={{ color: 'var(--text-muted)' }}>ahead</dt>
-                    <dd>{vc.data.ahead}</dd>
-                  </>
-                )}
-                {typeof vc.data.behind === 'number' && (
-                  <>
-                    <dt style={{ color: 'var(--text-muted)' }}>behind</dt>
-                    <dd>{vc.data.behind}</dd>
-                  </>
-                )}
+                <dt style={{ color: 'var(--text-muted)' }}>branch</dt>
+                <dd className="font-mono">{vc.data.branch}</dd>
+              </>
+            )}
+            {vc.data.clean !== undefined && (
+              <>
+                <dt style={{ color: 'var(--text-muted)' }}>working tree</dt>
+                <dd style={{ color: vc.data.clean ? 'var(--success)' : 'var(--warning)' }}>
+                  {vc.data.clean ? '✓ clean' : '● uncommitted changes'}
+                </dd>
+              </>
+            )}
+            {typeof vc.data.ahead === 'number' && (
+              <>
+                <dt style={{ color: 'var(--text-muted)' }} title="commits made locally that haven't been pushed to the remote">
+                  ahead of remote
+                </dt>
+                <dd>{vc.data.ahead === 0 ? 'in sync' : `${vc.data.ahead} commit${vc.data.ahead === 1 ? '' : 's'}`}</dd>
+              </>
+            )}
+            {typeof vc.data.behind === 'number' && (
+              <>
+                <dt style={{ color: 'var(--text-muted)' }} title="commits on the remote that haven't been pulled locally">
+                  behind remote
+                </dt>
+                <dd>{vc.data.behind === 0 ? 'in sync' : `${vc.data.behind} commit${vc.data.behind === 1 ? '' : 's'}`}</dd>
               </>
             )}
             {vc.data.error && (

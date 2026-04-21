@@ -74,9 +74,16 @@ export function MetricsPage() {
       </div>
 
       {q.isError && (
-        <p className="text-[12px]" style={{ color: 'var(--error)' }}>
-          failed to load /metrics: {(q.error as Error).message}
-        </p>
+        <div className="flex items-center gap-2 text-[12px]" style={{ color: 'var(--error)' }}>
+          <span>failed to load /metrics: {(q.error as Error).message}</span>
+          <button
+            onClick={() => q.refetch()}
+            className="rounded border px-2 py-0.5 text-[11px]"
+            style={{ background: 'transparent', borderColor: 'var(--error)', color: 'var(--error)' }}
+          >
+            retry
+          </button>
+        </div>
       )}
       {q.isLoading && (
         <p className="text-[12px]" style={{ color: 'var(--text-muted)' }}>loading…</p>

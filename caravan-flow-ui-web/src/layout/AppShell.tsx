@@ -29,7 +29,7 @@ export function AppShell({ current, onNavigate, children }: Props) {
           className="flex items-center gap-2 px-3 py-2"
           style={{ borderBottom: '1px solid var(--border)' }}
         >
-          <img src="/logo-mark.png" alt="" width={44} height={28} style={{ objectFit: 'contain' }} />
+          <img src="/logo-mark.png" alt="Caravan Flow" width={44} height={28} style={{ objectFit: 'contain' }} />
           <span className="text-[14px] font-semibold" style={{ color: 'var(--accent)' }}>
             caravan-flow
           </span>
@@ -41,11 +41,13 @@ export function AppShell({ current, onNavigate, children }: Props) {
               <button
                 key={item.id}
                 onClick={() => onNavigate(item.id)}
-                className="px-4 py-2 text-left transition-colors"
+                aria-current={active ? 'page' : undefined}
+                className="nav-btn px-4 py-2 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2"
                 style={{
-                  color: active ? '#fff' : '#b0b0c0',
+                  color: active ? '#fff' : 'var(--text-muted)',
                   background: active ? 'var(--surface-2)' : 'transparent',
                   borderLeft: active ? '3px solid var(--accent)' : '3px solid transparent',
+                  outlineColor: 'var(--accent)',
                 }}
               >
                 {item.label}
