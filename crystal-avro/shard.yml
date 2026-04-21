@@ -1,0 +1,16 @@
+name: avro
+version: 0.1.0
+
+authors:
+  - Vinit Joshi <vinit812010@gmail.com>
+
+description: |
+  Apache Avro 1.11 for Crystal — binary codec, JSON schema,
+  Object Container File (OCF). Hand-rolled, no reflection,
+  AOT-safe, works under preview_mt.
+
+crystal: ">= 1.20.0"
+
+license: MIT
+
+repository: https://github.com/CaravanScale/crystal-avro
