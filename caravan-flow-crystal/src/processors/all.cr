@@ -1,0 +1,26 @@
+# One-liner to import every built-in processor. Each `require` triggers
+# the file's top-level `register` macro call, which adds the type to the
+# module-level Registry. Add a new processor by creating its file and
+# appending the require here.
+
+require "./update_attribute"
+require "./generate_flowfile"
+require "./route_on_attribute"
+require "./log_attribute"
+require "./filter_attribute"
+require "./put_stdout"
+require "./put_file"
+require "./get_file"
+require "./split_text"
+require "./replace_text"
+require "./extract_text"
+require "./convert_json_to_record"
+require "./convert_record_to_json"
+require "./split_record"
+require "./extract_record_field"
+require "./convert_csv_to_record"
+require "./convert_record_to_csv"
+require "./evaluate_expression"
+require "./update_record"
+require "./route_record"
+require "./transform_record"

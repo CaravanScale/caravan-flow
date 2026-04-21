@@ -1,0 +1,23 @@
+port: 9092
+tick_interval_ms: 1000
+
+# Slice 3: serve the existing React bundle built by caravan-flow-ui-web.
+# The Vite build drops its output into caravan-flow-csharp/CaravanFlow/wwwroot
+# (see caravan-flow-ui-web/vite.config.ts:20). Crystal can serve the same
+# directory so the UI talks to the worker same-origin.
+ui_root: "../caravan-flow-csharp/CaravanFlow/wwwroot"
+
+nodes:
+  - name: gen
+    type: GenerateFlowFile
+    config:
+      content: "ping"
+      batch_size: "1"
+    routes:
+      success: [tag]
+
+  - name: tag
+    type: UpdateAttribute
+    config:
+      key: "env"
+      value: "prod"
