@@ -291,7 +291,7 @@ builder.Services.ConfigureHttpJsonOptions(options =>
     options.SerializerOptions.TypeInfoResolverChain.Insert(0, CaravanFlow.Core.CaravanJsonContext.Default);
 });
 
-// Permissive CORS — the Blazor WASM UI runs on its own dev-server
+// Permissive CORS — the React UI runs on its own Vite dev-server
 // port during development, and AllowAnyOrigin lets the bundle call
 // the management API from that separate origin. Production deployments
 // can narrow this down when the UI ships co-located with the worker.
@@ -333,19 +333,10 @@ if (!string.IsNullOrEmpty(authToken))
     });
 }
 
-// Blazor WASM bundle — CaravanFlow.UI's `dotnet publish` drops its
-// wwwroot/ into CaravanFlow/wwwroot/ (via build-ui.sh) and its
-// endpoint manifest into CaravanFlow/CaravanFlow.staticwebassets.endpoints.json.
-// MapStaticAssets reads the manifest, auto-generates dotnet.boot.js
-// at request time, and serves every asset (including the hashed
-// .wasm files) with correct Cache-Control + ETag + content-encoding
-// negotiation. Bundle lives at /; dashboard.html moves to /legacy.
-// Vite-built React bundle in wwwroot/. Plain UseStaticFiles is all we
-// need — Vite emits hashed asset filenames, so cache headers can be
-// far-future on /assets/* and no-cache on index.html. MapStaticAssets
-// (Blazor's magic manifest endpoint) is deliberately NOT used here:
-// we hit a content-encoding negotiation bug on .NET 10 where .br/.gz
-// variants got served with the wrong Content-Encoding header.
+// Vite-built React bundle (caravan-flow-ui-web) drops into wwwroot/
+// via its vite.config.ts outDir. Plain UseStaticFiles is all we need
+// — Vite emits hashed asset filenames, so cache headers can be
+// far-future on /assets/* and no-cache on index.html.
 bool uiHosted = !headless && manifestRoot is not null && Directory.Exists(Path.Combine(manifestRoot, "wwwroot"));
 if (headless)
 {
@@ -460,7 +451,7 @@ lifetime.ApplicationStopping.Register(() =>
 });
 
 // SPA fallback — any GET that wasn't matched above goes to index.html
-// so Blazor's client-side router handles /settings, /lineage, etc.
+// so the React client-side router handles /settings, /lineage, etc.
 // POST / (HTTP ingest) is unaffected because fallback only applies to
 // GET. Registered last so it doesn't shadow /api/* handlers.
 if (uiHosted)

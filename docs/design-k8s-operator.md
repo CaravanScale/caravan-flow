@@ -1,11 +1,9 @@
 # Design — caravan-flow k8s operator + multi-worker deployment
 
 > **Status (2026-04-17): PROPOSED.**
-> Supersedes [`caravan-flow-csharp/docs/design-fleet-ui.md`](../caravan-flow-csharp/docs/design-fleet-ui.md),
-> which had the UI binary talk directly to each worker. This design moves
-> fleet management behind an operator + aggregator split with the Flow CRD
-> as the source of truth, and preserves the single-binary standalone mode
-> unchanged.
+> Moves fleet management behind an operator + aggregator split with the
+> Flow CRD as the source of truth, and preserves the single-binary
+> standalone mode unchanged.
 
 ## Scope
 

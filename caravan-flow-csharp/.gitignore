@@ -13,10 +13,9 @@ CaravanFlow/CaravanFlow.Tests.csproj
 CaravanFlow/bin/
 CaravanFlow/obj/
 
-# Published Blazor WASM bundle — produced by `dotnet publish` on
-# CaravanFlow.UI and copied here for worker static-serving.
+# Built React bundle — produced by `vite build` in caravan-flow-ui-web
+# (outDir points here) and served by the worker as static assets.
 CaravanFlow/wwwroot/
-CaravanFlow/CaravanFlow.staticwebassets.endpoints.json
 
 # Test project generated files
 tests/Tests/CaravanFlow.Tests.csproj

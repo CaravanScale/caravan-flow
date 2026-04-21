@@ -113,11 +113,11 @@ Make caravan-flow useful for real workloads without requiring NATS or K8s. A sin
 - [ ] **Confluent wire format** — 1-byte magic + 4-byte schema ID prefix on Kafka messages. Different from OCF (which embeds the full schema). Defer until we have a Kafka source/sink.
 - [ ] **Apache Parquet support** — deferred; row-oriented flow model doesn't benefit from columnar storage. Revisit for one-shot batch ingest sources only.
 
-### Phase 2f: Fleet UI (SUPERSEDED)
+### Phase 2f: UI (React)
 
-Original Blazor-UI-binary plan is obsolete. React UI (`caravan-flow-ui-web`) has shipped phases 1 / 2a / 2b / 2c / 2d (Graph CRUD + observability views). Multi-worker management is now addressed by the operator + aggregator split captured in Phase 2g below.
+React UI (`caravan-flow-ui-web`) has shipped phases 1 / 2a / 2b / 2c / 2d (Graph CRUD + observability views). Multi-worker management is addressed by the operator + aggregator split in Phase 2g below.
 
-Predecessor design: [`caravan-flow-csharp/docs/design-fleet-ui.md`](caravan-flow-csharp/docs/design-fleet-ui.md) (marked superseded). Shipped UI slices:
+Shipped UI slices:
 - [x] **slice 1** (`1d75420`) — React + Vite + React Flow scaffold
 - [x] **2a** (`57874e4`) — editable drawer + Save-to-config button
 - [x] **2b** (`9d40917`) — add-processor dialog + empty-canvas CTA

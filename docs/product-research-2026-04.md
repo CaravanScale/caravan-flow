@@ -27,7 +27,6 @@ Built today (csharp):
 - 965 tests green under both JIT and AOT, zero analyzer warnings
 
 Not built (designed or deferred):
-- Fleet UI (Blazor WASM sibling binary) — designed, execution deferred
 - NATS multi-instance, K8s operator — Phase 3
 - Kafka / SQS / S3 / Postgres / ES connectors — Phase 4
 - RBAC + audit + multi-tenant — Phase 5

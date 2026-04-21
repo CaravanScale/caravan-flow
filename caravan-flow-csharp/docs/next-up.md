@@ -7,16 +7,16 @@ a concrete gap surfaces from running.
 
 ## Gating signal
 
-Waiting on UI approval to commit to Phase 2f (fleet UI). Once approved
-→ start with Phase 2f Phase 0 (worker-API prep). Until then, smaller
-standalone items are the backfill.
+React UI (`caravan-flow-ui-web`) has shipped phases 1 / 2a-2d. Remaining
+worker-API prep unblocks Phase 2g (aggregator + operator); until that's
+picked up, smaller standalone items are the backfill.
 
 ## Ranked options
 
-### 1. Phase 2f Phase 0 — worker-API prep (blocks real UI work)
-Estimate: ~1 week focused. Unblocks Blazor WASM sibling project.
+### 1. Phase 2g Phase 0 — worker-API prep (blocks aggregator/operator work)
+Estimate: ~1 week focused.
 
-Touch list (from `docs/design-fleet-ui.md` + `~/.claude/plans/kind-orbiting-moth.md`):
+Touch list (from `~/.claude/plans/kind-orbiting-moth.md`):
 - `ConfigLoader` with layered overlays (`config.yaml` ← `config.local.yaml` ← `secrets.yaml`)
 - `YamlEmitter` (round-trip write-back)
 - `ProcessorInfo.Version` (versioned processor types `type: Foo@1.2.0`)
@@ -41,12 +41,6 @@ Estimate: ~1 day. Small focused win.
 - Embedded registry currently loses runtime registrations on restart
 - Add optional file-backed store (JSON on disk, flushed on write)
 - Config-loaded schemas still come back from `schemas:` section as today
-
-## Not worth starting without approval
-
-- Full Phase 2f Phase 1 (Blazor WASM SPA) — blocked on Phase 0
-- Phase 2f Phase 2+3 (multi-worker, git integration) — blocked on Phase 1
-- Dashboard.html incremental upgrades (provenance panel, source start/stop) — would be thrown away once Blazor UI lands; only worth doing if fleet UI is rejected
 
 ## Deferred-until-concrete-need (no action)
 
