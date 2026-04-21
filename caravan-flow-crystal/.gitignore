@@ -2,3 +2,6 @@ bin/
 lib/
 .crystal/
 .shards/
+
+# Layout positions (per-user, worker auto-saves on /api/layout POST).
+layout.json

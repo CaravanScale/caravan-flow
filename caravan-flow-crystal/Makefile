@@ -5,18 +5,26 @@
 # want for a NiFi-style fabric that needs parallel processor exec.
 MT_FLAG := -Dpreview_mt
 
+# Extra link/runtime paths for libs installed via brew on the host
+# (zstd, pcre). The Alpine container build doesn't need these — they
+# come from apk packages and get static-linked.
+BREW_LIB := /home/linuxbrew/.linuxbrew/lib
+ZSTD_LIB := /home/linuxbrew/.linuxbrew/opt/zstd/lib
+PCRE_LIB := /home/linuxbrew/.linuxbrew/opt/pcre/lib
+HOST_LIBRARY_PATH := $(ZSTD_LIB):$(BREW_LIB):$(PCRE_LIB)
+
 build:
-	crystal build src/caravan_flow.cr -o bin/caravan-flow $(MT_FLAG)
+	CRYSTAL_LIBRARY_PATH=$(HOST_LIBRARY_PATH) crystal build src/caravan_flow.cr -o bin/caravan-flow $(MT_FLAG)
 
 build-release:
-	crystal build src/caravan_flow.cr -o bin/caravan-flow --release --no-debug $(MT_FLAG)
+	CRYSTAL_LIBRARY_PATH=$(HOST_LIBRARY_PATH) crystal build src/caravan_flow.cr -o bin/caravan-flow --release --no-debug $(MT_FLAG)
 	@ls -lh bin/caravan-flow
 
 run: build
-	CRYSTAL_WORKERS=4 ./bin/caravan-flow config.yml
+	LD_LIBRARY_PATH=$(HOST_LIBRARY_PATH) CRYSTAL_WORKERS=4 ./bin/caravan-flow config.yml
 
 test:
-	crystal spec $(MT_FLAG)
+	CRYSTAL_LIBRARY_PATH=$(HOST_LIBRARY_PATH) crystal spec $(MT_FLAG)
 
 # Fully static, portable-to-any-Linux binary via Alpine+Crystal container.
 # Use this for distribution — no brew / glibc coupling to the host.

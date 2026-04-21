@@ -17,7 +17,8 @@ RUN apk add --no-cache \
     libxml2-static \
     xz-static \
     zlib-static \
-    openssl-libs-static
+    openssl-libs-static \
+    zstd-static zstd-dev
 
 WORKDIR /src
 

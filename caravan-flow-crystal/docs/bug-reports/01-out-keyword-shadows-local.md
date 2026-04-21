@@ -164,3 +164,12 @@ was an hour of debugging. A clear error message pointing at the
 actual token — something like "`out` is reserved for C-FFI
 out-parameters; rename the local or use parentheses" — would save
 future users that time.
+
+### Postscript: we hit it again
+
+Writing a `DecompressContent` processor a day after filing this report,
+using `IO.copy(gz, out)` as a perfectly reasonable local variable for
+the destination IO — the same error fired again. Muscle memory for
+`out` as "receiver / output" is extremely strong; a rename is the
+right reflex, but most Crystal users won't have written this report
+yesterday. A clearer error message would really help.
