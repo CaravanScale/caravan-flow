@@ -8,9 +8,9 @@ describe UpdateAttribute do
     proc.process(ff)
 
     ff.attributes["env"].should eq "prod"
-    out = proc.drain_outbox
-    out.size.should eq 1
-    out.first[0].should eq "success"
+    emitted = proc.drain_outbox
+    emitted.size.should eq 1
+    emitted.first[0].should eq "success"
   end
 
   it "raises on missing required params" do
