@@ -81,28 +81,6 @@ final class OverlaysHttpTest {
     }
 
     @Test
-    void writeSecretsPersistsToDisk(@TempDir Path dir) throws Exception {
-        Path baseYaml = dir.resolve("config.yaml");
-        Files.writeString(baseYaml, """
-                flow:
-                  entryPoints: [a]
-                  processors:
-                    a:
-                      type: LogAttribute
-                """);
-        server = boot(baseYaml);
-
-        var resp = put("/api/overlays/secrets",
-                "{\"flow\":{\"processors\":{\"a\":{\"config\":{\"token\":\"T\"}}}}}");
-        assertEquals(200, resp.statusCode(), resp.body());
-
-        Path written = dir.resolve("secrets.yaml");
-        assertTrue(Files.exists(written), "secrets.yaml should be created alongside config.yaml");
-        String content = Files.readString(written);
-        assertTrue(content.contains("token"), content);
-    }
-
-    @Test
     void overlaysWithoutConfigLoaderReturns503() throws Exception {
         // Boot without a loader — the GET should surface 503 rather than a NPE.
         var pipeline = new Pipeline(PipelineGraph.empty());
@@ -112,11 +90,14 @@ final class OverlaysHttpTest {
     }
 
     @Test
-    void secretsWriteRejectsNonObjectBody(@TempDir Path dir) throws Exception {
+    void writeSecretsEndpointIsRetired(@TempDir Path dir) throws Exception {
         Path baseYaml = dir.resolve("config.yaml");
         Files.writeString(baseYaml, "flow:\n  entryPoints: [a]\n  processors:\n    a: {type: LogAttribute}\n");
         server = boot(baseYaml);
-        var resp = put("/api/overlays/secrets", "[1,2,3]");
-        assertEquals(400, resp.statusCode());
+        var resp = put("/api/overlays/secrets",
+                "{\"flow\":{\"processors\":{\"a\":{\"config\":{\"token\":\"T\"}}}}}");
+        assertEquals(404, resp.statusCode());
+        assertFalse(Files.exists(dir.resolve("secrets.yaml")),
+                "retired endpoint must not write secrets.yaml to disk");
     }
 }

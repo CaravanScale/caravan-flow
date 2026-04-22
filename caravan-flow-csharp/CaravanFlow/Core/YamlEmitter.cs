@@ -9,9 +9,9 @@ namespace CaravanFlow.Core;
 /// configs. Used by <c>POST /api/flow/save</c> to serialize the
 /// runtime graph back into <c>config.yaml</c>.
 ///
-/// Uses YamlDotNet's low-level <c>IEmitter</c> — same AOT-safe path as
-/// <see cref="Overlay.WriteSecrets"/>. No reflection, no dynamic code;
-/// compatible with the worker's native-AOT build.
+/// Uses YamlDotNet's low-level <c>IEmitter</c> — token-based, AOT-safe;
+/// no reflection, no dynamic code — so the worker's native-AOT build
+/// stays free of reflection dependencies.
 ///
 /// Output shape is the canonical separated layout enforced by the
 /// parity cohort: <c>flow.entryPoints</c> list, <c>flow.processors</c>

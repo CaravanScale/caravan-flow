@@ -1,20 +1,15 @@
-using System.Text;
-using YamlDotNet.Core;
-using YamlDotNet.Core.Events;
-
 namespace CaravanFlow.Core;
 
 /// <summary>
-/// Loads a base config plus optional local / secrets overlays and
-/// deep-merges them into a single effective config. Tracks which
-/// layer supplied each dot-path so <c>GET /api/overlays</c> can
-/// report provenance.
+/// Loads a base config plus optional local / (legacy) secrets overlays
+/// and deep-merges them into a single effective config. Tracks which
+/// layer supplied each dot-path so <c>GET /api/overlays</c> can report
+/// provenance.
 ///
 /// Layer order (later wins): base ← local ← secrets.
 ///
 /// Overlay paths come from (in order):
-///   1. Explicit argument (used by tests and the admin API's
-///      <c>PUT /api/overlays/secrets</c> write-through path).
+///   1. Explicit argument (used by tests).
 ///   2. Environment variable (<c>CARAVANFLOW_CONFIG_LOCAL</c>,
 ///      <c>CARAVANFLOW_SECRETS_PATH</c>).
 ///   3. Sibling of the base config (<c>config.local.yaml</c>,
@@ -23,9 +18,11 @@ namespace CaravanFlow.Core;
 /// A missing file at any layer is not an error — the layer simply
 /// contributes an empty map.
 ///
-/// Mirrors caravan-flow-java's <c>ConfigOverlay</c> shape so the
-/// HTTP surface (<c>GET /api/overlays</c>, <c>PUT /api/overlays/secrets</c>)
-/// returns the same JSON on both tracks.
+/// The <c>secrets</c> layer is read-only legacy: the on-disk write
+/// endpoint was retired and operators are expected to supply secrets
+/// via environment variables. The read path is kept so existing
+/// <c>secrets.yaml</c> files continue to merge, but no new secrets.yaml
+/// files are produced by the worker.
 /// </summary>
 public static class Overlay
 {
@@ -168,67 +165,4 @@ public static class Overlay
         return v;
     }
 
-    /// <summary>
-    /// Write a YAML document representing the secrets overlay to disk.
-    /// Used by <c>PUT /api/overlays/secrets</c>. Caller passes the
-    /// sanitized secrets map — this method does not re-layer.
-    ///
-    /// Uses YamlDotNet's low-level IEmitter (token-based, AOT-safe;
-    /// no reflection or dynamic code) so the native binary keeps its
-    /// no-reflection guarantee.
-    /// </summary>
-    public static void WriteSecrets(string path, Dictionary<string, object?>? secrets)
-    {
-        if (string.IsNullOrEmpty(path)) throw new ArgumentException("secrets path must not be null or empty");
-        var parent = System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(path));
-        if (!string.IsNullOrEmpty(parent)) Directory.CreateDirectory(parent);
-
-        var sb = new StringBuilder();
-        using (var sw = new StringWriter(sb))
-        {
-            var emitter = new Emitter(sw);
-            emitter.Emit(new StreamStart());
-            emitter.Emit(new DocumentStart());
-            EmitValue(emitter, secrets ?? new Dictionary<string, object?>());
-            emitter.Emit(new DocumentEnd(isImplicit: true));
-            emitter.Emit(new StreamEnd());
-        }
-        File.WriteAllText(path, sb.ToString());
-    }
-
-    private static void EmitValue(IEmitter emitter, object? v)
-    {
-        switch (v)
-        {
-            case null:
-                emitter.Emit(new Scalar(null, null, "null", ScalarStyle.Plain, isPlainImplicit: true, isQuotedImplicit: false));
-                break;
-            case Dictionary<string, object?> map:
-                emitter.Emit(new MappingStart(null, null, isImplicit: true, MappingStyle.Block));
-                foreach (var (k, inner) in map)
-                {
-                    emitter.Emit(new Scalar(null, null, k, ScalarStyle.Plain, isPlainImplicit: true, isQuotedImplicit: false));
-                    EmitValue(emitter, inner);
-                }
-                emitter.Emit(new MappingEnd());
-                break;
-            case List<object?> list:
-                emitter.Emit(new SequenceStart(null, null, isImplicit: true, SequenceStyle.Block));
-                foreach (var inner in list) EmitValue(emitter, inner);
-                emitter.Emit(new SequenceEnd());
-                break;
-            case bool b:
-                emitter.Emit(new Scalar(null, null, b ? "true" : "false", ScalarStyle.Plain, isPlainImplicit: true, isQuotedImplicit: false));
-                break;
-            default:
-                // Strings get double-quoted — secrets contain special chars often
-                // enough that unquoted strings would be a foot-gun. Non-string
-                // scalars (numbers) go out plain.
-                if (v is string s)
-                    emitter.Emit(new Scalar(null, null, s, ScalarStyle.DoubleQuoted, isPlainImplicit: false, isQuotedImplicit: true));
-                else
-                    emitter.Emit(new Scalar(null, null, v.ToString() ?? "", ScalarStyle.Plain, isPlainImplicit: true, isQuotedImplicit: false));
-                break;
-        }
-    }
 }

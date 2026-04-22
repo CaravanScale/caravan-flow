@@ -85,22 +85,6 @@ final class ConfigOverlayTest {
     }
 
     @Test
-    void secretsWriteRoundTrips(@TempDir Path dir) throws Exception {
-        Path base = dir.resolve("config.yaml");
-        Files.writeString(base, "a: base\n");
-        Path secrets = dir.resolve("secrets.yaml");
-
-        ConfigOverlay.writeSecrets(secrets, Map.of(
-                "flow", Map.of("processors", Map.of("put-http",
-                        Map.of("config", Map.of("token", "NEW"))))));
-        assertTrue(Files.exists(secrets));
-
-        var resolved = ConfigOverlay.load(base, null, secrets);
-        Map<String, Object> cfg = mapUnder(resolved.effective(), "flow", "processors", "put-http", "config");
-        assertEquals("NEW", cfg.get("token"));
-    }
-
-    @Test
     void blankYamlLayerIsEmpty(@TempDir Path dir) throws Exception {
         Path base = dir.resolve("config.yaml");
         Files.writeString(base, "a: base\n");

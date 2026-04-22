@@ -28,6 +28,11 @@ import java.util.Map;
 ///
 /// A missing file at any layer is not an error — the layer simply
 /// contributes an empty map.
+///
+/// The {@code secrets} layer is read-only legacy: the on-disk write
+/// endpoint was retired in favor of environment variables. The read
+/// path is kept so existing {@code secrets.yaml} files continue to
+/// merge, but no new secrets.yaml files are produced by the worker.
 public final class ConfigOverlay {
 
     private static final Logger log = LoggerFactory.getLogger(ConfigOverlay.class);
@@ -171,16 +176,4 @@ public final class ConfigOverlay {
         return v;
     }
 
-    /// Writes a YAML document representing the secrets overlay to
-    /// disk. Used by {@code PUT /api/overlays/secrets}. Caller is
-    /// responsible for passing the sanitized, already-merged map —
-    /// this method does not re-layer.
-    public static void writeSecrets(Path path, Map<String, Object> secrets) throws IOException {
-        if (path == null) throw new IllegalArgumentException("secrets path must not be null");
-        Path parent = path.toAbsolutePath().getParent();
-        if (parent != null) Files.createDirectories(parent);
-        String dumped = new Yaml().dumpAsMap(secrets == null ? Map.of() : secrets);
-        Files.writeString(path, dumped);
-        log.info("wrote secrets overlay to {}", path);
-    }
 }

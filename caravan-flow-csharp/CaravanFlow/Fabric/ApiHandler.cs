@@ -72,9 +72,10 @@ public sealed class ApiHandler
         app.MapPost("/api/sources/start", StartSource);
         app.MapPost("/api/sources/stop", StopSource);
 
-        // Overlay stack: base ← config.local.yaml ← secrets.yaml
+        // Overlay stack: base ← config.local.yaml ← (legacy) secrets.yaml.
+        // The secrets layer is read-only here — secrets move to env vars;
+        // the on-disk write endpoint was retired.
         app.MapGet("/api/overlays", Overlays);
-        app.MapPut("/api/overlays/secrets", WriteSecretsOverlay);
 
         // Version control (opt-in via vc.enabled=true in config.yaml)
         app.MapGet("/api/vc/status", VcStatus);
@@ -446,35 +447,6 @@ public sealed class ApiHandler
             ["effective"] = _resolvedOverlay.Effective,
             ["provenance"] = _resolvedOverlay.Provenance
         });
-    }
-
-    private async Task<IResult> WriteSecretsOverlay([FromBody] Dictionary<string, object?>? body)
-    {
-        if (_resolvedOverlay is null)
-            return Json(new Dictionary<string, object?> { ["error"] = "overlay info unavailable — worker booted without a config loader" });
-        if (body is null)
-            return Json(new Dictionary<string, object?> { ["error"] = "request body must be a JSON object" });
-
-        var secretsLayer = _resolvedOverlay.Layers.FirstOrDefault(l => l.Role == "secrets");
-        var secretsPath = secretsLayer?.Path;
-        if (string.IsNullOrEmpty(secretsPath))
-            return Json(new Dictionary<string, object?> { ["error"] = "no secrets path resolved" });
-
-        try
-        {
-            Overlay.WriteSecrets(secretsPath, body);
-            return Json(new Dictionary<string, object?>
-            {
-                ["status"] = "written",
-                ["path"] = secretsPath,
-                ["keys"] = body.Count
-            });
-        }
-        catch (Exception ex)
-        {
-            return Json(new Dictionary<string, object?> { ["error"] = $"failed to write secrets: {ex.Message}" });
-        }
-        finally { await Task.CompletedTask; }
     }
 
     // --- Version control (opt-in via vc.enabled=true in config.yaml) ---

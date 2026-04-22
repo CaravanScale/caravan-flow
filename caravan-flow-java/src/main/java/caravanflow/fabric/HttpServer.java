@@ -140,7 +140,6 @@ public final class HttpServer {
                 .put("/api/connections/{from}",        this::handleSetConnections)
                 .put("/api/entrypoints",               this::handleSetEntryPoints)
                 .get("/api/overlays",                  this::handleOverlays)
-                .put("/api/overlays/secrets",          this::handleWriteSecrets)
                 .get("/api/processor-types",           this::handleProcessorTypes)
                 .get("/api/processor-types/{name}",    this::handleProcessorType)
                 .post("/api/flow/save",                this::handleFlowSave)
@@ -927,46 +926,6 @@ public final class HttpServer {
         ctx.contentType("application/json").result(json.writeValueAsBytes(body));
     }
 
-    @SuppressWarnings("unchecked")
-    private void handleWriteSecrets(Context ctx) throws Exception {
-        if (loader == null || loader.lastOverlay() == null) {
-            writeError(ctx, 503, "overlay info unavailable — server started without a config loader");
-            return;
-        }
-        Object parsed;
-        try {
-            parsed = json.readValue(ctx.bodyAsBytes(), Object.class);
-        } catch (Exception ex) {
-            writeError(ctx, 400, "invalid json body: " + ex.getMessage());
-            return;
-        }
-        if (!(parsed instanceof Map<?, ?> rawMap)) {
-            writeError(ctx, 400, "request body must be a JSON object");
-            return;
-        }
-        Map<String, Object> secrets = new LinkedHashMap<>();
-        for (Map.Entry<?, ?> entry : rawMap.entrySet()) {
-            secrets.put(String.valueOf(entry.getKey()), entry.getValue());
-        }
-        Path secretsPath = loader.lastOverlay().layers().stream()
-                .filter(l -> "secrets".equals(l.role()))
-                .map(ConfigOverlay.Layer::path)
-                .findFirst()
-                .orElse(null);
-        if (secretsPath == null) {
-            writeError(ctx, 503, "no secrets path resolved");
-            return;
-        }
-        try {
-            ConfigOverlay.writeSecrets(secretsPath, secrets);
-        } catch (IOException ex) {
-            writeError(ctx, 500, "failed to write secrets overlay: " + ex.getMessage());
-            return;
-        }
-        ctx.status(200).contentType("application/json").result(json.writeValueAsBytes(
-                Map.of("status", "written", "path", secretsPath.toString(), "keys", secrets.size())));
-    }
-
     // --- Plugins ---
 
     private volatile PluginLoader.Summary currentPlugins = null;
@@ -1084,7 +1043,7 @@ public final class HttpServer {
                 "GET /api/plugins", "POST /api/plugins/reload",
                 "POST /api/connections", "DELETE /api/connections",
                 "PUT /api/connections/{from}", "PUT /api/entrypoints",
-                "GET /api/overlays", "PUT /api/overlays/secrets",
+                "GET /api/overlays",
                 "GET /api/processor-types", "GET /api/processor-types/{name}",
                 "POST /api/flow/save", "GET /api/identity",
                 "PUT /api/processors/{name}/config",
