@@ -2,6 +2,8 @@
 
 Lightweight data flow engine inspired by Apache NiFi (processor model), Apache Camel (direct pipeline execution), and NiFi Stateless (ephemeral, no inter-stage queues).
 
+This document describes the **C# reference runtime** (`caravan-flow-csharp/`) — the golden track. The Java (`caravan-flow-java/`) and Crystal (`caravan-flow-crystal/`) runtimes implement the same execution model (FlowFile, ProcessorResult variants, DAG traversal, failure routing), the same YAML config shape, and the same HTTP management API contract, so the React UI (`caravan-flow-ui-web/`) drives any of them same-origin. Track-specific deltas: Java uses `ServiceLoader` + `plugin-dirs/` for runtime extensibility (no AOT); Crystal uses a compile-time macro registry (`src/processor.cr#register`) and `spawn {}` over `preview_mt` workers. Naming differs by language idiom — C# uses C#-cased class names, Crystal `snake_case` files — but the contract is shared.
+
 ---
 
 ## Design Principles

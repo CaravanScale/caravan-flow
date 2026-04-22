@@ -164,9 +164,10 @@ caravan-flow combines ideas from **NiFi** (processor model, FlowFile abstraction
 - Failure routing in-graph via connections (no external DLQ)
 
 Lighter weight than NiFi:
-- No Java, no JVM — compiles to native binary (Go, C# AOT, Python)
+- Three interoperable runtime tracks: C# .NET 10 AOT (~28 MB, golden), Crystal 1.20 static (~7 MB, compact), Java JVM (enterprise extensibility). All three share the same config shape, HTTP contract, and React UI.
+- No mandatory JVM — C# and Crystal ship single static binaries with zero external deps; Java is available for orgs that need JVM ops + ServiceLoader plugins.
 - No distributed cluster — single process, scale by decomposition + NATS
-- No visual UI (yet) — YAML + management API + Prometheus metrics
+- Visual UI via `caravan-flow-ui-web` (React + React Flow) — drag palette, wired connections, per-processor config wizards; served by any of the three runtimes same-origin.
 - No content repository — inline for small data, content store claims for large data
 
 Key differences from Flink/Spark/Beam:

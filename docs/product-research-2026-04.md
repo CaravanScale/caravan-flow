@@ -6,9 +6,11 @@ caravan-flow was built with a gov / NiFi-replacement shape in mind (IRS-style ro
 
 **Not an implementation plan.** The deliverable here is a ranked list of product concepts with tradeoffs + a recommended direction. Once a direction is chosen, a separate plan and commit supersede this snapshot.
 
+> **Update (late April 2026):** the runtime mix has changed since this was drafted — Go and Python 3.14t were retired and a Crystal 1.20 track was added. The product concepts below (notably Concept 1 "caravan-edge" which assumed the Go binary, and Concept 3 "caravan-ml" which assumed the Python runtime) would need re-grounding against the current C# / Java / Crystal set before being pursued. The market-landscape analysis is otherwise unchanged.
+
 ## What caravan-flow is today (snapshot)
 
-Three runtimes — **Go (11 MB, 599K ff/s)**, **C# AOT (27 MB, 2M+ ff/s, zero-GC steady-state)**, **Python 3.14t (14 MB, 95K ff/s, pandas/numpy/sklearn)**. Csharp is the gold reference; Go is catching up; Python is Phase 1 shape.
+Three runtimes — **C# .NET 10 AOT (~27 MB, 2M+ ff/s, zero-GC steady-state)** is the gold reference, **Java (JVM, ServiceLoader + overlay plugin model)** is the enterprise-extensibility compromise, and **Crystal 1.20 static (`preview_mt`, ~7 MB)** is the compact-binary track — it recently reached full processor parity with the C# reference (32 processors) via a compile-time macro registry plus sibling `crystal-avro` and `crystal-jsonpath` shards. (Earlier Go and Python 3.14t tracks from the prior pivot have been retired.)
 
 Built today (csharp):
 - 24 processors across attribute/text/record/Avro/routing/expression

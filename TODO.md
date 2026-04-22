@@ -15,10 +15,12 @@
 - Prometheus /metrics, provenance tracking, structured logging
 - Graceful shutdown on SIGTERM/SIGINT
 
-**Three runtimes:**
-- **Go** — 11MB static binary, 599K ff/s, zero deps. Edge, embedded, performance-critical.
-- **C# .NET 10** — 27MB AOT binary, 2M+ ff/s, zero GC during execution. Maximum throughput, .NET ecosystems. 925 tests pass under both JIT and AOT, zero analyzer warnings.
-- **Python 3.14t** — 14MB native binary, 95K ff/s, pandas/numpy/sklearn integration. Python orgs.
+**Three runtimes (current):**
+- **C# .NET 10 (golden)** — ~27 MB AOT binary, 2M+ ff/s, zero GC during execution. Maximum throughput, .NET ecosystems. 965 tests pass under both JIT and AOT, zero analyzer warnings.
+- **Java (enterprise)** — JVM, ServiceLoader-based plugins, overlay config. For orgs with JVM ops + extensibility needs.
+- **Crystal (compact)** — ~7 MB static Linux binary via Crystal 1.20 `preview_mt`. Full parity with the C# reference (32 processors). Sibling shards `crystal-avro` and `crystal-jsonpath` cover the codec/expression gaps that C# hand-rolled.
+
+(The earlier Go and Python 3.14t runtimes were retired; references to them below are historical context from the pre-pivot roadmap.)
 
 ---
 

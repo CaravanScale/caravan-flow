@@ -5,10 +5,19 @@
 # Caravan Flow
 
 Visual dataflow engine for domain experts. NiFi-style canvas, Camel-style
-composition, AOT-compiled edge runtime. Built on [Caravan](https://github.com/CaravanScale/caravan)
-and compiled via [caravan-csharp](https://github.com/CaravanScale/caravan/tree/master/caravan-csharp)
-to a 28 MB .NET 10 native binary that drops on a Raspberry Pi and also
-scales out as a stateless worker pod in k8s.
+composition, three interoperable runtime tracks sharing one HTTP contract
+and one React UI:
+
+- **C# .NET 10 (golden track)** — ~28 MB native AOT binary, zero external
+  deps, drops on a Raspberry Pi and scales out as a stateless worker pod
+  in k8s. Built via [caravan-csharp](https://github.com/CaravanScale/caravan/tree/master/caravan-csharp).
+- **Java (enterprise track)** — JVM runtime with ServiceLoader-based
+  plugins and `plugin-dirs/` overlays, for orgs with JVM-shaped ops and
+  extensibility requirements.
+- **Crystal (compact track)** — ~7 MB static Linux binary via Crystal
+  1.20 + `preview_mt`, full parity with the C# reference (32 processors).
+  Ships two sibling shards: `crystal-avro` (OCF + binary codec) and
+  `crystal-jsonpath` (RFC 9535 subset).
 
 ## What's in the box
 
@@ -83,6 +92,9 @@ wizards that remove the need to write expression strings at all.
 caravan-flow/
 ├── caravan-flow-csharp/       — C# .NET 10 AOT runtime (golden track)
 ├── caravan-flow-java/         — Java JVM runtime (enterprise extensibility)
+├── caravan-flow-crystal/      — Crystal 1.20 runtime (compact static binary)
+├── crystal-avro/              — Avro JSON schema + binary + OCF shard
+├── crystal-jsonpath/          — JSONPath (RFC 9535 subset) shard
 ├── caravan-flow-ui-web/       — React graph canvas + palette (shared UI)
 ├── caravan-flow-ui-java/      — legacy Java UI (pre-React)
 ├── caravan-flow-shared/       — cross-track shared definitions
@@ -101,9 +113,11 @@ caravan-flow/
 
 ## Status
 
-Core runtime is production-grade on both tracks. Visual programming
-surface (palette + drag-drop + typed forms) is usable end-to-end. The
-k8s operator + aggregator, domain-expert UI wizards, and additional
+Core runtime is production-grade on C# and Java; the Crystal track has
+reached full processor parity (32 types) with the C# reference and
+shares the same HTTP contract + React UI. Visual programming surface
+(palette + drag-drop + typed forms) is usable end-to-end. The k8s
+operator + aggregator, domain-expert UI wizards, and additional
 integrations (MQTT, Kafka, SQL, S3) are scoped but gated on concrete
 requirements — see the roadmap docs above.
 
