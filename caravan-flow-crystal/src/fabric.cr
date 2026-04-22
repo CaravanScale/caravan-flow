@@ -234,6 +234,46 @@ class Fabric
     }.to_json).as_h
   end
 
+  # 3-color DFS cycle detection over the current connection graph.
+  # Returns nil if the DAG is acyclic, or the cycle's node chain if not
+  # (as "a → b → c → a"). Caller decides what to do with the result —
+  # startup treats it as fatal; hot-reload logs it and skips the swap.
+  def find_cycle : String?
+    white = Set(String).new(@nodes.keys)
+    gray = Set(String).new
+    stack = [] of String
+
+    visit = uninitialized Proc(String, String?)
+    visit = ->(name : String) : String? {
+      return nil unless white.includes?(name)
+      white.delete(name)
+      gray << name
+      stack << name
+      node = @nodes[name]?
+      if node
+        node.routes.each_value do |targets|
+          targets.each do |t|
+            if gray.includes?(t)
+              idx = stack.index(t) || 0
+              return (stack[idx..] + [t]).join(" → ")
+            end
+            cycle = visit.call(t)
+            return cycle if cycle
+          end
+        end
+      end
+      gray.delete(name)
+      stack.pop
+      nil
+    }
+
+    @nodes.each_key do |n|
+      cycle = visit.call(n)
+      return cycle if cycle
+    end
+    nil
+  end
+
   def stats_map : Hash(String, NamedTuple(processed: Int64, errors: Int64, state: String))
     result = {} of String => NamedTuple(processed: Int64, errors: Int64, state: String)
     @nodes.values.each do |n|

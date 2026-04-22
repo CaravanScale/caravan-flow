@@ -15,8 +15,13 @@ require "json"
 #   fn_call := ident '(' (expr (',' expr)*)? ')'
 #
 # ident lookup order: context.record fields → context.attributes →
-# a few built-in keywords (true/false/null). Functions: upper, lower,
-# trim, length, substring, concat, int, double, isNull, isEmpty, if.
+# a few built-in keywords (true/false/null). Functions mirror the
+# caravan-csharp EL:
+#   string : upper, lower, trim, length, substring, replace, concat,
+#            contains, startsWith, endsWith
+#   casts  : int, long, double, string, bool
+#   null   : isNull, isEmpty, coalesce, if
+#   math   : abs, min, max, floor, ceil, round, pow, sqrt
 #
 # This is a tree-walking interpreter — no bytecode. Hot loops would
 # cache the parsed AST on the processor (see EvaluateExpression).
@@ -160,16 +165,60 @@ module Expr
         j = vals.size > 2 ? (vals[2]?.try(&.to_s.to_i?) || s.size) : s.size
         s[i...j]? || ""
       when "concat"   then vals.map(&.to_s).join
-      when "int"      then vals[0].to_s.to_i64? || 0_i64
+      when "replace"  then vals[0].to_s.gsub(vals[1].to_s, vals[2].to_s)
+      when "int", "long" then vals[0].to_s.to_i64? || 0_i64
       when "double"   then vals[0].to_s.to_f? || 0.0
+      when "string"   then vals[0].nil? ? "" : vals[0].to_s
+      when "bool"     then truthy?(vals[0])
       when "isNull"   then vals[0].nil?
       when "isEmpty"  then vals[0].nil? || vals[0].to_s.empty?
+      when "coalesce" then vals.find { |v| !v.nil? }
       when "contains" then vals[0].to_s.includes?(vals[1].to_s)
       when "startsWith" then vals[0].to_s.starts_with?(vals[1].to_s)
       when "endsWith" then vals[0].to_s.ends_with?(vals[1].to_s)
       when "if"       then truthy?(vals[0]) ? vals[1] : vals[2]
+      when "abs"      then numeric_abs(vals[0])
+      when "min"      then numeric_reduce(vals) { |a, b| a < b ? a : b }
+      when "max"      then numeric_reduce(vals) { |a, b| a > b ? a : b }
+      when "floor"    then to_float(vals[0]).floor.to_i64
+      when "ceil"     then to_float(vals[0]).ceil.to_i64
+      when "round"    then to_float(vals[0]).round.to_i64
+      when "pow"      then to_float(vals[0]) ** to_float(vals[1])
+      when "sqrt"     then Math.sqrt(to_float(vals[0]))
       else raise "Expr: unknown function '#{@name}'"
       end
+    end
+
+    # Float coercion for math functions. Nil / unparseable → 0.0.
+    private def to_float(v : Value) : Float64
+      case v
+      when Int64   then v.to_f64
+      when Float64 then v
+      when Bool    then v ? 1.0 : 0.0
+      when String  then v.to_f64? || 0.0
+      when Nil     then 0.0
+      else              0.0
+      end.as(Float64)
+    end
+
+    # `abs` preserves integer-ness when the arg was Int64 so routing
+    # expressions comparing `abs(delta) < 3` stay int-shaped.
+    private def numeric_abs(v : Value) : Value
+      case v
+      when Int64   then v.abs
+      when Float64 then v.abs
+      else              to_float(v).abs
+      end
+    end
+
+    # min/max over a variadic numeric list. Mixed int/float returns the
+    # numerically-smaller/larger value as a Float64 — matches C# EL.
+    private def numeric_reduce(vals : Array(Value), & : Float64, Float64 -> Float64) : Value
+      raise "Expr: min/max requires at least one argument" if vals.empty?
+      any_float = vals.any? { |v| v.is_a?(Float64) }
+      floats = vals.map { |v| to_float(v) }
+      result = floats.reduce { |a, b| yield a, b }
+      any_float ? result : result.to_i64
     end
 
     private def truthy?(v : Value) : Bool

@@ -52,6 +52,7 @@ class ApiServer
     if method == "GET"
       return json_out(ctx) { Registry.metas.to_json(ctx.response) } if path == "/api/registry"
       return json_out(ctx) { @fabric.flow.to_json(ctx.response) } if path == "/api/flow"
+      return json_out(ctx) { stats_body(ctx) } if path == "/api/stats"
       return json_out(ctx) { @fabric.stats_map.to_json(ctx.response) } if path == "/api/processor-stats"
       return json_out(ctx) { flow_status_body(ctx) } if path == "/api/flow/status"
       return json_out(ctx) { EdgeStats.snapshot.to_json(ctx.response) } if path == "/api/edge-stats"
@@ -59,6 +60,8 @@ class ApiServer
       return json_out(ctx) { overlays_body(ctx) } if path == "/api/overlays"
       return json_out(ctx) { {enabled: false}.to_json(ctx.response) } if path == "/api/vc/status"
       return json_out(ctx) { {positions: @layout.get, path: @layout.path}.to_json(ctx.response) } if path == "/api/layout"
+      return health(ctx) if path == "/health"
+      return readyz(ctx) if path == "/readyz"
       return prometheus(ctx) if path == "/metrics"
 
       if path == "/api/provenance"
@@ -211,6 +214,62 @@ class ApiServer
       lastSavedAgoMs:   nil,
     }
     body.to_json(ctx.response)
+  end
+
+  # Fabric-wide stats mirroring caravan-csharp's GET /api/stats shape.
+  # Active-execution tracking isn't wired in Crystal (dispatch fire-and-
+  # forgets through `spawn`), so the count is reported as 0 — keep the
+  # key so the UI renders without a conditional.
+  private def stats_body(ctx) : Nil
+    total = 0_i64
+    source_count = 0
+    @fabric.nodes.each_value do |n|
+      total += n.processed.get
+      meta = Registry.metas.find { |m| m.name == n.type }
+      source_count += 1 if meta.try(&.kind) == "source"
+    end
+    {
+      processed:         total,
+      activeExecutions:  0,
+      processors:        @fabric.nodes.size,
+      sources:           source_count,
+    }.to_json(ctx.response)
+  end
+
+  # Liveness — process is up, sources listed but no readiness gating.
+  # K8s livenessProbe target.
+  private def health(ctx) : Nil
+    sources = [] of NamedTuple(name: String, type: String, running: Bool)
+    @fabric.nodes.each_value do |n|
+      meta = Registry.metas.find { |m| m.name == n.type }
+      next unless meta.try(&.kind) == "source"
+      sources << {name: n.name, type: n.type, running: n.enabled?}
+    end
+    ctx.response.content_type = "application/json"
+    {status: "healthy", sources: sources}.to_json(ctx.response)
+  end
+
+  # Readiness — process alive + ≥1 processor + every source running.
+  # Returns 503 when not ready so k8s gates service traffic.
+  private def readyz(ctx) : Nil
+    proc_count = @fabric.nodes.size
+    sources = [] of NamedTuple(name: String, type: String, running: Bool)
+    not_running = [] of String
+    @fabric.nodes.each_value do |n|
+      meta = Registry.metas.find { |m| m.name == n.type }
+      next unless meta.try(&.kind) == "source"
+      sources << {name: n.name, type: n.type, running: n.enabled?}
+      not_running << n.name unless n.enabled?
+    end
+    ready = proc_count > 0 && not_running.empty?
+    ctx.response.status_code = ready ? 200 : 503
+    ctx.response.content_type = "application/json"
+    {
+      ready:              ready,
+      processors:         proc_count,
+      sourcesTotal:       sources.size,
+      sourcesNotRunning:  not_running,
+    }.to_json(ctx.response)
   end
 
   private def sources_body(ctx) : Nil

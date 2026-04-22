@@ -44,6 +44,11 @@ STDOUT.puts "[boot] config: #{config_path}"
 
 cfg = load_config(config_path)
 fabric = build_fabric_from(cfg)
+if cycle = fabric.find_cycle
+  STDERR.puts "[boot] DAG cycle detected: #{cycle}"
+  STDERR.puts "[boot] caravan-flow requires an acyclic processor graph — break the cycle in config and restart."
+  exit 1
+end
 STDOUT.puts "[boot] fabric: #{fabric.nodes.size} nodes · #{Registry.metas.size} processor types registered"
 
 tick_ms = cfg["tick_interval_ms"]?.try(&.as_i?) || 1000
