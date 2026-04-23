@@ -1,0 +1,203 @@
+// FlowQueue — bounded, transactional queue connecting processors.
+// Items have three states: VISIBLE (available), INVISIBLE (claimed), ACKED (removed).
+// Visibility timeout ensures automatic recovery if a processor crashes or hangs.
+//
+// Uses a head-index dequeue with compaction to avoid O(n) slice copies and GC leaks.
+
+import sync.Mutex
+import time
+
+// QueueEntry wraps a FlowFile with queue metadata.
+data QueueEntry(String id, FlowFile flowFile, long claimedAt, int attemptCount, String sourceProcessor)
+
+// FlowQueue is a thread-safe bounded queue with claim/ack/nack semantics.
+class FlowQueue {
+    String name
+    int maxCount
+    long maxBytes
+    long visibilityTimeoutNanos
+    var items = List<QueueEntry>[]
+    var head = 0
+    var invisible = Map<String, QueueEntry>{}
+    Mutex mu
+    long currentBytes
+    long idCounter
+
+    init(String name, int maxCount, long maxBytes, long visibilityTimeoutNanos) {
+        this.name = name
+        this.maxCount = maxCount
+        this.maxBytes = maxBytes
+        this.visibilityTimeoutNanos = visibilityTimeoutNanos
+        this.idCounter = long(0)
+        this.currentBytes = long(0)
+    }
+
+    // getName returns the queue name.
+    pub String getName() {
+        return name
+    }
+
+    // offer adds a FlowFile to the queue. Returns false if at capacity (backpressure).
+    pub bool offer(FlowFile ff) {
+        var ffBytes = long(contentSize(ff.content))
+        lock (mu) {
+            var visibleCount = len(items) - head
+            var total = visibleCount + len(invisible)
+            if (total < maxCount && (maxBytes == long(0) || (currentBytes + ffBytes) <= maxBytes)) {
+                idCounter = idCounter + 1
+                var entryId = name + "-" + str(idCounter)
+                var entry = QueueEntry(entryId, ff, long(0), 0, "")
+                items = append(items, entry)
+                currentBytes = currentBytes + ffBytes
+                return true
+            }
+        }
+        return false
+    }
+
+    // offerWithSource adds a FlowFile with source processor context.
+    pub bool offerWithSource(FlowFile ff, String sourceProc) {
+        var ffBytes = long(contentSize(ff.content))
+        lock (mu) {
+            var visibleCount = len(items) - head
+            var total = visibleCount + len(invisible)
+            if (total < maxCount && (maxBytes == long(0) || (currentBytes + ffBytes) <= maxBytes)) {
+                idCounter = idCounter + 1
+                var entryId = name + "-" + str(idCounter)
+                var entry = QueueEntry(entryId, ff, long(0), 0, sourceProc)
+                items = append(items, entry)
+                currentBytes = currentBytes + ffBytes
+                return true
+            }
+        }
+        return false
+    }
+
+    // claim takes the next visible item and makes it invisible.
+    // Returns entry with empty id if queue is empty — check id == "".
+    pub QueueEntry claim() {
+        lock (mu) {
+            if (head < len(items)) {
+                var entry = items[head]
+                head = head + 1
+                // Compact when wasted space exceeds live items (amortized O(1))
+                compact()
+                // Move to invisible with timestamp
+                var now = long(time.Now().UnixNano())
+                var claimed = QueueEntry(entry.id, entry.flowFile, now, entry.attemptCount, entry.sourceProcessor)
+                invisible[claimed.id] = claimed
+                return claimed
+            }
+        }
+        var empty = byte[0]
+        return QueueEntry("", FlowFile("", Map<String, String>{}, Raw(empty), 0), long(0), 0, "")
+    }
+
+    // ack confirms successful processing — permanently removes the entry.
+    pub void ack(String entryId) {
+        lock (mu) {
+            if (invisible.containsKey(entryId)) {
+                var entry = invisible[entryId]
+                currentBytes = currentBytes - long(contentSize(entry.flowFile.content))
+                if (currentBytes < long(0)) {
+                    currentBytes = long(0)
+                }
+                invisible.delete(entryId)
+            }
+        }
+    }
+
+    // nack returns a failed entry to the visible queue immediately.
+    pub void nack(String entryId) {
+        lock (mu) {
+            if (invisible.containsKey(entryId)) {
+                var entry = invisible[entryId]
+                invisible.delete(entryId)
+                var updated = QueueEntry(entry.id, entry.flowFile, long(0), entry.attemptCount + 1, entry.sourceProcessor)
+                items = append(items, updated)
+            }
+        }
+    }
+
+    // hasCapacity returns true if the queue can accept at least one more item.
+    pub bool hasCapacity() {
+        lock (mu) {
+            var visibleCount = len(items) - head
+            var total = visibleCount + len(invisible)
+            var countOk = total < maxCount
+            var bytesOk = maxBytes == long(0) || currentBytes < maxBytes
+            return countOk && bytesOk
+        }
+    }
+
+    // getBytes returns the current tracked byte size.
+    pub long getBytes() {
+        lock (mu) {
+            return currentBytes
+        }
+    }
+
+    // size returns total items (visible + invisible).
+    pub int size() {
+        lock (mu) {
+            return (len(items) - head) + len(invisible)
+        }
+    }
+
+    // visibleCount returns the number of items available to claim.
+    pub int visibleCount() {
+        lock (mu) {
+            return len(items) - head
+        }
+    }
+
+    // invisibleCount returns the number of items currently being processed.
+    pub int invisibleCount() {
+        lock (mu) {
+            return len(invisible)
+        }
+    }
+
+    // compact reclaims dead space when head has advanced past half the slice.
+    // Called under lock. Amortized O(1): each element is copied at most once
+    // per N claims, where N is the number of elements.
+    void compact() {
+        var live = len(items) - head
+        if (head > 0 && head >= live) {
+            var compacted = List<QueueEntry>[]
+            var i = head
+            while (i < len(items)) {
+                compacted = append(compacted, items[i])
+                i = i + 1
+            }
+            items = compacted
+            head = 0
+        }
+    }
+
+    // startReaper spawns a background goroutine that returns timed-out invisible items to visible.
+    pub void startReaper() {
+        spawn {
+            while (true) {
+                time.Sleep(1 * time.Second)
+                lock (mu) {
+                    if (len(invisible) > 0) {
+                        var now = long(time.Now().UnixNano())
+                        var expired = List<String>[]
+                        for (id, entry in invisible) {
+                            if ((now - entry.claimedAt) > visibilityTimeoutNanos) {
+                                expired = append(expired, id)
+                            }
+                        }
+                        for (id in expired) {
+                            var entry = invisible[id]
+                            invisible.delete(id)
+                            var updated = QueueEntry(entry.id, entry.flowFile, long(0), entry.attemptCount + 1, entry.sourceProcessor)
+                            items = append(items, updated)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,72 @@
+// add-attribute processor — standalone HTTP server.
+// Receives FlowFile JSON via POST /process, adds an attribute, returns result.
+
+import net.http
+import encoding.json
+import io
+import fmt
+import os
+
+// FlowFile — matches the fabric's JSON contract.
+data FlowFile(
+    String id,
+    Map<String, String> attributes,
+    String content,
+    int timestamp
+)
+
+// ProcessorResult — matches the fabric's expected response.
+data ProcessorResult(
+    int resultType,
+    FlowFile flowFile,
+    List<FlowFile> flowFiles,
+    String reason
+)
+
+fn main() {
+    var port = "8081"
+    if len(os.Args) > 1 {
+        port = os.Args[1]
+    }
+
+    http.HandleFunc("/process", handleProcess)
+    http.HandleFunc("/health", handleHealth)
+
+    fmt.Println("[add-attribute] listening on :{port}")
+    http.ListenAndServe(":" + port, nil)
+}
+
+fn handleProcess(http.ResponseWriter w, http.Request r) {
+    // Read request body
+    var body = io.ReadAll(r.Body) or {
+        http.Error(w, "read error", 400)
+        return
+    }
+    r.Body.Close()
+
+    // Parse FlowFile
+    var ff = FlowFile("", Map<String, String>{}, "", 0)
+    json.Unmarshal(body, ff) or {
+        http.Error(w, "unmarshal error", 400)
+        return
+    }
+
+    // Add attribute
+    ff.attributes["processed"] = "true"
+    ff.attributes["processor"] = "add-attribute"
+
+    // Build result
+    var result = ProcessorResult(0, ff, List<FlowFile>[], "")
+
+    // Respond with JSON
+    w.Header().Set("Content-Type", "application/json")
+    var respBody = json.Marshal(result) or {
+        http.Error(w, "marshal error", 500)
+        return
+    }
+    w.Write(respBody)
+}
+
+fn handleHealth(http.ResponseWriter w, http.Request r) {
+    fmt.Fprintf(w, "ok")
+}

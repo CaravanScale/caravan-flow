@@ -1,0 +1,99 @@
+import stdlib.exceptions
+
+// Component lifecycle state.
+enum ComponentState {
+    DISABLED,
+    ENABLED,
+    DRAINING
+}
+
+// Provider — interface for shared infrastructure resources.
+// Everything is a provider: content storage, config, credentials,
+// connections, SSL contexts, logging. Processors look up what they
+// need by name.
+interface Provider {
+    String getName()
+    String getType()
+    ComponentState getState()
+    void enable()
+    void disable(int drainTimeoutSeconds)
+    void shutdown()
+    bool isEnabled()
+}
+
+// ProcessorContext — the central context for zinc-flow.
+// Just a bag of providers with dependency tracking.
+class ProcessorContext {
+    var providers = Map<String, Provider>{}
+    var dependents = Map<String, List<String>>{}
+
+    init() {}
+
+    // --- Provider management ---
+
+    pub void addProvider(Provider provider) {
+        providers[provider.getName()] = provider
+    }
+
+    pub void removeProvider(String name) {
+        if (providers.containsKey(name)) {
+            var p = providers[name]
+            if (p.isEnabled()) {
+                p.disable(60)
+            }
+            p.shutdown()
+            providers.delete(name)
+        }
+    }
+
+    pub Provider getProvider(String name) {
+        if (!providers.containsKey(name)) {
+            throw exceptions.ConfigException("provider not found: ${name}")
+        }
+        return providers[name]
+    }
+
+    pub Provider getEnabledProvider(String name) {
+        if (!providers.containsKey(name)) {
+            throw exceptions.ConfigException("provider not found: ${name}")
+        }
+        var p = providers[name]
+        if (!p.isEnabled()) {
+            throw exceptions.IllegalStateException("provider not enabled: ${name}")
+        }
+        return p
+    }
+
+    pub List<String> listProviders() {
+        return providers.keys()
+    }
+
+    // --- Dependency tracking ---
+
+    pub void registerDependent(String providerName, String processorName) {
+        if (!dependents.containsKey(providerName)) {
+            dependents[providerName] = List<String>[]
+        }
+        dependents[providerName] = append(dependents[providerName], processorName)
+    }
+
+    pub List<String> getDependents(String providerName) {
+        if (dependents.containsKey(providerName)) {
+            return dependents[providerName]
+        }
+        return List<String>[]
+    }
+
+    // --- Lifecycle ---
+
+    pub void shutdownAll() {
+        var names = providers.keys()
+        for (name in names) {
+            var p = providers[name]
+            if (p.isEnabled()) {
+                p.disable(60)
+            }
+            p.shutdown()
+        }
+    }
+}

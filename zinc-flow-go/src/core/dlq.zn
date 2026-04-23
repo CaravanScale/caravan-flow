@@ -1,0 +1,91 @@
+// Dead Letter Queue — stores flowfiles that exceeded retry limits.
+// One DLQ per flow. Inspectable and replayable via API.
+
+import sync.Mutex
+import time
+
+// DLQEntry holds a failed flowfile with context about why it failed.
+data DLQEntry(String id, FlowFile flowFile, String sourceProcessor, String sourceQueue, int attemptCount, String lastError, long arrivedAt)
+
+// DLQ is a thread-safe store of failed flowfiles.
+class DLQ {
+    var entries = Map<String, DLQEntry>{}
+    Mutex mu
+    long idCounter
+
+    init() {
+        this.idCounter = long(0)
+    }
+
+    // add stores a failed flowfile in the DLQ.
+    pub void add(FlowFile ff, String sourceProc, String sourceQueue, int attempts, String error) {
+        lock (mu) {
+            idCounter = idCounter + 1
+            var entryId = "dlq-" + str(idCounter)
+            var now = long(time.Now().UnixNano())
+            var entry = DLQEntry(entryId, ff, sourceProc, sourceQueue, attempts, error, now)
+            entries[entryId] = entry
+        }
+    }
+
+    // get retrieves a specific DLQ entry.
+    pub DLQEntry get(String id) {
+        lock (mu) {
+            if (entries.containsKey(id)) {
+                return entries[id]
+            }
+        }
+        var empty = byte[0]
+        return DLQEntry("", FlowFile("", Map<String, String>{}, Raw(empty), 0), "", "", 0, "not found", long(0))
+    }
+
+    // list returns all DLQ entries.
+    pub List<DLQEntry> list() {
+        lock (mu) {
+            var result = List<DLQEntry>[]
+            for (_, entry in entries) {
+                result = append(result, entry)
+            }
+            return result
+        }
+    }
+
+    // remove discards a DLQ entry.
+    pub void remove(String id) {
+        lock (mu) {
+            entries.delete(id)
+        }
+    }
+
+    // count returns the number of entries in the DLQ.
+    pub int count() {
+        lock (mu) {
+            return len(entries)
+        }
+    }
+
+    // replay removes an entry and returns the FlowFile for re-injection.
+    pub FlowFile replay(String id) {
+        lock (mu) {
+            if (entries.containsKey(id)) {
+                var entry = entries[id]
+                entries.delete(id)
+                return entry.flowFile
+            }
+        }
+        var empty = byte[0]
+        return FlowFile("", Map<String, String>{}, Raw(empty), 0)
+    }
+
+    // replayAll removes all entries and returns their FlowFiles.
+    pub List<DLQEntry> replayAll() {
+        lock (mu) {
+            var result = List<DLQEntry>[]
+            for (_, entry in entries) {
+                result = append(result, entry)
+            }
+            entries = Map<String, DLQEntry>{}
+            return result
+        }
+    }
+}

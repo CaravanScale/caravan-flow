@@ -1,0 +1,55 @@
+server:
+  port: 9091
+  host: 0.0.0.0
+
+logging:
+  level: DEBUG
+  handler: text
+  output: stdout
+
+content:
+  threshold: 262144
+  dir: /tmp/zinc-flow/content
+
+defaults:
+  backpressure:
+    max_count: 10000
+    max_retries: 5
+    drain_timeout: 60
+
+# Flow graph: linear chain tag-env → tag-source → logger → sink.
+# Processor type names and per-processor `connections:` match the csharp /
+# Go runtime. See examples/mvp-pipeline.yaml for a GenerateFlowFile-driven
+# demo; this file stays source-less so an HTTP/file ingest can be wired
+# against the management API without a config change.
+flow:
+  processors:
+    tag-env:
+      type: UpdateAttribute
+      config:
+        key: env
+        value: dev
+      connections:
+        success: [tag-source]
+
+    tag-source:
+      type: UpdateAttribute
+      config:
+        key: source
+        value: api
+      connections:
+        success: [logger]
+
+    logger:
+      type: LogAttribute
+      config:
+        prefix: flow
+      connections:
+        success: [sink]
+
+    sink:
+      type: PutFile
+      requires:
+        - content
+      config:
+        output_dir: /tmp/zinc-flow/output

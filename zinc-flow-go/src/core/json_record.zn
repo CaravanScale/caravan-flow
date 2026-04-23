@@ -1,0 +1,98 @@
+// JSON RecordReader/RecordWriter — converts between JSON arrays and Avro GenericRecords.
+// JSON is the most common interchange format; this is the first reader/writer implementation.
+
+import encoding.json
+
+// JsonRecordReader parses a JSON array of objects into GenericRecords.
+class JsonRecordReader : RecordReader {
+
+    init() {}
+
+    pub List<GenericRecord> read(byte[] data, Schema schema) {
+        // Parse JSON into list of maps
+        var rawList = List<Map<String, Object>>[]
+        try {
+            json.Unmarshal(data, rawList)
+        } catch (e) {
+            return List<GenericRecord>[]
+        }
+
+        // Schema-on-read: if schema has no fields, infer from first object
+        var effectiveSchema = schema
+        if (len(schema.fields) == 0 && len(rawList) > 0) {
+            effectiveSchema = inferSchema(schema.name, rawList[0])
+        }
+
+        // Convert each map to a GenericRecord using the schema
+        var records = List<GenericRecord>[]
+        for (raw in rawList) {
+            var record = GenericRecord(effectiveSchema)
+            for (f in effectiveSchema.fields) {
+                if (raw.containsKey(f.name)) {
+                    record.setField(f.name, raw[f.name])
+                } else if (f.defaultValue != null) {
+                    record.setField(f.name, f.defaultValue)
+                }
+            }
+            records = append(records, record)
+        }
+        return records
+    }
+}
+
+// JsonRecordWriter serializes GenericRecords to a JSON array of objects.
+class JsonRecordWriter : RecordWriter {
+
+    init() {}
+
+    pub byte[] write(List<GenericRecord> records, Schema schema) {
+        // Convert each record to a map
+        var rawList = List<Map<String, Object>>[]
+        for (record in records) {
+            var raw = Map<String, Object>{}
+            for (f in schema.fields) {
+                var val = record.getField(f.name)
+                if (val != null) {
+                    raw[f.name] = val
+                }
+            }
+            rawList = append(rawList, raw)
+        }
+
+        // Serialize to JSON
+        try {
+            var result = json.Marshal(rawList)
+            return result
+        } catch (e) {
+            return byte[0]
+        }
+    }
+}
+
+// inferSchema builds a Schema from a JSON object's keys and value types.
+Schema inferSchema(String name, Map<String, Object> sample) {
+    var fields = List<Field>[]
+    var keys = sample.keys()
+    for (key in keys) {
+        var val = sample[key]
+        var ft = inferFieldType(val)
+        fields = append(fields, Field(key, ft, null))
+    }
+    return Schema(name, fields)
+}
+
+// inferFieldType maps a Go runtime value to a FieldType.
+// json.Unmarshal produces: string, float64 (all numbers), bool, map, slice.
+FieldType inferFieldType(Object val) {
+    if (val == null) {
+        return NULL
+    }
+    match (val) {
+        case String(_) { return STRING }
+        case bool(_) { return BOOLEAN }
+        case float64(_) { return DOUBLE }
+        case int(_) { return INT }
+        case long(_) { return LONG }
+    }
+    return STRING
+}

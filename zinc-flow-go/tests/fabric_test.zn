@@ -1,0 +1,391 @@
+// Direct-pipeline executor tests. Exercises each ProcessorResult
+// variant through the new Fabric work-stack traversal, plus DLQ,
+// ScopedContext, and Provider lifecycle which remain independent
+// subsystems under the new architecture.
+//
+// Test processors are defined inline (rather than shared helpers) so
+// each test reads as a self-contained expectation: what goes in, what
+// comes out, what got recorded.
+
+import core
+import fabric.registry
+import fabric.runtime
+import processors
+import stdlib.asserts
+
+// --- Recording processors (test scaffolding) ---
+
+// RecordSink captures every FlowFile that reaches it. Returns Dropped,
+// so it's a natural terminal. Used to assert which path a FlowFile
+// took through the graph.
+class RecordSink : ProcessorFn {
+    String label
+    pub List<FlowFile> captured = List<FlowFile>[]
+
+    init(String label) { this.label = label }
+
+    pub ProcessorResult process(FlowFile ff) {
+        captured = append(captured, ff)
+        return Dropped("recorded by ${label}")
+    }
+
+    pub int count() { return len(captured) }
+}
+
+// RouterProc returns Routed(rel, ff) based on a configured attribute.
+// If the attribute's value is in the `success` set, returns
+// Routed("success", ff); otherwise Routed("failure", ff). Useful for
+// testing relationship dispatch without depending on a full rules
+// engine.
+class RouterProc : ProcessorFn {
+    String attr
+    String goodValue
+
+    init(String attr, String goodValue) {
+        this.attr = attr
+        this.goodValue = goodValue
+    }
+
+    pub ProcessorResult process(FlowFile ff) {
+        if (ff.attributes.containsKey(attr) && ff.attributes[attr] == goodValue) {
+            return Routed("success", ff)
+        }
+        return Routed("failure", ff)
+    }
+}
+
+// SplitProc returns Multiple — one FlowFile per letter in the input
+// content. Exercises the fan-out-per-result path of the executor.
+class SplitProc : ProcessorFn {
+    init() {}
+
+    pub ProcessorResult process(FlowFile ff) {
+        var out = List<FlowFile>[]
+        match (ff.content) {
+            case Raw(bytes) {
+                var s = string(bytes)
+                var i = 0
+                while (i < len(s)) {
+                    var ch = s[i:i+1]
+                    var attrs = Map<String, String>{}
+                    for (k in ff.attributes.keys()) {
+                        attrs[k] = ff.attributes[k]
+                    }
+                    attrs["split.idx"] = str(i)
+                    out = append(out, FlowFile(ff.id + "-" + str(i), attrs, Raw(ch.toBytes()), ff.timestamp))
+                    i = i + 1
+                }
+            }
+            case _ {
+                // Non-raw content — just pass through
+                out = append(out, ff)
+            }
+        }
+        return Multiple(out)
+    }
+}
+
+// FailProc always returns Failure(reason, ff). Exercises the failure
+// routing path.
+class FailProc : ProcessorFn {
+    String reason
+    init(String reason) { this.reason = reason }
+
+    pub ProcessorResult process(FlowFile ff) {
+        return Failure(reason, ff)
+    }
+}
+
+// LoopProc re-routes to itself via "success". Combined with a low
+// maxHops setting this verifies the hop guard.
+class LoopProc : ProcessorFn {
+    init() {}
+    pub ProcessorResult process(FlowFile ff) {
+        return Single(ff)
+    }
+}
+
+// --- Registry helpers for addProcessor-style tests ---
+
+ProcessorFn recordSinkFactory(ScopedContext ctx, Map<String, String> cfg) {
+    return RecordSink(cfg["label"])
+}
+ProcessorFn routerFactory(ScopedContext ctx, Map<String, String> cfg) {
+    return RouterProc(cfg["attr"], cfg["good"])
+}
+ProcessorFn failFactory(ScopedContext ctx, Map<String, String> cfg) {
+    return FailProc(cfg["reason"])
+}
+ProcessorFn loopFactory(ScopedContext ctx, Map<String, String> cfg) {
+    return LoopProc()
+}
+
+void registerRecordingProcessors(Registry reg) {
+    reg.register(
+        ProcessorInfo("record-sink", "Records every FlowFile", List<String>[]),
+        recordSinkFactory
+    )
+    reg.register(
+        ProcessorInfo("router", "Routes by attribute", List<String>["attr", "good"]),
+        routerFactory
+    )
+    reg.register(
+        ProcessorInfo("fail", "Always Failure", List<String>["reason"]),
+        failFactory
+    )
+    reg.register(
+        ProcessorInfo("loop", "Self-loop via success", List<String>[]),
+        loopFactory
+    )
+}
+
+// --- Executor variant coverage ---
+
+test "executor: Single result → follows 'success' connection" {
+    var reg = Registry()
+    registerBuiltins(reg)
+    registerRecordingProcessors(reg)
+    var ctx = mkContext()
+
+    var fab = Fabric(reg, ctx)
+    fab.addProcessor("tagger", "add-attribute", Map<String, String>{"key": "tag", "value": "seen"})
+    var sink = RecordSink("after-tag")
+    fab.addProcessorInstance("sink", sink, List<String>[])
+    fab.connect("tagger", "success", List<String>["sink"])
+
+    var ff = createFlowFile("hi".toBytes(), Map<String, String>{})
+    var ok = fab.execute(ff, "tagger")
+    asserts.isTrue(t, ok, "execute returned true")
+    asserts.equalInt(t, sink.count(), 1)
+    asserts.equalString(t, sink.captured[0].attributes["tag"], "seen")
+}
+
+test "executor: Multiple result → fans each output to 'success' targets" {
+    var reg = Registry()
+    registerBuiltins(reg)
+    registerRecordingProcessors(reg)
+    var ctx = mkContext()
+
+    var fab = Fabric(reg, ctx)
+    var splitter = SplitProc()
+    fab.addProcessorInstance("splitter", splitter, List<String>[])
+    var sink = RecordSink("fanout")
+    fab.addProcessorInstance("sink", sink, List<String>[])
+    fab.connect("splitter", "success", List<String>["sink"])
+
+    var ff = createFlowFile("abc".toBytes(), Map<String, String>{})
+    fab.execute(ff, "splitter")
+    asserts.equalInt(t, sink.count(), 3)
+}
+
+test "executor: Routed result → follows the named relationship" {
+    var reg = Registry()
+    registerBuiltins(reg)
+    registerRecordingProcessors(reg)
+    var ctx = mkContext()
+
+    var fab = Fabric(reg, ctx)
+    var router = RouterProc("env", "prod")
+    fab.addProcessorInstance("router", router, List<String>[])
+    var prod = RecordSink("prod")
+    var dev = RecordSink("dev")
+    fab.addProcessorInstance("prod", prod, List<String>[])
+    fab.addProcessorInstance("dev", dev, List<String>[])
+    fab.connect("router", "success", List<String>["prod"])
+    fab.connect("router", "failure", List<String>["dev"])
+
+    fab.execute(createFlowFile("a".toBytes(), Map<String, String>{"env": "prod"}), "router")
+    fab.execute(createFlowFile("b".toBytes(), Map<String, String>{"env": "staging"}), "router")
+
+    asserts.equalInt(t, prod.count(), 1)
+    asserts.equalInt(t, dev.count(), 1)
+}
+
+test "executor: Dropped result → terminal, no downstream delivery" {
+    var reg = Registry()
+    registerBuiltins(reg)
+    registerRecordingProcessors(reg)
+    var ctx = mkContext()
+
+    var fab = Fabric(reg, ctx)
+    var dropper = RecordSink("drop-label")  // RecordSink returns Dropped
+    fab.addProcessorInstance("dropper", dropper, List<String>[])
+    var shouldNotSee = RecordSink("never")
+    fab.addProcessorInstance("never", shouldNotSee, List<String>[])
+    // Wire a downstream anyway — Dropped must NOT flow there.
+    fab.connect("dropper", "success", List<String>["never"])
+
+    fab.execute(createFlowFile("x".toBytes(), Map<String, String>{}), "dropper")
+    asserts.equalInt(t, dropper.count(), 1)
+    asserts.equalInt(t, shouldNotSee.count(), 0)
+}
+
+test "executor: Failure with 'failure' connection → routes there, no DLQ" {
+    var reg = Registry()
+    registerBuiltins(reg)
+    registerRecordingProcessors(reg)
+    var ctx = mkContext()
+
+    var fab = Fabric(reg, ctx)
+    var failer = FailProc("boom")
+    fab.addProcessorInstance("failer", failer, List<String>[])
+    var onErr = RecordSink("err-handler")
+    fab.addProcessorInstance("err", onErr, List<String>[])
+    fab.connect("failer", "failure", List<String>["err"])
+
+    fab.execute(createFlowFile("x".toBytes(), Map<String, String>{}), "failer")
+    asserts.equalInt(t, onErr.count(), 1)
+    asserts.equalInt(t, fab.getDlqCount(), 0)
+}
+
+test "executor: Failure without 'failure' connection → DLQ" {
+    var reg = Registry()
+    registerBuiltins(reg)
+    registerRecordingProcessors(reg)
+    var ctx = mkContext()
+
+    var fab = Fabric(reg, ctx)
+    var failer = FailProc("unrouted")
+    fab.addProcessorInstance("failer", failer, List<String>[])
+    // No connections wired — unhandled failure should land in DLQ.
+
+    fab.execute(createFlowFile("x".toBytes(), Map<String, String>{}), "failer")
+    asserts.equalInt(t, fab.getDlqCount(), 1)
+    var entries = fab.getDLQ().list()
+    asserts.equalString(t, entries[0].sourceProcessor, "failer")
+    asserts.equalString(t, entries[0].lastError, "unrouted")
+}
+
+test "executor: max hops → drops FlowFile, does not infinite loop" {
+    var reg = Registry()
+    registerBuiltins(reg)
+    registerRecordingProcessors(reg)
+    var ctx = mkContext()
+
+    var fab = Fabric(reg, ctx)
+    fab.setMaxHops(5)
+    var loop = LoopProc()
+    fab.addProcessorInstance("loop", loop, List<String>[])
+    fab.connect("loop", "success", List<String>["loop"])
+
+    // If the guard fails this test hangs — tolerable signal.
+    fab.execute(createFlowFile("x".toBytes(), Map<String, String>{}), "loop")
+    // No assertion on count — just confirming return.
+    asserts.isTrue(t, true, "hop guard returned")
+}
+
+test "executor: disabled processor skipped, no downstream delivery" {
+    var reg = Registry()
+    registerBuiltins(reg)
+    registerRecordingProcessors(reg)
+    var ctx = mkContext()
+
+    var fab = Fabric(reg, ctx)
+    var sink = RecordSink("post-disabled")
+    fab.addProcessorInstance("sink", sink, List<String>[])
+    fab.addProcessor("tagger", "add-attribute", Map<String, String>{"key": "t", "value": "v"})
+    fab.connect("tagger", "success", List<String>["sink"])
+
+    fab.disableProcessor("tagger", 0)
+    fab.execute(createFlowFile("x".toBytes(), Map<String, String>{}), "tagger")
+    asserts.equalInt(t, sink.count(), 0)
+}
+
+test "executor: ingestAndExecute fans to all entry points" {
+    var reg = Registry()
+    registerBuiltins(reg)
+    registerRecordingProcessors(reg)
+    var ctx = mkContext()
+
+    var fab = Fabric(reg, ctx)
+    var a = RecordSink("A")
+    var b = RecordSink("B")
+    fab.addProcessorInstance("a", a, List<String>[])
+    fab.addProcessorInstance("b", b, List<String>[])
+    // No inbound edges to a or b → both are entry points.
+    fab.computeEntryPoints()
+
+    asserts.equalInt(t, len(fab.getEntryPoints()), 2)
+    var accepted = fab.ingestAndExecute(createFlowFile("hi".toBytes(), Map<String, String>{}))
+    asserts.isTrue(t, accepted, "ingested")
+    asserts.equalInt(t, a.count(), 1)
+    asserts.equalInt(t, b.count(), 1)
+}
+
+test "executor: ingestAndExecute with no entry points returns false" {
+    var reg = Registry()
+    registerBuiltins(reg)
+    var ctx = mkContext()
+    var fab = Fabric(reg, ctx)
+    asserts.isFalse(t, fab.ingestAndExecute(createFlowFile("x".toBytes(), Map<String, String>{})), "rejected with no entries")
+}
+
+// --- DLQ (subsystem independent of executor) ---
+
+test "DLQ — add captures processor name, queue, attempt count, error" {
+    var dlq = DLQ()
+    asserts.equalInt(t, dlq.count(), 0)
+
+    var ff = createFlowFile("failed".toBytes(), Map<String, String>{"type": "test"})
+    dlq.add(ff, "my-proc", "my-queue", 3, "processing error")
+    asserts.equalInt(t, dlq.count(), 1)
+
+    var entries = dlq.list()
+    asserts.equalInt(t, len(entries), 1)
+    asserts.equalString(t, entries[0].sourceProcessor, "my-proc")
+    asserts.equalString(t, entries[0].lastError, "processing error")
+    asserts.equalInt(t, entries[0].attemptCount, 3)
+}
+
+test "DLQ — replay returns FlowFile and removes from DLQ" {
+    var dlq = DLQ()
+    var ff = createFlowFile("replay-me".toBytes(), Map<String, String>{"id": "123"})
+    dlq.add(ff, "proc", "queue", 5, "max retries")
+    asserts.equalInt(t, dlq.count(), 1)
+
+    var entries = dlq.list()
+    var replayedFf = dlq.replay(entries[0].id)
+    asserts.equalString(t, replayedFf.id, ff.id)
+    asserts.equalInt(t, dlq.count(), 0)
+}
+
+// --- ScopedContext ---
+
+test "ScopedContext — provider lookup via declared scope" {
+    var store = MemoryContentStore()
+    var cp = ContentProvider("content", store)
+    cp.enable()
+
+    var providers = Map<String, Provider>{}
+    providers["content"] = cp
+    var ctx = ScopedContext(providers)
+
+    asserts.equalInt(t, len(ctx.listProviders()), 1)
+
+    try {
+        var p = ctx.getProvider("content")
+        asserts.equalString(t, p.getName(), "content")
+    } catch (e) {
+        t.Errorf("content provider should exist")
+    }
+}
+
+// --- Provider lifecycle ---
+
+test "Provider lifecycle — enable, disable, re-enable, shutdown" {
+    var store = MemoryContentStore()
+    var cp = ContentProvider("content", store)
+
+    asserts.isFalse(t, cp.isEnabled(), "initially disabled")
+
+    cp.enable()
+    asserts.isTrue(t, cp.isEnabled(), "after enable")
+
+    cp.disable(0)
+    asserts.isFalse(t, cp.isEnabled(), "after disable")
+
+    cp.enable()
+    asserts.isTrue(t, cp.isEnabled(), "re-enabled")
+    cp.shutdown()
+    asserts.isFalse(t, cp.isEnabled(), "after shutdown")
+}

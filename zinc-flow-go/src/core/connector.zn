@@ -1,0 +1,33 @@
+// Source connector abstraction. A source produces FlowFiles from an
+// external system (or synthesizes them, as GenerateFlowFile does) and
+// hands them to the fabric via the ingest callback it receives at
+// Start.
+//
+// Two patterns, same interface:
+//   • Event-driven (ListenHTTP, consumer queues) — the source's own
+//     library drives when FlowFiles arrive; the source just forwards.
+//   • Polling (GenerateFlowFile, GetFile) — the source runs a timer
+//     goroutine and calls poll()→ingest() per tick.
+//
+// The Fabric only knows this interface. Each source decides how to
+// produce work.
+
+import time
+
+// IngestFn — the callback a source receives at Start. Returns true if
+// the pipeline accepted the FlowFile, false on backpressure (caller
+// should drop or retry).
+type IngestFn = Fn<(FlowFile), bool>
+
+interface ConnectorSource {
+    String getName()
+    String getSourceType()
+    bool isRunning()
+    void start(IngestFn ingest)
+    void stop()
+    // pollOnce runs one production cycle synchronously and returns the
+    // produced FlowFiles without calling ingest. Lets tests and admin
+    // tooling drive a source deterministically without standing up a
+    // background timer (mirrors csharp PollingSource.PollOnce).
+    List<FlowFile> pollOnce()
+}

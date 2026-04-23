@@ -1,0 +1,59 @@
+// Binary encoding helpers for FlowFile V3 wire format.
+// Big-endian pack/unpack for 2-byte, 4-byte, and 8-byte integers.
+
+// packUint16BE encodes a uint16 as 2 big-endian bytes.
+pub byte[] packUint16BE(int value) {
+    var buf = byte[2]
+    buf[0] = byte(value >> 8)
+    buf[1] = byte(value & 0xFF)
+    return buf
+}
+
+// unpackUint16BE decodes 2 big-endian bytes to an int.
+pub int unpackUint16BE(byte[] data, int offset) {
+    return int(data[offset]) << 8 | int(data[offset + 1])
+}
+
+// packUint32BE encodes a uint32 as 4 big-endian bytes.
+pub byte[] packUint32BE(int value) {
+    var buf = byte[4]
+    buf[0] = byte(value >> 24)
+    buf[1] = byte(value >> 16 & 0xFF)
+    buf[2] = byte(value >> 8 & 0xFF)
+    buf[3] = byte(value & 0xFF)
+    return buf
+}
+
+// unpackUint32BE decodes 4 big-endian bytes to an int.
+pub int unpackUint32BE(byte[] data, int offset) {
+    return int(data[offset]) << 24 |
+           int(data[offset + 1]) << 16 |
+           int(data[offset + 2]) << 8 |
+           int(data[offset + 3])
+}
+
+// packInt64BE encodes a long as 8 big-endian bytes.
+pub byte[] packInt64BE(long value) {
+    var buf = byte[8]
+    buf[0] = byte(value >> 56)
+    buf[1] = byte(value >> 48 & 0xFF)
+    buf[2] = byte(value >> 40 & 0xFF)
+    buf[3] = byte(value >> 32 & 0xFF)
+    buf[4] = byte(value >> 24 & 0xFF)
+    buf[5] = byte(value >> 16 & 0xFF)
+    buf[6] = byte(value >> 8 & 0xFF)
+    buf[7] = byte(value & 0xFF)
+    return buf
+}
+
+// unpackInt64BE decodes 8 big-endian bytes to a long.
+pub long unpackInt64BE(byte[] data, int offset) {
+    return long(data[offset]) << 56 |
+           long(data[offset + 1]) << 48 |
+           long(data[offset + 2]) << 40 |
+           long(data[offset + 3]) << 32 |
+           long(data[offset + 4]) << 24 |
+           long(data[offset + 5]) << 16 |
+           long(data[offset + 6]) << 8 |
+           long(data[offset + 7])
+}

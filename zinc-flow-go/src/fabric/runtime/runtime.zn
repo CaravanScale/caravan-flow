@@ -1,0 +1,714 @@
+// Fabric Runtime — direct-pipeline executor.
+//
+// Replaces the prior queue-and-session model. Each FlowFile enters at an
+// entry-point processor and is walked synchronously through the graph by
+// an iterative work-stack. No inter-stage queues. Concurrency comes from
+// source threads — each ingest call is an independent traversal.
+//
+// Routing is graph-based: every processor has an outgoing `connections`
+// map keyed by NiFi-style relationship name ("success" / "failure" /
+// custom). Attribute-predicate routing lives inside a RouteOnAttribute
+// processor (Phase 3), not inside the fabric itself.
+
+import stdlib.config
+import stdlib.logging
+import sync.Mutex
+import core
+import fabric.registry
+import time
+
+// ProcessorDef — the config-time definition of a processor (used for
+// introspection and hot reload diffing in later phases).
+data ProcessorDef(
+    String typeName,
+    Map<String, String> config,
+    List<String> requires,
+    Map<String, List<String>> connections
+)
+
+// WorkItem — one frame on the executor stack.
+data WorkItem(FlowFile ff, String processor, int hops)
+
+// Fabric orchestrates processor lifecycles and executes FlowFiles against
+// the current PipelineGraph. The graph is swapped atomically (under mu)
+// on loadFlow / addProcessor / removeProcessor; in-flight Execute calls
+// always see a stable snapshot.
+class Fabric {
+    Registry reg
+    ProcessorContext globalCtx
+    PipelineGraph graph
+    Mutex mu
+    DLQ dlqStore
+
+    // Per-processor metrics. Keyed by user-facing processor name.
+    var processorCounts = Map<String, int>{}
+    var processorErrors = Map<String, int>{}
+
+    // Config-time defs, for introspection. Kept alongside the graph so
+    // API handlers can report "what was this processor configured as?"
+    var processorDefs = Map<String, ProcessorDef>{}
+
+    // Registered source connectors. The key is the user-facing source
+    // name (not the SourceType), so a flow can have multiple instances
+    // of the same type (e.g., two GenerateFlowFile sources on different
+    // content). startAsync calls start() on each.
+    var sources = Map<String, ConnectorSource>{}
+
+    int maxHops
+    int totalProcessed
+    int activeExecutions
+    var running = false
+
+    init(Registry reg, ProcessorContext globalCtx) {
+        this.reg = reg
+        this.globalCtx = globalCtx
+        this.graph = PipelineGraph()
+        this.dlqStore = DLQ()
+        this.maxHops = 50
+    }
+
+    // --- Graph snapshot helpers ---
+
+    // snapshotGraph returns the current graph pointer under the lock.
+    // Caller walks the returned graph without holding the lock — graphs
+    // are treated as immutable once published (mutations go via swapGraph).
+    PipelineGraph snapshotGraph() {
+        lock (mu) {
+            return graph
+        }
+    }
+
+    // swapGraph replaces the active graph. Called under exclusive intent
+    // (loadFlow, addProcessor, removeProcessor, reloadFlow).
+    void swapGraph(PipelineGraph newGraph) {
+        lock (mu) {
+            graph = newGraph
+        }
+    }
+
+    // --- Config loading ---
+
+    // loadFlow parses `flow.processors.<name>.{type, config, requires, connections}`
+    // from the given config object, instantiates each processor, wires the
+    // DAG, and publishes the resulting graph. Overwrites any prior graph.
+    pub void loadFlow(config.Config cfg) {
+        if (cfg.has("defaults.max_hops")) {
+            maxHops = cfg.getInt("defaults.max_hops")
+        }
+
+        var newGraph = PipelineGraph()
+        var newDefs = Map<String, ProcessorDef>{}
+
+        var procKeys = cfg.getSubKeys("flow.processors")
+        for (name in procKeys) {
+            var prefix = "flow.processors.${name}"
+            var typeName = cfg.getString(prefix + ".type")
+            if (!reg.has(typeName)) {
+                logging.error("unknown processor type", "type", typeName, "name", name)
+                continue
+            }
+
+            var procConfig = cfg.getStringMap(prefix + ".config")
+            var requires = cfg.getStringSlice(prefix + ".requires")
+
+            // Register dependencies so provider-disable can cascade later.
+            for (provName in requires) {
+                globalCtx.registerDependent(provName, name)
+            }
+
+            // Build scoped context filtered to declared provider deps.
+            var ctx = buildScopedContextFor(requires)
+            var proc = reg.create(typeName, ctx, procConfig)
+            newGraph.addProcessor(name, proc, requires)
+
+            // Parse connections: flow.processors.<name>.connections.<relationship> = [targets...]
+            var connKeys = cfg.getSubKeys(prefix + ".connections")
+            var connMap = Map<String, List<String>>{}
+            for (rel in connKeys) {
+                var targets = cfg.getStringSlice(prefix + ".connections." + rel)
+                if (len(targets) > 0) {
+                    newGraph.addConnection(name, rel, targets)
+                    connMap[rel] = targets
+                }
+            }
+
+            newDefs[name] = ProcessorDef(typeName, procConfig, requires, connMap)
+            logging.info("processor created", "name", name, "type", typeName)
+        }
+
+        newGraph.computeEntryPoints()
+        swapGraph(newGraph)
+        processorDefs = newDefs
+
+        // Initialize per-processor counters (preserve existing values on reload).
+        for (name in newGraph.getProcessorNames()) {
+            if (!processorCounts.containsKey(name)) {
+                processorCounts[name] = 0
+            }
+            if (!processorErrors.containsKey(name)) {
+                processorErrors[name] = 0
+            }
+        }
+
+        logging.info("flow loaded",
+            "processors", len(newGraph.getProcessorNames()),
+            "entry_points", len(newGraph.getEntryPoints()))
+    }
+
+    // --- Execution ---
+
+    // execute runs one FlowFile through the graph starting at `entryPoint`.
+    // Synchronous; returns true when the walk completes (always true today —
+    // backpressure will return false once the concurrency gate is added).
+    pub bool execute(FlowFile ff, String entryPoint) {
+        var g = snapshotGraph()
+        activeExecutions = activeExecutions + 1
+        executeGraph(g, ff, entryPoint)
+        activeExecutions = activeExecutions - 1
+        return true
+    }
+
+    // ingestAndExecute is the source-side callback: fan the FlowFile to
+    // every entry-point processor. Returns false when no entry points are
+    // configured (the FlowFile has nowhere to go).
+    pub bool ingestAndExecute(FlowFile ff) {
+        var g = snapshotGraph()
+        var entries = g.getEntryPoints()
+        if (len(entries) == 0) {
+            logging.warn("no entry points configured, dropping ff", "id", ff.id)
+            return false
+        }
+        if (len(entries) == 1) {
+            return execute(ff, entries[0])
+        }
+        // Multiple entry points — first gets the original, rest get clones.
+        var i = 1
+        while (i < len(entries)) {
+            var clone = cloneFlowFile(ff)
+            execute(clone, entries[i])
+            i = i + 1
+        }
+        return execute(ff, entries[0])
+    }
+
+    // executeGraph is the iterative DFS loop. The graph is read-only for
+    // the duration of the walk — any in-flight reload completes against
+    // the snapshot we hold.
+    void executeGraph(PipelineGraph g, FlowFile ff, String entryPoint) {
+        var work = List<WorkItem>[]
+        work = append(work, WorkItem(ff, entryPoint, 0))
+
+        while (len(work) > 0) {
+            var last = len(work) - 1
+            var item = work[last]
+            work = work[0:last]
+
+            if (item.hops >= maxHops) {
+                logging.error("max hops exceeded",
+                    "processor", item.processor,
+                    "max_hops", maxHops,
+                    "ff", item.ff.id)
+                incProcError(item.processor)
+                continue
+            }
+
+            if (!g.hasProcessor(item.processor)) {
+                logging.error("unknown processor in graph, dropping",
+                    "processor", item.processor, "ff", item.ff.id)
+                continue
+            }
+
+            // Skip non-ENABLED processors. DRAINING also skipped — the
+            // processor is in the middle of shutting down, accepting new
+            // work would race the cascade.
+            var state = g.getState(item.processor)
+            var runIt = false
+            match (state) {
+                case ENABLED { runIt = true }
+                case DRAINING {}
+                case DISABLED {}
+            }
+            if (!runIt) {
+                continue
+            }
+
+            var proc = g.getProcessor(item.processor)
+            var result = proc.process(item.ff)
+            incProcCount(item.processor)
+            totalProcessed = totalProcessed + 1
+
+            match (result) {
+                case Single(out) {
+                    work = pushDownstream(work, g, out, item.processor, "success", item.hops + 1)
+                }
+                case Multiple(outs) {
+                    for (out in outs) {
+                        work = pushDownstream(work, g, out, item.processor, "success", item.hops + 1)
+                    }
+                }
+                case Routed(route, out) {
+                    work = pushDownstream(work, g, out, item.processor, route, item.hops + 1)
+                }
+                case Dropped(_) {
+                    // terminal — no downstream delivery
+                }
+                case Failure(reason, failFf) {
+                    var targets = g.getTargets(item.processor, "failure")
+                    if (len(targets) > 0) {
+                        work = pushDownstream(work, g, failFf, item.processor, "failure", item.hops + 1)
+                    } else {
+                        logging.error("unhandled failure, routing to DLQ",
+                            "processor", item.processor, "reason", reason, "ff", failFf.id)
+                        dlqStore.add(failFf, item.processor, "direct", item.hops, reason)
+                        incProcError(item.processor)
+                    }
+                }
+            }
+        }
+    }
+
+    // pushDownstream fans a FlowFile to every target configured for
+    // (fromProcessor, relationship). First target takes the original ff;
+    // subsequent targets get attribute-clones so that branch mutations
+    // don't leak across siblings. Pushes in reverse order so the first
+    // target is popped first (stable DFS order).
+    List<WorkItem> pushDownstream(List<WorkItem> work, PipelineGraph g, FlowFile ff, String fromProcessor, String relationship, int hops) {
+        var targets = g.getTargets(fromProcessor, relationship)
+        if (len(targets) == 0) {
+            return work
+        }
+        var i = len(targets) - 1
+        while (i >= 1) {
+            work = append(work, WorkItem(cloneFlowFile(ff), targets[i], hops))
+            i = i - 1
+        }
+        work = append(work, WorkItem(ff, targets[0], hops))
+        return work
+    }
+
+    // incProcCount bumps the success counter for `name`, lazily initializing.
+    void incProcCount(String name) {
+        if (processorCounts.containsKey(name)) {
+            processorCounts[name] = processorCounts[name] + 1
+        } else {
+            processorCounts[name] = 1
+        }
+    }
+
+    // incProcError bumps the error counter for `name`, lazily initializing.
+    void incProcError(String name) {
+        if (processorErrors.containsKey(name)) {
+            processorErrors[name] = processorErrors[name] + 1
+        } else {
+            processorErrors[name] = 1
+        }
+    }
+
+    // --- Source management ---
+
+    // addSource registers a ConnectorSource. If the fabric is already
+    // running, the source is started immediately; otherwise it waits
+    // for startAsync.
+    pub void addSource(ConnectorSource source) {
+        sources[source.getName()] = source
+        if (running) {
+            source.start((FlowFile ff) -> ingestAndExecute(ff))
+            logging.info("source started", "name", source.getName(), "type", source.getSourceType())
+        }
+    }
+
+    pub bool startSource(String name) {
+        if (!sources.containsKey(name)) {
+            return false
+        }
+        var src = sources[name]
+        if (!src.isRunning()) {
+            src.start((FlowFile ff) -> ingestAndExecute(ff))
+            logging.info("source started", "name", name, "type", src.getSourceType())
+        }
+        return true
+    }
+
+    pub bool stopSource(String name) {
+        if (!sources.containsKey(name)) {
+            return false
+        }
+        sources[name].stop()
+        logging.info("source stopped", "name", name)
+        return true
+    }
+
+    // getSources returns (name, type, running) triples for every
+    // registered source.
+    pub List<Map<String, String>> getSources() {
+        var result = List<Map<String, String>>[]
+        for (name in sources.keys()) {
+            var src = sources[name]
+            var entry = Map<String, String>{}
+            entry["name"] = name
+            entry["type"] = src.getSourceType()
+            if (src.isRunning()) {
+                entry["running"] = "true"
+            } else {
+                entry["running"] = "false"
+            }
+            result = append(result, entry)
+        }
+        return result
+    }
+
+    // --- Lifecycle ---
+
+    pub void startAsync() {
+        running = true
+        // Start every registered source — they each kick off their own
+        // loops and feed us via ingestAndExecute.
+        for (name in sources.keys()) {
+            var src = sources[name]
+            if (!src.isRunning()) {
+                src.start((FlowFile ff) -> ingestAndExecute(ff))
+            }
+            logging.info("source started", "name", name, "type", src.getSourceType())
+        }
+        logging.info("fabric started",
+            "processors", len(graph.getProcessorNames()),
+            "entry_points", len(graph.getEntryPoints()),
+            "sources", len(sources))
+    }
+
+    pub void stopAsync() {
+        running = false
+        for (name in sources.keys()) {
+            sources[name].stop()
+        }
+    }
+
+    // --- Source-side ingest (kept for back-compat with HTTP source). ---
+    // `ingest` routes via ingestAndExecute. Returns false if no entry points.
+    pub bool ingest(FlowFile ff) {
+        return ingestAndExecute(ff)
+    }
+
+    // replayAt re-injects a FlowFile at the named processor. Used by DLQ
+    // replay: the DLQ records the source processor, replay resumes there
+    // rather than going through the full entry-point fan-out.
+    pub bool replayAt(String processorName, FlowFile ff) {
+        var g = snapshotGraph()
+        if (!g.hasProcessor(processorName)) {
+            return false
+        }
+        return execute(ff, processorName)
+    }
+
+    // --- Introspection ---
+
+    pub ProcessorContext getContext() {
+        return globalCtx
+    }
+
+    pub Registry getRegistry() {
+        return reg
+    }
+
+    pub DLQ getDLQ() {
+        return dlqStore
+    }
+
+    pub int getDlqCount() {
+        return dlqStore.count()
+    }
+
+    pub List<String> getProcessorNames() {
+        var g = snapshotGraph()
+        return g.getProcessorNames()
+    }
+
+    pub List<String> getEntryPoints() {
+        var g = snapshotGraph()
+        return g.getEntryPoints()
+    }
+
+    pub Map<String, Map<String, List<String>>> getConnections() {
+        var g = snapshotGraph()
+        return g.getConnections()
+    }
+
+    pub String getProcessorType(String name) {
+        if (processorDefs.containsKey(name)) {
+            return processorDefs[name].typeName
+        }
+        return "unknown"
+    }
+
+    pub Map<String, int> getStats() {
+        var stats = Map<String, int>{}
+        stats["processed"] = totalProcessed
+        stats["active"] = activeExecutions
+        stats["processors"] = len(graph.getProcessorNames())
+        stats["dlq"] = dlqStore.count()
+        return stats
+    }
+
+    pub Map<String, Map<String, int>> getProcessorStats() {
+        var stats = Map<String, Map<String, int>>{}
+        for (name in graph.getProcessorNames()) {
+            // Local is `ps` (not `s`) because Zinc→Go lowers the class
+            // receiver as `s` — a local named `s` would shadow it.
+            var ps = Map<String, int>{}
+            if (processorCounts.containsKey(name)) {
+                ps["processed"] = processorCounts[name]
+            } else {
+                ps["processed"] = 0
+            }
+            if (processorErrors.containsKey(name)) {
+                ps["errors"] = processorErrors[name]
+            } else {
+                ps["errors"] = 0
+            }
+            stats[name] = ps
+        }
+        return stats
+    }
+
+    pub ComponentState getProcessorState(String name) {
+        var g = snapshotGraph()
+        return g.getState(name)
+    }
+
+    pub List<String> getProcessorRequires(String name) {
+        var g = snapshotGraph()
+        return g.getRequires(name)
+    }
+
+    // --- Processor lifecycle ---
+
+    // enableProcessor — flip state to ENABLED. Refuses if any required
+    // provider is missing or disabled (mirrors csharp behavior).
+    pub bool enableProcessor(String name) {
+        var g = snapshotGraph()
+        if (!g.hasProcessor(name)) {
+            return false
+        }
+        var requires = g.getRequires(name)
+        for (provName in requires) {
+            try {
+                var prov = globalCtx.getProvider(provName)
+                if (!prov.isEnabled()) {
+                    logging.warn("cannot enable — provider disabled",
+                        "processor", name, "provider", provName)
+                    return false
+                }
+            } catch (e) {
+                logging.warn("cannot enable — provider missing",
+                    "processor", name, "provider", provName)
+                return false
+            }
+        }
+        g.setState(name, ENABLED)
+        logging.info("processor enabled", "name", name)
+        return true
+    }
+
+    // disableProcessor — mark DRAINING, then DISABLED. Because the
+    // executor is synchronous there's nothing to drain (no in-flight
+    // queue behind this processor); the state change takes effect on the
+    // next execute() that touches it.
+    pub bool disableProcessor(String name, int drainSecs) {
+        var g = snapshotGraph()
+        if (!g.hasProcessor(name)) {
+            return false
+        }
+        g.setState(name, DISABLED)
+        logging.info("processor disabled", "name", name, "drain_secs", drainSecs)
+        return true
+    }
+
+    // --- Provider lifecycle ---
+
+    pub bool enableProvider(String providerName) {
+        try {
+            var prov = globalCtx.getProvider(providerName)
+            prov.enable()
+            logging.info("provider enabled", "name", providerName)
+            return true
+        } catch (e) {
+            return false
+        }
+    }
+
+    // disableProvider cascades to dependent processors before disabling
+    // the provider itself. Prevents a processor from running against a
+    // half-gone dependency.
+    pub bool disableProvider(String providerName, int drainSecs) {
+        try {
+            var prov = globalCtx.getProvider(providerName)
+            var dependents = globalCtx.getDependents(providerName)
+            for (procName in dependents) {
+                match (getProcessorState(procName)) {
+                    case ENABLED { disableProcessor(procName, drainSecs) }
+                    case DRAINING {}
+                    case DISABLED {}
+                }
+            }
+            prov.disable(drainSecs)
+            logging.info("provider disabled", "name", providerName)
+            return true
+        } catch (e) {
+            return false
+        }
+    }
+
+    // --- Dynamic processor management ---
+
+    // setMaxHops overrides the default hop limit. Primarily for tests —
+    // production sets this via `defaults.max_hops` in config.
+    pub void setMaxHops(int n) { maxHops = n }
+
+    // connect wires `src[relationship] → targets`. Overwrites any prior
+    // target list for the same (src, relationship) pair.
+    pub void connect(String src, String relationship, List<String> targets) {
+        graph.addConnection(src, relationship, targets)
+    }
+
+    // computeEntryPoints recomputes the entry-point set after manual
+    // wiring. loadFlow/addProcessor call this automatically; tests that
+    // build graphs via connect() should call it once the topology is final.
+    pub void computeEntryPoints() { graph.computeEntryPoints() }
+
+    // addProcessorInstance registers a pre-built ProcessorFn in the active
+    // graph. Complementary to addProcessor: that variant uses the registry
+    // to construct, this one accepts any instance (test-only scaffolding
+    // plus any caller that wants to bypass the registry).
+    pub bool addProcessorInstance(String name, ProcessorFn proc, List<String> requires) {
+        var g = snapshotGraph()
+        if (g.hasProcessor(name)) {
+            logging.warn("processor already exists", "name", name)
+            return false
+        }
+        for (provName in requires) {
+            globalCtx.registerDependent(provName, name)
+        }
+        g.addProcessor(name, proc, requires)
+        g.computeEntryPoints()
+        processorCounts[name] = 0
+        processorErrors[name] = 0
+        return true
+    }
+
+    // addProcessor creates a new processor from the registry and wires it
+    // into the active graph. Returns false on duplicate name or unknown
+    // type. Connections are empty by default; callers may follow up with
+    // addConnection once that API is added.
+    pub bool addProcessor(String name, String typeName, Map<String, String> pconfig) {
+        var g = snapshotGraph()
+        if (g.hasProcessor(name)) {
+            logging.warn("processor already exists", "name", name)
+            return false
+        }
+        if (!reg.has(typeName)) {
+            logging.warn("unknown processor type", "type", typeName)
+            return false
+        }
+
+        var requires = List<String>[]
+        var ctx = buildScopedContextFor(requires)
+        var proc = reg.create(typeName, ctx, pconfig)
+        g.addProcessor(name, proc, requires)
+        g.computeEntryPoints()
+        // No swap needed — PipelineGraph is mutable in-place for incremental
+        // adds. The reload flow (swapGraph) is only used by loadFlow and
+        // future reloadFlow.
+
+        processorDefs[name] = ProcessorDef(typeName, pconfig, requires, Map<String, List<String>>{})
+        processorCounts[name] = 0
+        processorErrors[name] = 0
+
+        logging.info("processor added", "name", name, "type", typeName)
+        return true
+    }
+
+    // removeProcessor marks the processor DISABLED and drops it from
+    // the graph (rebuilds the processor list sans `name`).
+    pub bool removeProcessor(String name) {
+        var g = snapshotGraph()
+        if (!g.hasProcessor(name)) {
+            return false
+        }
+        // Rebuild graph without this processor. The PipelineGraph doesn't
+        // expose an in-place remove, so we construct a replacement.
+        var newGraph = PipelineGraph()
+        for (n in g.getProcessorNames()) {
+            if (n == name) {
+                continue
+            }
+            newGraph.addProcessor(n, g.getProcessor(n), g.getRequires(n))
+        }
+        var allConns = g.getConnections()
+        for (srcName in allConns.keys()) {
+            if (srcName == name) {
+                continue
+            }
+            var rels = allConns[srcName]
+            for (rel in rels.keys()) {
+                // Drop any target that pointed at the removed processor.
+                var kept = List<String>[]
+                for (t in rels[rel]) {
+                    if (t != name) {
+                        kept = append(kept, t)
+                    }
+                }
+                if (len(kept) > 0) {
+                    newGraph.addConnection(srcName, rel, kept)
+                }
+            }
+        }
+        newGraph.computeEntryPoints()
+        swapGraph(newGraph)
+        processorDefs.delete(name)
+        logging.info("processor removed", "name", name)
+        return true
+    }
+
+    // --- Helpers ---
+
+    // buildScopedContextFor constructs a ScopedContext visible to the
+    // processor. Empty requires → all providers (matches csharp).
+    ScopedContext buildScopedContextFor(List<String> requires) {
+        var scoped = Map<String, Provider>{}
+        if (len(requires) == 0) {
+            var providerNames = globalCtx.listProviders()
+            for (pn in providerNames) {
+                try {
+                    scoped[pn] = globalCtx.getProvider(pn)
+                } catch (e) {}
+            }
+        } else {
+            for (pn in requires) {
+                try {
+                    scoped[pn] = globalCtx.getProvider(pn)
+                } catch (e) {}
+            }
+        }
+        return ScopedContext(scoped)
+    }
+
+    // status prints the current fabric state.
+    pub void status() {
+        logging.info("fabric status",
+            "processors", len(graph.getProcessorNames()),
+            "entry_points", len(graph.getEntryPoints()),
+            "processed", totalProcessed,
+            "active", activeExecutions,
+            "dlq", dlqStore.count())
+    }
+}
+
+// cloneFlowFile — shallow-clone a FlowFile with a fresh attributes map so
+// fan-out siblings don't share mutation with each other.
+FlowFile cloneFlowFile(FlowFile ff) {
+    var attrs = Map<String, String>{}
+    for (k in ff.attributes.keys()) {
+        attrs[k] = ff.attributes[k]
+    }
+    return FlowFile(ff.id, attrs, ff.content, ff.timestamp)
+}

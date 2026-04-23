@@ -1,0 +1,252 @@
+// Built-in processors — standard processors shipped with zinc-flow.
+
+import core
+import fabric.registry
+import stdlib.logging
+import os
+
+// registerBuiltins registers all built-in processors with the registry.
+// Type names match csharp where interop matters (UpdateAttribute,
+// RouteOnAttribute, PutStdout) — the shared YAML fixture resolves to
+// the same processor on both binaries. The older kebab-case names
+// (add-attribute, file-sink, log, ...) stay registered for backward
+// compatibility with zinc-native configs.
+pub void registerBuiltins(Registry reg) {
+    // --- csharp-interop names: MVP pipeline ---
+    reg.register(
+        ProcessorInfo("UpdateAttribute", "Sets key=value attribute on FlowFiles", List<String>["key", "value"]),
+        UpdateAttributeFactory
+    )
+    reg.register(
+        ProcessorInfo("RouteOnAttribute", "Routes FlowFiles based on attribute predicates",
+            List<String>["routes"]),
+        RouteOnAttributeFactory
+    )
+    reg.register(
+        ProcessorInfo("PutStdout", "Writes FlowFile to stdout", List<String>["format"]),
+        PutStdoutFactory
+    )
+    reg.register(
+        ProcessorInfo("ConvertJSONToRecord", "Parses JSON content into Avro records", List<String>["schema_name"]),
+        JsonToRecordsFactory
+    )
+    reg.register(
+        ProcessorInfo("ConvertRecordToJSON", "Serializes Avro records back to JSON", List<String>[]),
+        RecordsToJsonFactory
+    )
+    reg.register(
+        ProcessorInfo("ExtractRecordField", "Extracts record fields onto FlowFile attributes",
+            List<String>["fields", "record_index"]),
+        ExtractRecordFieldFactory
+    )
+    reg.register(
+        ProcessorInfo("TransformRecord", "Rewrites records via rename/add/copy/remove/default/toUpper/toLower ops",
+            List<String>["operations"]),
+        TransformRecordFactory
+    )
+    reg.register(
+        ProcessorInfo("ReplaceText", "Regex find/replace on content",
+            List<String>["pattern", "replacement", "mode"]),
+        ReplaceTextFactory
+    )
+    reg.register(
+        ProcessorInfo("ExtractText", "Regex captures → FlowFile attributes",
+            List<String>["pattern", "group_names"]),
+        ExtractTextFactory
+    )
+    reg.register(
+        ProcessorInfo("SplitText", "Regex delimiter → Multiple FlowFiles",
+            List<String>["delimiter", "header_lines"]),
+        SplitTextFactory
+    )
+    reg.register(
+        ProcessorInfo("LogAttribute", "Logs FlowFile attributes and passes through", List<String>["prefix"]),
+        LogAttributeFactory
+    )
+    reg.register(
+        ProcessorInfo("FilterAttribute", "Keeps or removes named FlowFile attributes",
+            List<String>["mode", "attributes"]),
+        FilterAttributeFactory
+    )
+    reg.register(
+        ProcessorInfo("PutFile", "Writes FlowFile content to a directory",
+            List<String>["output_dir", "naming_attribute", "prefix", "suffix", "format"]),
+        PutFileFactory
+    )
+    // --- zinc-native / legacy names ---
+    reg.register(
+        ProcessorInfo("add-attribute", "Adds key=value attribute to FlowFiles", List<String>["key", "value"]),
+        AddAttributeFactory
+    )
+    reg.register(
+        ProcessorInfo("file-sink", "Writes FlowFile content to disk", List<String>["output_dir"]),
+        FileSinkFactory
+    )
+    reg.register(
+        ProcessorInfo("log", "Logs FlowFile and passes through", List<String>["prefix"]),
+        LogProcessorFactory
+    )
+    reg.register(
+        ProcessorInfo("json-to-records", "Parses JSON content into Avro records", List<String>["schema_name"]),
+        JsonToRecordsFactory
+    )
+    reg.register(
+        ProcessorInfo("records-to-json", "Serializes Avro records back to JSON", List<String>[]),
+        RecordsToJsonFactory
+    )
+}
+
+ProcessorFn AddAttributeFactory(ScopedContext ctx, Map<String, String> config) {
+    return AddAttribute(config["key"], config["value"])
+}
+
+ProcessorFn FileSinkFactory(ScopedContext ctx, Map<String, String> config) {
+    try {
+        var p = ctx.getProvider("content")
+        var cp = p as ContentProvider
+        return FileSink(config["output_dir"], cp.getStore())
+    } catch (e) {
+        return FileSink(config["output_dir"], MemoryContentStore())
+    }
+}
+
+ProcessorFn LogProcessorFactory(ScopedContext ctx, Map<String, String> config) {
+    return LogProcessor(config["prefix"])
+}
+
+ProcessorFn JsonToRecordsFactory(ScopedContext ctx, Map<String, String> config) {
+    var schemaName = config["schema_name"]
+    if (schemaName == "") {
+        schemaName = "default"
+    }
+    try {
+        var p = ctx.getProvider("content")
+        var cp = p as ContentProvider
+        return JsonToRecords(schemaName, cp.getStore())
+    } catch (e) {
+        return JsonToRecords(schemaName, MemoryContentStore())
+    }
+}
+
+ProcessorFn RecordsToJsonFactory(ScopedContext ctx, Map<String, String> config) {
+    return RecordsToJson()
+}
+
+// AddAttribute — tags a FlowFile with a key=value attribute.
+class AddAttribute : ProcessorFn {
+    String key
+    String value
+
+    init(String key, String value) {
+        this.key = key
+        this.value = value
+    }
+
+    pub ProcessorResult process(FlowFile ff) {
+        var tagged = withAttribute(ff, key, value)
+        return Single(tagged)
+    }
+}
+
+// FileSink — writes FlowFile content to disk. Returns Dropped (terminal).
+// Resolves all Content variants to bytes using the ContentStore.
+class FileSink : ProcessorFn {
+    String outputDir
+    ContentStore store
+
+    init(String outputDir, ContentStore store) {
+        this.outputDir = outputDir
+        this.store = store
+    }
+
+    pub ProcessorResult process(FlowFile ff) {
+        var path = outputDir + "/" + ff.id + ".out"
+        var resolved = resolve(store, ff.content)
+        if (resolved.errorMsg != "") {
+            return Failure(resolved.errorMsg, ff)
+        }
+        WriteFile(path, resolved.data, 0o644)
+        return Dropped("written to " + path)
+    }
+}
+
+// LogProcessor — logs the FlowFile and passes it through.
+class LogProcessor : ProcessorFn {
+    String prefix
+
+    init(String prefix) {
+        this.prefix = prefix
+    }
+
+    pub ProcessorResult process(FlowFile ff) {
+        logging.info("flowfile", "processor", prefix, "id", ff.id, "attributes", ff.attributes)
+        return Single(ff)
+    }
+}
+
+// JsonToRecords — parses Raw JSON content into Avro Records.
+// If content is already Records, passes through unchanged.
+class JsonToRecords : ProcessorFn {
+    String schemaName
+    ContentStore store
+
+    init(String schemaName, ContentStore store) {
+        this.schemaName = schemaName
+        this.store = store
+    }
+
+    pub ProcessorResult process(FlowFile ff) {
+        match (ff.content) {
+            case Raw(bytes) {
+                return parseJson(ff, bytes)
+            }
+            case Claim(_, _) {
+                var resolved = resolve(store, ff.content)
+                if (resolved.errorMsg != "") {
+                    return Failure(resolved.errorMsg, ff)
+                }
+                return parseJson(ff, resolved.data)
+            }
+            case Records(_, _) {
+                // Already records — pass through
+                return Single(ff)
+            }
+        }
+    }
+
+    ProcessorResult parseJson(FlowFile ff, byte[] data) {
+        // Infer schema from first JSON object (schema-on-read)
+        var schema = schemaFromFields(schemaName, List<Field>[])
+        var reader = JsonRecordReader()
+        var records = reader.read(data, schema)
+        if (len(records) == 0) {
+            return Failure("no records parsed from JSON", ff)
+        }
+        var updated = withContent(ff, Records(schema, records))
+        return Single(updated)
+    }
+}
+
+// RecordsToJson — serializes Avro Records content back to JSON bytes.
+// If content is already Raw, passes through unchanged.
+class RecordsToJson : ProcessorFn {
+
+    init() {}
+
+    pub ProcessorResult process(FlowFile ff) {
+        match (ff.content) {
+            case Records(schema, records) {
+                var writer = JsonRecordWriter()
+                var bytes = writer.write(records, schema)
+                var updated = withContent(ff, Raw(bytes))
+                return Single(updated)
+            }
+            case Raw(_) {
+                return Single(ff)
+            }
+            case Claim(_, _) {
+                return Single(ff)
+            }
+        }
+    }
+}

@@ -1,0 +1,112 @@
+// FilterAttribute — keeps or drops FlowFile attributes by name set.
+//
+// Mirrors csharp ZincFlow.StdLib.FilterAttribute (Processors.cs:57).
+// Config:
+//   mode       — "keep" retains only the named attrs; anything else
+//                (including the default) treats the list as removals.
+//   attributes — semicolon-separated attribute names.
+//
+// Content is unchanged; only the attribute set is rewritten. Useful
+// as a boundary-sanitizer before a sink — e.g., strip provenance or
+// internal attrs before PutHTTP ships a FlowFile downstream.
+
+import core
+import fabric.registry
+
+class FilterAttribute : ProcessorFn {
+    bool removeMode
+    var attrSet = Map<String, bool>{}
+
+    init(String mode, String attributesSpec) {
+        // `_remove = mode != "keep"` (case-insensitive). Any non-"keep"
+        // mode, including empty, removes. Empty spec is a valid no-op
+        // configuration — guarded below rather than via bare return,
+        // because a bare return in a ctor would signal failure and Zinc
+        // ctors have no failure channel (use a factory returning T? for
+        // that).
+        this.removeMode = filterLowerAscii(mode) != "keep"
+        if (attributesSpec != "") {
+            var start = 0
+            var i = 0
+            while (i < len(attributesSpec)) {
+                if (attributesSpec[i:i+1] == ";") {
+                    addName(attributesSpec[start:i])
+                    start = i + 1
+                }
+                i = i + 1
+            }
+            if (start < len(attributesSpec)) {
+                addName(attributesSpec[start:len(attributesSpec)])
+            }
+        }
+    }
+
+    void addName(String name) {
+        var trimmed = trimFilterSpace(name)
+        if (trimmed != "") {
+            attrSet[trimmed] = true
+        }
+    }
+
+    pub ProcessorResult process(FlowFile ff) {
+        var filtered = Map<String, String>{}
+        for (k in ff.attributes.keys()) {
+            var inSet = attrSet.containsKey(k)
+            if (removeMode && !inSet) {
+                filtered[k] = ff.attributes[k]
+            }
+            if (!removeMode && inSet) {
+                filtered[k] = ff.attributes[k]
+            }
+        }
+        var updated = FlowFile(ff.id, filtered, ff.content, ff.timestamp)
+        return Single(updated)
+    }
+}
+
+pub ProcessorFn FilterAttributeFactory(ScopedContext ctx, Map<String, String> config) {
+    var mode = ""
+    if (config.containsKey("mode")) { mode = config["mode"] }
+    var attrs = ""
+    if (config.containsKey("attributes")) { attrs = config["attributes"] }
+    return FilterAttribute(mode, attrs)
+}
+
+// Local helpers — kept out of a shared module so each processor stays
+// self-contained. Small duplication, big self-containment win.
+
+String filterLowerAscii(String s) {
+    var out = ""
+    var i = 0
+    while (i < len(s)) {
+        var c = s[i:i+1]
+        if (c >= "A" && c <= "Z") {
+            var b = byte(s[i])
+            out = out + string(byte(b + 32))
+        } else {
+            out = out + c
+        }
+        i = i + 1
+    }
+    return out
+}
+
+String trimFilterSpace(String s) {
+    var start = 0
+    while (start < len(s)) {
+        var c = s[start:start+1]
+        if (c != " " && c != "\t") {
+            break
+        }
+        start = start + 1
+    }
+    var stop = len(s)
+    while (stop > start) {
+        var c = s[stop-1:stop]
+        if (c != " " && c != "\t") {
+            break
+        }
+        stop = stop - 1
+    }
+    return s[start:stop]
+}

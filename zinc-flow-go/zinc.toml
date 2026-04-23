@@ -1,0 +1,13 @@
+[project]
+name = "zinc-flow"
+version = "0.1.0"
+main = "main.zn"
+
+[go]
+version = "1.26"
+
+[deps]
+stdlib = "github.com/ZincScale/zinc-stdlib"
+
+[replace]
+stdlib = "/home/vrjoshi/proj/caravan/zinc-go/stdlib/zinc-out"

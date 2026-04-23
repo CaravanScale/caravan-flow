@@ -1,0 +1,211 @@
+// RouteOnAttribute — routes a FlowFile to the first relationship whose
+// attribute predicate matches, else to "unmatched".
+//
+// Mirrors csharp ZincFlow.StdLib.RouteOnAttribute. The `routes` config
+// is a single string holding `routeName: attr OP value` triples
+// separated by semicolons. Example:
+//
+//   "high: priority EQ high; contains_order: type CONTAINS order"
+//
+// Supported operators: EQ NEQ CONTAINS STARTSWITH ENDSWITH EXISTS GT LT.
+// Case-insensitive on the operator; attribute name and value are
+// passed through verbatim. An unparseable entry is silently dropped
+// during construction — the source of truth is the config string.
+//
+// Output shape: Routed(route, ff). The executor's connection table
+// decides what downstream processor(s) receive each route. A route
+// with no wired target terminates the FlowFile (Fabric drops it).
+
+import core
+import fabric.registry
+
+// Route — one parsed predicate entry. `relationship` is the name the
+// executor matches against the processor's `connections`; the rest is
+// the predicate to evaluate.
+data Route(String relationship, String attribute, String op, String value)
+
+class RouteOnAttribute : ProcessorFn {
+    var routes = List<Route>[]
+
+    init(String routesSpec) {
+        parseRoutes(routesSpec)
+    }
+
+    void parseRoutes(String spec) {
+        if (spec == "") {
+            return
+        }
+        // Split by ';' to get entries, then by ':' to separate name
+        // from predicate. splitString is a locally-defined helper
+        // (see bottom of file) — done as a custom splitter rather
+        // than importing strings.Split because the trimmed-and-skip-
+        // empty behavior has to match csharp byte-for-byte.
+        var entries = splitAndTrim(spec, ";")
+        for (entry in entries) {
+            var colonIdx = indexOfByte(entry, ":")
+            if (colonIdx <= 0) {
+                continue
+            }
+            var name = trimSpace(entry[0:colonIdx])
+            var conditionStr = trimSpace(entry[colonIdx+1:len(entry)])
+            var parts = splitOnSpace(conditionStr, 3)
+            if (len(parts) < 2) {
+                continue
+            }
+            var attribute = parts[0]
+            var op = upperCase(parts[1])
+            var value = ""
+            if (len(parts) >= 3) {
+                value = parts[2]
+            }
+            routes = append(routes, Route(name, attribute, op, value))
+        }
+    }
+
+    pub ProcessorResult process(FlowFile ff) {
+        for (route in routes) {
+            if (evaluate(route, ff.attributes)) {
+                return Routed(route.relationship, ff)
+            }
+        }
+        return Routed("unmatched", ff)
+    }
+}
+
+pub ProcessorFn RouteOnAttributeFactory(ScopedContext ctx, Map<String, String> config) {
+    var spec = ""
+    if (config.containsKey("routes")) {
+        spec = config["routes"]
+    }
+    return RouteOnAttribute(spec)
+}
+
+// --- predicate evaluation ---
+
+bool evaluate(Route r, Map<String, String> attrs) {
+    if (r.op == "EXISTS") {
+        return attrs.containsKey(r.attribute)
+    }
+    if (!attrs.containsKey(r.attribute)) {
+        return false
+    }
+    var actual = attrs[r.attribute]
+    if (r.op == "EQ") {
+        return actual == r.value
+    }
+    if (r.op == "NEQ") {
+        return actual != r.value
+    }
+    if (r.op == "CONTAINS") {
+        return actual.contains(r.value)
+    }
+    if (r.op == "STARTSWITH") {
+        return actual.startsWith(r.value)
+    }
+    if (r.op == "ENDSWITH") {
+        return actual.endsWith(r.value)
+    }
+    if (r.op == "GT") {
+        return actual > r.value
+    }
+    if (r.op == "LT") {
+        return actual < r.value
+    }
+    return false
+}
+
+// --- string helpers (kept local so the processor has no stdlib deps) ---
+
+List<String> splitAndTrim(String s, String sep) {
+    var out = List<String>[]
+    var start = 0
+    var i = 0
+    while (i < len(s)) {
+        if (s[i:i+1] == sep) {
+            var part = trimSpace(s[start:i])
+            if (part != "") {
+                out = append(out, part)
+            }
+            start = i + 1
+        }
+        i = i + 1
+    }
+    var tail = trimSpace(s[start:len(s)])
+    if (tail != "") {
+        out = append(out, tail)
+    }
+    return out
+}
+
+int indexOfByte(String s, String b) {
+    var i = 0
+    while (i < len(s)) {
+        if (s[i:i+1] == b) {
+            return i
+        }
+        i = i + 1
+    }
+    return -1
+}
+
+String trimSpace(String s) {
+    var start = 0
+    while (start < len(s)) {
+        var c = s[start:start+1]
+        if (c != " " && c != "\t") {
+            break
+        }
+        start = start + 1
+    }
+    var stop = len(s)
+    while (stop > start) {
+        var c = s[stop-1:stop]
+        if (c != " " && c != "\t") {
+            break
+        }
+        stop = stop - 1
+    }
+    return s[start:stop]
+}
+
+List<String> splitOnSpace(String s, int maxParts) {
+    var out = List<String>[]
+    var start = 0
+    var i = 0
+    while (i < len(s) && len(out) < maxParts-1) {
+        var c = s[i:i+1]
+        if (c == " " || c == "\t") {
+            if (i > start) {
+                out = append(out, s[start:i])
+            }
+            // skip consecutive whitespace
+            while (i < len(s) && (s[i:i+1] == " " || s[i:i+1] == "\t")) {
+                i = i + 1
+            }
+            start = i
+            continue
+        }
+        i = i + 1
+    }
+    if (start < len(s)) {
+        out = append(out, s[start:len(s)])
+    }
+    return out
+}
+
+String upperCase(String s) {
+    var out = ""
+    var i = 0
+    while (i < len(s)) {
+        var c = s[i:i+1]
+        if (c >= "a" && c <= "z") {
+            // byte-level ASCII uppercase shift: 'a'(97) → 'A'(65), diff = -32
+            var b = byte(s[i])
+            out = out + string(byte(b - 32))
+        } else {
+            out = out + c
+        }
+        i = i + 1
+    }
+    return out
+}

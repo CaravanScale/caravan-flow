@@ -1,0 +1,169 @@
+// ExtractRecordField — lifts named fields from a Record row onto the
+// FlowFile as attributes, leaving content unchanged.
+//
+// Mirrors csharp ZincFlow.StdLib.ExtractRecordField
+// (RecordProcessors.cs:362). Config:
+//   fields        — semicolon-separated `field_path:attr_name` pairs.
+//                   Example: "name:customer.name;amount:order.total"
+//   record_index  — which record in the batch to read (default 0).
+//
+// Behavior:
+//   • Content is NOT mutated — the processor is purely attribute-
+//     surfacing. Downstream processors still see the same records.
+//   • Non-Record content (Raw, Claim) → pass-through (Single). Not a
+//     failure — it just means "this FlowFile isn't ready for field
+//     extraction" and the pipeline keeps moving.
+//   • Missing field on the selected record → silently skipped. csharp
+//     behaves the same way; we preserve that shape for interop.
+//   • record_index out of range → pass-through (Single).
+//
+// Dotted paths (e.g., "address.city") are NOT yet supported —
+// flattened field names only. Adding them is a follow-up once the
+// Record API grows GetByPath support.
+
+import core
+import fabric.registry
+
+data FieldMapping(String field, String attr)
+
+class ExtractRecordField : ProcessorFn {
+    var mappings = List<FieldMapping>[]
+    int recordIndex
+
+    init(String fieldsSpec, int recordIndex) {
+        this.recordIndex = recordIndex
+        parseFields(fieldsSpec)
+    }
+
+    void parseFields(String spec) {
+        if (spec == "") {
+            return
+        }
+        // Same `k:v;k:v` shape csharp uses. A pair without a colon or
+        // an empty side is skipped — permissive on bad config, matching
+        // csharp's SplitStringOptions.RemoveEmptyEntries behavior.
+        var start = 0
+        var i = 0
+        while (i < len(spec)) {
+            if (spec[i:i+1] == ";") {
+                addPair(spec[start:i])
+                start = i + 1
+            }
+            i = i + 1
+        }
+        if (start < len(spec)) {
+            addPair(spec[start:len(spec)])
+        }
+    }
+
+    void addPair(String pair) {
+        var trimmed = trimPairSpace(pair)
+        if (trimmed == "") {
+            return
+        }
+        var colonIdx = -1
+        var j = 0
+        while (j < len(trimmed)) {
+            if (trimmed[j:j+1] == ":") {
+                colonIdx = j
+                break
+            }
+            j = j + 1
+        }
+        if (colonIdx <= 0 || colonIdx == len(trimmed)-1) {
+            return
+        }
+        var fname = trimPairSpace(trimmed[0:colonIdx])
+        var aname = trimPairSpace(trimmed[colonIdx+1:len(trimmed)])
+        if (fname == "" || aname == "") {
+            return
+        }
+        mappings = append(mappings, FieldMapping(fname, aname))
+    }
+
+    pub ProcessorResult process(FlowFile ff) {
+        match (ff.content) {
+            case Records(_, records) {
+                if (len(records) == 0 || recordIndex >= len(records)) {
+                    return Single(ff)
+                }
+                var record = records[recordIndex]
+                var result = ff
+                for (m in mappings) {
+                    var val = record.getField(m.field)
+                    if (val != null) {
+                        result = withAttribute(result, m.attr, str(val))
+                    }
+                }
+                return Single(result)
+            }
+            case _ {
+                // Non-Record content — nothing to extract. Pass-through
+                // so the pipeline can continue (parse earlier, extract
+                // later).
+                return Single(ff)
+            }
+        }
+    }
+}
+
+pub ProcessorFn ExtractRecordFieldFactory(ScopedContext ctx, Map<String, String> config) {
+    var fieldsSpec = ""
+    if (config.containsKey("fields")) {
+        fieldsSpec = config["fields"]
+    }
+    var idx = 0
+    if (config.containsKey("record_index")) {
+        idx = parseIntOr(config["record_index"], 0)
+    }
+    return ExtractRecordField(fieldsSpec, idx)
+}
+
+// parseIntOr — tiny int parser, returns fallback on any garbage.
+// Duplicated from fabric/source/generate.zn's atoi rather than
+// exposed via stdlib to avoid leaking a subpackage-private helper.
+int parseIntOr(String s, int fallback) {
+    if (s == "") {
+        return fallback
+    }
+    var neg = false
+    var start = 0
+    if (s[0:1] == "-") {
+        neg = true
+        start = 1
+    }
+    var n = 0
+    var i = start
+    while (i < len(s)) {
+        var c = s[i:i+1]
+        if (c < "0" || c > "9") {
+            return fallback
+        }
+        n = n*10 + (int(byte(s[i])) - 48)
+        i = i + 1
+    }
+    if (neg) {
+        return 0 - n
+    }
+    return n
+}
+
+String trimPairSpace(String s) {
+    var start = 0
+    while (start < len(s)) {
+        var c = s[start:start+1]
+        if (c != " " && c != "\t") {
+            break
+        }
+        start = start + 1
+    }
+    var stop = len(s)
+    while (stop > start) {
+        var c = s[stop-1:stop]
+        if (c != " " && c != "\t") {
+            break
+        }
+        stop = stop - 1
+    }
+    return s[start:stop]
+}
