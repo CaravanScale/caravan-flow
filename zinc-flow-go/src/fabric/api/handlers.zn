@@ -1,12 +1,12 @@
 // Management API — REST endpoints for monitoring and controlling zinc-flow.
 // All responses are JSON. Mounted under /api/ in main.zn.
 
-import net.http
+import net/http
 import io
-import encoding.json
+import encoding/json
 import core
-import fabric.runtime
-import fabric.registry
+import fabric/runtime
+import fabric/registry
 
 // ApiHandler holds a reference to the fabric for serving API requests.
 class ApiHandler {
@@ -89,9 +89,7 @@ class ApiHandler {
             return
         }
         var req = Map<String, Object>{}
-        try {
-            json.Unmarshal(body, req)
-        } catch (e) {
+        json.Unmarshal(body, req) or {
             writeError(w, 400, "invalid json")
             return
         }
@@ -141,9 +139,7 @@ class ApiHandler {
             return
         }
         var req = Map<String, Object>{}
-        try {
-            json.Unmarshal(body, req)
-        } catch (e) {
+        json.Unmarshal(body, req) or {
             writeError(w, 400, "invalid json")
             return
         }
@@ -177,9 +173,7 @@ class ApiHandler {
             return
         }
         var req = Map<String, Object>{}
-        try {
-            json.Unmarshal(body, req)
-        } catch (e) {
+        json.Unmarshal(body, req) or {
             writeError(w, 400, "invalid json")
             return
         }
@@ -209,9 +203,7 @@ class ApiHandler {
             return
         }
         var req = Map<String, Object>{}
-        try {
-            json.Unmarshal(body, req)
-        } catch (e) {
+        json.Unmarshal(body, req) or {
             writeError(w, 400, "invalid json")
             return
         }
@@ -238,9 +230,7 @@ class ApiHandler {
             return
         }
         var req = Map<String, Object>{}
-        try {
-            json.Unmarshal(body, req)
-        } catch (e) {
+        json.Unmarshal(body, req) or {
             writeError(w, 400, "invalid json")
             return
         }
@@ -272,9 +262,7 @@ class ApiHandler {
             return
         }
         var req = Map<String, Object>{}
-        try {
-            json.Unmarshal(body, req)
-        } catch (e) {
+        json.Unmarshal(body, req) or {
             writeError(w, 400, "invalid json")
             return
         }
@@ -287,9 +275,8 @@ class ApiHandler {
         var config = Map<String, String>{}
         if (req.containsKey("config")) {
             var rawConfig = Map<String, String>{}
-            var configBytes = byte[0]
-            try { configBytes = json.Marshal(req["config"]) } catch (e) {}
-            try { json.Unmarshal(configBytes, rawConfig) } catch (e) {}
+            var configBytes = json.Marshal(req["config"]) or { byte[0] }
+            json.Unmarshal(configBytes, rawConfig) or {}
             var keys = rawConfig.keys()
             for (k in keys) {
                 config[k] = rawConfig[k]
@@ -317,9 +304,7 @@ class ApiHandler {
             return
         }
         var req = Map<String, Object>{}
-        try {
-            json.Unmarshal(body, req)
-        } catch (e) {
+        json.Unmarshal(body, req) or {
             writeError(w, 400, "invalid json")
             return
         }
@@ -349,17 +334,17 @@ class ApiHandler {
         for (name in names) {
             var entry = Map<String, Object>{}
             entry["name"] = name
-            try {
-                var prov = ctx.getProvider(name)
-                entry["type"] = prov.getType()
-                var state = prov.getState()
-                match (state) {
-                    case ENABLED { entry["state"] = "ENABLED" }
-                    case DRAINING { entry["state"] = "DRAINING" }
-                    case DISABLED { entry["state"] = "DISABLED" }
-                }
-            } catch (e) {
+            var prov = ctx.getProvider(name) or {
                 entry["state"] = "UNKNOWN"
+                result = append(result, entry)
+                continue
+            }
+            entry["type"] = prov.getType()
+            var state = prov.getState()
+            match (state) {
+                case ENABLED { entry["state"] = "ENABLED" }
+                case DRAINING { entry["state"] = "DRAINING" }
+                case DISABLED { entry["state"] = "DISABLED" }
             }
             result = append(result, entry)
         }
@@ -379,9 +364,7 @@ class ApiHandler {
             return
         }
         var req = Map<String, Object>{}
-        try {
-            json.Unmarshal(body, req)
-        } catch (e) {
+        json.Unmarshal(body, req) or {
             writeError(w, 400, "invalid json")
             return
         }
@@ -411,9 +394,7 @@ class ApiHandler {
             return
         }
         var req = Map<String, Object>{}
-        try {
-            json.Unmarshal(body, req)
-        } catch (e) {
+        json.Unmarshal(body, req) or {
             writeError(w, 400, "invalid json")
             return
         }
@@ -434,12 +415,7 @@ class ApiHandler {
 
 // readBody reads the full request body, returning null on failure.
 byte[] readBody(Request r) {
-    var body = byte[0]
-    try {
-        body = ReadAll(r.Body)
-    } catch (e) {
-        return null
-    }
+    var body = ReadAll(r.Body) or { return null }
     r.Body.Close()
     return body
 }
@@ -457,17 +433,13 @@ void writeError(ResponseWriter w, int status, String msg) {
     w.Header().Set("Content-Type", "application/json")
     w.WriteHeader(status)
     var result = Map<String, Object>{"error": msg}
-    var body = '{"error":"unknown"}'.toBytes()
-    try { body = json.Marshal(result) } catch (e) {}
+    var body = json.Marshal(result) or { '{"error":"unknown"}'.toBytes() }
     w.Write(body)
 }
 
 // writeJson serializes data to JSON and writes it as the HTTP response.
 void writeJson(ResponseWriter w, Object data) {
-    var body = byte[0]
-    try {
-        body = json.Marshal(data)
-    } catch (e) {
+    var body = json.Marshal(data) or {
         w.WriteHeader(500)
         w.Write('{"error":"json marshal failed"}'.toBytes())
         return

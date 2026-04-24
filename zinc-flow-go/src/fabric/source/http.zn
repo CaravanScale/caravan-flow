@@ -2,12 +2,12 @@
 // Receives HTTP POST requests, creates FlowFiles, and feeds them into the Fabric.
 // Supports both raw body ingestion and NiFi FlowFile V3 binary format.
 
-import net.http
+import net/http
 import io
 import core
-import stdlib.logging
-import fabric.runtime
-import fabric.model
+import stdlib/logging
+import fabric/runtime
+import fabric/model
 import time
 
 // HttpSource handles HTTP ingestion of FlowFiles.
@@ -28,10 +28,7 @@ class HttpSource {
             return
         }
 
-        var body = byte[0]
-        try {
-            body = ReadAll(r.Body)
-        } catch (e) {
+        var body = ReadAll(r.Body) or {
             w.WriteHeader(400)
             w.Write('{"error":"failed to read body"}'.toBytes())
             return

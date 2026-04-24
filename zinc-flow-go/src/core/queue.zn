@@ -4,7 +4,7 @@
 //
 // Uses a head-index dequeue with compaction to avoid O(n) slice copies and GC leaks.
 
-import sync.Mutex
+import sync
 import time
 
 // QueueEntry wraps a FlowFile with queue metadata.
@@ -19,7 +19,7 @@ class FlowQueue {
     var items = List<QueueEntry>[]
     var head = 0
     var invisible = Map<String, QueueEntry>{}
-    Mutex mu
+    sync.Mutex mu
     long currentBytes
     long idCounter
 

@@ -11,7 +11,7 @@
 // internal attrs before PutHTTP ships a FlowFile downstream.
 
 import core
-import fabric.registry
+import fabric/registry
 
 class FilterAttribute : ProcessorFn {
     bool removeMode

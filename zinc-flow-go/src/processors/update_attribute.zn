@@ -12,7 +12,7 @@
 // csharp-interop name.
 
 import core
-import fabric.registry
+import fabric/registry
 
 class UpdateAttribute : ProcessorFn {
     String key

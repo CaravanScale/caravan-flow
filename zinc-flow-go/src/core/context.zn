@@ -1,4 +1,4 @@
-import stdlib.exceptions
+import stdlib/errors
 
 // Component lifecycle state.
 enum ComponentState {
@@ -48,18 +48,18 @@ class ProcessorContext {
 
     pub Provider getProvider(String name) {
         if (!providers.containsKey(name)) {
-            throw exceptions.ConfigException("provider not found: ${name}")
+            return errors.ConfigError("provider not found: ${name}")
         }
         return providers[name]
     }
 
     pub Provider getEnabledProvider(String name) {
         if (!providers.containsKey(name)) {
-            throw exceptions.ConfigException("provider not found: ${name}")
+            return errors.ConfigError("provider not found: ${name}")
         }
         var p = providers[name]
         if (!p.isEnabled()) {
-            throw exceptions.IllegalStateException("provider not enabled: ${name}")
+            return errors.IllegalStateError("provider not enabled: ${name}")
         }
         return p
     }

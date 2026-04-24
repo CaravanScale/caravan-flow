@@ -1,12 +1,12 @@
 // IRS Rules Engine — evaluates routing rules against FlowFile attributes.
 // Thread-safe: writes use mutex, reads are concurrent-safe.
 
-import sync.Mutex
+import sync
 
 // RulesEngine — holds rulesets and evaluates FlowFiles against them.
 class RulesEngine {
     var rulesets = Map<String, List<RoutingRule>>{}
-    Mutex mu
+    sync.Mutex mu
 
     init() {}
 

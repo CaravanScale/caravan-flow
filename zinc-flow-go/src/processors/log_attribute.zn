@@ -11,8 +11,8 @@
 // attribute overlay chain; in Zinc we just iterate the plain map.
 
 import core
-import fabric.registry
-import stdlib.logging
+import fabric/registry
+import stdlib/logging
 
 class LogAttribute : ProcessorFn {
     String prefix

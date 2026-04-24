@@ -1,7 +1,7 @@
 // ProcessSession — transaction boundary for processor execution.
 // Wraps the claim → process → route → ack cycle with all-or-nothing fan-out.
 
-import fabric.router
+import fabric/router
 
 // ProcessSession orchestrates one processor's execution cycle.
 class ProcessSession {

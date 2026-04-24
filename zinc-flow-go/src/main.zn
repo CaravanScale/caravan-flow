@@ -2,19 +2,19 @@
 // Fabric loads processors + routing from config, processes FlowFiles asynchronously.
 // HTTP source accepts FlowFiles via POST /ingest.
 
-import stdlib.config
-import stdlib.logging
+import stdlib/config
+import stdlib/logging
 import core
-import fabric.registry
-import fabric.runtime
-import fabric.source
-import fabric.api
+import fabric/registry
+import fabric/runtime
+import fabric/source
+import fabric/api
 import processors
 import os
-import os.signal
+import os/signal
 import syscall
 import time
-import net.http
+import net/http
 
 void main() {
     // Load config

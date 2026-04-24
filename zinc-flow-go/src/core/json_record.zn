@@ -1,7 +1,7 @@
 // JSON RecordReader/RecordWriter — converts between JSON arrays and Avro GenericRecords.
 // JSON is the most common interchange format; this is the first reader/writer implementation.
 
-import encoding.json
+import encoding/json
 
 // JsonRecordReader parses a JSON array of objects into GenericRecords.
 class JsonRecordReader : RecordReader {
@@ -11,11 +11,7 @@ class JsonRecordReader : RecordReader {
     pub List<GenericRecord> read(byte[] data, Schema schema) {
         // Parse JSON into list of maps
         var rawList = List<Map<String, Object>>[]
-        try {
-            json.Unmarshal(data, rawList)
-        } catch (e) {
-            return List<GenericRecord>[]
-        }
+        json.Unmarshal(data, rawList) or { return List<GenericRecord>[] }
 
         // Schema-on-read: if schema has no fields, infer from first object
         var effectiveSchema = schema
@@ -60,12 +56,8 @@ class JsonRecordWriter : RecordWriter {
         }
 
         // Serialize to JSON
-        try {
-            var result = json.Marshal(rawList)
-            return result
-        } catch (e) {
-            return byte[0]
-        }
+        var result = json.Marshal(rawList) or { return byte[0] }
+        return result
     }
 }
 

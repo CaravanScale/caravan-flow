@@ -22,7 +22,7 @@
 // Record API grows GetByPath support.
 
 import core
-import fabric.registry
+import fabric/registry
 
 data FieldMapping(String field, String attr)
 

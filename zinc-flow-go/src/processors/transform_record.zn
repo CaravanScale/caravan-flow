@@ -25,7 +25,7 @@
 // content passes through Single unchanged (same as ExtractRecordField).
 
 import core
-import fabric.registry
+import fabric/registry
 
 data RecordOp(String op, String arg1, String arg2)
 

@@ -1,8 +1,8 @@
 // Concrete provider implementations.
 // Each wraps an existing infrastructure type and adds lifecycle management.
 
-import stdlib.config
-import stdlib.logging
+import stdlib/config
+import stdlib/logging
 
 // ConfigProvider wraps Config. The bootstrap provider — used to configure everything else.
 class ConfigProvider : Provider {

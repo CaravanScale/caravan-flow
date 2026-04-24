@@ -10,11 +10,11 @@
 // custom). Attribute-predicate routing lives inside a RouteOnAttribute
 // processor (Phase 3), not inside the fabric itself.
 
-import stdlib.config
-import stdlib.logging
-import sync.Mutex
+import stdlib/config
+import stdlib/logging
+import sync
 import core
-import fabric.registry
+import fabric/registry
 import time
 
 // ProcessorDef — the config-time definition of a processor (used for
@@ -37,7 +37,7 @@ class Fabric {
     Registry reg
     ProcessorContext globalCtx
     PipelineGraph graph
-    Mutex mu
+    sync.Mutex mu
     DLQ dlqStore
 
     // Per-processor metrics. Keyed by user-facing processor name.
@@ -491,15 +491,13 @@ class Fabric {
         }
         var requires = g.getRequires(name)
         for (provName in requires) {
-            try {
-                var prov = globalCtx.getProvider(provName)
-                if (!prov.isEnabled()) {
-                    logging.warn("cannot enable — provider disabled",
-                        "processor", name, "provider", provName)
-                    return false
-                }
-            } catch (e) {
+            var prov = globalCtx.getProvider(provName) or {
                 logging.warn("cannot enable — provider missing",
+                    "processor", name, "provider", provName)
+                return false
+            }
+            if (!prov.isEnabled()) {
+                logging.warn("cannot enable — provider disabled",
                     "processor", name, "provider", provName)
                 return false
             }
@@ -526,36 +524,28 @@ class Fabric {
     // --- Provider lifecycle ---
 
     pub bool enableProvider(String providerName) {
-        try {
-            var prov = globalCtx.getProvider(providerName)
-            prov.enable()
-            logging.info("provider enabled", "name", providerName)
-            return true
-        } catch (e) {
-            return false
-        }
+        var prov = globalCtx.getProvider(providerName) or { return false }
+        prov.enable()
+        logging.info("provider enabled", "name", providerName)
+        return true
     }
 
     // disableProvider cascades to dependent processors before disabling
     // the provider itself. Prevents a processor from running against a
     // half-gone dependency.
     pub bool disableProvider(String providerName, int drainSecs) {
-        try {
-            var prov = globalCtx.getProvider(providerName)
-            var dependents = globalCtx.getDependents(providerName)
-            for (procName in dependents) {
-                match (getProcessorState(procName)) {
-                    case ENABLED { disableProcessor(procName, drainSecs) }
-                    case DRAINING {}
-                    case DISABLED {}
-                }
+        var prov = globalCtx.getProvider(providerName) or { return false }
+        var dependents = globalCtx.getDependents(providerName)
+        for (procName in dependents) {
+            match (getProcessorState(procName)) {
+                case ENABLED { disableProcessor(procName, drainSecs) }
+                case DRAINING {}
+                case DISABLED {}
             }
-            prov.disable(drainSecs)
-            logging.info("provider disabled", "name", providerName)
-            return true
-        } catch (e) {
-            return false
         }
+        prov.disable(drainSecs)
+        logging.info("provider disabled", "name", providerName)
+        return true
     }
 
     // --- Dynamic processor management ---
@@ -678,15 +668,13 @@ class Fabric {
         if (len(requires) == 0) {
             var providerNames = globalCtx.listProviders()
             for (pn in providerNames) {
-                try {
-                    scoped[pn] = globalCtx.getProvider(pn)
-                } catch (e) {}
+                var p = globalCtx.getProvider(pn) or { continue }
+                scoped[pn] = p
             }
         } else {
             for (pn in requires) {
-                try {
-                    scoped[pn] = globalCtx.getProvider(pn)
-                } catch (e) {}
+                var p = globalCtx.getProvider(pn) or { continue }
+                scoped[pn] = p
             }
         }
         return ScopedContext(scoped)

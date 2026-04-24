@@ -1,8 +1,8 @@
 // Built-in processors — standard processors shipped with zinc-flow.
 
 import core
-import fabric.registry
-import stdlib.logging
+import fabric/registry
+import stdlib/logging
 import os
 
 // registerBuiltins registers all built-in processors with the registry.
@@ -101,13 +101,11 @@ ProcessorFn AddAttributeFactory(ScopedContext ctx, Map<String, String> config) {
 }
 
 ProcessorFn FileSinkFactory(ScopedContext ctx, Map<String, String> config) {
-    try {
-        var p = ctx.getProvider("content")
-        var cp = p as ContentProvider
-        return FileSink(config["output_dir"], cp.getStore())
-    } catch (e) {
+    var p = ctx.getProvider("content") or {
         return FileSink(config["output_dir"], MemoryContentStore())
     }
+    var cp = p as ContentProvider
+    return FileSink(config["output_dir"], cp.getStore())
 }
 
 ProcessorFn LogProcessorFactory(ScopedContext ctx, Map<String, String> config) {
@@ -119,13 +117,11 @@ ProcessorFn JsonToRecordsFactory(ScopedContext ctx, Map<String, String> config) 
     if (schemaName == "") {
         schemaName = "default"
     }
-    try {
-        var p = ctx.getProvider("content")
-        var cp = p as ContentProvider
-        return JsonToRecords(schemaName, cp.getStore())
-    } catch (e) {
+    var p = ctx.getProvider("content") or {
         return JsonToRecords(schemaName, MemoryContentStore())
     }
+    var cp = p as ContentProvider
+    return JsonToRecords(schemaName, cp.getStore())
 }
 
 ProcessorFn RecordsToJsonFactory(ScopedContext ctx, Map<String, String> config) {

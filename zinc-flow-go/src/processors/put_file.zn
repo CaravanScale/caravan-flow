@@ -20,9 +20,9 @@
 // full naming/prefix/suffix/format knobs.
 
 import core
-import fabric.registry
-import fabric.model
-import sync.Mutex
+import fabric/registry
+import fabric/model
+import sync
 import os
 
 class PutFile : ProcessorFn {
@@ -32,7 +32,7 @@ class PutFile : ProcessorFn {
     String suffix
     String format
     ContentStore store
-    Mutex mu
+    sync.Mutex mu
     long counter
 
     init(String outputDir, String namingAttr, String prefix, String suffix, String format, ContentStore store) {
@@ -102,13 +102,11 @@ pub ProcessorFn PutFileFactory(ScopedContext ctx, Map<String, String> config) {
     if (config.containsKey("format") && config["format"] != "") {
         format = config["format"]
     }
-    try {
-        var p = ctx.getProvider("content")
-        var cp = p as ContentProvider
-        return PutFile(outputDir, namingAttr, prefix, suffix, format, cp.getStore())
-    } catch (e) {
+    var p = ctx.getProvider("content") or {
         return PutFile(outputDir, namingAttr, prefix, suffix, format, MemoryContentStore())
     }
+    var cp = p as ContentProvider
+    return PutFile(outputDir, namingAttr, prefix, suffix, format, cp.getStore())
 }
 
 // basename returns the last path segment of s — strips any leading

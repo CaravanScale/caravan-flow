@@ -1,7 +1,7 @@
 // Dead Letter Queue — stores flowfiles that exceeded retry limits.
 // One DLQ per flow. Inspectable and replayable via API.
 
-import sync.Mutex
+import sync
 import time
 
 // DLQEntry holds a failed flowfile with context about why it failed.
@@ -10,7 +10,7 @@ data DLQEntry(String id, FlowFile flowFile, String sourceProcessor, String sourc
 // DLQ is a thread-safe store of failed flowfiles.
 class DLQ {
     var entries = Map<String, DLQEntry>{}
-    Mutex mu
+    sync.Mutex mu
     long idCounter
 
     init() {

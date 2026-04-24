@@ -13,11 +13,11 @@
 // Returns Single(ff) so a chained sink (e.g., PutFile) can run after.
 
 import core
-import fabric.registry
-import fabric.model
+import fabric/registry
+import fabric/model
 import io
 import fmt
-import encoding.hex
+import encoding/hex
 
 class PutStdout : ProcessorFn {
     String format
@@ -77,11 +77,9 @@ pub ProcessorFn PutStdoutFactory(ScopedContext ctx, Map<String, String> config) 
     // Resolve content store via the scoped context; fall back to an
     // in-memory store so the processor works even without a configured
     // ContentProvider (useful for unit tests).
-    try {
-        var p = ctx.getProvider("content")
-        var cp = p as ContentProvider
-        return PutStdout(format, cp.getStore())
-    } catch (e) {
+    var p = ctx.getProvider("content") or {
         return PutStdout(format, MemoryContentStore())
     }
+    var cp = p as ContentProvider
+    return PutStdout(format, cp.getStore())
 }

@@ -18,11 +18,11 @@
 // Tests can bypass the timer entirely via `pollOnce()`.
 
 import core
-import stdlib.config
-import stdlib.logging
-import sync.Mutex
+import stdlib/config
+import stdlib/logging
+import sync
 import time
-import fabric.runtime
+import fabric/runtime
 
 class GenerateFlowFile : ConnectorSource {
     String name
@@ -33,7 +33,7 @@ class GenerateFlowFile : ConnectorSource {
 
     // counter for `generate.index` — shared across all batches. Guarded
     // by mu for concurrent stop/start races (uncommon but cheap).
-    Mutex mu
+    sync.Mutex mu
     long counter
 
     var running = false

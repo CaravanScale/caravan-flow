@@ -17,7 +17,7 @@
 // with no wired target terminates the FlowFile (Fabric drops it).
 
 import core
-import fabric.registry
+import fabric/registry
 
 // Route — one parsed predicate entry. `relationship` is the name the
 // executor matches against the processor's `connections`; the rest is
