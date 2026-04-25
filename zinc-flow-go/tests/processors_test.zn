@@ -5,8 +5,8 @@
 
 import core
 import processors
-import fabric.source
-import stdlib.asserts
+import fabric/source
+import stdlib/asserts
 
 test "AddAttribute — sets attribute, preserves existing attrs" {
     var proc = AddAttribute("env", "prod")

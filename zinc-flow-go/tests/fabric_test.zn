@@ -8,10 +8,10 @@
 // comes out, what got recorded.
 
 import core
-import fabric.registry
-import fabric.runtime
+import fabric/registry
+import fabric/runtime
 import processors
-import stdlib.asserts
+import stdlib/asserts
 
 // --- Recording processors (test scaffolding) ---
 
@@ -362,12 +362,8 @@ test "ScopedContext — provider lookup via declared scope" {
 
     asserts.equalInt(t, len(ctx.listProviders()), 1)
 
-    try {
-        var p = ctx.getProvider("content")
-        asserts.equalString(t, p.getName(), "content")
-    } catch (e) {
-        t.Errorf("content provider should exist")
-    }
+    var p = ctx.getProvider("content")
+    asserts.equalString(t, p.getName(), "content")
 }
 
 // --- Provider lifecycle ---

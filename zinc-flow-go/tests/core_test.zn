@@ -4,8 +4,8 @@
 // stdlib.asserts which reports through *testing.T.
 
 import core
-import fabric.model
-import stdlib.asserts
+import fabric/model
+import stdlib/asserts
 
 // --- FlowFile ---
 

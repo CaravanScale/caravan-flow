@@ -2,8 +2,8 @@
 // disabled-rule handling. Migrated from test_main.zn.
 
 import core
-import fabric.router
-import stdlib.asserts
+import fabric/router
+import stdlib/asserts
 
 test "routing EQ — attribute equality routes correctly" {
     var engine = RulesEngine()

@@ -16,11 +16,11 @@
 // behavior.
 
 import core
-import fabric.registry
-import fabric.runtime
-import fabric.source
+import fabric/registry
+import fabric/runtime
+import fabric/source
 import processors
-import stdlib.asserts
+import stdlib/asserts
 
 test "MVP pipeline e2e — generate → update → route → sink" {
     // Wire fabric with MVP processors.
