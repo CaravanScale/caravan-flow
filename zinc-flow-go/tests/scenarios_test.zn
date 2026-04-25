@@ -145,13 +145,14 @@ test "scenario: provider disable cascades — dependent processors become DISABL
         case _ { t.Errorf("initially expected ENABLED") }
     }
 
-    // SKIP: cross-package call to fab.disableProvider can't compile —
-    // compiler auto-widens the call site to (bool, error) even though the
-    // impl returns just `bool` (the inner `or { return false }` consumes
-    // the only error path). Skipping the cascade assertion until that
-    // compiler bug is fixed; the underlying behavior is still exercised
-    // by the in-package fabric tests.
-    t.Skip("blocked on zinc compiler cross-package thrower-inference bug")
+    fab.disableProvider("content", 1)
+    asserts.isFalse(t, cp.isEnabled(), "content provider disabled")
+
+    match (fab.getProcessorState("file-sink")) {
+        case DISABLED { }
+        case ENABLED { t.Errorf("sink should not be ENABLED after cascade") }
+        case DRAINING {}
+    }
 }
 
 test "scenario: enableProcessor — refuses when a required provider is disabled" {
