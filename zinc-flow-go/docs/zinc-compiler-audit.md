@@ -26,7 +26,7 @@
 | J | FlowFile V3 binary I/O | csharp V3 read/write | Stub exists at `src/fabric/source/http.zn:41`. No language gap; real port work. | unknown (port work, not lang gap) | zinc-flow code (not compiler) | M | MVP | — | — |
 | K | HTTP server | Kestrel-free csharp server | `net.http` already imported at `src/fabric/source/http.zn:5`. Handler-as-callback is tied to D. | OK (verify handler registration post-D fix) | — | — | P4 (ListenHTTP) | — | — |
 | L | HTTP client | — | `net.http` client side — same import, should work. | OK | — | — | P3 (PutHTTP) | — | — |
-| M | Testing primitives | xUnit (~557 tests) | **Built in zinc commit `05631de`**. `zinc test` CLI didn't exist; built end-to-end. `test "name" { body }` syntax → `func TestName(t *testing.T)` in `*_test.go`, delegated to `go test ./...`. `stdlib/asserts` module provides `equalInt`/`equalString`/`isTrue`/`isFalse`/`contains`/`fail`/`fatal`. `-v`, `-run`, coverage all work natively. Regression: `examples-test/basic/`. | **OK** | — | — | — | — | ZCA-08 (FIXED) |
+| M | Testing primitives | xUnit (~557 tests) | **Built in zinc commit `05631de`**. `zinc-go test` CLI didn't exist; built end-to-end. `test "name" { body }` syntax → `func TestName(t *testing.T)` in `*_test.go`, delegated to `go test ./...`. `stdlib/asserts` module provides `equalInt`/`equalString`/`isTrue`/`isFalse`/`contains`/`fail`/`fatal`. `-v`, `-run`, coverage all work natively. Regression: `examples-test/basic/`. | **OK** | — | — | — | — | ZCA-08 (FIXED) |
 | N | Bytes / binary buffers | `Span<byte>`, `ArrayPool` | `byte[]` used at `src/processors/builtin.zn:146`; `bytes` / `io` Go packages available. Pooling patterns not probed (may not be needed for MVP). | OK | — | — | — | — | — |
 | O | Time / monotonic clock | `Stopwatch`, nanos | `import time` at `src/fabric/runtime/runtime.zn:8`; `time.Sleep(100 * time.Millisecond)` used. Nanosecond ops like `long(30000000000)` in use at `runtime.zn:41`. | OK | — | — | — | — | — |
 | X | Third-party Go dep import via zinc.toml | — (csharp uses NuGet) | **FIXED in zinc commit `b8b1e19`**. Root cause: `compileDir`/`compileMultiFile`/`compileFile` didn't accept `importAliases`, so projects without `src/` subdirs silently dropped `[imports]` map. `compileDirWithSubpackages` already threaded it — flat path did not. ZCA-01 (missing `require`) was a downstream symptom: `go mod tidy` stripped the require because generated Go referenced `"uuid"` instead of `"github.com/google/uuid"`. Fix threads aliases variadic tail-param through flat compile path and passes `cfg.Imports` from buildProject/runProject. Verified with probe-01-thirdparty + zinc-flow rebuild + ad-hoc stdlib + all 54 e2e tests. | **OK** | — | — | — | — | ZCA-01 (symptom), ZCA-02 (root, FIXED) |
@@ -40,11 +40,11 @@
 1. **Probe A** — exhaustive-match enforcement. Deliberately incomplete match must fail compilation. If silent, file high-priority ticket; this is a correctness gate for every `ProcessorResult` match in the codebase.
 2. **Probe C** — nested generics + user-defined `class Box<T>`. `Map<String, List<FlowFile>>` already appears in runtime.zn without incident, but user-defined generics haven't been confirmed.
 3. ~~**Probe X** — third-party Go dep~~ **DONE, broken (2 bugs — ZCA-01, ZCA-02)**. Reclassified as P3-blocking (not MVP-blocking) — MVP works with Go stdlib only.
-4. **Probe M** — `zinc test` must support: assertions, failure-path tests (processor returning `Failure(reason, ff)` is observable from test code), recover-from-panic test-helper (to assert "processor didn't throw"), test isolation. If any missing, file ticket.
+4. **Probe M** — `zinc-go test` must support: assertions, failure-path tests (processor returning `Failure(reason, ff)` is observable from test code), recover-from-panic test-helper (to assert "processor didn't throw"), test isolation. If any missing, file ticket.
 
 ### Compiler tickets discovered
 
-- ~~**ZCA-01**: `zinc build` / `zinc run` generates `go.mod` without a `require` block.~~ **Not a real bug** — was a downstream symptom of ZCA-02. `generateGoMod` wrote the require correctly; `go mod tidy` then removed it because the generated Go code had wrong import path. Fixed automatically by ZCA-02.
+- ~~**ZCA-01**: `zinc-go build` / `zinc-go run` generates `go.mod` without a `require` block.~~ **Not a real bug** — was a downstream symptom of ZCA-02. `generateGoMod` wrote the require correctly; `go mod tidy` then removed it because the generated Go code had wrong import path. Fixed automatically by ZCA-02.
 - ~~**ZCA-02**: `[imports]` alias for external Go modules not honored by codegen.~~ **FIXED in zinc commit `b8b1e19`**. Real root cause was `compileDir` flat path didn't accept `importAliases` at all (only `compileDirWithSubpackages` did). Fixed by threading aliases through `compileDir`/`compileMultiFile`/`compileFile` as variadic tail param.
 - ~~**ZCA-03**: Non-exhaustive `match` on sealed class compiles silently.~~ **FIXED in zinc commit `92aa080`**. Enforcement added in codegen (the typechecker pass isn't wired to the CLI); `compileErrors` list on Generator surfaced through `compileFile`/`compileMultiFile`/`compileDirWithSubpackages`. Side-discovery: `Generate()` value-forks the generator for the import-collection pass — any state mutated on the copy was being lost — now propagated back.
 - ~~**ZCA-04**: Parser cannot handle `>>` at close of nested user-generic type.~~ **FIXED in zinc commit `a738e0c`**. Root cause was wider than the `>>` tokenization: `looksLikeTypeArgs()` did flat IDENT+DOT lookahead (no depth counter), and `parseCallTypeArgs()` consumed only IDENTs rather than recursing through `v2ParseType()`. Both replaced with depth-aware / recursive variants.
@@ -72,7 +72,7 @@
 
 ## Probe plan (ordering)
 
-Probes live in a scratch dir outside the repo (suggest `/tmp/zinc-probes/`). Each probe is an isolated `zinc.toml` project, compiled with `zinc build`. Probe results documented inline in this matrix under "Evidence," with ticket IDs added as filed.
+Probes live in a scratch dir outside the repo (suggest `/tmp/zinc-probes/`). Each probe is an isolated `zinc.toml` project, compiled with `zinc-go build`. Probe results documented inline in this matrix under "Evidence," with ticket IDs added as filed.
 
 | Order | Probe | Approx. LOC | Expected time | Unlocks |
 |---|---|---|---|---|
@@ -88,7 +88,7 @@ Probes 1–4 are the MVP gate. Probe 5 can happen in parallel but isn't MVP-bloc
 
 ## Exit criteria for Phase 0 — **ALL MET**
 
-- [x] Probes 1–4 green under `zinc build` producing native Go binaries.
+- [x] Probes 1–4 green under `zinc-go build` producing native Go binaries.
 - [x] Probe 5 (closure bridge) resolved early — zero-param lambda parse gap (ZCA-07) fixed during probe execution.
 - [x] All MVP-blocking gaps fixed (not just ticketed).
 - [x] Matrix has no `unknown` or `probe` rows — every category is OK or FIXED.
@@ -106,7 +106,7 @@ Nine compiler tickets filed + fixed + committed, all pushed to `github.com/ZincS
 | ZCA-03 | Compile-time exhaustive-match enforcement on sealed types | `92aa080` |
 | ZCA-06 | `_v` unused-var for discard/wildcard case arms | `91eec11` |
 | ZCA-07 | Zero-param lambda parse `() -> { body }` | `049b7b9` |
-| ZCA-08 | `zinc test` command + `test "name" { body }` + `stdlib/asserts` | `05631de` |
+| ZCA-08 | `zinc-go test` command + `test "name" { body }` + `stdlib/asserts` | `05631de` |
 | ZCA-09 | `fmt.Errorf` constant-format-string for `Error("…${interp}")` | `d8453bd` |
 | +UX    | Unified `[deps]` + alias-keyed `[replace]` in zinc.toml | `53529ea` |
 

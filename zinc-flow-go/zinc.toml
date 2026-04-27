@@ -14,4 +14,4 @@ fsnotify = "github.com/fsnotify/fsnotify@v1.7.0"
 fsnotify = "github.com/fsnotify/fsnotify"
 
 [replace]
-stdlib = "/home/vrjoshi/proj/zinc/zinc-go/stdlib/zinc-out"
+stdlib = "../../zinc/zinc-go/stdlib/zinc-out"

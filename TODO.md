@@ -39,7 +39,7 @@
 
 - [x] Provider lifecycle (ENABLED/DISABLED), ScopedContext, dependency cascade
 - [x] Map-keyed YAML config, graceful shutdown
-- [x] **41 tests via `zinc test`** — core (8) + processors (7) + routing (7) + fabric/queue/DLQ (9) + scenarios (10). Real `go test` integration, `stdlib.asserts` helpers, exit-code-honest failures. (Was 30 tests / 137 assertions under the old `run_tests.sh` src/main.zn-swap hack — retired.)
+- [x] **41 tests via `zinc-go test`** — core (8) + processors (7) + routing (7) + fabric/queue/DLQ (9) + scenarios (10). Real `go test` integration, `stdlib.asserts` helpers, exit-code-honest failures. (Was 30 tests / 137 assertions under the old `run_tests.sh` src/main.zn-swap hack — retired.)
 - [x] zinc-flow-python port — 129 assertions, DataFrame processors
 - [x] zinc-flow-csharp port — 149 assertions, ThreadStatic pools, ArrayPool, ref-counted Content, 2M+ ff/s AOT
 
@@ -53,7 +53,7 @@ Prerequisite for porting zinc-flow's processor set to the Zinc language (re-esta
 - [x] Compile-time exhaustive `match` enforcement on sealed types (ZCA-03)
 - [x] `_v` unused-var fix for discard/wildcard case arms (ZCA-06)
 - [x] Zero-param lambda parse `() -> { body }` (ZCA-07)
-- [x] `zinc test` command + `test "name" { body }` syntax + `stdlib/asserts` module (ZCA-08)
+- [x] `zinc-go test` command + `test "name" { body }` syntax + `stdlib/asserts` module (ZCA-08)
 - [x] `fmt.Errorf` with constant format string for `Error("...${interp}")` — go-vet clean (ZCA-09)
 - [x] Unified `[deps]` + `[replace]` in `zinc.toml` (alias-keyed, no duplication with `[imports]`)
 
