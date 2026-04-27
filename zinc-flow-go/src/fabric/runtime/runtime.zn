@@ -38,9 +38,13 @@ class Fabric {
     ProcessorContext globalCtx
     PipelineGraph graph
     sync.Mutex mu
+    sync.Mutex countersMu
     DLQ dlqStore
 
     // Per-processor metrics. Keyed by user-facing processor name.
+    // countersMu guards these against handler-goroutine writes racing
+    // API readers. Kept separate from `mu` so hot-path counter bumps
+    // don't queue behind rare graph swaps.
     var processorCounts = Map<String, int>{}
     var processorErrors = Map<String, int>{}
 
@@ -141,12 +145,14 @@ class Fabric {
         processorDefs = newDefs
 
         // Initialize per-processor counters (preserve existing values on reload).
-        for (name in newGraph.getProcessorNames()) {
-            if (!processorCounts.containsKey(name)) {
-                processorCounts[name] = 0
-            }
-            if (!processorErrors.containsKey(name)) {
-                processorErrors[name] = 0
+        lock (countersMu) {
+            for (name in newGraph.getProcessorNames()) {
+                if (!processorCounts.containsKey(name)) {
+                    processorCounts[name] = 0
+                }
+                if (!processorErrors.containsKey(name)) {
+                    processorErrors[name] = 0
+                }
             }
         }
 
@@ -287,20 +293,26 @@ class Fabric {
     }
 
     // incProcCount bumps the success counter for `name`, lazily initializing.
+    // Called from every executeGraph step — concurrent with API readers, so
+    // the map mutation must be guarded.
     void incProcCount(String name) {
-        if (processorCounts.containsKey(name)) {
-            processorCounts[name] = processorCounts[name] + 1
-        } else {
-            processorCounts[name] = 1
+        lock (countersMu) {
+            if (processorCounts.containsKey(name)) {
+                processorCounts[name] = processorCounts[name] + 1
+            } else {
+                processorCounts[name] = 1
+            }
         }
     }
 
     // incProcError bumps the error counter for `name`, lazily initializing.
     void incProcError(String name) {
-        if (processorErrors.containsKey(name)) {
-            processorErrors[name] = processorErrors[name] + 1
-        } else {
-            processorErrors[name] = 1
+        lock (countersMu) {
+            if (processorErrors.containsKey(name)) {
+                processorErrors[name] = processorErrors[name] + 1
+            } else {
+                processorErrors[name] = 1
+            }
         }
     }
 
@@ -451,21 +463,23 @@ class Fabric {
 
     pub Map<String, Map<String, int>> getProcessorStats() {
         var stats = Map<String, Map<String, int>>{}
-        for (name in graph.getProcessorNames()) {
-            // Local is `ps` (not `s`) because Zinc→Go lowers the class
-            // receiver as `s` — a local named `s` would shadow it.
-            var ps = Map<String, int>{}
-            if (processorCounts.containsKey(name)) {
-                ps["processed"] = processorCounts[name]
-            } else {
-                ps["processed"] = 0
+        lock (countersMu) {
+            for (name in graph.getProcessorNames()) {
+                // Local is `ps` (not `s`) because Zinc→Go lowers the class
+                // receiver as `s` — a local named `s` would shadow it.
+                var ps = Map<String, int>{}
+                if (processorCounts.containsKey(name)) {
+                    ps["processed"] = processorCounts[name]
+                } else {
+                    ps["processed"] = 0
+                }
+                if (processorErrors.containsKey(name)) {
+                    ps["errors"] = processorErrors[name]
+                } else {
+                    ps["errors"] = 0
+                }
+                stats[name] = ps
             }
-            if (processorErrors.containsKey(name)) {
-                ps["errors"] = processorErrors[name]
-            } else {
-                ps["errors"] = 0
-            }
-            stats[name] = ps
         }
         return stats
     }
@@ -580,8 +594,10 @@ class Fabric {
         }
         g.addProcessor(name, proc, requires)
         g.computeEntryPoints()
-        processorCounts[name] = 0
-        processorErrors[name] = 0
+        lock (countersMu) {
+            processorCounts[name] = 0
+            processorErrors[name] = 0
+        }
         return true
     }
 
@@ -610,8 +626,10 @@ class Fabric {
         // future reloadFlow.
 
         processorDefs[name] = ProcessorDef(typeName, pconfig, requires, Map<String, List<String>>{})
-        processorCounts[name] = 0
-        processorErrors[name] = 0
+        lock (countersMu) {
+            processorCounts[name] = 0
+            processorErrors[name] = 0
+        }
 
         logging.info("processor added", "name", name, "type", typeName)
         return true
