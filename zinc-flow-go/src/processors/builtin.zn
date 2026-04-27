@@ -73,6 +73,16 @@ pub void registerBuiltins(Registry reg) {
             List<String>["output_dir", "naming_attribute", "prefix", "suffix", "format"]),
         PutFileFactory
     )
+    reg.register(
+        ProcessorInfo("ConvertCSVToRecord", "Parses CSV content into Avro records",
+            List<String>["delimiter", "has_header", "schema_name"]),
+        ConvertCSVToRecordFactory
+    )
+    reg.register(
+        ProcessorInfo("ConvertRecordToCSV", "Serializes Avro records to CSV bytes",
+            List<String>["delimiter", "include_header"]),
+        ConvertRecordToCSVFactory
+    )
     // --- zinc-native / legacy names ---
     reg.register(
         ProcessorInfo("add-attribute", "Adds key=value attribute to FlowFiles", List<String>["key", "value"]),

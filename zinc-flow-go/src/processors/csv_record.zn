@@ -1,0 +1,214 @@
+// CSV codec processors — ConvertCSVToRecord / ConvertRecordToCSV.
+//
+// Mirrors csharp ZincFlow.StdLib.CsvRecord (~150 LOC hand-rolled there).
+// Backed by Go's stdlib `encoding/csv` — no third-party dep needed.
+//
+// ConvertCSVToRecord:
+//   • Raw bytes → Records. First row optionally read as header
+//     (config: has_header). Without a header, fields are named
+//     col_0, col_1, ... All field types are STRING (CSV is untyped).
+//   • Empty input → Failure.
+//   • Already-Records content → pass-through.
+//
+// ConvertRecordToCSV:
+//   • Records → Raw bytes. Header row emitted by default
+//     (config: include_header). Quoting per RFC 4180 via stdlib.
+//   • Already-Raw content → pass-through.
+//
+// Config:
+//   delimiter       — single-char (default ",")
+//   has_header      — "true" | "false" (default "true") — reader only
+//   include_header  — "true" | "false" (default "true") — writer only
+//   schema_name     — name embedded in the inferred Schema (default "csv")
+
+import core
+import fabric/registry
+import bytes
+import encoding/csv
+
+class ConvertCSVToRecord : ProcessorFn {
+    String schemaName
+    String delimiter
+    bool hasHeader
+    ContentStore store
+
+    init(String schemaName, String delimiter, bool hasHeader, ContentStore store) {
+        this.schemaName = schemaName
+        this.delimiter = delimiter
+        this.hasHeader = hasHeader
+        this.store = store
+    }
+
+    pub ProcessorResult process(FlowFile ff) {
+        match (ff.content) {
+            case Raw(data) {
+                return parseCsv(ff, data)
+            }
+            case Claim(_, _) {
+                var resolved = resolve(store, ff.content)
+                if (resolved.errorMsg != "") {
+                    return Failure(resolved.errorMsg, ff)
+                }
+                return parseCsv(ff, resolved.data)
+            }
+            case Records(_, _) {
+                return Single(ff)
+            }
+        }
+    }
+
+    ProcessorResult parseCsv(FlowFile ff, byte[] data) {
+        var reader = csv.NewReader(bytes.NewReader(data))
+        if (len(delimiter) == 1) {
+            reader.Comma = rune(delimiter[0])
+        }
+        var rows = reader.ReadAll() or {
+            return Failure("csv parse failed: ${err.Error()}", ff)
+        }
+        if (len(rows) == 0) {
+            return Failure("no rows in CSV", ff)
+        }
+
+        var fieldNames = List<String>[]
+        var dataStart = 0
+        if (hasHeader) {
+            fieldNames = rows[0]
+            dataStart = 1
+        } else {
+            var i = 0
+            while (i < len(rows[0])) {
+                fieldNames = append(fieldNames, "col_${i}")
+                i = i + 1
+            }
+        }
+
+        if (len(rows) - dataStart == 0) {
+            return Failure("CSV has header but no data rows", ff)
+        }
+
+        var fields = List<Field>[]
+        for (n in fieldNames) {
+            fields = append(fields, Field(n, STRING, null))
+        }
+        var schema = schemaFromFields(schemaName, fields)
+
+        var records = List<GenericRecord>[]
+        var r = dataStart
+        while (r < len(rows)) {
+            var row = rows[r]
+            var rec = GenericRecord(schema)
+            var c = 0
+            while (c < len(fieldNames) && c < len(row)) {
+                rec.setField(fieldNames[c], row[c])
+                c = c + 1
+            }
+            records = append(records, rec)
+            r = r + 1
+        }
+
+        var updated = withContent(ff, Records(schema, records))
+        return Single(updated)
+    }
+}
+
+class ConvertRecordToCSV : ProcessorFn {
+    String delimiter
+    bool includeHeader
+
+    init(String delimiter, bool includeHeader) {
+        this.delimiter = delimiter
+        this.includeHeader = includeHeader
+    }
+
+    pub ProcessorResult process(FlowFile ff) {
+        match (ff.content) {
+            case Records(schema, records) {
+                return writeCsv(ff, schema, records)
+            }
+            case Raw(_) {
+                return Single(ff)
+            }
+            case Claim(_, _) {
+                return Single(ff)
+            }
+        }
+    }
+
+    ProcessorResult writeCsv(FlowFile ff, Schema schema, List<GenericRecord> records) {
+        // bytes.NewBuffer(nil-ish) returns *bytes.Buffer for stack-friendly
+        // use; bytes.Buffer-as-local doesn't auto-pointerize the way class
+        // fields do.
+        var buf = bytes.NewBuffer(byte[0])
+        var writer = csv.NewWriter(buf)
+        if (len(delimiter) == 1) {
+            writer.Comma = rune(delimiter[0])
+        }
+
+        if (includeHeader) {
+            var header = List<String>[]
+            for (f in schema.fields) {
+                header = append(header, f.name)
+            }
+            writer.Write(header) or {
+                return Failure("csv header write failed: ${err.Error()}", ff)
+            }
+        }
+
+        for (rec in records) {
+            var row = List<String>[]
+            for (f in schema.fields) {
+                var v = rec.getField(f.name)
+                row = append(row, anyToString(v))
+            }
+            writer.Write(row) or {
+                return Failure("csv row write failed: ${err.Error()}", ff)
+            }
+        }
+        writer.Flush()
+
+        var updated = withContent(ff, Raw(buf.Bytes()))
+        return Single(updated)
+    }
+}
+
+// anyToString — defensive coercion from Object to string for CSV cells.
+// Records carry Object (Go any); CSV cells are strings. fmt.Sprint handles
+// any concrete type without panicking.
+String anyToString(Object v) {
+    if (v == null) {
+        return ""
+    }
+    return fmt.Sprint(v)
+}
+
+pub ProcessorFn ConvertCSVToRecordFactory(ScopedContext ctx, Map<String, String> config) {
+    var schemaName = config["schema_name"]
+    if (schemaName == "") {
+        schemaName = "csv"
+    }
+    var delimiter = config["delimiter"]
+    if (delimiter == "") {
+        delimiter = ","
+    }
+    var hasHeader = true
+    if (config.containsKey("has_header") && config["has_header"] == "false") {
+        hasHeader = false
+    }
+    var p = ctx.getProvider("content") or {
+        return ConvertCSVToRecord(schemaName, delimiter, hasHeader, MemoryContentStore())
+    }
+    var cp = p as ContentProvider
+    return ConvertCSVToRecord(schemaName, delimiter, hasHeader, cp.getStore())
+}
+
+pub ProcessorFn ConvertRecordToCSVFactory(ScopedContext ctx, Map<String, String> config) {
+    var delimiter = config["delimiter"]
+    if (delimiter == "") {
+        delimiter = ","
+    }
+    var includeHeader = true
+    if (config.containsKey("include_header") && config["include_header"] == "false") {
+        includeHeader = false
+    }
+    return ConvertRecordToCSV(delimiter, includeHeader)
+}

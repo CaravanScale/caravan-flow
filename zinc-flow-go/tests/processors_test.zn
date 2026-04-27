@@ -739,3 +739,119 @@ test "PutStdout — Records content returns Failure (raw-bytes resolution unsupp
         case _ { t.Errorf("expected Failure for Records content, got %v", result) }
     }
 }
+
+test "ConvertCSVToRecord — parses header+rows into records" {
+    var store = MemoryContentStore()
+    var proc = ConvertCSVToRecord("csv", ",", true, store)
+    var csvData = "name,age\nalice,30\nbob,25\n"
+    var ff = createFlowFile(csvData.toBytes(), Map<String, String>{})
+    var result = proc.process(ff)
+
+    match (result) {
+        case Single(out) {
+            asserts.isTrue(t, isRecord(out.content), "content is records")
+            match (out.content) {
+                case Records(schema, rows) {
+                    asserts.equalInt(t, len(schema.fields), 2)
+                    asserts.equalString(t, schema.fields[0].name, "name")
+                    asserts.equalString(t, schema.fields[1].name, "age")
+                    asserts.equalInt(t, len(rows), 2)
+                    asserts.equalString(t, fmt.Sprint(rows[0].getField("name")), "alice")
+                    asserts.equalString(t, fmt.Sprint(rows[1].getField("age")), "25")
+                }
+                case _ { t.Errorf("expected Records") }
+            }
+        }
+        case _ { t.Errorf("expected Single, got %v", result) }
+    }
+}
+
+test "ConvertCSVToRecord — has_header=false auto-names columns" {
+    var store = MemoryContentStore()
+    var proc = ConvertCSVToRecord("csv", ",", false, store)
+    var csvData = "x,y,z\n1,2,3\n"
+    var ff = createFlowFile(csvData.toBytes(), Map<String, String>{})
+    match (proc.process(ff)) {
+        case Single(out) {
+            match (out.content) {
+                case Records(schema, rows) {
+                    asserts.equalString(t, schema.fields[0].name, "col_0")
+                    asserts.equalString(t, schema.fields[2].name, "col_2")
+                    asserts.equalInt(t, len(rows), 2)
+                }
+                case _ { t.Errorf("expected Records") }
+            }
+        }
+        case _ { t.Errorf("expected Single") }
+    }
+}
+
+test "ConvertCSVToRecord — empty input returns Failure" {
+    var store = MemoryContentStore()
+    var proc = ConvertCSVToRecord("csv", ",", true, store)
+    var ff = createFlowFile("".toBytes(), Map<String, String>{})
+    match (proc.process(ff)) {
+        case Failure(_, _) {}
+        case _ { t.Errorf("expected Failure on empty input") }
+    }
+}
+
+test "ConvertRecordToCSV — emits header + rows" {
+    var fields = List<Field>[Field("name", STRING, null), Field("age", STRING, null)]
+    var schema = schemaFromFields("test", fields)
+    var rec1 = GenericRecord(schema)
+    rec1.setField("name", "alice")
+    rec1.setField("age", "30")
+    var rec2 = GenericRecord(schema)
+    rec2.setField("name", "bob")
+    rec2.setField("age", "25")
+    var ff = FlowFile("ff-csv", Map<String, String>{},
+        Records(schema, List<GenericRecord>[rec1, rec2]), 0)
+
+    var proc = ConvertRecordToCSV(",", true)
+    match (proc.process(ff)) {
+        case Single(out) {
+            match (out.content) {
+                case Raw(data) {
+                    var s = string(data)
+                    asserts.contains(t, s, "name,age")
+                    asserts.contains(t, s, "alice,30")
+                    asserts.contains(t, s, "bob,25")
+                }
+                case _ { t.Errorf("expected Raw") }
+            }
+        }
+        case _ { t.Errorf("expected Single") }
+    }
+}
+
+test "ConvertRecordToCSV — round-trip via ConvertCSVToRecord" {
+    var fields = List<Field>[Field("a", STRING, null), Field("b", STRING, null)]
+    var schema = schemaFromFields("rt", fields)
+    var rec = GenericRecord(schema)
+    rec.setField("a", "hello")
+    rec.setField("b", "world")
+    var ff = FlowFile("ff-rt", Map<String, String>{},
+        Records(schema, List<GenericRecord>[rec]), 0)
+
+    var toCsv = ConvertRecordToCSV(",", true)
+    match (toCsv.process(ff)) {
+        case Single(csvFf) {
+            var fromCsv = ConvertCSVToRecord("rt", ",", true, MemoryContentStore())
+            match (fromCsv.process(csvFf)) {
+                case Single(roundTripped) {
+                    match (roundTripped.content) {
+                        case Records(_, rows) {
+                            asserts.equalInt(t, len(rows), 1)
+                            asserts.equalString(t, fmt.Sprint(rows[0].getField("a")), "hello")
+                            asserts.equalString(t, fmt.Sprint(rows[0].getField("b")), "world")
+                        }
+                        case _ { t.Errorf("expected Records after round-trip") }
+                    }
+                }
+                case _ { t.Errorf("CSV→Record step failed") }
+            }
+        }
+        case _ { t.Errorf("Record→CSV step failed") }
+    }
+}
