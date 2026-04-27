@@ -28,7 +28,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="../../CaravanFlow/CaravanFlow.csproj" />
+    <ProjectReference Include="../../ZincFlow/ZincFlow.csproj" />
   </ItemGroup>
 
 </Project>
