@@ -135,10 +135,7 @@ class ConvertRecordToCSV : ProcessorFn {
     }
 
     ProcessorResult writeCsv(FlowFile ff, Schema schema, List<GenericRecord> records) {
-        // bytes.NewBuffer(nil-ish) returns *bytes.Buffer for stack-friendly
-        // use; bytes.Buffer-as-local doesn't auto-pointerize the way class
-        // fields do.
-        var buf = bytes.NewBuffer(byte[0])
+        var buf = new bytes.Buffer
         var writer = csv.NewWriter(buf)
         if (len(delimiter) == 1) {
             writer.Comma = rune(delimiter[0])
