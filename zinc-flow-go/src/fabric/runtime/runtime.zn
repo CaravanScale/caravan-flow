@@ -13,6 +13,7 @@
 import stdlib/config
 import stdlib/logging
 import sync
+import sync/atomic
 import core
 import fabric/registry
 import time
@@ -25,6 +26,19 @@ data ProcessorDef(
     List<String> requires,
     Map<String, List<String>> connections
 )
+
+// ProcCounter — per-processor lock-free counters. The atomic.Int64 fields
+// auto-pointerize, so the constructor publishes a fresh pair of `*atomic.Int64`
+// per processor on flow-load. After publish, hot-path bumps go straight
+// through the atomic instructions — no mutex on the fast path. Fields are
+// `pub` so the codegen exports them and inner-field access from local var
+// references works regardless of subpackage rules.
+pub class ProcCounter {
+    pub atomic.Int64 hits
+    pub atomic.Int64 errors
+
+    init() {}
+}
 
 // WorkItem — one frame on the executor stack.
 data WorkItem(FlowFile ff, String processor, int hops)
@@ -41,12 +55,13 @@ class Fabric {
     sync.Mutex countersMu
     DLQ dlqStore
 
-    // Per-processor metrics. Keyed by user-facing processor name.
-    // countersMu guards these against handler-goroutine writes racing
-    // API readers. Kept separate from `mu` so hot-path counter bumps
-    // don't queue behind rare graph swaps.
-    var processorCounts = Map<String, int>{}
-    var processorErrors = Map<String, int>{}
+    // Per-processor metrics. Keyed by user-facing processor name. The map
+    // structure is mutated only at flow-load / addProcessor / removeProcessor
+    // (under countersMu). The pointed-to ProcCounter values mutate constantly
+    // on the hot path, but each counter is a *atomic.Int64 so increments are
+    // lock-free. countersMu is held only briefly to look up the pointer or
+    // mutate the map structure; never during the actual increment.
+    var counters = Map<String, ProcCounter>{}
 
     // Config-time defs, for introspection. Kept alongside the graph so
     // API handlers can report "what was this processor configured as?"
@@ -59,8 +74,11 @@ class Fabric {
     var sources = Map<String, ConnectorSource>{}
 
     int maxHops
-    int totalProcessed
-    int activeExecutions
+    // Hot-path counters — bumped on every flowfile, read from API
+    // handlers concurrently. Lock-free atomics avoid serializing the
+    // pipeline through countersMu the way the per-processor maps do.
+    atomic.Int64 totalProcessed
+    atomic.Int64 activeExecutions
     var running = false
 
     init(Registry reg, ProcessorContext globalCtx) {
@@ -147,11 +165,8 @@ class Fabric {
         // Initialize per-processor counters (preserve existing values on reload).
         lock (countersMu) {
             for (name in newGraph.getProcessorNames()) {
-                if (!processorCounts.containsKey(name)) {
-                    processorCounts[name] = 0
-                }
-                if (!processorErrors.containsKey(name)) {
-                    processorErrors[name] = 0
+                if (!counters.containsKey(name)) {
+                    counters[name] = ProcCounter()
                 }
             }
         }
@@ -168,9 +183,9 @@ class Fabric {
     // backpressure will return false once the concurrency gate is added).
     pub bool execute(FlowFile ff, String entryPoint) {
         var g = snapshotGraph()
-        activeExecutions = activeExecutions + 1
+        activeExecutions.Add(1)
         executeGraph(g, ff, entryPoint)
-        activeExecutions = activeExecutions - 1
+        activeExecutions.Add(-1)
         return true
     }
 
@@ -241,7 +256,7 @@ class Fabric {
             var proc = g.getProcessor(item.processor)
             var result = proc.process(item.ff)
             incProcCount(item.processor)
-            totalProcessed = totalProcessed + 1
+            totalProcessed.Add(1)
 
             match (result) {
                 case Single(out) {
@@ -292,26 +307,24 @@ class Fabric {
         return work
     }
 
-    // incProcCount bumps the success counter for `name`, lazily initializing.
-    // Called from every executeGraph step — concurrent with API readers, so
-    // the map mutation must be guarded.
+    // incProcCount bumps the success counter for `name`. The map lookup is
+    // briefly guarded — we hold countersMu only long enough to read the
+    // *ProcCounter pointer out of the map. The atomic.Int64.Add then runs
+    // outside the lock. Map structure mutations (addProcessor / loadFlow)
+    // hold the same lock exclusively, so we won't observe a torn map.
     void incProcCount(String name) {
         lock (countersMu) {
-            if (processorCounts.containsKey(name)) {
-                processorCounts[name] = processorCounts[name] + 1
-            } else {
-                processorCounts[name] = 1
+            if (counters.containsKey(name)) {
+                counters[name].hits.Add(1)
             }
         }
     }
 
-    // incProcError bumps the error counter for `name`, lazily initializing.
+    // incProcError bumps the error counter for `name`.
     void incProcError(String name) {
         lock (countersMu) {
-            if (processorErrors.containsKey(name)) {
-                processorErrors[name] = processorErrors[name] + 1
-            } else {
-                processorErrors[name] = 1
+            if (counters.containsKey(name)) {
+                counters[name].errors.Add(1)
             }
         }
     }
@@ -454,8 +467,8 @@ class Fabric {
 
     pub Map<String, int> getStats() {
         var stats = Map<String, int>{}
-        stats["processed"] = totalProcessed
-        stats["active"] = activeExecutions
+        stats["processed"] = int(totalProcessed.Load())
+        stats["active"] = int(activeExecutions.Load())
         stats["processors"] = len(graph.getProcessorNames())
         stats["dlq"] = dlqStore.count()
         return stats
@@ -468,14 +481,12 @@ class Fabric {
                 // Local is `ps` (not `s`) because Zinc→Go lowers the class
                 // receiver as `s` — a local named `s` would shadow it.
                 var ps = Map<String, int>{}
-                if (processorCounts.containsKey(name)) {
-                    ps["processed"] = processorCounts[name]
+                if (counters.containsKey(name)) {
+                    var pc = counters[name]
+                    ps["processed"] = int(pc.hits.Load())
+                    ps["errors"] = int(pc.errors.Load())
                 } else {
                     ps["processed"] = 0
-                }
-                if (processorErrors.containsKey(name)) {
-                    ps["errors"] = processorErrors[name]
-                } else {
                     ps["errors"] = 0
                 }
                 stats[name] = ps
@@ -595,8 +606,7 @@ class Fabric {
         g.addProcessor(name, proc, requires)
         g.computeEntryPoints()
         lock (countersMu) {
-            processorCounts[name] = 0
-            processorErrors[name] = 0
+            counters[name] = ProcCounter()
         }
         return true
     }
@@ -627,8 +637,7 @@ class Fabric {
 
         processorDefs[name] = ProcessorDef(typeName, pconfig, requires, Map<String, List<String>>{})
         lock (countersMu) {
-            processorCounts[name] = 0
-            processorErrors[name] = 0
+            counters[name] = ProcCounter()
         }
 
         logging.info("processor added", "name", name, "type", typeName)
@@ -703,8 +712,8 @@ class Fabric {
         logging.info("fabric status",
             "processors", len(graph.getProcessorNames()),
             "entry_points", len(graph.getEntryPoints()),
-            "processed", totalProcessed,
-            "active", activeExecutions,
+            "processed", totalProcessed.Load(),
+            "active", activeExecutions.Load(),
             "dlq", dlqStore.count())
     }
 }
