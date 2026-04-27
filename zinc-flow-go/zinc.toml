@@ -8,6 +8,10 @@ version = "1.26"
 
 [deps]
 stdlib = "github.com/ZincScale/zinc-stdlib"
+fsnotify = "github.com/fsnotify/fsnotify@v1.7.0"
+
+[imports]
+fsnotify = "github.com/fsnotify/fsnotify"
 
 [replace]
 stdlib = "/home/vrjoshi/proj/caravan/zinc-go/stdlib/zinc-out"

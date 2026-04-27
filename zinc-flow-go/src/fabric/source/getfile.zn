@@ -1,0 +1,278 @@
+// GetFile — directory-watching source. Ingests new files via fsnotify
+// events, moves processed files to a `.processed/` subdir.
+//
+// Mirrors caravan-flow-csharp's GetFile (Sources.cs:GetFile, ~150 LOC
+// hand-rolled). Backed by github.com/fsnotify/fsnotify — the canonical
+// Go cross-platform file-watch library.
+//
+// Lifecycle:
+//   • start(ingest): scan dir once for pre-existing files (caught up
+//     after a restart), create the fsnotify watcher, spawn an event
+//     loop that handles Create/Write events.
+//   • stop(): signal the event loop via the `done` channel; the loop
+//     closes its captured watcher and exits.
+//
+// Behavior on each detected file:
+//   1. Read full contents into memory (Raw content).
+//   2. Build a FlowFile with attributes:
+//        filename — basename of the source file
+//        path     — absolute path at ingest time
+//        size     — byte length (decimal string)
+//   3. ingest(ff) — non-blocking. Backpressure is the fabric's job.
+//   4. Move file to <directory>/<move_subdir>/<filename> (default
+//      `.processed`). On move failure (e.g. cross-device) the file is
+//      deleted instead — the FlowFile already carries the bytes.
+//
+// Config keys:
+//   directory      — required. Absolute or relative path to watch.
+//   move_subdir    — default ".processed".
+//   pattern        — glob filter applied to the basename. Default "*".
+
+import core
+import stdlib/logging
+import fabric/runtime
+import fsnotify
+import os
+import path/filepath
+import strconv
+import strings
+
+class GetFile : ConnectorSource {
+    String name
+    String directory
+    String moveSubdir
+    String pattern
+
+    var running = false
+    IngestFn ingestFn
+
+    // done — closed (well, sent to) by stop() to terminate the spawned
+    // event loop. Capacity 1 so stop() never blocks even if the loop
+    // already exited from a watcher error.
+    Channel<bool> done
+
+    init(String name, String directory, String moveSubdir, String pattern) {
+        this.name = name
+        this.directory = directory
+        this.moveSubdir = moveSubdir
+        if (this.moveSubdir == "") {
+            this.moveSubdir = ".processed"
+        }
+        this.pattern = pattern
+        if (this.pattern == "") {
+            this.pattern = "*"
+        }
+        this.done = Channel<bool>(1)
+    }
+
+    pub String getName() {
+        return name
+    }
+
+    pub String getSourceType() {
+        return "GetFile"
+    }
+
+    pub bool isRunning() {
+        return running
+    }
+
+    pub void start(IngestFn ingest) {
+        this.ingestFn = ingest
+
+        os.MkdirAll(directory, 0o755) or {
+            logging.error("getfile: cannot create watch dir", "dir", directory, "err", err.Error())
+            return
+        }
+        var movePath = filepath.Join(directory, moveSubdir)
+        os.MkdirAll(movePath, 0o755) or {
+            logging.error("getfile: cannot create move subdir", "dir", movePath, "err", err.Error())
+            return
+        }
+
+        // Pick up files that existed before we started watching.
+        var preExisting = scanExisting()
+        for (path in preExisting) {
+            ingestFile(path)
+        }
+
+        var w = fsnotify.NewWatcher() or {
+            logging.error("getfile: fsnotify.NewWatcher failed", "err", err.Error())
+            return
+        }
+        var addErr = w.Add(directory)
+        if (addErr != nil) {
+            logging.error("getfile: watcher.Add failed", "dir", directory, "err", addErr.Error())
+            w.Close()
+            return
+        }
+
+        running = true
+        logging.info("getfile: watching", "name", name, "directory", directory)
+
+        spawn {
+            // w + done captured. Loop until stop() sends on `done`,
+            // then close the watcher and exit. We don't store w as a
+            // field because Zinc auto-pointerizes class fields, which
+            // creates a type mismatch with `fsnotify.NewWatcher()`'s
+            // already-pointer return — capture-and-close keeps the
+            // type plumbing simple.
+            while (true) {
+                select {
+                    case ev = w.Events.recv():
+                        handleEvent(ev)
+                    case watcherErr = w.Errors.recv():
+                        if (watcherErr != nil) {
+                            logging.warn("getfile: watcher error", "err", watcherErr.Error())
+                        }
+                    case done.recv():
+                        w.Close()
+                        running = false
+                        return
+                }
+            }
+        }
+    }
+
+    pub void stop() {
+        if (!running) {
+            return
+        }
+        // Non-blocking send: capacity-1 buffer means a duplicate stop()
+        // call can't deadlock even if the loop already exited and isn't
+        // draining `done`.
+        select {
+            case done.send(true):
+            case _:
+        }
+        // running flips to false in the event loop on done receipt, but
+        // also flip here so isRunning() reflects truth even if the loop
+        // exited via watcher error.
+        running = false
+    }
+
+    // pollOnce — drain anything currently in the directory. Tests +
+    // admin tooling can drive the source without standing up the
+    // background goroutine. Doesn't touch fsnotify.
+    pub List<FlowFile> pollOnce() {
+        var emitted = List<FlowFile>[]
+        var paths = scanExisting()
+        for (path in paths) {
+            var data = os.ReadFile(path) or {
+                continue
+            }
+            var ff = buildFlowFile(path, data)
+            emitted = append(emitted, ff)
+            moveProcessed(path)
+        }
+        return emitted
+    }
+
+    void handleEvent(fsnotify.Event ev) {
+        var isCreate = ev.Op & fsnotify.Create != 0
+        var isWrite = ev.Op & fsnotify.Write != 0
+        if (!isCreate && !isWrite) {
+            return
+        }
+        ingestFile(ev.Name)
+    }
+
+    void ingestFile(String path) {
+        if (!matchesPattern(path)) {
+            return
+        }
+        var info = os.Stat(path) or {
+            return
+        }
+        if (info.IsDir()) {
+            return
+        }
+        var data = os.ReadFile(path) or {
+            logging.warn("getfile: read failed", "path", path, "err", err.Error())
+            return
+        }
+        var ff = buildFlowFile(path, data)
+        if (!ingestFn(ff)) {
+            logging.warn("getfile: ingest rejected", "source", name, "path", path)
+        }
+        moveProcessed(path)
+    }
+
+    FlowFile buildFlowFile(String path, byte[] data) {
+        var attrs = Map<String, String>{}
+        attrs["source"] = name
+        attrs["filename"] = filepath.Base(path)
+        attrs["path"] = path
+        attrs["size"] = strconv.Itoa(len(data))
+        return createFlowFile(data, attrs)
+    }
+
+    void moveProcessed(String path) {
+        // Ensure the destination dir exists. start() pre-creates it, but
+        // pollOnce / direct ingestFile callers may run without start()
+        // having ever fired (tests, admin tooling). MkdirAll is no-op
+        // when the dir already exists.
+        var moveDir = filepath.Join(directory, moveSubdir)
+        os.MkdirAll(moveDir, 0o755) or {
+            os.Remove(path)
+            return
+        }
+        var dest = filepath.Join(moveDir, filepath.Base(path))
+        os.Rename(path, dest) or {
+            // Cross-device move can fail with "invalid cross-device link".
+            // The FlowFile already carries the bytes, so just delete the
+            // source and let the pipeline carry on.
+            os.Remove(path)
+        }
+    }
+
+    List<String> scanExisting() {
+        var out = List<String>[]
+        var entries = os.ReadDir(directory) or {
+            return out
+        }
+        for (e in entries) {
+            if (e.IsDir()) {
+                continue
+            }
+            var fname = e.Name()
+            // Hidden files (incl. our .processed move-target dir) are
+            // skipped — convention is "drop new files in the dir, this
+            // source picks them up." Hidden files aren't user payload.
+            if (strings.HasPrefix(fname, ".")) {
+                continue
+            }
+            var full = filepath.Join(directory, fname)
+            if (matchesPattern(full)) {
+                out = append(out, full)
+            }
+        }
+        return out
+    }
+
+    bool matchesPattern(String path) {
+        if (pattern == "" || pattern == "*") {
+            return true
+        }
+        var matched = filepath.Match(pattern, filepath.Base(path)) or {
+            return false
+        }
+        return matched
+    }
+}
+
+pub ConnectorSource GetFileFactory(String name, Map<String, String> config) {
+    var dir = ""
+    if (config.containsKey("directory")) {
+        dir = config["directory"]
+    }
+    var moveSubdir = ""
+    if (config.containsKey("move_subdir")) {
+        moveSubdir = config["move_subdir"]
+    }
+    var pattern = ""
+    if (config.containsKey("pattern")) {
+        pattern = config["pattern"]
+    }
+    return GetFile(name, dir, moveSubdir, pattern)
+}

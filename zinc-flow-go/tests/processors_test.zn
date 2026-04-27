@@ -932,3 +932,4 @@ test "UnpackageFlowFileV3 — Records content rejected" {
         case _ { t.Errorf("expected Failure on Records content") }
     }
 }
+
