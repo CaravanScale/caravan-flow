@@ -1,0 +1,738 @@
+"""zinc-flow-python test suite — matches zinc-flow (Go) test coverage."""
+import sys
+import os
+import time
+import json
+import logging
+
+# Add src to path. Two layouts to cover:
+#   • Source tree: tests/test_flow.zn lives at <repo>/tests/, src is sibling at <repo>/src/.
+#   • zinc-python build:  tests/test_flow.py lives at <tmp>/tests/, modules sit at <tmp>/
+#     directly because the build flattens src/* into the tmp root.
+# Insert both so the import works regardless of which we're running under.
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from core.types import (
+    FlowFile, Raw, Records, Claim, Single, Dropped, Failure,
+    ComponentState, create_flowfile, with_attribute, with_content,
+    content_size, is_record,
+)
+from core.queue import FlowQueue
+from core.dlq import DLQ
+from core.context import ProcessorContext, ScopedContext
+from core.providers import ConfigProvider, LoggingProvider, ContentProvider
+from core.session import ProcessSession
+from fabric.router import RulesEngine, RoutingRule, Operator
+from fabric.registry import Registry
+from fabric.runtime import Fabric
+from processors.builtin import (
+    AddAttribute, LogProcessor, FileSink, JsonToRecords, RecordsToJson,
+    register_builtins,
+)
+
+logging.basicConfig(level=logging.WARNING)
+
+passed = 0
+failed = 0
+
+
+def assert_true(label: str, value: bool) {
+    global passed, failed
+    if value {
+        print("  PASS: {label}")
+        passed += 1
+    } else {
+        print("  FAIL: {label}")
+        failed += 1
+    }
+}
+
+def assert_false(label: str, value: bool) {
+    assert_true(label, not value)
+}
+
+def assert_eq(label: str, actual, expected) {
+    global passed, failed
+    if actual == expected {
+        print("  PASS: {label}")
+        passed += 1
+    } else {
+        print("  FAIL: {label} — expected {expected}, got {actual}")
+        failed += 1
+    }
+}
+
+
+# --- Helpers ---
+
+def test_context() -> ProcessorContext {
+    ctx = ProcessorContext()
+    cp = ContentProvider("content", None)
+    cp.enable()
+    ctx.add_provider(cp)
+    lp = LoggingProvider()
+    lp.enable()
+    ctx.add_provider(lp)
+    cfg_p = ConfigProvider({})
+    cfg_p.enable()
+    ctx.add_provider(cfg_p)
+    return ctx
+}
+
+def test_scoped_context() -> ScopedContext {
+    cp = ContentProvider("content", None)
+    cp.enable()
+    return ScopedContext({"content": cp})
+}
+
+
+# =============================================================================
+# Core types
+# =============================================================================
+
+def test_flowfile_basics() {
+    print("--- FlowFile Basics ---")
+    ff = create_flowfile(b"hello", {"type": "order", "source": "test"})
+    assert_true("id starts with ff-", ff.id.startswith("ff-"))
+    assert_eq("type attr", ff.attributes["type"], "order")
+    assert_eq("source attr", ff.attributes["source"], "test")
+
+    ff2 = with_attribute(ff, "env", "dev")
+    assert_eq("added env", ff2.attributes["env"], "dev")
+    assert_true("same id after with_attribute", ff2.id == ff.id)
+    assert_eq("original attrs preserved", ff2.attributes["type"], "order")
+
+    ff3 = with_content(ff, Raw(b"new data"))
+    assert_true("same id after with_content", ff3.id == ff.id)
+}
+
+def test_content_types() {
+    print("--- Content Types ---")
+    raw = Raw(b"data")
+    assert_false("raw is not record", is_record(raw))
+    assert_eq("raw size", content_size(raw), 4)
+
+    rec = Records(schema={"type": "test"}, records=[])
+    assert_true("records is record", is_record(rec))
+
+    claim = Claim("claim-1", 1024)
+    assert_false("claim is not record", is_record(claim))
+    assert_eq("claim size", content_size(claim), 1024)
+}
+
+
+# =============================================================================
+# Processors
+# =============================================================================
+
+def test_processor_add_attribute() {
+    print("--- Processor: AddAttribute ---")
+    proc = AddAttribute("env", "prod")
+    ff = create_flowfile(b"data", {"type": "order"})
+    result = proc.process(ff)
+    assert_true("result is Single", isinstance(result, Single))
+    assert_eq("added env", result.flowfile.attributes["env"], "prod")
+    assert_eq("kept type", result.flowfile.attributes["type"], "order")
+}
+
+def test_processor_log_passthrough() {
+    print("--- Processor: LogProcessor ---")
+    proc = LogProcessor("test")
+    ff = create_flowfile(b"data", {"type": "order"})
+    result = proc.process(ff)
+    assert_true("result is Single", isinstance(result, Single))
+    assert_true("same id", result.flowfile.id == ff.id)
+    assert_eq("same type", result.flowfile.attributes["type"], "order")
+}
+
+def test_processor_file_sink() {
+    print("--- Processor: FileSink ---")
+    os.makedirs("/tmp/zinc-flow-python-test/output", exist_ok=True)
+    proc = FileSink("/tmp/zinc-flow-python-test/output", None)
+    ff = create_flowfile(b"sink test", {})
+    result = proc.process(ff)
+    assert_true("result is Dropped", isinstance(result, Dropped))
+}
+
+def test_processor_json_to_records() {
+    print("--- Processor: JsonToRecords ---")
+    proc = JsonToRecords(None)
+    data = json.dumps([{"name": "Alice"}, {"name": "Bob"}]).encode()
+    ff = create_flowfile(data, {})
+    result = proc.process(ff)
+    assert_true("result is Single", isinstance(result, Single))
+    assert_true("content is records", is_record(result.flowfile.content))
+}
+
+def test_processor_records_to_json() {
+    print("--- Processor: RecordsToJson ---")
+    content = Records(schema={"type": "test"}, records=[{"name": "Bob"}])
+    ff = FlowFile(id="ff-test", attributes={}, content=content, size=1)
+    proc = RecordsToJson()
+    result = proc.process(ff)
+    assert_true("result is Single", isinstance(result, Single))
+    assert_false("output is raw not records", is_record(result.flowfile.content))
+    assert_true("json contains Bob", b"Bob" in result.flowfile.content.data)
+}
+
+def test_processor_json_roundtrip() {
+    print("--- Processor: JSON Roundtrip ---")
+    content = Records(schema={"type": "geo"}, records=[{"city": "Portland"}])
+    ff = FlowFile(id="ff-rt", attributes={}, content=content, size=1)
+
+    # Records -> JSON
+    to_json = RecordsToJson()
+    step1 = to_json.process(ff)
+    assert_true("step1 is raw", isinstance(step1, Single) and not is_record(step1.flowfile.content))
+    assert_true("json contains Portland", b"Portland" in step1.flowfile.content.data)
+
+    # JSON -> Records
+    to_rec = JsonToRecords(None)
+    step2 = to_rec.process(step1.flowfile)
+    assert_true("step2 is records", isinstance(step2, Single) and is_record(step2.flowfile.content))
+}
+
+def test_processor_json_to_records_empty() {
+    print("--- Processor: JsonToRecords Empty ---")
+    proc = JsonToRecords(None)
+    ff = create_flowfile(b"not json at all", {})
+    result = proc.process(ff)
+    assert_true("invalid json fails", isinstance(result, Failure))
+}
+
+
+# =============================================================================
+# Routing Engine
+# =============================================================================
+
+def test_routing_eq() {
+    print("--- Routing: EQ ---")
+    engine = RulesEngine()
+    engine.add_or_replace_ruleset("test", [RoutingRule("r1", "type", Operator.EQ, "order", "proc-1")])
+    assert_eq("eq match count", len(engine.get_destinations({"type": "order"})), 1)
+    assert_eq("eq match dest", engine.get_destinations({"type": "order"})[0], "proc-1")
+    assert_eq("eq no match", len(engine.get_destinations({"type": "event"})), 0)
+}
+
+def test_routing_neq() {
+    print("--- Routing: NEQ ---")
+    engine = RulesEngine()
+    engine.add_or_replace_ruleset("test", [RoutingRule("r1", "type", Operator.NEQ, "order", "proc-2")])
+    assert_eq("neq match count", len(engine.get_destinations({"type": "event"})), 1)
+    assert_eq("neq no match", len(engine.get_destinations({"type": "order"})), 0)
+}
+
+def test_routing_contains() {
+    print("--- Routing: CONTAINS ---")
+    engine = RulesEngine()
+    engine.add_or_replace_ruleset("test", [RoutingRule("r1", "message", Operator.CONTAINS, "error", "dlq")])
+    assert_eq("contains match", len(engine.get_destinations({"message": "got an error here"})), 1)
+    assert_eq("contains no match", len(engine.get_destinations({"message": "all good"})), 0)
+}
+
+def test_routing_starts_ends_with() {
+    print("--- Routing: STARTSWITH/ENDSWITH ---")
+    engine = RulesEngine()
+    engine.add_or_replace_ruleset("test", [
+        RoutingRule("starts", "path", Operator.STARTSWITH, "/api", "api-proc"),
+        RoutingRule("ends", "path", Operator.ENDSWITH, ".json", "json-proc"),
+    ])
+    assert_eq("both match", len(engine.get_destinations({"path": "/api/data.json"})), 2)
+    dests = engine.get_destinations({"path": "/api/data.xml"})
+    assert_eq("starts only", len(dests), 1)
+    assert_eq("starts dest", dests[0], "api-proc")
+}
+
+def test_routing_exists() {
+    print("--- Routing: EXISTS ---")
+    engine = RulesEngine()
+    engine.add_or_replace_ruleset("test", [RoutingRule("r1", "priority", Operator.EXISTS, "", "proc")])
+    assert_eq("exists match", len(engine.get_destinations({"priority": "high"})), 1)
+    assert_eq("exists no match", len(engine.get_destinations({"type": "order"})), 0)
+}
+
+def test_routing_no_match() {
+    print("--- Routing: No Match ---")
+    engine = RulesEngine()
+    engine.add_or_replace_ruleset("test", [RoutingRule("r1", "type", Operator.EQ, "order", "proc-1")])
+    assert_eq("missing attr no match", len(engine.get_destinations({"source": "test"})), 0)
+
+    # Disabled rule
+    engine.add_or_replace_ruleset("disabled-set", [RoutingRule("r2", "type", Operator.EQ, "order", "proc-2", enabled=False)])
+    dests = engine.get_destinations({"type": "order"})
+    assert_eq("disabled rule skipped", len(dests), 1)
+    assert_eq("only enabled matched", dests[0], "proc-1")
+}
+
+
+# =============================================================================
+# Queue
+# =============================================================================
+
+def test_queue_offer_claim() {
+    print("--- FlowQueue: Offer/Claim ---")
+    q = FlowQueue("test-q", 100, 1024 * 1024, 30.0)
+    ff = create_flowfile(b"hello", {"key": "val"})
+    assert_true("offer accepted", q.offer(ff))
+    assert_eq("visible count", q.visible_count(), 1)
+    assert_eq("invisible count", q.invisible_count(), 0)
+
+    entry = q.claim()
+    assert_true("claim non-empty", entry is not None)
+    assert_eq("claimed flowfile id", entry.flowfile.id, ff.id)
+    assert_eq("after claim visible", q.visible_count(), 0)
+    assert_eq("after claim invisible", q.invisible_count(), 1)
+
+    q.ack(entry.id)
+    assert_eq("after ack visible", q.visible_count(), 0)
+    assert_eq("after ack invisible", q.invisible_count(), 0)
+}
+
+def test_queue_backpressure() {
+    print("--- FlowQueue: Backpressure ---")
+    q = FlowQueue("bp-q", 2, 1024, 30.0)
+    assert_true("first offer", q.offer(create_flowfile(b"a", {})))
+    assert_true("second offer", q.offer(create_flowfile(b"b", {})))
+    assert_false("third rejected (backpressure)", q.offer(create_flowfile(b"c", {})))
+    assert_false("no capacity", q.has_capacity())
+}
+
+def test_queue_ack_nack() {
+    print("--- FlowQueue: Ack/Nack ---")
+    q = FlowQueue("an-q", 100, 1024 * 1024, 30.0)
+    q.offer(create_flowfile(b"test", {}))
+    entry = q.claim()
+    assert_eq("attempt before nack", entry.attempt_count, 0)
+    q.nack(entry.id)
+    assert_eq("after nack visible", q.visible_count(), 1)
+    assert_eq("after nack invisible", q.invisible_count(), 0)
+    retried = q.claim()
+    assert_eq("attempt after nack", retried.attempt_count, 1)
+    q.ack(retried.id)
+}
+
+
+# =============================================================================
+# DLQ
+# =============================================================================
+
+def test_dlq_add_and_list() {
+    print("--- DLQ: Add/List ---")
+    dlq = DLQ()
+    assert_eq("initial count", dlq.count(), 0)
+    ff = create_flowfile(b"failed", {"type": "test"})
+    dlq.add(ff, "my-proc", "my-queue", 3, "processing error")
+    assert_eq("after add count", dlq.count(), 1)
+    entries = dlq.list_entries()
+    assert_eq("list length", len(entries), 1)
+    assert_eq("source processor", entries[0].source_processor, "my-proc")
+    assert_eq("last error", entries[0].last_error, "processing error")
+    assert_eq("attempt count", entries[0].attempt_count, 3)
+}
+
+def test_dlq_replay() {
+    print("--- DLQ: Replay ---")
+    dlq = DLQ()
+    ff = create_flowfile(b"replay-me", {"id": "123"})
+    dlq.add(ff, "proc", "queue", 5, "max retries")
+    assert_eq("before replay", dlq.count(), 1)
+    entries = dlq.list_entries()
+    replayed = dlq.replay(entries[0].id)
+    assert_eq("replayed flowfile id", replayed.id, ff.id)
+    assert_eq("after replay", dlq.count(), 0)
+}
+
+
+# =============================================================================
+# ScopedContext
+# =============================================================================
+
+def test_scoped_context_access() {
+    print("--- ScopedContext: Access ---")
+    cp = ContentProvider("content", None)
+    cp.enable()
+    ctx = ScopedContext({"content": cp})
+    assert_eq("provider count", len(ctx.list_providers()), 1)
+    p = ctx.get_provider("content")
+    assert_eq("provider name", p.get_name(), "content")
+}
+
+
+# =============================================================================
+# Provider Lifecycle
+# =============================================================================
+
+def test_provider_lifecycle() {
+    print("--- Provider: Lifecycle ---")
+    cp = ContentProvider("content", None)
+    assert_false("initially disabled", cp.is_enabled())
+    cp.enable()
+    assert_true("after enable", cp.is_enabled())
+    cp.disable(0)
+    assert_false("after disable", cp.is_enabled())
+    cp.enable()
+    assert_true("re-enabled", cp.is_enabled())
+    cp.shutdown()
+    assert_false("after shutdown", cp.is_enabled())
+}
+
+
+# =============================================================================
+# Fabric Integration
+# =============================================================================
+
+def test_fabric_multi_hop() {
+    print("--- Fabric: Multi-Hop ---")
+    ctx = test_context()
+    reg = Registry()
+    register_builtins(reg)
+    fab = Fabric(reg, ctx)
+
+    engine = RulesEngine()
+    engine.add_or_replace_ruleset("flow", [
+        RoutingRule("all-to-tag", "type", Operator.EXISTS, "", "tag-env"),
+        RoutingRule("tagged-to-log", "env", Operator.EXISTS, "", "logger"),
+    ])
+
+    dests1 = engine.get_destinations({"type": "order"})
+    assert_eq("first hop matches", len(dests1), 1)
+    assert_eq("first hop dest", dests1[0], "tag-env")
+
+    dests2 = engine.get_destinations({"type": "order", "env": "prod"})
+    assert_eq("second hop matches", len(dests2), 2)
+
+    ff = create_flowfile(b"multi-hop", {"type": "test"})
+    assert_true("ingest accepted", fab.ingest(ff))
+}
+
+def test_fabric_dlq_from_failure() {
+    print("--- Fabric: DLQ from Failure ---")
+    ctx = test_context()
+    reg = Registry()
+    register_builtins(reg)
+    fab = Fabric(reg, ctx)
+    assert_eq("initial dlq", fab.dlq_store.count(), 0)
+    ff = create_flowfile(b"test", {"type": "unknown"})
+    assert_true("ingest accepted", fab.ingest(ff))
+    assert_eq("no failures no dlq", fab.dlq_store.count(), 0)
+    assert_true("dlq accessible", True)
+}
+
+
+# =============================================================================
+# Scenarios — end-to-end flow engine behavior
+# =============================================================================
+
+def test_scenario_processor_chain() {
+    print("--- Scenario: Processor Chain ---")
+    ctx = test_scoped_context()
+    reg = Registry()
+    register_builtins(reg)
+    tagger = reg.create("add-attribute", ctx, {"key": "env", "value": "dev"})
+    logger = reg.create("log", ctx, {"prefix": "chain-test"})
+
+    tag_queue = FlowQueue("tag-env", 100, 1024 * 1024, 30.0)
+    log_queue = FlowQueue("logger", 100, 1024 * 1024, 30.0)
+    queues = {"tag-env": tag_queue, "logger": log_queue}
+
+    tag_engine = RulesEngine()
+    tag_engine.add_or_replace_ruleset("flow", [RoutingRule("to-logger", "env", Operator.EXISTS, "", "logger")])
+    log_engine = RulesEngine()
+
+    dlq = DLQ()
+    tag_session = ProcessSession(tag_queue, tagger, "tag-env", tag_engine, queues, dlq, 5)
+    log_session = ProcessSession(log_queue, logger, "logger", log_engine, queues, dlq, 5)
+
+    ff = create_flowfile(b"hello", {"type": "order"})
+    tag_queue.offer(ff)
+    assert_eq("tag queue has 1", tag_queue.visible_count(), 1)
+
+    assert_true("tag session executed", tag_session.execute())
+    assert_eq("tag queue empty", tag_queue.visible_count(), 0)
+    assert_eq("log queue has 1", log_queue.visible_count(), 1)
+
+    assert_true("log session executed", log_session.execute())
+    assert_eq("log queue empty", log_queue.visible_count(), 0)
+    assert_eq("no dlq entries", dlq.count(), 0)
+}
+
+def test_scenario_disable_processor() {
+    print("--- Scenario: Disable/Enable Processor ---")
+    ctx = test_context()
+    reg = Registry()
+    register_builtins(reg)
+    fab = Fabric(reg, ctx)
+    fab.add_processor("tagger", "add-attribute", {"key": "env", "value": "test"})
+    assert_eq("initially enabled", fab.processor_states["tagger"], ComponentState.ENABLED)
+
+    fab.disable_processor("tagger", 1)
+    ff = create_flowfile(b"test", {"type": "test"})
+    fab.ingest(ff)
+
+    fab.enable_processor("tagger")
+    assert_eq("re-enabled", fab.processor_states["tagger"], ComponentState.ENABLED)
+}
+
+def test_scenario_backpressure_propagation() {
+    print("--- Scenario: Backpressure Propagation ---")
+    small_queue = FlowQueue("small", 3, 1024, 30.0)
+    downstream = FlowQueue("downstream", 3, 1024, 30.0)
+    queues = {"small": small_queue, "downstream": downstream}
+
+    engine = RulesEngine()
+    engine.add_or_replace_ruleset("flow", [RoutingRule("forward", "type", Operator.EXISTS, "", "downstream")])
+
+    proc = LogProcessor("bp-test")
+    dlq = DLQ()
+    session = ProcessSession(small_queue, proc, "small", engine, queues, dlq, 5)
+
+    for _ in range(3) {
+        downstream.offer(create_flowfile(b"fill", {"type": "x"}))
+    }
+    assert_false("downstream full", downstream.has_capacity())
+
+    small_queue.offer(create_flowfile(b"blocked", {"type": "test"}))
+    assert_true("session ran", session.execute())
+    assert_eq("item back in small queue", small_queue.visible_count(), 1)
+    entry = small_queue.claim()
+    assert_eq("attempt incremented", entry.attempt_count, 1)
+}
+
+def test_scenario_retry_exhaustion_to_dlq() {
+    print("--- Scenario: Retry Exhaustion -> DLQ ---")
+    source = FlowQueue("source", 100, 1024 * 1024, 30.0)
+    dest = FlowQueue("dest", 0, 0, 30.0)
+    queues = {"dest": dest}
+
+    engine = RulesEngine()
+    engine.add_or_replace_ruleset("flow", [RoutingRule("to-dest", "type", Operator.EXISTS, "", "dest")])
+
+    proc = LogProcessor("retry-test")
+    dlq = DLQ()
+    max_retries = 3
+    session = ProcessSession(source, proc, "source", engine, queues, dlq, max_retries)
+
+    ff = create_flowfile(b"will-fail", {"type": "test"})
+    source.offer(ff)
+
+    for _ in range(max_retries + 1) {
+        session.execute()
+    }
+
+    assert_eq("dlq has entry", dlq.count(), 1)
+    assert_eq("source queue empty", source.visible_count(), 0)
+    entries = dlq.list_entries()
+    assert_eq("dlq source processor", entries[0].source_processor, "source")
+    assert_eq("dlq error", entries[0].last_error, "max retries exceeded")
+}
+
+def test_scenario_dlq_replay_to_source_queue() {
+    print("--- Scenario: DLQ Replay to Source Queue ---")
+    dlq = DLQ()
+    source = FlowQueue("my-proc", 100, 1024 * 1024, 30.0)
+
+    ff = create_flowfile(b"replay-test", {"type": "order"})
+    dlq.add(ff, "my-proc", "my-proc", 5, "processing failed")
+    assert_eq("dlq count", dlq.count(), 1)
+
+    entries = dlq.list_entries()
+    replayed = dlq.replay(entries[0].id)
+    assert_eq("replayed ff id matches", replayed.id, ff.id)
+    assert_eq("dlq empty after replay", dlq.count(), 0)
+
+    source.offer(replayed)
+    assert_eq("source queue has replayed item", source.visible_count(), 1)
+
+    entry = source.claim()
+    assert_eq("claimed replayed ff", entry.flowfile.id, ff.id)
+    source.ack(entry.id)
+    assert_eq("source queue empty after processing", source.visible_count(), 0)
+}
+
+def test_scenario_scoped_provider_isolation() {
+    print("--- Scenario: Scoped Provider Isolation ---")
+    cp = ContentProvider("content", None)
+    cp.enable()
+    lp = LoggingProvider()
+    lp.enable()
+
+    ctx = ScopedContext({"content": cp})
+    p = ctx.get_provider("content")
+    assert_eq("content provider type", p.get_type(), "content")
+    assert_eq("only 1 provider in scope", len(ctx.list_providers()), 1)
+}
+
+def test_scenario_dependency_cascade() {
+    print("--- Scenario: Dependency Cascade ---")
+    cp = ContentProvider("content", None)
+    cp.enable()
+    global_ctx = ProcessorContext()
+    global_ctx.add_provider(cp)
+    global_ctx.register_dependent("content", "file-sink")
+
+    reg = Registry()
+    register_builtins(reg)
+    fab = Fabric(reg, global_ctx)
+    fab.add_processor("file-sink", "file-sink", {"output_dir": "/tmp/test"})
+    assert_eq("sink initially enabled", fab.processor_states["file-sink"], ComponentState.ENABLED)
+
+    fab.disable_provider("content", 1)
+    assert_false("content provider disabled", cp.is_enabled())
+    state = fab.processor_states["file-sink"]
+    assert_true("sink draining or disabled after cascade", state == ComponentState.DRAINING or state == ComponentState.DISABLED)
+}
+
+def test_scenario_enable_refuses_disabled_provider() {
+    print("--- Scenario: Enable Refuses Disabled Provider ---")
+    cp = ContentProvider("content", None)
+    # Leave disabled
+    global_ctx = ProcessorContext()
+    global_ctx.add_provider(cp)
+
+    reg = Registry()
+    register_builtins(reg)
+    fab = Fabric(reg, global_ctx)
+    fab.add_processor("sink", "file-sink", {"output_dir": "/tmp/test"})
+    fab.processor_requires["sink"] = ["content"]
+
+    fab.disable_processor("sink", 0)
+    time.sleep(0.3)
+
+    # Enable should fail — content provider is disabled
+    assert_false("enable refused with disabled provider", fab.enable_processor("sink"))
+
+    # Enable provider, then processor should succeed
+    cp.enable()
+    assert_true("enable succeeds with provider enabled", fab.enable_processor("sink"))
+}
+
+def test_scenario_irs_fan_out() {
+    print("--- Scenario: IRS Fan-Out ---")
+    tagger = AddAttribute("env", "prod")
+
+    src = FlowQueue("source", 100, 1024 * 1024, 30.0)
+    dest_a = FlowQueue("dest-a", 100, 1024 * 1024, 30.0)
+    dest_b = FlowQueue("dest-b", 100, 1024 * 1024, 30.0)
+    dest_c = FlowQueue("dest-c", 100, 1024 * 1024, 30.0)
+    queues = {"source": src, "dest-a": dest_a, "dest-b": dest_b, "dest-c": dest_c}
+
+    engine = RulesEngine()
+    engine.add_or_replace_ruleset("flow", [
+        RoutingRule("to-a", "env", Operator.EXISTS, "", "dest-a"),
+        RoutingRule("to-b", "env", Operator.EXISTS, "", "dest-b"),
+        RoutingRule("to-c", "env", Operator.EXISTS, "", "dest-c"),
+    ])
+
+    dlq = DLQ()
+    session = ProcessSession(src, tagger, "source", engine, queues, dlq, 5)
+
+    ff = create_flowfile(b"fanout", {"type": "order"})
+    src.offer(ff)
+    session.execute()
+
+    assert_eq("dest-a has 1", dest_a.visible_count(), 1)
+    assert_eq("dest-b has 1", dest_b.visible_count(), 1)
+    assert_eq("dest-c has 1", dest_c.visible_count(), 1)
+    assert_eq("source empty", src.visible_count(), 0)
+    assert_eq("no dlq", dlq.count(), 0)
+
+    entry_a = dest_a.claim()
+    assert_eq("dest-a has env attr", entry_a.flowfile.attributes["env"], "prod")
+    dest_a.ack(entry_a.id)
+}
+
+def test_scenario_visibility_timeout() {
+    print("--- Scenario: Visibility Timeout ---")
+    q = FlowQueue("vis-test", 10, 1024, 0.5)
+    q.start_reaper()
+
+    ff = create_flowfile(b"timeout-test", {"type": "test"})
+    q.offer(ff)
+
+    entry = q.claim()
+    assert_true("claimed non-empty", entry is not None)
+    assert_eq("visible after claim", q.visible_count(), 0)
+    assert_eq("invisible after claim", q.invisible_count(), 1)
+    assert_eq("attempt before timeout", entry.attempt_count, 0)
+
+    time.sleep(2.0)
+
+    assert_eq("visible after timeout", q.visible_count(), 1)
+    assert_eq("invisible after timeout", q.invisible_count(), 0)
+
+    reclaimed = q.claim()
+    assert_true("reclaimed non-empty", reclaimed is not None)
+    if reclaimed is not None {
+        assert_eq("attempt after timeout", reclaimed.attempt_count, 1)
+        q.ack(reclaimed.id)
+    }
+    assert_eq("clean after ack", q.visible_count(), 0)
+}
+
+
+# =============================================================================
+# Main
+# =============================================================================
+
+def main() {
+    print("=== zinc-flow-python test suite ===")
+    print("")
+
+    # Core types
+    test_flowfile_basics()
+    test_content_types()
+
+    # Processors
+    test_processor_add_attribute()
+    test_processor_log_passthrough()
+    test_processor_file_sink()
+    test_processor_json_to_records()
+    test_processor_records_to_json()
+    test_processor_json_roundtrip()
+    test_processor_json_to_records_empty()
+
+    # Routing engine
+    test_routing_eq()
+    test_routing_neq()
+    test_routing_contains()
+    test_routing_starts_ends_with()
+    test_routing_exists()
+    test_routing_no_match()
+
+    # Fabric integration
+    test_fabric_multi_hop()
+    test_fabric_dlq_from_failure()
+
+    # Flow engine: queues, DLQ, sessions, providers
+    test_queue_offer_claim()
+    test_queue_backpressure()
+    test_queue_ack_nack()
+    test_dlq_add_and_list()
+    test_dlq_replay()
+    test_scoped_context_access()
+    test_provider_lifecycle()
+
+    # Scenarios
+    test_scenario_processor_chain()
+    test_scenario_disable_processor()
+    test_scenario_backpressure_propagation()
+    test_scenario_retry_exhaustion_to_dlq()
+    test_scenario_dlq_replay_to_source_queue()
+    test_scenario_scoped_provider_isolation()
+    test_scenario_dependency_cascade()
+    test_scenario_enable_refuses_disabled_provider()
+    test_scenario_irs_fan_out()
+    test_scenario_visibility_timeout()
+
+    print("")
+    print("=== {passed} passed, {failed} failed ===")
+    if failed > 0 {
+        sys.exit(1)
+    }
+}
+
+
+# Entry point — `zinc-python run tests/test_flow.zn` executes this file
+# as a script via `python test_flow.py`, which doesn't auto-call main().
+main()

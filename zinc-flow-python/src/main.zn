@@ -1,0 +1,83 @@
+import signal
+import sys
+import time
+import logging
+import os
+import yaml
+
+from core.context import ProcessorContext
+from core.providers import ConfigProvider, LoggingProvider, ContentProvider
+from fabric.registry import Registry
+from fabric.runtime import Fabric
+from processors.builtin import register_builtins
+from api.handlers import create_app
+
+
+def main() {
+    # Load config
+    config_path = os.environ.get("ZINC_FLOW_CONFIG", "config.yaml")
+    with open(config_path) as f {
+        config = yaml.safe_load(f)
+    }
+
+    # Setup logging
+    log_level = config.get("logging", {}).get("level", "INFO")
+    logging.basicConfig(level=getattr(logging, log_level), format="%(asctime)s %(levelname)s %(message)s")
+    logger = logging.getLogger("zinc-flow")
+    logger.info("zinc-flow-python starting")
+
+    # Create providers
+    content_dir = config.get("content", {}).get("dir", "/tmp/zinc-flow-python/content")
+    os.makedirs(content_dir, exist_ok=True)
+
+    config_provider = ConfigProvider(config)
+    config_provider.enable()
+
+    logging_provider = LoggingProvider()
+    logging_provider.enable()
+
+    content_provider = ContentProvider("content", None)
+    content_provider.enable()
+
+    # Build global context
+    global_ctx = ProcessorContext()
+    global_ctx.add_provider(config_provider)
+    global_ctx.add_provider(logging_provider)
+    global_ctx.add_provider(content_provider)
+
+    # Registry
+    registry = Registry()
+    register_builtins(registry)
+    logger.info("registry loaded: {len(registry.list_types())} processors")
+
+    # Fabric
+    fab = Fabric(registry, global_ctx)
+    fab.load_flow(config)
+    fab.start_async()
+    fab.status()
+
+    # Output dir
+    os.makedirs("/tmp/zinc-flow-python/output", exist_ok=True)
+
+    # Flask app
+    app = create_app(fab)
+
+    port = config.get("server", {}).get("port", 9091)
+    host = config.get("server", {}).get("host", "0.0.0.0")
+
+    # Graceful shutdown
+    def shutdown_handler(signum, frame) {
+        logger.info("shutdown signal received")
+        fab.stop_async()
+        time.sleep(2)
+        global_ctx.shutdown_all()
+        logger.info("shutdown complete")
+        sys.exit(0)
+    }
+
+    signal.signal(signal.SIGTERM, shutdown_handler)
+    signal.signal(signal.SIGINT, shutdown_handler)
+
+    logger.info("listening on {host}:{port}")
+    app.run(host=host, port=port, threaded=True)
+}

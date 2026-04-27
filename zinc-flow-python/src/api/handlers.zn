@@ -1,0 +1,142 @@
+from flask import Flask, request, jsonify
+from core.types import create_flowfile, ComponentState
+import logging
+
+logger = logging.getLogger("zinc-flow")
+
+
+def create_app(fab) -> Flask {
+    app = Flask("zinc-flow")
+
+    @app.route("/ingest", methods=["POST"])
+    def ingest() {
+        data = request.get_data()
+        attrs = {}
+        for key, val in request.headers.items() {
+            if key.lower().startswith("x-flow-") {
+                attrs[key[7:].lower()] = val
+            }
+        }
+        ff = create_flowfile(data, attrs)
+        if fab.ingest(ff) {
+            return jsonify({"status": "accepted", "id": ff.id})
+        } else {
+            return jsonify({"error": "backpressure"}), 503
+        }
+    }
+
+    @app.route("/health")
+    def health() {
+        return jsonify({"status": "ok", "dlq": fab.dlq_store.count()})
+    }
+
+    @app.route("/api/stats")
+    def stats() {
+        return jsonify(fab.get_stats())
+    }
+
+    @app.route("/api/queues")
+    def queues() {
+        return jsonify(fab.get_queue_stats())
+    }
+
+    @app.route("/api/processors")
+    def processors() {
+        result = {}
+        for name in fab.processor_names {
+            result[name] = {"state": fab.processor_states.get(name, ComponentState.DISABLED).name}
+        }
+        return jsonify(result)
+    }
+
+    @app.route("/api/dlq")
+    def dlq_list() {
+        entries = fab.dlq_store.list_entries()
+        return jsonify([{
+            "id": e.id, "flowfile_id": e.flowfile.id,
+            "source_processor": e.source_processor,
+            "attempt_count": e.attempt_count, "last_error": e.last_error,
+        } for e in entries])
+    }
+
+    @app.route("/api/dlq/replay", methods=["POST"])
+    def dlq_replay() {
+        body = request.get_json(silent=True) or {}
+        entry_id = body.get("id", "")
+        entry = fab.dlq_store.get(entry_id)
+        if entry is None {
+            return jsonify({"error": "not found"}), 404
+        }
+        ff = fab.dlq_store.replay(entry_id)
+        if ff {
+            fab.replay_to_queue(entry.source_queue, ff)
+            return jsonify({"status": "replayed", "id": entry_id})
+        }
+        return jsonify({"error": "replay failed"}), 500
+    }
+
+    @app.route("/api/dlq/replay-all", methods=["POST"])
+    def dlq_replay_all() {
+        replayed = fab.dlq_store.replay_all()
+        for queue_name, ff in replayed {
+            fab.replay_to_queue(queue_name, ff)
+        }
+        return jsonify({"replayed": len(replayed)})
+    }
+
+    @app.route("/api/processors/enable", methods=["POST"])
+    def enable_processor() {
+        body = request.get_json(silent=True) or {}
+        name = body.get("name", "")
+        if fab.enable_processor(name) {
+            return jsonify({"status": "enabled", "name": name})
+        }
+        return jsonify({"error": "failed to enable"}), 400
+    }
+
+    @app.route("/api/processors/disable", methods=["POST"])
+    def disable_processor() {
+        body = request.get_json(silent=True) or {}
+        name = body.get("name", "")
+        drain_secs = body.get("timeout", 60)
+        if fab.disable_processor(name, drain_secs) {
+            return jsonify({"status": "draining", "name": name})
+        }
+        return jsonify({"error": "failed to disable"}), 400
+    }
+
+    @app.route("/api/providers")
+    def providers() {
+        result = {}
+        for name in fab.global_ctx.list_providers() {
+            prov = fab.global_ctx.get_provider(name)
+            if prov {
+                result[name] = {"type": prov.get_type(), "state": prov.get_state().name}
+            }
+        }
+        return jsonify(result)
+    }
+
+    @app.route("/api/providers/enable", methods=["POST"])
+    def enable_provider() {
+        body = request.get_json(silent=True) or {}
+        name = body.get("name", "")
+        if fab.enable_provider(name) {
+            return jsonify({"status": "enabled", "name": name})
+        }
+        return jsonify({"error": "not found"}), 404
+    }
+
+    @app.route("/api/providers/disable", methods=["POST"])
+    def disable_provider() {
+        body = request.get_json(silent=True) or {}
+        name = body.get("name", "")
+        drain_secs = body.get("timeout", 60)
+        if fab.disable_provider(name, drain_secs) {
+            return jsonify({"status": "disabled", "name": name})
+        }
+        return jsonify({"error": "not found"}), 404
+    }
+
+    return app
+}
