@@ -1,0 +1,103 @@
+// FlowFile V3 boundary processors — package/unpackage NiFi V3 binary
+// format at the pipeline boundary.
+//
+// Mirrors caravan-flow-csharp's PackageFlowFileV3 / UnpackageFlowFileV3
+// (Processors.cs ~120 LOC). Wraps the existing pack/unpack primitives
+// in fabric/model/flowfile.zn — no new serialization code, just the
+// processor surface so YAML configs can place V3 boundaries anywhere
+// in the graph (not just at HTTP ingest / file egress).
+//
+// PackageFlowFileV3:
+//   • Resolves Content to bytes, then wraps the entire FlowFile
+//     (attrs + content) as a single V3 binary blob. The result is a
+//     new FlowFile whose content is Raw(v3_bytes) — typically routed
+//     to PutFile or PutHTTP for downstream transport.
+//   • Mime attribute set to application/flowfile-v3 for downstream
+//     receivers to recognize.
+//
+// UnpackageFlowFileV3:
+//   • Parses Raw bytes as one or more concatenated V3 frames. A
+//     single frame returns Single(ff); multiple frames return
+//     Multiple(ffs) so each is fanned out independently downstream.
+//   • Invalid magic → Failure (preserved attrs for DLQ inspection).
+
+import core
+import fabric/registry
+import fabric/model
+
+class PackageFlowFileV3 : ProcessorFn {
+    ContentStore store
+
+    init(ContentStore store) {
+        this.store = store
+    }
+
+    pub ProcessorResult process(FlowFile ff) {
+        var resolved = resolve(store, ff.content)
+        if (resolved.errorMsg != "") {
+            return Failure(resolved.errorMsg, ff)
+        }
+        var packed = packFlowFile(ff, resolved.data)
+        var packagedAttrs = Map<String, String>{}
+        packagedAttrs["mime.type"] = "application/flowfile-v3"
+        packagedAttrs["v3.original.id"] = ff.id
+        var packaged = createFlowFile(packed, packagedAttrs)
+        return Single(packaged)
+    }
+}
+
+class UnpackageFlowFileV3 : ProcessorFn {
+    ContentStore store
+
+    init(ContentStore store) {
+        this.store = store
+    }
+
+    pub ProcessorResult process(FlowFile ff) {
+        match (ff.content) {
+            case Raw(data) {
+                return unpack(ff, data)
+            }
+            case Claim(_, _) {
+                var resolved = resolve(store, ff.content)
+                if (resolved.errorMsg != "") {
+                    return Failure(resolved.errorMsg, ff)
+                }
+                return unpack(ff, resolved.data)
+            }
+            case Records(_, _) {
+                return Failure("UnpackageFlowFileV3 cannot operate on Records content", ff)
+            }
+        }
+    }
+
+    ProcessorResult unpack(FlowFile ff, byte[] data) {
+        if (len(data) < V3_MAGIC_LEN) {
+            return Failure("payload too short for V3", ff)
+        }
+        var unpacked = unpackAll(data)
+        if (len(unpacked) == 0) {
+            return Failure("no FlowFiles parsed from V3 payload", ff)
+        }
+        if (len(unpacked) == 1) {
+            return Single(unpacked[0])
+        }
+        return Multiple(unpacked)
+    }
+}
+
+pub ProcessorFn PackageFlowFileV3Factory(ScopedContext ctx, Map<String, String> config) {
+    var p = ctx.getProvider("content") or {
+        return PackageFlowFileV3(MemoryContentStore())
+    }
+    var cp = p as ContentProvider
+    return PackageFlowFileV3(cp.getStore())
+}
+
+pub ProcessorFn UnpackageFlowFileV3Factory(ScopedContext ctx, Map<String, String> config) {
+    var p = ctx.getProvider("content") or {
+        return UnpackageFlowFileV3(MemoryContentStore())
+    }
+    var cp = p as ContentProvider
+    return UnpackageFlowFileV3(cp.getStore())
+}

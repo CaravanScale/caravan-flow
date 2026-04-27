@@ -83,6 +83,16 @@ pub void registerBuiltins(Registry reg) {
             List<String>["delimiter", "include_header"]),
         ConvertRecordToCSVFactory
     )
+    reg.register(
+        ProcessorInfo("PackageFlowFileV3", "Wraps a FlowFile as a V3 binary blob",
+            List<String>[]),
+        PackageFlowFileV3Factory
+    )
+    reg.register(
+        ProcessorInfo("UnpackageFlowFileV3", "Parses V3 binary bytes back into FlowFile(s)",
+            List<String>[]),
+        UnpackageFlowFileV3Factory
+    )
     // --- zinc-native / legacy names ---
     reg.register(
         ProcessorInfo("add-attribute", "Adds key=value attribute to FlowFiles", List<String>["key", "value"]),

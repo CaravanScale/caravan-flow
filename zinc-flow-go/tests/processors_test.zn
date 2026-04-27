@@ -6,7 +6,9 @@
 import core
 import processors
 import fabric/source
+import fabric/model
 import stdlib/asserts
+import bytes
 
 test "AddAttribute — sets attribute, preserves existing attrs" {
     var proc = AddAttribute("env", "prod")
@@ -853,5 +855,80 @@ test "ConvertRecordToCSV — round-trip via ConvertCSVToRecord" {
             }
         }
         case _ { t.Errorf("Record→CSV step failed") }
+    }
+}
+
+test "PackageFlowFileV3 — wraps FF in V3 envelope with mime attr" {
+    var store = MemoryContentStore()
+    var attrs = Map<String, String>{}
+    attrs["env"] = "dev"
+    var ff = createFlowFile("hello".toBytes(), attrs)
+    var proc = PackageFlowFileV3(store)
+    match (proc.process(ff)) {
+        case Single(out) {
+            asserts.equalString(t, out.attributes["mime.type"], "application/flowfile-v3")
+            asserts.equalString(t, out.attributes["v3.original.id"], ff.id)
+            match (out.content) {
+                case Raw(data) {
+                    asserts.isTrue(t, len(data) > V3_MAGIC_LEN, "packed body has body beyond magic")
+                    var magic = "NiFiFF3".toBytes()
+                    asserts.isTrue(t, bytes.Equal(data[0:V3_MAGIC_LEN], magic), "starts with V3 magic")
+                }
+                case _ { t.Errorf("expected Raw content") }
+            }
+        }
+        case _ { t.Errorf("expected Single") }
+    }
+}
+
+test "UnpackageFlowFileV3 — round-trip via PackageFlowFileV3" {
+    var store = MemoryContentStore()
+    var attrs = Map<String, String>{}
+    attrs["env"] = "prod"
+    attrs["app"] = "billing"
+    var original = createFlowFile("payload-bytes".toBytes(), attrs)
+
+    var pkg = PackageFlowFileV3(store)
+    match (pkg.process(original)) {
+        case Single(packed) {
+            var unpkg = UnpackageFlowFileV3(store)
+            match (unpkg.process(packed)) {
+                case Single(restored) {
+                    asserts.equalString(t, restored.attributes["env"], "prod")
+                    asserts.equalString(t, restored.attributes["app"], "billing")
+                    match (restored.content) {
+                        case Raw(data) {
+                            asserts.equalString(t, string(data), "payload-bytes")
+                        }
+                        case _ { t.Errorf("expected Raw on restored") }
+                    }
+                }
+                case _ { t.Errorf("expected Single from unpkg") }
+            }
+        }
+        case _ { t.Errorf("expected Single from pkg") }
+    }
+}
+
+test "UnpackageFlowFileV3 — invalid magic returns Failure" {
+    var store = MemoryContentStore()
+    var ff = createFlowFile("not-a-v3-payload-just-text".toBytes(), Map<String, String>{})
+    var proc = UnpackageFlowFileV3(store)
+    match (proc.process(ff)) {
+        case Failure(reason, _) {
+            asserts.contains(t, reason, "V3")
+        }
+        case _ { t.Errorf("expected Failure on garbage input") }
+    }
+}
+
+test "UnpackageFlowFileV3 — Records content rejected" {
+    var store = MemoryContentStore()
+    var schema = schemaFromFields("test", List<Field>[])
+    var ff = FlowFile("ff-rec", Map<String, String>{}, Records(schema, List<GenericRecord>[]), 0)
+    var proc = UnpackageFlowFileV3(store)
+    match (proc.process(ff)) {
+        case Failure(_, _) {}
+        case _ { t.Errorf("expected Failure on Records content") }
     }
 }
