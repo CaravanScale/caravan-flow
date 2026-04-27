@@ -15,7 +15,7 @@ In your `shard.yml`:
 ```yaml
 dependencies:
   jsonpath:
-    github: CaravanScale/crystal-jsonpath
+    github: ZincScale/crystal-jsonpath
     version: ~> 0.1
 ```
 

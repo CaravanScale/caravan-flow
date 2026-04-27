@@ -9,7 +9,7 @@ logging:
 
 content:
   threshold: 262144
-  dir: /tmp/caravan-flow/content
+  dir: /tmp/zinc-flow/content
 
 defaults:
   backpressure:
@@ -52,4 +52,4 @@ flow:
       requires:
         - content
       config:
-        output_dir: /tmp/caravan-flow/output
+        output_dir: /tmp/zinc-flow/output

@@ -5,15 +5,15 @@ does, what components exist, what the architecture looks like), not
 the source of **code idioms** (how control flow is shaped, how
 errors are reported, how partial states are represented).
 
-Caravan's design constraint: **everything that can fail must go through
+Zinc's design constraint: **everything that can fail must go through
 the error mechanism** — `T?` return + `Error(reason)` + `or { }` at
 the call site. Silent skips, silent fallbacks, and partial-
 construction short-circuits are category errors.
 
 This doc is the exhaustive file-by-file survey of today's commits
-(`ef15d0b` through `ddc9c8a` on caravan-flow; `b8b1e19` through
-`26b21cd` on caravan-go). Every site where a csharp idiom leaked is
-flagged with `file:line`, the specific idiom, and a proposed Caravan
+(`ef15d0b` through `ddc9c8a` on zinc-flow; `b8b1e19` through
+`26b21cd` on zinc-go). Every site where a csharp idiom leaked is
+flagged with `file:line`, the specific idiom, and a proposed Zinc
 design.
 
 ---
@@ -21,15 +21,15 @@ design.
 ## Fixed already
 
 ### A1. Bare `return` inside constructor bodies
-- **Resolution:** caravan-go now rejects at compile time via
+- **Resolution:** zinc-go now rejects at compile time via
   `checkCtorBodyNoBareReturn` in
-  `caravan-go/internal/codegen_go/codegen_types.go`. Recurses into
+  `zinc-go/internal/codegen_go/codegen_types.go`. Recurses into
   nested `if / for / while / match / parallel for` blocks AND into
   `or { }` handlers on Var/TupleVar/Assign/Expr/ParallelFor stmts.
   Deliberately does NOT recurse into `spawn { }` or deferred
   closures (bare return there is scoped to that closure, not the
   ctor).
-- **Negative tests:** `caravan-go/examples-fail/ctor_bare_return.zn`
+- **Negative tests:** `zinc-go/examples-fail/ctor_bare_return.zn`
   (direct if-guard) + `ctor_bare_return_in_handler.zn`
   (`or { return }`). Commit: `26b21cd` + follow-up coverage
   extension.
@@ -53,7 +53,7 @@ input silently becomes the default; user misconfiguration hides.
 - `src/processors/text_processors.zn:243` — `textParseInt`, called
   for `header_lines`.
 
-**Caravan design:** `parseInt(s): int?` returning
+**Zinc design:** `parseInt(s): int?` returning
 `Error("not a number: %s")`. Callers take an `or { fallback }` at
 each site — the fallback becomes a deliberate choice at the call
 site, not hidden behavior in the parser.
@@ -72,7 +72,7 @@ disappear; load succeeds with a partial processor.
 - `src/fabric/source/generate.zn:parseAttributes + addPair`
   (lines 64-99).
 
-**Caravan design:** factories return `ProcessorFn?` /
+**Zinc design:** factories return `ProcessorFn?` /
 `ConnectorSource?`. Parse errors abort construction and surface at
 the registry level. Pipeline fails to load on typo.
 
@@ -80,7 +80,7 @@ the registry level. Pipeline fails to load on typo.
 - `src/processors/transform_record.zn:151-200` — `applyOne` falls
   through silently on any op name it doesn't recognize, including
   `compute` which isn't implemented.
-- **Caravan design:** factory validates op vocabulary at construction
+- **Zinc design:** factory validates op vocabulary at construction
   time; unrecognized op → `Error`. `compute` stays registered as
   "known but not implemented" so its error message is clearer than
   the catch-all.
@@ -89,7 +89,7 @@ the registry level. Pipeline fails to load on typo.
 - `src/processors/route_on_attribute.zn:85-114` — `evaluate` falls
   through to `return false` if `op` isn't in the known set. A route
   with `op: WEIRDOP` silently never matches.
-- **Caravan design:** validate operator strings at `parseRoutes` time;
+- **Zinc design:** validate operator strings at `parseRoutes` time;
   unknown op → factory-level Error.
 
 ### F. Missing-required-config silent-empty-string (factories group)
@@ -107,7 +107,7 @@ processors with empty-string "config."
 - `src/processors/put_file.zn:91-92` — missing `output_dir` →
   empty, leading to writes at `"/filename"`.
 
-**Caravan design:** factory validates required keys up front, returns
+**Zinc design:** factory validates required keys up front, returns
 Error if missing. Once `ProcessorFactory` returns `ProcessorFn?`
 this is a one-line check per factory.
 
@@ -128,7 +128,7 @@ something is a leak.
 - `src/processors/log_attribute.zn:41-46` — factory default
   `prefix = "flow"`. (Marginal — prefix is descriptive only.)
 
-**Caravan design:** validate the value is in the allowed set; reject
+**Zinc design:** validate the value is in the allowed set; reject
 unknown values at factory time. Defaults that are ACTUALLY set by
 the user (vs. missing) should at minimum be validated.
 
@@ -145,7 +145,7 @@ they don't handle.
   content passes through silently. Comment acknowledges this as
   intentional (pipeline keeps moving).
 
-**Caravan design decision:** arguably benign for ExtractRecordField
+**Zinc design decision:** arguably benign for ExtractRecordField
 (staged pipeline with optional records). For RecordsToJson it's
 likely an error — the processor can't do its job, so the FlowFile
 should go to a failure route.
@@ -154,14 +154,14 @@ should go to a failure route.
 - `src/processors/extract_record_field.zn:92-96` — missing field
   silently omitted from attribute set. csharp behaves the same;
   doc at line 16-17 admits it.
-- **Caravan design decision:** benign for soft-extract workloads; a
+- **Zinc design decision:** benign for soft-extract workloads; a
   `strict: true` config mode that errors on missing fields would
   cover the hard-extract case without breaking back-compat.
 
 ### J. RouteOnAttribute fall-through to `"unmatched"`
 - `src/processors/route_on_attribute.zn:71` — when no predicate
   matches, FlowFile goes to relationship `"unmatched"`.
-- **Caravan design decision:** load-bearing — NiFi configs rely on a
+- **Zinc design decision:** load-bearing — NiFi configs rely on a
   catch-all. But if `unmatched:` isn't wired in the YAML, the
   FlowFile drops silently in the executor (pushDownstream with no
   targets returns without Failure). Proposed mitigation: loadFlow
@@ -173,7 +173,7 @@ should go to a failure route.
 - `src/fabric/runtime/runtime.zn:108-111` — `if !reg.has(typeName)
   { logging.error + continue }`. Load "succeeds," pipeline is
   partial.
-- **Caravan design:** `loadFlow` should return a load-result with
+- **Zinc design:** `loadFlow` should return a load-result with
   collected errors; any unknown type aborts the whole load.
 
 ### L. ExecuteGraph unknown-processor drop at runtime
@@ -186,7 +186,7 @@ should go to a failure route.
   non-optional `ProcessorFn`. Factory-internal failures (bad config,
   provider missing) can't be reported to Fabric. Tightly coupled
   to F.
-- **Caravan design:** `Registry.create` returns `ProcessorFn?`;
+- **Zinc design:** `Registry.create` returns `ProcessorFn?`;
   `addProcessor` returns `bool` OR an error-string; `loadFlow`
   collects all per-processor errors.
 
@@ -194,7 +194,7 @@ should go to a failure route.
 - `src/fabric/runtime/runtime.zn:672-691` — `or { continue }`
   silently skips providers that a processor declared in `requires`
   but globalCtx doesn't have. Processor gets a partial scope.
-- **Caravan design:** if a processor `requires` provider X and X isn't
+- **Zinc design:** if a processor `requires` provider X and X isn't
   present, construction aborts with Error.
 
 ### O. PipelineGraph accessors return silently-bogus defaults
@@ -208,7 +208,7 @@ should go to a failure route.
 - `src/core/pipeline_graph.zn:168-173` — `getRequires` returns
   empty list on unknown name.
 
-**Caravan design:** accessors return `T?` (e.g.
+**Zinc design:** accessors return `T?` (e.g.
 `getProcessor(name): ProcessorFn?`,
 `getState(name): ComponentState?`). Callers get explicit failure
 and can `or { }` a decision at the call site.
@@ -216,7 +216,7 @@ and can `or { }` a decision at the call site.
 ### P. Fabric.getProcessorType returns "unknown" string
 - `src/fabric/runtime/runtime.zn:438-443` — silent sentinel
   "unknown" instead of error.
-- **Caravan design:** `getProcessorType(name): String?`.
+- **Zinc design:** `getProcessorType(name): String?`.
 
 ### Q. handlers.zn ignores replayAt return
 - `src/fabric/api/handlers.zn:109` — `fab.replayAt(sourceProc, ff)`
@@ -224,46 +224,46 @@ and can `or { }` a decision at the call site.
   user gets 200 "replayed" response.
 - `src/fabric/api/handlers.zn:123` — same pattern in
   dlqReplayAllHandler.
-- **Caravan design:** check return, write 404/409 when false.
+- **Zinc design:** check return, write 404/409 when false.
 
 ### R. handlers.zn empty `or { }` swallows unmarshal error
 - `src/fabric/api/handlers.zn:279` — `json.Unmarshal(configBytes,
   rawConfig) or {}` — empty handler block silently drops the
   unmarshal error, then continues as if config was empty.
-- **Caravan design:** surface as 400 response with the error message,
+- **Zinc design:** surface as 400 response with the error message,
   OR at minimum log it.
 
 ### S. GenerateFlowFile loadGenerateSource silent skip on missing content
 - `src/fabric/source/generate.zn:181-184` — `if
   !cfg.has("sources.generate.content") { return }`. A `sources.generate`
   section without `content` silently registers no source.
-- **Caravan design decision:** if sources.generate exists but content
+- **Zinc design decision:** if sources.generate exists but content
   missing → Error; if whole sources.generate is absent → fine.
 
 ### T. put_file.basename silently strips directory traversal
 - `src/processors/put_file.zn:79` + basename helper at line
   112-128 — attacker sending `filename: "../../etc/passwd"` gets
   silently reduced to "passwd" (written into output_dir).
-- **Caravan design decision:** reject-with-Failure when the naming
+- **Zinc design decision:** reject-with-Failure when the naming
   attribute contains `/` or `..` rather than silently sanitizing.
   Silent sanitize is a security anti-pattern: attacker learns their
   payload "worked" (no error) and iterates.
 
 ---
 
-## caravan-go compiler commits (audited)
+## zinc-go compiler commits (audited)
 
 | Commit | Files | Verdict |
 |---|---|---|
-| `26b21cd` | codegen_types.go | **Caravan-correct.** Replaces the prior csharpism hack. The `switch` default case in `checkCtorStmtNoBareReturn` deliberately does nothing for Stmt types that can't contain nested control flow (Break, Continue, AssertStmt, PrintStmt, etc.) — not a silent skip, a correct no-op. |
-| `9caffb1` | codegen_exprs.go | **Caravan-correct.** Field-casing + lambda return-type inference — both are compiler correctness fixes. |
-| `3a1d569` | codegen_resolve.go, codegen_stmts.go, codegen_types.go | **Caravan-correct.** Param-type propagation so `.keys()`/`.values()` stay typed through realistic receiver shapes. |
-| `2d86ec4` | codegen_calls.go, codegen_resolve.go, codegen_stmts.go | **Caravan-correct.** Receiver-shape sweep. No idioms imported. |
-| `e83cdd7` | codegen_calls.go, codegen_resolve.go | **Caravan-correct.** IndexExpr walking, typed channel recv. |
-| `5178cde` | codegen_calls.go, codegen_resolve.go, codegen_stmts.go | **Caravan-correct.** Map K/V typed generation. |
-| `afc4d16` | codegen_calls.go, codegen_exprs.go, codegen_resolve.go, codegen_stmts.go | **Caravan-correct.** Six identifier-vs-package precedence fixes. |
-| `0865ec0` | codegen_calls.go | **Caravan-correct.** Field-name shadows subpackage. |
-| `d8453bd` | codegen_stmts.go | **Caravan-correct.** `Error(...)` interpolation emission. |
+| `26b21cd` | codegen_types.go | **Zinc-correct.** Replaces the prior csharpism hack. The `switch` default case in `checkCtorStmtNoBareReturn` deliberately does nothing for Stmt types that can't contain nested control flow (Break, Continue, AssertStmt, PrintStmt, etc.) — not a silent skip, a correct no-op. |
+| `9caffb1` | codegen_exprs.go | **Zinc-correct.** Field-casing + lambda return-type inference — both are compiler correctness fixes. |
+| `3a1d569` | codegen_resolve.go, codegen_stmts.go, codegen_types.go | **Zinc-correct.** Param-type propagation so `.keys()`/`.values()` stay typed through realistic receiver shapes. |
+| `2d86ec4` | codegen_calls.go, codegen_resolve.go, codegen_stmts.go | **Zinc-correct.** Receiver-shape sweep. No idioms imported. |
+| `e83cdd7` | codegen_calls.go, codegen_resolve.go | **Zinc-correct.** IndexExpr walking, typed channel recv. |
+| `5178cde` | codegen_calls.go, codegen_resolve.go, codegen_stmts.go | **Zinc-correct.** Map K/V typed generation. |
+| `afc4d16` | codegen_calls.go, codegen_exprs.go, codegen_resolve.go, codegen_stmts.go | **Zinc-correct.** Six identifier-vs-package precedence fixes. |
+| `0865ec0` | codegen_calls.go | **Zinc-correct.** Field-name shadows subpackage. |
+| `d8453bd` | codegen_stmts.go | **Zinc-correct.** `Error(...)` interpolation emission. |
 | `53529ea`, `05631de`, `049b7b9`, `91eec11`, `92aa080`, `a738e0c`, `b8b1e19`, `f0c6c1d` | various | Audited, all compiler/stdlib correctness. |
 
 **Only csharpism found in compiler:** the short-lived `inConstructor`
@@ -311,7 +311,7 @@ and documented in A1).
 
 ## csharp-side parallel cleanup (status)
 
-The groups above enumerate *Caravan-side* (`src/**/*.zn`) sites. The csharp
+The groups above enumerate *Zinc-side* (`src/**/*.zn`) sites. The csharp
 reference has analogous sites that were cleaned up independently under
 the same design rule (every config error must surface at `LoadFlow` time
 through `ConfigException` → aggregated into `AggregateException`).
@@ -356,6 +356,6 @@ Remaining on csharp:
   `LoadFlow` guarantees the invariant. Low-priority — the runtime
   defensive check is cheap.
 
-Coverage: 17 new assertions in `CaravanFlow.Tests/ConfigErrorTests.cs`
+Coverage: 17 new assertions in `ZincFlow.Tests/ConfigErrorTests.cs`
 across all the above paths + a 4-error aggregation test proving
 `LoadFlow` reports every problem, not just the first.

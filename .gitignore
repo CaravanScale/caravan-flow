@@ -1,5 +1,5 @@
 out/
-.caravan/
+.zinc/
 *.class
 .idea/
 .vscode/
@@ -7,8 +7,8 @@ out/
 # sbt build artifacts
 target/
 
-# caravan-java / sbt assembly artifacts
-caravan-out/
+# zinc-java / sbt assembly artifacts
+zinc-out/
 
 # OS
 .DS_Store

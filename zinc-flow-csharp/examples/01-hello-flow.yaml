@@ -1,0 +1,55 @@
+# 01 — Hello flow
+#
+# Smallest useful pipeline. Accepts HTTP POSTs on :9091 (the management
+# port also serves ingest via POST /), tags each FlowFile with environment
+# and source attributes, logs the attributes, writes the body to disk.
+#
+# Try it:
+#   ./build/ZincFlow validate examples/01-hello-flow.yaml
+#   cp examples/01-hello-flow.yaml config.yaml && ./build/ZincFlow
+#   curl -X POST http://localhost:9091/ -d 'hello world'
+#   ls /tmp/zinc-out/
+
+server:
+  port: 9091
+
+logging:
+  format: text
+
+content:
+  dir: /tmp/zinc-flow-csharp/content
+
+flow:
+
+  processors:
+    tag-env:
+      type: UpdateAttribute
+      config:
+        key: env
+        value: dev
+
+    tag-source:
+      type: UpdateAttribute
+      config:
+        key: source
+        value: api
+
+    logger:
+      type: LogAttribute
+      config:
+        prefix: hello
+
+    sink:
+      type: PutFile
+      requires: [content]
+      config:
+        outputDir: /tmp/zinc-out
+        namingAttribute: filename
+
+  connections:
+    tag-env:
+      success: [tag-source]
+    tag-source:
+      success: [logger]
+    logger:
+      success: [sink]

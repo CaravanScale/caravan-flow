@@ -1,0 +1,72 @@
+# 07 — NiFi FlowFile V3 in / NiFi FlowFile V3 out
+#
+# This is the canonical zinc-flow shape: ingest NiFi FlowFiles (which package
+# attributes + content into one binary frame), do work on them, emit NiFi
+# FlowFiles back out. The content INSIDE the FlowFile can be anything —
+# JSON, CSV, Avro OCF, raw bytes — that's a side-effect choice, not the
+# system boundary.
+#
+# Pipeline:
+#   GetFile  (auto-detects V3 magic, unwraps; non-V3 files pass through raw)
+#     → log
+#     → PackageFlowFileV3 (re-wraps attributes + (possibly transformed) content)
+#     → PutFile  (writes V3-framed file; downstream zinc-flow / NiFi can read it)
+#
+# Try it:
+#   ./build/ZincFlow validate examples/07-flowfile-v3-roundtrip.yaml
+#   mkdir -p /tmp/v3-in /tmp/v3-out
+#   # Drop a NiFi-V3-framed file into /tmp/v3-in/ — its attributes survive
+#   # disk → memory → disk, and the output file is V3-framed too.
+
+server:
+  port: 9091
+
+content:
+  dir: /tmp/zinc-flow-csharp/content
+
+sources:
+  fileIngest:
+    type: GetFile
+    config:
+      inputDir: /tmp/v3-in
+      pattern: "*"
+      pollIntervalMs: 1000
+      unpackV3: true     # default; sniffs magic header and unwraps if present
+
+  # HTTP ingest is now POST / on the management port — use
+  # UnpackageFlowFileV3 in your flow if the POSTed body is V3-framed.
+
+flow:
+
+  processors:
+    # Visibility: log everything that came in, including all attributes.
+    log:
+      type: LogAttribute
+      config: { prefix: ingest }
+
+    # Re-wrap (attributes + content) as a V3 binary blob.
+    # The output FlowFile's CONTENT is now the V3-framed bytes;
+    # downstream sinks just write it as-is.
+    package:
+      type: PackageFlowFileV3
+      requires: [content]
+
+    # Write the V3-framed bytes to disk. A peer zinc-flow / NiFi pointed at
+    # this directory with a V3-aware reader will see every original attribute.
+    write:
+      type: PutFile
+      requires: [content]
+      config:
+        outputDir: /tmp/v3-out
+        namingAttribute: filename
+        suffix: .v3
+        # `format: v3` is also available on PutFile for the case where you
+        # have NOT used PackageFlowFileV3 upstream — that variant wraps in the
+        # sink itself. Either approach gets you a V3-framed file.
+        # format: v3
+
+  connections:
+    log:
+      success: [package]
+    package:
+      success: [write]

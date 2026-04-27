@@ -15,7 +15,7 @@ In your `shard.yml`:
 ```yaml
 dependencies:
   avro:
-    github: CaravanScale/crystal-avro
+    github: ZincScale/crystal-avro
     version: ~> 0.1
 ```
 
@@ -120,7 +120,7 @@ etc. where there's no ambiguity) and returns strict types on read.
   the hot path. Write/read iterate `schema.fields`; the codec looks
   up by index, not name, at encode/decode time.
 - **Coercion is explicit, narrow, and errors loudly.** We accept
-  `String → Int32` because caravan-flow hands us config values as
+  `String → Int32` because zinc-flow hands us config values as
   strings, but we never guess `Int32 → Bool` or anything weirder.
 
 ## License

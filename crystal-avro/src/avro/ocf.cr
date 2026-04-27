@@ -14,7 +14,7 @@ module Avro
   #   sync    : 16 bytes    (random, repeated at end of every block)
   #   blocks  : ( count:long, size:long, data:bytes[size], sync:16 )*
   #
-  # Writing emits a single block per call — simpler, suits caravan-flow's
+  # Writing emits a single block per call — simpler, suits zinc-flow's
   # "one flowfile = one call" model. Reading supports any block count.
   module OCF
     MAGIC = Bytes[0x4F, 0x62, 0x6A, 0x01]  # "Obj\x01"

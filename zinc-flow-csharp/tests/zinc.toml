@@ -1,0 +1,28 @@
+[project]
+name = "ZincFlow.Tests"
+version = "0.1.0"
+main = "Tests/Program.cs"
+source_dir = "Tests"
+sdk = "Microsoft.NET.Sdk.Web"
+
+[csharp]
+framework = "net10.0"
+lang_version = "latest"
+nullable = true
+implicit_usings = true
+unsafe = true
+
+[csharp.aot]
+enabled = true
+strip_symbols = true
+invariant_globalization = true
+optimization = "Size"
+stack_traces = false
+trim_metadata = false
+
+[csharp.nuget]
+packages = ["YamlDotNet:16.3.0", "ZstdSharp.Port:0.8.4"]
+
+[csharp.references]
+# Project reference to the main ZincFlow project
+projects = ["../../ZincFlow/ZincFlow.csproj"]

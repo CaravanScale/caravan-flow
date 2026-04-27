@@ -1,8 +1,8 @@
-# caravan-flow Architecture
+# zinc-flow Architecture
 
 Lightweight data flow engine inspired by Apache NiFi (processor model), Apache Camel (direct pipeline execution), and NiFi Stateless (ephemeral, no inter-stage queues).
 
-This document describes the **C# reference runtime** (`caravan-flow-csharp/`) — the golden track. The Java (`caravan-flow-java/`) and Crystal (`caravan-flow-crystal/`) runtimes implement the same execution model (FlowFile, ProcessorResult variants, DAG traversal, failure routing), the same YAML config shape, and the same HTTP management API contract, so the React UI (`caravan-flow-ui-web/`) drives any of them same-origin. Track-specific deltas: Java uses `ServiceLoader` + `plugin-dirs/` for runtime extensibility (no AOT); Crystal uses a compile-time macro registry (`src/processor.cr#register`) and `spawn {}` over `preview_mt` workers. Naming differs by language idiom — C# uses C#-cased class names, Crystal `snake_case` files — but the contract is shared.
+This document describes the **C# reference runtime** (`zinc-flow-csharp/`) — the golden track. The Java (`zinc-flow-java/`) and Crystal (`zinc-flow-crystal/`) runtimes implement the same execution model (FlowFile, ProcessorResult variants, DAG traversal, failure routing), the same YAML config shape, and the same HTTP management API contract, so the React UI (`zinc-flow-ui-web/`) drives any of them same-origin. Track-specific deltas: Java uses `ServiceLoader` + `plugin-dirs/` for runtime extensibility (no AOT); Crystal uses a compile-time macro registry (`src/processor.cr#register`) and `spawn {}` over `preview_mt` workers. Naming differs by language idiom — C# uses C#-cased class names, Crystal `snake_case` files — but the contract is shared.
 
 ---
 
@@ -14,7 +14,7 @@ This document describes the **C# reference runtime** (`caravan-flow-csharp/`) �
 
 3. **Failure routing in-graph.** Processors return typed results (success, failure, drop). Failures follow "failure" connections to error-handling processors. No external DLQ — error handling is part of the graph.
 
-4. **Scale by decomposition.** A single caravan-flow process handles one flow graph. For scaling, break the graph into fast/slow parts connected via NATS between separate caravan-flow instances (pods). No distributed coordination within a single process.
+4. **Scale by decomposition.** A single zinc-flow process handles one flow graph. For scaling, break the graph into fast/slow parts connected via NATS between separate zinc-flow instances (pods). No distributed coordination within a single process.
 
 5. **Zero external deps.** The standalone binary has no runtime dependencies — no database, no message broker, no JVM. Config from YAML, content on disk.
 
@@ -329,8 +329,8 @@ Pool is thread-local (`[ThreadStatic]`), 256 items per thread, no CAS contention
 ## File Layout (C# runtime)
 
 ```
-caravan-flow-csharp/                           5,277 lines
-├── CaravanFlow/
+zinc-flow-csharp/                           5,277 lines
+├── ZincFlow/
 │   ├── Core/
 │   │   ├── Types.cs          489  — FlowFile, Content, ProcessorResult, Pool<T>
 │   │   ├── Providers.cs      305  — IProvider, ProcessorContext, ScopedContext, Logging, Provenance
@@ -359,7 +359,7 @@ caravan-flow-csharp/                           5,277 lines
 ├── tests/Tests/
 │   └── TestSuite.cs         3200+ — 438 tests (core types, processors, codecs, DAG, failure, e2e)
 ├── config.yaml                     — Flow definition
-└── caravan.toml                       — Build config (caravan-csharp reads this)
+└── zinc.toml                       — Build config (zinc-csharp reads this)
 ```
 
 ---
@@ -370,14 +370,14 @@ caravan-flow-csharp/                           5,277 lines
 Single binary, zero deps. Config from YAML. Best for dev, test, edge, single-machine workloads.
 
 ```
-[ListenHTTP :9092] → [caravan-flow process] → [PutFile / PutHTTP]
+[ListenHTTP :9092] → [zinc-flow process] → [PutFile / PutHTTP]
 ```
 
 ### Multi-instance (Phase 3)
-Multiple caravan-flow processes connected via NATS. Break flows into fast/slow segments. Each segment is a separate process (pod) with its own config.
+Multiple zinc-flow processes connected via NATS. Break flows into fast/slow segments. Each segment is a separate process (pod) with its own config.
 
 ```
-[caravan-flow A]                    [caravan-flow B]
+[zinc-flow A]                    [zinc-flow B]
   ListenHTTP → parse → PutNats ──→ GetNats → transform → PutFile
                   (fast segment)       (slow segment)
 ```

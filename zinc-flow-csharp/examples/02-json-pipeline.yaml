@@ -1,0 +1,74 @@
+# 02 — JSON pipeline with typed transforms
+#
+# POST a JSON array of order objects; the pipeline parses to records, filters
+# by amount, computes derived fields with the typed expression engine, then
+# writes back as JSON.
+#
+# Try it:
+#   ./build/ZincFlow validate examples/02-json-pipeline.yaml
+#   cp examples/02-json-pipeline.yaml config.yaml && ./build/ZincFlow
+#   curl -X POST http://localhost:9091/ \
+#     -H 'Content-Type: application/json' \
+#     -d '[{"id":1,"amount":120,"qty":2,"region":"US"},
+#          {"id":2,"amount":40,"qty":1,"region":"EU"},
+#          {"id":3,"amount":250,"qty":5,"region":"US"}]'
+#   ls /tmp/zinc-out/   # only US/EU rows with amount > 100 land here
+
+server:
+  port: 9091
+
+content:
+  dir: /tmp/zinc-flow-csharp/content
+
+flow:
+
+  processors:
+    parse:
+      type: ConvertJSONToRecord
+      requires: [content]
+      config:
+        schemaName: orders
+
+    # Filter rows. QueryRecord uses JsonPath (RFC-9535-ish) — pick any
+    # filter expression Newtonsoft.Json's SelectTokens understands.
+    filter:
+      type: QueryRecord
+      config:
+        query: "$[?(@.amount > 100)]"
+
+    # The new compute: directive evaluates typed expressions against record
+    # fields. Each step sees prior writes.
+    transform:
+      type: TransformRecord
+      config:
+        operations: >
+          compute:total:amount * qty;
+          compute:tax:total * if(region == "US", 0.07, 0.15);
+          compute:label:upper(region) + "-" + string(round(total + tax))
+
+    encode:
+      type: ConvertRecordToJSON
+
+    write:
+      type: PutFile
+      requires: [content]
+      config:
+        outputDir: /tmp/zinc-out
+        namingAttribute: filename
+        suffix: .json
+
+    errors:
+      type: LogAttribute
+      config:
+        prefix: parse-error
+
+  connections:
+    parse:
+      success: [filter]
+      failure: [errors]
+    filter:
+      success: [transform]
+    transform:
+      success: [encode]
+    encode:
+      success: [write]

@@ -1,7 +1,7 @@
 // FlowFile V3 boundary processors — package/unpackage NiFi V3 binary
 // format at the pipeline boundary.
 //
-// Mirrors caravan-flow-csharp's PackageFlowFileV3 / UnpackageFlowFileV3
+// Mirrors zinc-flow-csharp's PackageFlowFileV3 / UnpackageFlowFileV3
 // (Processors.cs ~120 LOC). Wraps the existing pack/unpack primitives
 // in fabric/model/flowfile.zn — no new serialization code, just the
 // processor surface so YAML configs can place V3 boundaries anywhere

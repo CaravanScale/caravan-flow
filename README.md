@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="logo.png" alt="Caravan Flow" width="320">
+  <img src="logo.png" alt="Zinc Flow" width="320">
 </p>
 
-# Caravan Flow
+# Zinc Flow
 
 Visual dataflow engine for domain experts. NiFi-style canvas, Camel-style
 composition, three interoperable runtime tracks sharing one HTTP contract
@@ -10,7 +10,7 @@ and one React UI:
 
 - **C# .NET 10 (golden track)** — ~28 MB native AOT binary, zero external
   deps, drops on a Raspberry Pi and scales out as a stateless worker pod
-  in k8s. Built via [caravan-csharp](https://github.com/CaravanScale/caravan/tree/master/caravan-csharp).
+  in k8s. Built via [zinc-csharp](https://github.com/ZincScale/zinc/tree/master/zinc-csharp).
 - **Java (enterprise track)** — JVM runtime with ServiceLoader-based
   plugins and `plugin-dirs/` overlays, for orgs with JVM-shaped ops and
   extensibility requirements.
@@ -45,9 +45,9 @@ and one React UI:
 ## Quick start
 
 ```bash
-cd caravan-flow-csharp
-caravan-csharp build        # native AOT binary in build/
-./build/CaravanFlow         # starts on :9091, serves UI + API
+cd zinc-flow-csharp
+zinc-csharp build        # native AOT binary in build/
+./build/ZincFlow         # starts on :9091, serves UI + API
 
 # Browse http://localhost:9091
 
@@ -62,7 +62,7 @@ curl -X POST http://localhost:9091/api/flowfiles/ingest \
   -d '{"content":"hello","attributes":{"env":"dev"}}'
 
 # Kubernetes worker pod (no UI served, API only)
-./build/CaravanFlow --mode=headless
+./build/ZincFlow --mode=headless
 ```
 
 ## Processor catalog
@@ -89,17 +89,17 @@ wizards that remove the need to write expression strings at all.
 ## Project structure
 
 ```
-caravan-flow/
-├── caravan-flow-csharp/       — C# .NET 10 AOT runtime (golden track)
-├── caravan-flow-java/         — Java JVM runtime (enterprise extensibility)
-├── caravan-flow-crystal/      — Crystal 1.20 runtime (compact static binary)
+zinc-flow/
+├── zinc-flow-csharp/       — C# .NET 10 AOT runtime (golden track)
+├── zinc-flow-java/         — Java JVM runtime (enterprise extensibility)
+├── zinc-flow-crystal/      — Crystal 1.20 runtime (compact static binary)
 ├── crystal-avro/              — Avro JSON schema + binary + OCF shard
 ├── crystal-jsonpath/          — JSONPath (RFC 9535 subset) shard
-├── caravan-flow-ui-web/       — React graph canvas + palette (shared UI)
-├── caravan-flow-ui-java/      — legacy Java UI (pre-React)
-├── caravan-flow-shared/       — cross-track shared definitions
+├── zinc-flow-ui-web/       — React graph canvas + palette (shared UI)
+├── zinc-flow-ui-java/      — legacy Java UI (pre-React)
+├── zinc-flow-shared/       — cross-track shared definitions
 ├── docs/                      — design documents + architecture
-├── logo.png                   — Caravan brand
+├── logo.png                   — Zinc brand
 └── README.md
 ```
 
@@ -123,8 +123,8 @@ requirements — see the roadmap docs above.
 
 ## Related
 
-- [Caravan](https://github.com/CaravanScale/caravan) — the language Caravan Flow is written in.
-- [caravan-csharp](https://github.com/CaravanScale/caravan/tree/master/caravan-csharp) — C# build backend.
+- [Zinc](https://github.com/ZincScale/zinc) — the language Zinc Flow is written in.
+- [zinc-csharp](https://github.com/ZincScale/zinc/tree/master/zinc-csharp) — C# build backend.
 
 ## License
 

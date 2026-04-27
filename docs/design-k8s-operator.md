@@ -1,4 +1,4 @@
-# Design — caravan-flow k8s operator + multi-worker deployment
+# Design — zinc-flow k8s operator + multi-worker deployment
 
 > **Status (2026-04-17): PROPOSED.**
 > Moves fleet management behind an operator + aggregator split with the
@@ -7,12 +7,12 @@
 
 ## Scope
 
-caravan-flow must run in three shapes with one HTTP API surface and one
+zinc-flow must run in three shapes with one HTTP API surface and one
 React UI bundle:
 
 | Mode | Who runs it | Source of truth | UI served by |
 |---|---|---|---|
-| **Single-worker (standalone)** | `./caravan-flow` binary | `config.yaml` on disk | the worker itself |
+| **Single-worker (standalone)** | `./zinc-flow` binary | `config.yaml` on disk | the worker itself |
 | **Multi-worker classic** | aggregator pod + N worker pods | aggregator-held canonical `config.yaml` | aggregator |
 | **K8s fleet** | operator + aggregator + N worker pods | `Flow` CRD in the cluster | aggregator |
 
@@ -41,7 +41,7 @@ migration, testing, and a slice-sized phase plan.
    replicas, env-sourced secrets. `kubectl apply -f flow.yaml` stands up
    the fleet.
 3. **Standalone mode stays a single binary** — no forced dependency on
-   k8s or an aggregator. `./caravan-flow` still reads `config.yaml`,
+   k8s or an aggregator. `./zinc-flow` still reads `config.yaml`,
    serves the UI, writes back on Save.
 4. **Same UI everywhere** — zero conditional code paths in React keyed
    on deployment mode. Backend adapts; frontend doesn't branch.
@@ -87,7 +87,7 @@ migration, testing, and a slice-sized phase plan.
 
 ```
 ┌─────────────────────────────────────────────┐
-│  caravan-flow (worker binary)               │
+│  zinc-flow (worker binary)               │
 │  ┌─────────────┐  ┌──────────────────────┐  │
 │  │  React UI   │  │  HTTP API            │  │
 │  │  (wwwroot)  │  │  /api/flow           │  │
@@ -120,7 +120,7 @@ stays exactly as today.
            └─────────────┬─────────────────┘
                          │ HTTPS (Ingress)
            ┌─────────────▼─────────────────┐
-           │  caravan-flow-aggregator      │  ◄── serves UI bundle
+           │  zinc-flow-aggregator      │  ◄── serves UI bundle
            │  Deployment, 1-2 replicas     │      + API gateway
            │                               │
            │  GET  /api/flow    (reads CRD)│
@@ -136,7 +136,7 @@ stays exactly as today.
          ┌────▼─────┐      ┌────────▼─────────────┐
          │ k8s API  │      │  Worker pods (N)      │
          │          │      │  ┌─────────────────┐  │
-         │ Flow CRD │      │  │ caravan-flow    │  │
+         │ Flow CRD │      │  │ zinc-flow    │  │
          │ Cluster  │      │  │  (headless mode)│  │
          │   CRD    │      │  │                 │  │
          │ Events   │      │  │  reads ConfigMap│  │
@@ -151,7 +151,7 @@ stays exactly as today.
               │                     │ mounted ConfigMap
               │                     │ + envFrom Secrets
          ┌────▼──────────────────────────────────┐
-         │  caravan-flow-operator                │
+         │  zinc-flow-operator                │
          │  Deployment, 1 replica (leader-elect) │
          │                                       │
          │  Watches:                             │
@@ -264,7 +264,7 @@ Represents one flow graph. Has a 1:1 mapping to today's `config.yaml`
 under the `flow:` key, with operator-specific extensions grafted on.
 
 ```yaml
-apiVersion: caravanflow.io/v1
+apiVersion: zincflow.io/v1
 kind: Flow
 metadata:
   name: my-pipeline
@@ -361,7 +361,7 @@ Worker runtime settings. Usually one per namespace, referenced by
 one or more `Flow` resources.
 
 ```yaml
-apiVersion: caravanflow.io/v1
+apiVersion: zincflow.io/v1
 kind: FlowCluster
 metadata:
   name: default-cluster
@@ -372,7 +372,7 @@ spec:
 
   # Worker image. Operator provides sensible defaults per runtime.
   image:
-    repository: ghcr.io/caravanscale/caravan-flow-csharp
+    repository: ghcr.io/zincscale/zinc-flow-csharp
     tag: "1.0.0"
     pullPolicy: IfNotPresent
 
@@ -395,7 +395,7 @@ spec:
 
   # Env vars injected into every worker pod (non-secret).
   env:
-    - name: CARAVAN_LOG_LEVEL
+    - name: ZINC_LOG_LEVEL
       value: INFO
 
   # Optional persistent volume for processors that need durable local
@@ -444,7 +444,7 @@ status:
 
 ## Components — deep dive
 
-### `caravan-flow-operator` (new, Go)
+### `zinc-flow-operator` (new, Go)
 
 Follow the existing TODO/Phase-3b plan: scaffolded with kubebuilder.
 Go is chosen here despite the "C# is golden" memory because the k8s
@@ -472,13 +472,13 @@ off following ecosystem defaults.
 - Emit k8s Events on significant transitions (ConfigMap updated,
   rolling restart started, validation failed).
 
-**Image:** `ghcr.io/caravanscale/caravan-flow-operator:VERSION`.
+**Image:** `ghcr.io/zincscale/zinc-flow-operator:VERSION`.
 Shipped via Helm chart (see Packaging).
 
 **Leader election:** standard controller-runtime leader election so
 multiple operator pods can run for HA.
 
-### `caravan-flow-aggregator` (new, C#)
+### `zinc-flow-aggregator` (new, C#)
 
 C# matches the existing worker stack, AOT posture, and "golden track"
 memory. Targets .NET 10 AOT, same toolchain as the worker.
@@ -502,31 +502,31 @@ memory. Targets .NET 10 AOT, same toolchain as the worker.
   ArgoCD Application status for the Flow CRD) or returning
   `{enabled: false}` when no gitops reconciler is configured.
 
-**Image:** `ghcr.io/caravanscale/caravan-flow-aggregator:VERSION`.
+**Image:** `ghcr.io/zincscale/zinc-flow-aggregator:VERSION`.
 Runs as a `Deployment` with 1-2 replicas behind a `Service` + Ingress.
 
 **Scale:** the aggregator is stateless except for the pod-health
 cache. Any replica can serve any request.
 
 **RBAC needed:**
-- `get, list, watch, update, patch` on `flows.caravanflow.io`
-- `get, list, watch` on `flowclusters.caravanflow.io`
+- `get, list, watch, update, patch` on `flows.zincflow.io`
+- `get, list, watch` on `flowclusters.zincflow.io`
 - `get, list, watch` on `pods` (in the target namespace)
 - `get, list, watch` on `events` (for the events panel)
 - No write on k8s primitives — the operator owns those.
 
-### Worker (existing `caravan-flow`, needs a headless mode)
+### Worker (existing `zinc-flow`, needs a headless mode)
 
 **Additions:**
 - `--mode=standalone|headless` flag (default `standalone` to preserve
-  current behavior). Env var equivalent: `CARAVAN_MODE`.
+  current behavior). Env var equivalent: `ZINC_MODE`.
 - In headless mode:
   - UI is not served. The `wwwroot` MapStaticAssets block is skipped.
   - `VersionControlProvider` is force-disabled.
   - `/api/flow/save` returns `405 Method Not Allowed` (writes go via
     the aggregator → operator → ConfigMap → pod restart).
   - Config is loaded from a mounted ConfigMap path
-    (`/etc/caravan-flow/config.yaml`) instead of the working-dir
+    (`/etc/zinc-flow/config.yaml`) instead of the working-dir
     default. Set via `--config` flag.
   - Workers watch the ConfigMap mount for changes (k8s updates the
     file on ConfigMap update) and hot-reload if the new shape is
@@ -538,7 +538,7 @@ cache. Any replica can serve any request.
     the operator-populated pod list (optional — aggregator can do this
     too).
 - Primary-node awareness: a worker reads an env var
-  `CARAVAN_PRIMARY_NODE=true|false` injected by the operator, and
+  `ZINC_PRIMARY_NODE=true|false` injected by the operator, and
   processors marked `primaryOnly: true` only register on primary pods.
 
 **Removals in headless mode:**
@@ -554,7 +554,7 @@ cache. Any replica can serve any request.
   reconcile resets them if they drift from spec.
 - Provenance, metrics, stats, validation.
 
-### UI (existing `caravan-flow-ui-web`)
+### UI (existing `zinc-flow-ui-web`)
 
 **No conditional deployment-mode logic.** The UI reads:
 - `GET /api/identity` on boot to learn `role` and display "standalone"
@@ -647,21 +647,21 @@ NiFi calls these "Primary Node" processors.
 - One pod holds the lease at any time; acquires on startup if vacant,
   renews every 10s, expires after 30s.
 - Operator labels the lease-holding pod with
-  `caravanflow.io/primary-node: "true"` and sets the env var
-  `CARAVAN_PRIMARY_NODE=true` on that pod via a mutating webhook on
+  `zincflow.io/primary-node: "true"` and sets the env var
+  `ZINC_PRIMARY_NODE=true` on that pod via a mutating webhook on
   pod creation — or, simpler, the operator re-creates the pod with
   the env var when primacy changes. **Simpler is: env var is always
   `true` on pod index 0, `false` elsewhere, and StatefulSet-like
   ordinal stability gives us quasi-election.** Reviewing trade-off
   in "Open questions".
 - On pod failure, lease expires → operator promotes another pod →
-  that pod's `CARAVAN_PRIMARY_NODE` env var is updated → pod
+  that pod's `ZINC_PRIMARY_NODE` env var is updated → pod
   restarts cleanly → primary-only processors start running on the
   new primary.
 
 ### Worker behavior
 
-- At startup, the worker reads `CARAVAN_PRIMARY_NODE`. For each
+- At startup, the worker reads `ZINC_PRIMARY_NODE`. For each
   processor marked `primaryOnly: true` in the flow, it only
   instantiates the processor if primary. Non-primary pods skip those
   processors entirely (including sources — non-primary pods don't
@@ -719,7 +719,7 @@ their native ack/commit semantics — out of scope here.
 
 Cluster-scoped (for webhooks + leader election):
 ```yaml
-- apiGroups: ["caravanflow.io"]
+- apiGroups: ["zincflow.io"]
   resources: ["flows", "flowclusters", "flows/status", "flowclusters/status"]
   verbs: ["get", "list", "watch", "update", "patch"]
 
@@ -748,7 +748,7 @@ Cluster-scoped (for webhooks + leader election):
 
 Namespaced:
 ```yaml
-- apiGroups: ["caravanflow.io"]
+- apiGroups: ["zincflow.io"]
   resources: ["flows", "flowclusters"]
   verbs: ["get", "list", "watch", "patch"]   # patch for spec edits
 
@@ -768,7 +768,7 @@ Workers don't talk to k8s. Empty SA.
 ### Helm chart layout
 
 ```
-charts/caravan-flow/
+charts/zinc-flow/
 ├── Chart.yaml
 ├── values.yaml              # default values: image tags, replicas, RBAC on/off
 ├── crds/
@@ -785,7 +785,7 @@ charts/caravan-flow/
     └── _helpers.tpl
 ```
 
-`helm install caravan-flow caravan-flow/caravan-flow` installs the
+`helm install zinc-flow zinc-flow/zinc-flow` installs the
 operator + CRDs + aggregator in one shot. Users then apply their own
 `Flow` and `FlowCluster` resources.
 
@@ -796,11 +796,11 @@ per-namespace examples. Lets GitOps users consume without Helm.
 
 ### Image registry
 
-All images published to `ghcr.io/caravanscale/`:
-- `caravan-flow-csharp:TAG` (existing, worker)
-- `caravan-flow-java:TAG` (existing, worker)
-- `caravan-flow-aggregator:TAG` (new)
-- `caravan-flow-operator:TAG` (new)
+All images published to `ghcr.io/zincscale/`:
+- `zinc-flow-csharp:TAG` (existing, worker)
+- `zinc-flow-java:TAG` (existing, worker)
+- `zinc-flow-aggregator:TAG` (new)
+- `zinc-flow-operator:TAG` (new)
 
 Tags: `vX.Y.Z` for releases, `main` for latest commit.
 
@@ -823,14 +823,14 @@ independently of the fleet work.
 
 1. Deploy aggregator in the same network as workers.
 2. Configure aggregator with a peer list (`AGGREGATOR_PEERS=http://w1:9091,http://w2:9091`).
-3. Switch workers to headless mode (`CARAVAN_MODE=headless`,
-   `CARAVAN_CONFIG=/etc/caravan-flow/config.yaml`).
+3. Switch workers to headless mode (`ZINC_MODE=headless`,
+   `ZINC_CONFIG=/etc/zinc-flow/config.yaml`).
 4. Point UI users at the aggregator URL instead of any worker URL.
 5. Aggregator holds the canonical `config.yaml` (+ optional git integration).
 
 ### From classic to k8s fleet
 
-1. Install operator via Helm: `helm install caravan-flow ...`.
+1. Install operator via Helm: `helm install zinc-flow ...`.
 2. Apply `FlowCluster` + `Flow` CRDs matching the existing topology.
    Operator reconciles → Deployment + ConfigMap.
 3. Cutover: point UI at the aggregator Service / Ingress; tear down
@@ -839,7 +839,7 @@ independently of the fleet work.
 ### From standalone straight to k8s fleet (most common)
 
 Skip classic. Generate a `Flow` CRD from the existing `config.yaml`
-(tool: `caravan-flow migrate-to-crd config.yaml > flow.yaml`). Apply.
+(tool: `zinc-flow migrate-to-crd config.yaml > flow.yaml`). Apply.
 
 ---
 
@@ -911,11 +911,11 @@ Ships immediately, no new deployment shape.
 
 Worker gains `--mode=headless`; shippable before the aggregator.
 
-- [ ] `--mode=standalone|headless` flag + `CARAVAN_MODE` env var.
+- [ ] `--mode=standalone|headless` flag + `ZINC_MODE` env var.
 - [ ] In headless: skip wwwroot, disable VersionControlProvider,
       reject `/api/flow/save` with 405.
 - [ ] `--config` flag for explicit config path (defaults to
-      `./config.yaml` standalone, `/etc/caravan-flow/config.yaml`
+      `./config.yaml` standalone, `/etc/zinc-flow/config.yaml`
       headless).
 - [ ] ConfigMap-style file watcher: reload on file change
       (k8s-compatible — ConfigMap updates replace the file atomically
@@ -927,7 +927,7 @@ Worker gains `--mode=headless`; shippable before the aggregator.
 
 First aggregator binary. Enables multi-worker classic deployments.
 
-- [ ] New project: `caravan-flow-aggregator-csharp/`.
+- [ ] New project: `zinc-flow-aggregator-csharp/`.
 - [ ] Serves the React UI bundle (reuse build output from ui-web).
 - [ ] Implements read endpoints: `/api/flow` (reads canonical file),
       `/api/processor-stats` (fan-out + sum), `/api/provenance/*`
@@ -945,7 +945,7 @@ First aggregator binary. Enables multi-worker classic deployments.
 No aggregator integration yet — this phase is purely getting the
 CRDs reconciling against real pods.
 
-- [ ] New repo or dir: `caravan-flow-operator/`. Scaffolded with
+- [ ] New repo or dir: `zinc-flow-operator/`. Scaffolded with
       kubebuilder.
 - [ ] `Flow` CRD types + generated code.
 - [ ] `FlowCluster` CRD types + generated code.
@@ -973,7 +973,7 @@ Aggregator learns to read from k8s.
 ### Phase F — Primary-node handling
 
 - [ ] Operator manages Lease per Flow.
-- [ ] Operator injects `CARAVAN_PRIMARY_NODE` env var on the primary
+- [ ] Operator injects `ZINC_PRIMARY_NODE` env var on the primary
       pod.
 - [ ] Worker respects `primaryOnly: true` during processor
       instantiation.
@@ -1004,9 +1004,9 @@ Aggregator learns to read from k8s.
 
 ### Phase I — Packaging + docs
 
-- [ ] Helm chart in `charts/caravan-flow/`.
+- [ ] Helm chart in `charts/zinc-flow/`.
 - [ ] Kustomize bases in `deploy/kustomize/`.
-- [ ] `caravan-flow migrate-to-crd` CLI subcommand.
+- [ ] `zinc-flow migrate-to-crd` CLI subcommand.
 - [ ] Getting-started guide for each of the three modes.
 - [ ] Operator runbook (common failure modes + recovery).
 
@@ -1060,7 +1060,7 @@ Aggregator learns to read from k8s.
    agreement? **Proposed: defer to Phase 3.** Out of scope for this
    design.
 
-8. **Schema evolution.** When we bump `caravanflow.io/v1` → `v1beta2`,
+8. **Schema evolution.** When we bump `zincflow.io/v1` → `v1beta2`,
    how do we migrate existing Flow resources? **Proposed: k8s-native
    conversion webhooks, stored version = latest.** Standard k8s
    practice.

@@ -1,7 +1,7 @@
 // GetFile — directory-watching source. Ingests new files via fsnotify
 // events, moves processed files to a `.processed/` subdir.
 //
-// Mirrors caravan-flow-csharp's GetFile (Sources.cs:GetFile, ~150 LOC
+// Mirrors zinc-flow-csharp's GetFile (Sources.cs:GetFile, ~150 LOC
 // hand-rolled). Backed by github.com/fsnotify/fsnotify — the canonical
 // Go cross-platform file-watch library.
 //

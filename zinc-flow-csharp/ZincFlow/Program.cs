@@ -1,0 +1,612 @@
+using System.Diagnostics;
+using System.Runtime;
+using System.Text;
+using ZincFlow.Core;
+using ZincFlow.Fabric;
+using ZincFlow.StdLib;
+
+// --- Mode selection ---
+var mode = args.Length > 0 ? args[0] : "serve";
+
+if (mode == "--bench" || mode == "bench")
+{
+    RunBenchmarks();
+    return;
+}
+
+if (mode == "validate" || mode == "--validate")
+{
+    Environment.Exit(RunValidate(args.Length > 1 ? args[1] : null));
+    return;
+}
+
+if (mode == "--help" || mode == "-h" || mode == "help")
+{
+    Console.WriteLine("zinc-flow — data flow engine");
+    Console.WriteLine();
+    Console.WriteLine("Usage:");
+    Console.WriteLine("  zinc-flow                  Start the server using ./config.yaml (default)");
+    Console.WriteLine("  zinc-flow --mode=standalone Serve API + UI (default)");
+    Console.WriteLine("  zinc-flow --mode=headless  Serve API only; do not mount the UI (k8s worker pod)");
+    Console.WriteLine("  zinc-flow validate [path]  Check a config without starting; exit 0 on success, 1 on errors");
+    Console.WriteLine("  zinc-flow bench            Run pipeline throughput benchmarks");
+    Console.WriteLine("  zinc-flow help             Show this message");
+    return;
+}
+
+// --mode=standalone | --mode=headless  (default: standalone)
+//
+// In k8s worker pods the UI is served by a separate controller — the
+// worker runs headless (API only). Matches the k8s operator + multi-worker
+// design doc. $ZINCFLOW_MODE is honored as a fallback for operators
+// that prefer env vars over CLI flags.
+string uiMode = Environment.GetEnvironmentVariable("ZINCFLOW_MODE") ?? "standalone";
+foreach (var arg in args)
+{
+    if (arg.StartsWith("--mode="))
+        uiMode = arg.Substring("--mode=".Length);
+    else if (arg == "--headless")
+        uiMode = "headless";
+}
+if (uiMode != "standalone" && uiMode != "headless")
+{
+    Console.Error.WriteLine($"invalid --mode '{uiMode}'; expected 'standalone' or 'headless'");
+    Environment.Exit(2);
+    return;
+}
+bool headless = uiMode == "headless";
+
+// --- Production server mode ---
+Console.WriteLine("zinc-flow-csharp starting");
+
+// Load config.yaml
+var configPath = Path.Combine(Directory.GetCurrentDirectory(), "config.yaml");
+if (!File.Exists(configPath))
+    configPath = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "config.yaml");
+
+// Load config with optional overlays: base ← config.local.yaml ← secrets.yaml.
+// Overlay paths resolve from $ZINCFLOW_CONFIG_LOCAL / $ZINCFLOW_SECRETS_PATH
+// env vars first, then sibling-file defaults next to the base config. Missing
+// files are not errors — the layer contributes an empty map. The resolved
+// snapshot is kept around so `GET /api/overlays` can surface layer provenance.
+Overlay.Resolved? resolvedOverlay = null;
+Dictionary<string, object?> config;
+if (File.Exists(configPath))
+{
+    resolvedOverlay = Overlay.Load(configPath);
+    config = resolvedOverlay.Effective;
+    Console.WriteLine($"Config loaded from {configPath}");
+    foreach (var layer in resolvedOverlay.Layers)
+    {
+        if (layer.Role == "base") continue; // already reported above
+        if (layer.Present)
+            Console.WriteLine($"  overlay [{layer.Role}] {layer.Path} ({layer.Content.Count} top-level keys)");
+    }
+}
+else
+{
+    config = new();
+    Console.WriteLine("No config.yaml found, using defaults");
+}
+
+// Create providers
+var contentDir = GetConfigString(config, "content.dir", "/tmp/zinc-flow-csharp/content");
+// Not ParseInt's empty-is-default path — the fallback "256" comes from
+// GetConfigString, so the string is always present here. Bad input
+// must throw rather than silently use the compiled-in default.
+ContentHelpers.ClaimThreshold = ConfigHelpers.ParseIntRaw(
+    GetConfigString(config, "content.offloadThresholdKb", "256"),
+    "content.offloadThresholdKb") * 1024;
+var store = new FileContentStore(contentDir);
+var cleanup = new ContentStoreCleanup(store, contentDir);
+ContentStoreCleanup.Instance = cleanup;
+var contentProvider = new ContentProvider("content", store);
+contentProvider.Enable();
+
+var configProvider = new ConfigProvider(config);
+configProvider.Enable();
+
+var loggingProvider = new LoggingProvider();
+// ZINCFLOW_LOG_FORMAT env takes precedence over the YAML key so k8s
+// operators can switch to structured logs without touching config.yaml.
+var logFormat = Environment.GetEnvironmentVariable("ZINCFLOW_LOG_FORMAT")
+    ?? GetConfigString(config, "logging.format", "text");
+loggingProvider.JsonOutput = logFormat == "json";
+loggingProvider.Enable();
+
+var provenanceProvider = new ProvenanceProvider();
+provenanceProvider.Enable();
+
+// Build global context
+var globalCtx = new ProcessorContext();
+globalCtx.AddProvider(contentProvider);
+globalCtx.AddProvider(configProvider);
+globalCtx.AddProvider(loggingProvider);
+globalCtx.AddProvider(provenanceProvider);
+
+// Embedded schema registry — always wired (airgapped, no remote backend).
+// Pre-loads from the optional `schemas:` section in config, then exposes REST
+// endpoints under /api/schema-registry/* on the management port and supports
+// auto-capture from incoming OCF files via ConvertOCFToRecord's
+// autoRegisterSubject config.
+var embeddedRegistry = new ZincFlow.StdLib.EmbeddedSchemaRegistry();
+var schemaConfigDir = File.Exists(configPath) ? Path.GetDirectoryName(Path.GetFullPath(configPath)) : null;
+var schemasSection = ZincFlow.Fabric.Fabric.AsStringDict(config.GetValueOrDefault("schemas"));
+var preloaded = embeddedRegistry.LoadFromConfig(schemasSection, schemaConfigDir);
+var srProvider = new SchemaRegistryProvider(embeddedRegistry);
+srProvider.Enable();
+globalCtx.AddProvider(srProvider);
+Console.WriteLine($"[schema-registry] embedded ({preloaded} subjects preloaded)");
+if (!string.IsNullOrEmpty(GetConfigString(config, "schema_registry.url", "")))
+    Console.Error.WriteLine("[schema-registry] WARNING: schema_registry.url is set but ignored — this build only supports the embedded backend");
+
+// Optional VC provider — shells out to git for config-commit + push.
+// Defaults to the parent directory of the base config file as the repo
+// when `vc.repo` isn't specified; that matches the common "config
+// lives in a git repo" layout and avoids needing explicit paths.
+if (GetConfigString(config, "vc.enabled", "false") == "true")
+{
+    var vcRepo = GetConfigString(config, "vc.repo",
+        File.Exists(configPath) ? Path.GetDirectoryName(Path.GetFullPath(configPath)) ?? "." : ".");
+    var vcGit = GetConfigString(config, "vc.git", "git");
+    var vcRemote = GetConfigString(config, "vc.remote", "origin");
+    var vcBranch = GetConfigString(config, "vc.branch", "main");
+    var vcProvider = new VersionControlProvider(vcRepo, vcGit, vcRemote, vcBranch);
+    vcProvider.Enable();
+    globalCtx.AddProvider(vcProvider);
+    Console.WriteLine($"[vc] enabled repo={vcRepo} remote={vcRemote} branch={vcBranch}");
+}
+
+// Create registry
+var reg = new Registry();
+BuiltinProcessors.RegisterAll(reg);
+Console.WriteLine($"Registry loaded: {reg.List().Count} processor types");
+
+// Validate config before loading
+var validationErrors = ConfigValidator.Validate(config, reg);
+if (validationErrors.Count > 0)
+{
+    Console.Error.WriteLine("Config validation errors:");
+    foreach (var err in validationErrors)
+        Console.Error.WriteLine(err);
+    Console.Error.WriteLine("Continuing with valid processors...");
+}
+
+// Create fabric and load flow
+var fab = new ZincFlow.Fabric.Fabric(reg, globalCtx);
+fab.LoadFlow(config);
+fab.StartAsync();
+fab.Status();
+
+// Create output directory
+Directory.CreateDirectory("/tmp/zinc-flow-csharp/output");
+
+// Config-driven sources — generic `sources:` shape:
+//   sources:
+//     <name>:
+//       type: GetFile|GenerateFlowFile|...
+//       config: { key: value, ... }
+// Each named entry becomes an IConnectorSource via the registry.
+// Multiple instances per type are allowed (e.g. two GetFile pollers
+// on different dirs). A factory returning null signals "not
+// configured" and is skipped without error.
+//
+// HTTP ingest is handled on the management port (POST /) below, not
+// as a source.
+var sourceRegistry = new SourceRegistry();
+BuiltinSources.RegisterAll(sourceRegistry);
+
+var sourcesSection = ZincFlow.Fabric.Fabric.AsStringDict(config.GetValueOrDefault("sources"));
+if (sourcesSection is not null)
+{
+    foreach (var (sourceName, sourceSpecObj) in sourcesSection)
+    {
+        var spec = ZincFlow.Fabric.Fabric.AsStringDict(sourceSpecObj);
+        if (spec is null)
+        {
+            Console.Error.WriteLine($"source '{sourceName}': expected map, got {sourceSpecObj?.GetType().Name}");
+            continue;
+        }
+        var typeName = ZincFlow.Fabric.Fabric.GetStr(spec, "type");
+        if (string.IsNullOrEmpty(typeName))
+        {
+            Console.Error.WriteLine($"source '{sourceName}': missing 'type' key");
+            continue;
+        }
+        if (!sourceRegistry.Has(typeName))
+        {
+            Console.Error.WriteLine($"source '{sourceName}': unknown type '{typeName}'");
+            continue;
+        }
+
+        var cfgMap = ZincFlow.Fabric.Fabric.AsStringDict(spec.GetValueOrDefault("config"));
+        var cfgFlat = new Dictionary<string, string>();
+        if (cfgMap is not null)
+        {
+            foreach (var (k, v) in cfgMap)
+                cfgFlat[k] = v?.ToString() ?? "";
+        }
+
+        var source = sourceRegistry.Create(typeName, sourceName, cfgFlat, store);
+        if (source is not null)
+        {
+            fab.AddSource(source, cfgFlat);
+            if (ZincFlow.Fabric.Fabric.AsStringDict(spec.GetValueOrDefault("connections")) is { } connDict)
+            {
+                foreach (var (rel, targetsObj) in connDict)
+                {
+                    if (targetsObj is IEnumerable<object?> list)
+                    {
+                        foreach (var t in list)
+                        {
+                            var tname = t?.ToString();
+                            if (!string.IsNullOrEmpty(tname))
+                                fab.AddSourceConnection(sourceName, rel, tname);
+                        }
+                    }
+                }
+            }
+            Console.WriteLine($"source {sourceName} ({typeName}) registered");
+        }
+        else
+        {
+            Console.WriteLine($"source {sourceName} ({typeName}) disabled by factory — skipping");
+        }
+    }
+}
+
+// Build ASP.NET Minimal API app.
+// ContentRoot + WebRoot are pinned to the directory that holds
+// wwwroot/ so UseStaticFiles picks up the Vite-built React bundle no
+// matter where the operator runs the binary from.
+string? manifestRoot = null;
+foreach (var candidate in new[]
+{
+    AppContext.BaseDirectory,
+    Path.Combine(AppContext.BaseDirectory, "..", "ZincFlow"),
+    Path.Combine(Directory.GetCurrentDirectory(), "ZincFlow"),
+    Directory.GetCurrentDirectory(),
+})
+{
+    if (File.Exists(Path.Combine(candidate, "wwwroot", "index.html")))
+    {
+        manifestRoot = Path.GetFullPath(candidate);
+        break;
+    }
+}
+
+var builder = WebApplication.CreateBuilder(new WebApplicationOptions
+{
+    Args = args,
+    ContentRootPath = manifestRoot ?? Directory.GetCurrentDirectory(),
+    WebRootPath = manifestRoot is not null ? Path.Combine(manifestRoot, "wwwroot") : null,
+});
+builder.Logging.ClearProviders();
+builder.Logging.AddConsole();
+if (manifestRoot is not null) Console.WriteLine($"[ui] ContentRoot pinned to {manifestRoot}");
+
+// Use source-generated ZincJsonContext for AOT-safe JSON (no reflection fallback).
+builder.Services.ConfigureHttpJsonOptions(options =>
+{
+    options.SerializerOptions.TypeInfoResolverChain.Insert(0, ZincFlow.Core.ZincJsonContext.Default);
+});
+
+// Permissive CORS — the React UI runs on its own Vite dev-server
+// port during development, and AllowAnyOrigin lets the bundle call
+// the management API from that separate origin. Production deployments
+// can narrow this down when the UI ships co-located with the worker.
+builder.Services.AddCors(cors =>
+{
+    cors.AddDefaultPolicy(p => p.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod());
+});
+
+var port = GetConfigString(config, "server.port", "9091");
+builder.WebHost.UseUrls($"http://0.0.0.0:{port}");
+
+var app = builder.Build();
+app.UseCors();
+
+// Bearer-token auth on /api/* when ZINCFLOW_AUTH_TOKEN is set.
+// Off by default so standalone edge mode stays frictionless; k8s
+// deployments set the env and the sidecar / operator injects tokens.
+// /health, /readyz, /metrics stay open so k8s probes and Prometheus
+// scraping don't need credentials. UI assets (/, /assets/*) also open.
+var authToken = Environment.GetEnvironmentVariable("ZINCFLOW_AUTH_TOKEN");
+if (!string.IsNullOrEmpty(authToken))
+{
+    Console.WriteLine("[auth] bearer-token auth enabled on /api/*");
+    var expected = "Bearer " + authToken;
+    app.Use(async (ctx, next) =>
+    {
+        var path = ctx.Request.Path.Value ?? "";
+        if (path.StartsWith("/api/"))
+        {
+            if (!ctx.Request.Headers.TryGetValue("Authorization", out var h)
+                || h.ToString() != expected)
+            {
+                ctx.Response.StatusCode = 401;
+                await ctx.Response.WriteAsync("{\"error\":\"unauthorized\"}");
+                return;
+            }
+        }
+        await next();
+    });
+}
+
+// Vite-built React bundle (zinc-flow-ui-web) drops into wwwroot/
+// via its vite.config.ts outDir. Plain UseStaticFiles is all we need
+// — Vite emits hashed asset filenames, so cache headers can be
+// far-future on /assets/* and no-cache on index.html.
+bool uiHosted = !headless && manifestRoot is not null && Directory.Exists(Path.Combine(manifestRoot, "wwwroot"));
+if (headless)
+{
+    Console.WriteLine("[ui] headless mode — UI assets not mounted (only API endpoints are served)");
+}
+if (uiHosted)
+{
+    app.UseStaticFiles(new Microsoft.AspNetCore.Builder.StaticFileOptions
+    {
+        OnPrepareResponse = ctx =>
+        {
+            var p = ctx.File.PhysicalPath ?? "";
+            if (p.Contains("/assets/") || p.Contains("\\assets\\"))
+                ctx.Context.Response.Headers["Cache-Control"] = "public, max-age=31536000, immutable";
+            else
+                ctx.Context.Response.Headers["Cache-Control"] = "no-cache";
+        }
+    });
+    Console.WriteLine($"[ui] hosting wwwroot/ from {Path.Combine(manifestRoot!, "wwwroot")}");
+}
+
+// Dashboard — kept on /legacy for one release as an escape hatch.
+// New UI lives at / via MapStaticAssets above.
+string? dashboardPath = null;
+foreach (var candidate in new[]
+{
+    Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "dashboard.html"),      // JIT: bin/Debug/net10.0/../../..
+    Path.Combine(AppContext.BaseDirectory, "..", "ZincFlow", "dashboard.html"),      // AOT: build/../ZincFlow/
+    Path.Combine(Directory.GetCurrentDirectory(), "ZincFlow", "dashboard.html"),     // CWD/ZincFlow/
+    Path.Combine(Directory.GetCurrentDirectory(), "dashboard.html"),                 // CWD/
+})
+{
+    if (File.Exists(candidate)) { dashboardPath = candidate; break; }
+}
+if (dashboardPath is not null)
+{
+    var dashHtml = File.ReadAllText(dashboardPath);
+    app.MapGet("/legacy", () => Results.Content(dashHtml, "text/html"));
+}
+
+// Root POST ingest removed. Drop a ListenHTTP source on the graph if
+// you want external HTTP ingress — everything must be visible on the
+// canvas. No magic fan-out entry.
+
+// Management API — admin surface for processors/sources/providers
+var api = new ApiHandler(fab);
+api.SetConfigPath(configPath);
+api.SetResolvedOverlay(resolvedOverlay);
+api.SetSourceRegistry(sourceRegistry, store);
+api.MapRoutes(app);
+
+// Schema registry REST endpoints (Confluent path shapes under /api/schema-registry)
+new SchemaRegistryHandler(embeddedRegistry).MapRoutes(app);
+
+// Prometheus metrics
+var metrics = new MetricsHandler(fab);
+app.Map("/metrics", (RequestDelegate)metrics.HandleMetrics);
+
+// Periodic stats
+_ = Task.Run(async () =>
+{
+    while (true)
+    {
+        await Task.Delay(30_000);
+        fab.Status();
+    }
+});
+
+// Content store cleanup
+var sweepMs = ConfigHelpers.ParseIntRaw(
+    GetConfigString(config, "content.sweepIntervalMs", "300000"),
+    "content.sweepIntervalMs");
+var appCts = new CancellationTokenSource();
+cleanup.StartPeriodicSweep(sweepMs, appCts.Token);
+
+// File-system-watch auto-reload has been removed — the UI / operator
+// triggers reload explicitly via POST /api/reload on both tracks, so
+// a background watcher is redundant. The reload endpoint in ApiHandler
+// reads config.yaml on demand; the schema-registry re-apply happens
+// there as well.
+
+Console.WriteLine($"Listening on port {port}");
+
+// Graceful shutdown
+var lifetime = app.Lifetime;
+lifetime.ApplicationStopping.Register(() =>
+{
+    Console.WriteLine("Shutdown signal received — graceful drain");
+    // Phase 1: stop all sources so no new FlowFiles enter the pipeline.
+    fab.StopSources();
+    Console.WriteLine("[shutdown] sources stopped");
+
+    // Phase 2: wait for in-flight executions to finish. Operators can tune
+    // the timeout via ZINCFLOW_DRAIN_TIMEOUT_MS (default 30 s); k8s
+    // terminationGracePeriodSeconds should be set above this value.
+    var drainTimeoutMs = int.TryParse(
+        Environment.GetEnvironmentVariable("ZINCFLOW_DRAIN_TIMEOUT_MS"),
+        out var t) && t > 0 ? t : 30_000;
+    var deadline = Environment.TickCount64 + drainTimeoutMs;
+    while (fab.GetActiveExecutions() > 0 && Environment.TickCount64 < deadline)
+        Thread.Sleep(50);
+    var remaining = fab.GetActiveExecutions();
+    if (remaining > 0)
+        Console.WriteLine($"[shutdown] drain timeout — {remaining} executions still in flight");
+    else
+        Console.WriteLine("[shutdown] drain complete");
+
+    // Phase 3: cancel everything else and tear down providers.
+    fab.StopAsync();
+    globalCtx.ShutdownAll();
+    Console.WriteLine("Shutdown complete");
+});
+
+// SPA fallback — any GET that wasn't matched above goes to index.html
+// so the React client-side router handles /settings, /lineage, etc.
+// POST / (HTTP ingest) is unaffected because fallback only applies to
+// GET. Registered last so it doesn't shadow /api/* handlers.
+if (uiHosted)
+{
+    app.MapFallbackToFile("index.html");
+}
+
+app.Run();
+
+// --- Helpers ---
+
+static int RunValidate(string? pathArg)
+{
+    var path = pathArg ?? Path.Combine(Directory.GetCurrentDirectory(), "config.yaml");
+    if (!File.Exists(path))
+    {
+        Console.Error.WriteLine($"validate: config file not found: {path}");
+        return 2;
+    }
+
+    Dictionary<string, object?> config;
+    try
+    {
+        config = YamlParser.Parse(File.ReadAllText(path));
+    }
+    catch (Exception ex)
+    {
+        Console.Error.WriteLine($"validate: YAML parse failed: {ex.Message}");
+        return 1;
+    }
+
+    var reg = new Registry();
+    BuiltinProcessors.RegisterAll(reg);
+    var result = FlowValidator.Validate(config, reg);
+
+    Console.WriteLine($"validate: {path}");
+    if (result.Issues.Count == 0)
+    {
+        Console.WriteLine("  no issues — config is valid");
+        return 0;
+    }
+    foreach (var issue in result.Issues)
+        Console.WriteLine($"  {issue}");
+    Console.WriteLine();
+    Console.WriteLine($"summary: {result.ErrorCount} error(s), {result.WarningCount} warning(s)");
+    return result.HasErrors ? 1 : 0;
+}
+
+static string GetConfigString(Dictionary<string, object?> config, string dotPath, string defaultVal)
+{
+    var parts = dotPath.Split('.');
+    object? current = config;
+    foreach (var part in parts)
+    {
+        if (ZincFlow.Fabric.Fabric.TryGetDictValue(current, part, out current))
+            continue;
+        return defaultVal;
+    }
+    return current?.ToString() ?? defaultVal;
+}
+
+// --- Benchmarks (activated with --bench) ---
+
+static void RunBenchmarks()
+{
+    Console.WriteLine("=== zinc-flow-csharp (.NET 10) benchmark ===");
+    Console.WriteLine($"Runtime: {System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription}");
+    Console.WriteLine($"GC: Server={GCSettings.IsServerGC}, LatencyMode={GCSettings.LatencyMode}");
+    Console.WriteLine();
+
+    Console.WriteLine("Warmup (pools + JIT)...");
+    BenchPipelineThroughput(10_000, quiet: true);
+
+    GC.Collect(2, GCCollectionMode.Aggressive, true, true);
+    GC.WaitForPendingFinalizers();
+    GC.Collect(2, GCCollectionMode.Aggressive, true, true);
+
+    int g0Base = GC.CollectionCount(0), g1Base = GC.CollectionCount(1), g2Base = GC.CollectionCount(2);
+    long allocBase = GC.GetTotalAllocatedBytes(true);
+    Console.WriteLine();
+
+    Console.WriteLine("Pipeline throughput (2-hop direct execution):");
+    BenchPipelineThroughput(10_000);
+    BenchPipelineThroughput(50_000);
+    BenchPipelineThroughput(100_000);
+    BenchPipelineThroughput(500_000);
+    Console.WriteLine();
+
+    long allocTotal = GC.GetTotalAllocatedBytes(true) - allocBase;
+    int g0 = GC.CollectionCount(0) - g0Base, g1 = GC.CollectionCount(1) - g1Base, g2 = GC.CollectionCount(2) - g2Base;
+    Console.WriteLine("GC during benchmarks (post-warmup):");
+    Console.WriteLine($"  Gen0: {g0}, Gen1: {g1}, Gen2: {g2}");
+    Console.WriteLine($"  Allocated: {allocTotal / 1024.0 / 1024.0:F2} MB");
+    Console.WriteLine($"  Heap now:  {GC.GetTotalMemory(false) / 1024.0 / 1024.0:F2} MB");
+}
+
+static void BenchPipelineThroughput(int n, bool quiet = false)
+{
+    // Build a 2-hop pipeline: tag → sink (direct execution, no queues)
+    var globalCtx = new ProcessorContext();
+    var reg = new Registry();
+    BuiltinProcessors.RegisterAll(reg);
+
+    var fab = new ZincFlow.Fabric.Fabric(reg, globalCtx);
+    var config = new Dictionary<string, object?>
+    {
+        ["flow"] = new Dictionary<string, object?>
+        {
+            ["processors"] = new Dictionary<string, object?>
+            {
+                ["tag"] = new Dictionary<string, object?>
+                {
+                    ["type"] = "UpdateAttribute",
+                    ["config"] = new Dictionary<string, object?> { ["env"] = "prod" },
+                    ["connections"] = new Dictionary<string, object?> { ["success"] = new List<object?> { "sink" } }
+                },
+                ["sink"] = new Dictionary<string, object?>
+                {
+                    ["type"] = "UpdateAttribute",
+                    ["config"] = new Dictionary<string, object?> { ["done"] = "true" }
+                }
+            }
+        }
+    };
+    fab.LoadFlow(config);
+
+    var payload = "bench payload data here"u8.ToArray();
+    int g0Before = GC.CollectionCount(0);
+
+    var sw = Stopwatch.StartNew();
+
+    for (int i = 0; i < n; i++)
+    {
+        var ff = FlowFile.Create(payload, new Dictionary<string, string>
+        {
+            ["type"] = "order",
+            ["id"] = i.ToString()
+        });
+        fab.Execute(ff, "tag");
+    }
+
+    sw.Stop();
+    long ms = sw.ElapsedMilliseconds;
+    int g0During = GC.CollectionCount(0) - g0Before;
+
+    if (!quiet)
+    {
+        if (ms > 0)
+        {
+            long rate = n * 1000L / ms;
+            Console.WriteLine($"  {n:N0} ff, 2 hops: {ms}ms ({rate:N0} ff/s) [gc0: {g0During}]");
+        }
+        else
+        {
+            Console.WriteLine($"  {n:N0} ff, 2 hops: <1ms [gc0: {g0During}]");
+        }
+    }
+}

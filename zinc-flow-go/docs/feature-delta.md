@@ -1,4 +1,4 @@
-# zinc-flow-go ↔ caravan-flow-csharp feature delta
+# zinc-flow-go ↔ zinc-flow-csharp feature delta
 
 Both repos are implementations of the same conceptual flow-processing
 engine (NiFi-like). Different languages, different maturity levels on
@@ -6,7 +6,7 @@ different subsystems. This doc is feature-oriented, not code-oriented.
 
 ## Subsystem coverage matrix
 
-| Subsystem | zinc-flow-go | caravan-flow-csharp | Notes |
+| Subsystem | zinc-flow-go | zinc-flow-csharp | Notes |
 |---|---|---|---|
 | **FlowFile model** | ✅ (core/flowfile, fabric/model/flowfile) | ✅ (Fabric/FlowFileV3.cs) | C# has v3 explicitly versioned |
 | **Content + ContentStore** | ✅ | ✅ | Parity |
@@ -41,7 +41,7 @@ Feature-level: what processor types and codecs each side ships.
 
 ### Processors
 
-| Processor | zinc-flow-go | caravan-flow-csharp |
+| Processor | zinc-flow-go | zinc-flow-csharp |
 |---|---|---|
 | PutStdout | ✅ | ✅ (in Processors.cs) |
 | PutFile | ✅ | ✅ (in Processors.cs) |
@@ -57,7 +57,7 @@ Feature-level: what processor types and codecs each side ships.
 
 ### Sources
 
-| Source | zinc-flow-go | caravan-flow-csharp |
+| Source | zinc-flow-go | zinc-flow-csharp |
 |---|---|---|
 | GenerateFlowFile (test) | ✅ | ❌ |
 | ListenHTTP | ✅ | ✅ |
@@ -65,7 +65,7 @@ Feature-level: what processor types and codecs each side ships.
 
 ### Schema / codec
 
-| Feature | zinc-flow-go | caravan-flow-csharp |
+| Feature | zinc-flow-go | zinc-flow-csharp |
 |---|---|---|
 | Avro binary encoding | ✅ (core/avro) | ✅ (StdLib/AvroBinary.cs) |
 | **Avro OCF (container files)** | ❌ | ✅ (StdLib/AvroOCF.cs) |
@@ -90,7 +90,7 @@ Runtime/topology primitives — the "inside" of the engine:
 - **HTTP outbound delivery** — sink that POSTs flowfiles
 - **Generate source** — synthetic flowfile generator for testing
 
-### What caravan-flow-csharp has that zinc-flow-go doesn't
+### What zinc-flow-csharp has that zinc-flow-go doesn't
 
 Data-plane depth — the "content" side:
 - **Full Avro stack** — OCF, full schema parser, logical types, schema registry (embedded + wire), resolver
@@ -113,14 +113,14 @@ record processors (extract/transform), text processors.
 
 1. **The two codebases aren't behind/ahead — they're differently deep.**
    zinc-flow-go is more thorough on runtime topology (queues, sessions,
-   DLQ, scoping); caravan-flow-csharp is more thorough on data-plane
+   DLQ, scoping); zinc-flow-csharp is more thorough on data-plane
    codecs (Avro stack, expression engine, compression).
 
 2. **Likely convergence path:** pick which side's features should be
    canonical, port the missing pieces across both. Natural split —
    runtime primitives (DLQ, session, queue, pipeline graph) come from
    zinc-flow-go; data-plane features (Avro, EL, CSV, compression,
-   schema) come from caravan-flow-csharp.
+   schema) come from zinc-flow-csharp.
 
 3. **Error/config models differ.** C# uses exceptions (`ConfigException`);
    zinc uses error values (`errors.ConfigError`). If these converge, the

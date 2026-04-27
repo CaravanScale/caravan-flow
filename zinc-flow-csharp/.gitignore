@@ -1,0 +1,23 @@
+build/
+bin/
+obj/
+*.dll
+*.pdb
+*.exe
+*.dbg
+
+# Generated from zinc.toml — do not edit
+ZincFlow/ZincFlow.csproj
+ZincFlow/ZincFlow.Tests.csproj
+
+ZincFlow/bin/
+ZincFlow/obj/
+
+# Built React bundle — produced by `vite build` in zinc-flow-ui-web
+# (outDir points here) and served by the worker as static assets.
+ZincFlow/wwwroot/
+
+# Test project generated files
+tests/Tests/ZincFlow.Tests.csproj
+tests/Tests/bin/
+tests/Tests/obj/

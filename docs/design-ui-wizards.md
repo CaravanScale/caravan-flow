@@ -7,7 +7,7 @@
 
 ## Context
 
-Caravan-flow's product pitch is visual functional programming for domain
+Zinc-flow's product pitch is visual functional programming for domain
 experts (see `memory/project_audience_domain_experts.md`,
 `memory/project_visual_functional_programming.md`). The graph canvas +
 palette already deliver that at the topology level: drag, drop, connect.

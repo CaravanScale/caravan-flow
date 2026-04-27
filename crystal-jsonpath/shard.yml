@@ -16,4 +16,4 @@ crystal: ">= 1.20.0"
 
 license: MIT
 
-repository: https://github.com/CaravanScale/crystal-jsonpath
+repository: https://github.com/ZincScale/crystal-jsonpath

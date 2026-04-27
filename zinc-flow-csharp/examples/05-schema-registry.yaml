@@ -1,0 +1,93 @@
+# 05 — Schema-registry-backed Avro pipeline (embedded registry, config-loaded)
+#
+# zinc-flow ships an in-process schema registry — no external service needed,
+# fits airgapped deployments. Schemas are loaded from the `schemas:` section
+# at startup; processors reference them by subject just like with a remote
+# registry. REST endpoints under /api/schema-registry/* are also live for
+# runtime registration / inspection (see example 06).
+#
+# Try it:
+#   ./build/ZincFlow validate examples/05-schema-registry.yaml
+#   cp examples/05-schema-registry.yaml config.yaml && ./build/ZincFlow
+#
+# Inspect the loaded schema:
+#   curl -s http://localhost:9091/api/schema-registry/subjects
+#   curl -s http://localhost:9091/api/schema-registry/subjects/orders/versions/latest
+
+server:
+  port: 9091
+
+content:
+  dir: /tmp/zinc-flow-csharp/content
+
+# Pre-load schemas into the embedded registry. Each subject is one of:
+#   inline: <Avro JSON schema as a string (multiline `|` works)>
+#   file:   <path to .avsc, relative to this config file>
+schemas:
+  orders:
+    file: schemas/orders.avsc
+
+sources:
+  fileIngest:
+    type: GetFile
+    config:
+      inputDir: /tmp/avro-in
+      pattern: "*.avro"
+
+flow:
+
+  processors:
+    parse:
+      type: ConvertOCFToRecord
+      requires: [content, schema_registry]
+      config:
+        readerSchemaSubject: orders
+        # Pin to a specific version for reproducibility, or use "latest"
+        # to always pick up the most-recently-registered version.
+        readerSchemaVersion: latest
+
+    filter:
+      type: QueryRecord
+      config:
+        # JsonPath filter — nested paths work: "$[?(@.user.country == 'US')]"
+        query: "$[?(@.amount > 100)]"
+
+    transform:
+      type: TransformRecord
+      config:
+        operations: >
+          compute:total:amount * qty;
+          compute:tax:total * if(region == "US", 0.07, 0.15);
+          compute:label:upper(region) + "-" + string(round(total + tax))
+
+    # Write back as zstd-compressed OCF. The output schema is whatever the
+    # records carry — same as the registry-fetched reader schema, plus any
+    # fields added by `compute:`.
+    encode:
+      type: ConvertRecordToOCF
+      config:
+        codec: zstandard
+
+    write:
+      type: PutFile
+      requires: [content]
+      config:
+        outputDir: /tmp/avro-out
+        namingAttribute: filename
+        suffix: .processed.avro
+
+    errors:
+      type: LogAttribute
+      config:
+        prefix: registry-error
+
+  connections:
+    parse:
+      success: [filter]
+      failure: [errors]
+    filter:
+      success: [transform]
+    transform:
+      success: [encode]
+    encode:
+      success: [write]

@@ -13,4 +13,4 @@ crystal: ">= 1.20.0"
 
 license: MIT
 
-repository: https://github.com/CaravanScale/crystal-avro
+repository: https://github.com/ZincScale/crystal-avro
