@@ -9,6 +9,7 @@ target/
 
 # zinc-java / sbt assembly artifacts
 zinc-out/
+caravan-out/  # legacy build dir from pre-rename — kept ignored
 
 # OS
 .DS_Store
