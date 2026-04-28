@@ -21,6 +21,7 @@
 //     Multiple(ffs) so each is fanned out independently downstream.
 //   • Invalid magic → Failure (preserved attrs for DLQ inspection).
 
+import stdlib/errors
 import core
 import fabric/registry
 import fabric/model

@@ -16,6 +16,7 @@
 // backed content resolves naturally. Resolve failures surface as
 // Failure(reason, ff).
 
+import stdlib/errors
 import core
 import fabric/registry
 import regexp
@@ -62,7 +63,7 @@ class ReplaceText : ProcessorFn {
     }
 }
 
-pub ProcessorFn ReplaceTextFactory(ScopedContext ctx, Map<String, String> config) {
+pub Result<ProcessorFn, BaseError> ReplaceTextFactory(ScopedContext ctx, Map<String, String> config) {
     var pattern = ""
     if (config.containsKey("pattern")) { pattern = config["pattern"] }
     var replacement = ""
@@ -139,7 +140,7 @@ class ExtractText : ProcessorFn {
     }
 }
 
-pub ProcessorFn ExtractTextFactory(ScopedContext ctx, Map<String, String> config) {
+pub Result<ProcessorFn, BaseError> ExtractTextFactory(ScopedContext ctx, Map<String, String> config) {
     var pattern = ""
     if (config.containsKey("pattern")) { pattern = config["pattern"] }
     var groupNames = ""
@@ -213,7 +214,7 @@ class SplitText : ProcessorFn {
     }
 }
 
-pub ProcessorFn SplitTextFactory(ScopedContext ctx, Map<String, String> config) {
+pub Result<ProcessorFn, BaseError> SplitTextFactory(ScopedContext ctx, Map<String, String> config) {
     var delimiter = "\n"
     if (config.containsKey("delimiter") && config["delimiter"] != "") {
         delimiter = config["delimiter"]

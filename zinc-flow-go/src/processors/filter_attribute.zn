@@ -10,6 +10,7 @@
 // as a boundary-sanitizer before a sink — e.g., strip provenance or
 // internal attrs before PutHTTP ships a FlowFile downstream.
 
+import stdlib/errors
 import core
 import fabric/registry
 
@@ -64,7 +65,7 @@ class FilterAttribute : ProcessorFn {
     }
 }
 
-pub ProcessorFn FilterAttributeFactory(ScopedContext ctx, Map<String, String> config) {
+pub Result<ProcessorFn, BaseError> FilterAttributeFactory(ScopedContext ctx, Map<String, String> config) {
     var mode = ""
     if (config.containsKey("mode")) { mode = config["mode"] }
     var attrs = ""

@@ -12,6 +12,7 @@
 // observable output a shared integration test can assert against.
 // Returns Single(ff) so a chained sink (e.g., PutFile) can run after.
 
+import stdlib/errors
 import core
 import fabric/registry
 import fabric/model
@@ -69,7 +70,7 @@ class PutStdout : ProcessorFn {
     }
 }
 
-pub ProcessorFn PutStdoutFactory(ScopedContext ctx, Map<String, String> config) {
+pub Result<ProcessorFn, BaseError> PutStdoutFactory(ScopedContext ctx, Map<String, String> config) {
     var format = "raw"
     if (config.containsKey("format") && config["format"] != "") {
         format = config["format"]

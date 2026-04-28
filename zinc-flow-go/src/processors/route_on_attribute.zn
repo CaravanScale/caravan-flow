@@ -16,6 +16,7 @@
 // decides what downstream processor(s) receive each route. A route
 // with no wired target terminates the FlowFile (Fabric drops it).
 
+import stdlib/errors
 import core
 import fabric/registry
 
@@ -72,7 +73,7 @@ class RouteOnAttribute : ProcessorFn {
     }
 }
 
-pub ProcessorFn RouteOnAttributeFactory(ScopedContext ctx, Map<String, String> config) {
+pub Result<ProcessorFn, BaseError> RouteOnAttributeFactory(ScopedContext ctx, Map<String, String> config) {
     var spec = ""
     if (config.containsKey("routes")) {
         spec = config["routes"]

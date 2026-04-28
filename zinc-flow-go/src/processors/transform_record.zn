@@ -24,6 +24,7 @@
 // Output: Single(flowfile_with_updated_RecordContent). Non-Record
 // content passes through Single unchanged (same as ExtractRecordField).
 
+import stdlib/errors
 import core
 import fabric/registry
 
@@ -200,7 +201,7 @@ class TransformRecord : ProcessorFn {
     }
 }
 
-pub ProcessorFn TransformRecordFactory(ScopedContext ctx, Map<String, String> config) {
+pub Result<ProcessorFn, BaseError> TransformRecordFactory(ScopedContext ctx, Map<String, String> config) {
     var spec = ""
     if (config.containsKey("operations")) {
         spec = config["operations"]

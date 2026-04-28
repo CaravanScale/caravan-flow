@@ -11,6 +11,7 @@
 // one for Zinc-native configs and tests; UpdateAttribute is the
 // csharp-interop name.
 
+import stdlib/errors
 import core
 import fabric/registry
 
@@ -29,6 +30,6 @@ class UpdateAttribute : ProcessorFn {
     }
 }
 
-pub ProcessorFn UpdateAttributeFactory(ScopedContext ctx, Map<String, String> config) {
+pub Result<ProcessorFn, BaseError> UpdateAttributeFactory(ScopedContext ctx, Map<String, String> config) {
     return UpdateAttribute(config["key"], config["value"])
 }

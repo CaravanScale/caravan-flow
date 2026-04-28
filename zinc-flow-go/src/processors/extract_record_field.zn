@@ -21,6 +21,7 @@
 // flattened field names only. Adding them is a follow-up once the
 // Record API grows GetByPath support.
 
+import stdlib/errors
 import core
 import fabric/registry
 
@@ -107,7 +108,7 @@ class ExtractRecordField : ProcessorFn {
     }
 }
 
-pub ProcessorFn ExtractRecordFieldFactory(ScopedContext ctx, Map<String, String> config) {
+pub Result<ProcessorFn, BaseError> ExtractRecordFieldFactory(ScopedContext ctx, Map<String, String> config) {
     var fieldsSpec = ""
     if (config.containsKey("fields")) {
         fieldsSpec = config["fields"]

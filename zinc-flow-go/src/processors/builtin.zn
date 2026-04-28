@@ -1,5 +1,6 @@
 // Built-in processors — standard processors shipped with zinc-flow.
 
+import stdlib/errors
 import core
 import fabric/registry
 import stdlib/logging
@@ -116,11 +117,11 @@ pub void registerBuiltins(Registry reg) {
     )
 }
 
-ProcessorFn AddAttributeFactory(ScopedContext ctx, Map<String, String> config) {
+Result<ProcessorFn, BaseError> AddAttributeFactory(ScopedContext ctx, Map<String, String> config) {
     return AddAttribute(config["key"], config["value"])
 }
 
-ProcessorFn FileSinkFactory(ScopedContext ctx, Map<String, String> config) {
+Result<ProcessorFn, BaseError> FileSinkFactory(ScopedContext ctx, Map<String, String> config) {
     var p = ctx.getProvider("content") or {
         return FileSink(config["output_dir"], MemoryContentStore())
     }
@@ -128,11 +129,11 @@ ProcessorFn FileSinkFactory(ScopedContext ctx, Map<String, String> config) {
     return FileSink(config["output_dir"], cp.getStore())
 }
 
-ProcessorFn LogProcessorFactory(ScopedContext ctx, Map<String, String> config) {
+Result<ProcessorFn, BaseError> LogProcessorFactory(ScopedContext ctx, Map<String, String> config) {
     return LogProcessor(config["prefix"])
 }
 
-ProcessorFn JsonToRecordsFactory(ScopedContext ctx, Map<String, String> config) {
+Result<ProcessorFn, BaseError> JsonToRecordsFactory(ScopedContext ctx, Map<String, String> config) {
     var schemaName = config["schema_name"]
     if (schemaName == "") {
         schemaName = "default"
@@ -144,7 +145,7 @@ ProcessorFn JsonToRecordsFactory(ScopedContext ctx, Map<String, String> config) 
     return JsonToRecords(schemaName, cp.getStore())
 }
 
-ProcessorFn RecordsToJsonFactory(ScopedContext ctx, Map<String, String> config) {
+Result<ProcessorFn, BaseError> RecordsToJsonFactory(ScopedContext ctx, Map<String, String> config) {
     return RecordsToJson()
 }
 

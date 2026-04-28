@@ -21,6 +21,7 @@
 //   include_header  — "true" | "false" (default "true") — writer only
 //   schema_name     — name embedded in the inferred Schema (default "csv")
 
+import stdlib/errors
 import core
 import fabric/registry
 import bytes
@@ -178,7 +179,7 @@ String anyToString(Object v) {
     return fmt.Sprint(v)
 }
 
-pub ProcessorFn ConvertCSVToRecordFactory(ScopedContext ctx, Map<String, String> config) {
+pub Result<ProcessorFn, BaseError> ConvertCSVToRecordFactory(ScopedContext ctx, Map<String, String> config) {
     var schemaName = config["schema_name"]
     if (schemaName == "") {
         schemaName = "csv"
@@ -198,7 +199,7 @@ pub ProcessorFn ConvertCSVToRecordFactory(ScopedContext ctx, Map<String, String>
     return ConvertCSVToRecord(schemaName, delimiter, hasHeader, cp.getStore())
 }
 
-pub ProcessorFn ConvertRecordToCSVFactory(ScopedContext ctx, Map<String, String> config) {
+pub Result<ProcessorFn, BaseError> ConvertRecordToCSVFactory(ScopedContext ctx, Map<String, String> config) {
     var delimiter = config["delimiter"]
     if (delimiter == "") {
         delimiter = ","

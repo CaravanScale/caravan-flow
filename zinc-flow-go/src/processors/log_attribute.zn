@@ -10,6 +10,7 @@
 // logs only id + attributes-as-whole. In csharp LogAttribute walks the
 // attribute overlay chain; in Zinc we just iterate the plain map.
 
+import stdlib/errors
 import core
 import fabric/registry
 import stdlib/logging
@@ -38,7 +39,7 @@ class LogAttribute : ProcessorFn {
     }
 }
 
-pub ProcessorFn LogAttributeFactory(ScopedContext ctx, Map<String, String> config) {
+pub Result<ProcessorFn, BaseError> LogAttributeFactory(ScopedContext ctx, Map<String, String> config) {
     var prefix = "flow"
     if (config.containsKey("prefix") && config["prefix"] != "") {
         prefix = config["prefix"]

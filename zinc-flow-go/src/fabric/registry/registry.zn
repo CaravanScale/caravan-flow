@@ -3,10 +3,13 @@
 // The flow graph config references processors by name.
 
 import core
+import stdlib/errors
 
 // ProcessorFactory creates a configured ProcessorFn instance.
 // Receives scoped context (only declared providers) and config map.
-type ProcessorFactory = Fn<(ScopedContext, Map<String, String>), ProcessorFn>
+// Factories may fail (bad config, missing provider, etc.); the
+// Result<...> in the type signals that to the type system.
+type ProcessorFactory = Fn<(ScopedContext, Map<String, String>), Result<ProcessorFn, BaseError>>
 
 // ProcessorInfo describes a registered processor type.
 data ProcessorInfo(
@@ -29,7 +32,8 @@ class Registry {
     }
 
     // create instantiates a processor by name with the given scoped context and config.
-    pub ProcessorFn create(String name, ScopedContext ctx, Map<String, String> config) {
+    // Returns Result so callers see the failability the factory itself declared.
+    pub Result<ProcessorFn, BaseError> create(String name, ScopedContext ctx, Map<String, String> config) {
         var factory = factories[name]
         return factory(ctx, config)
     }
