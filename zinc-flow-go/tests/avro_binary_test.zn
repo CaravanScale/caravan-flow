@@ -11,8 +11,11 @@ import fabric/model
 import stdlib/asserts
 
 // recordsFrom unwraps a Single result into the (schema, records) it carries.
-// Test helper — keeps the body of each round-trip test readable.
-(Schema, List<GenericRecord>, bool) recordsFrom(ProcessorResult r) {
+// Test helper — keeps the body of each round-trip test readable. `pub`
+// so avro_ocf_test.zn (same `tests` package) can reference it; without
+// pub the codegen exports the symbol as RecordsFrom (cross-file visible
+// only via the export-rewrite path).
+pub (Schema, List<GenericRecord>, bool) recordsFrom(ProcessorResult r) {
     match (r) {
         case Single(ff) {
             match (ff.content) {
@@ -24,7 +27,7 @@ import stdlib/asserts
     }
 }
 
-(byte[], bool) bytesFrom(ProcessorResult r) {
+pub (byte[], bool) bytesFrom(ProcessorResult r) {
     match (r) {
         case Single(ff) {
             match (ff.content) {

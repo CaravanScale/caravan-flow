@@ -85,6 +85,16 @@ pub void registerBuiltins(Registry reg) {
         codec.ConvertRecordToAvroFactory
     )
     reg.register(
+        ProcessorInfo("ConvertOCFToRecord", "Decode Avro OCF (.avro file) into records",
+            List<String>["reader_schema"]),
+        codec.ConvertOCFToRecordFactory
+    )
+    reg.register(
+        ProcessorInfo("ConvertRecordToOCF", "Encode records to Avro OCF (.avro file)",
+            List<String>["codec"]),
+        codec.ConvertRecordToOCFFactory
+    )
+    reg.register(
         ProcessorInfo("ConvertCSVToRecord", "Parses CSV content into Avro records",
             List<String>["delimiter", "has_header", "schema_name"]),
         ConvertCSVToRecordFactory

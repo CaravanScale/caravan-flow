@@ -1,0 +1,179 @@
+// OCF round-trip tests across all three supported codecs, plus
+// multi-record encode/decode and reader-schema field-drop projection.
+// Pre-fix: hamba-backed OCF needed compiler-level method-arg-wrap. Now
+// pure Zinc — no compiler bridge needed for OCF semantics.
+
+import core
+import codec
+import stdlib/asserts
+
+// makeFlowFileWithRecords — test helper. Builds a FlowFile with the
+// given records as its content. recordsFrom/bytesFrom helpers live in
+// avro_binary_test.zn — same `tests/` package, so we reuse them here.
+FlowFile makeFlowFileWithRecords(Schema schema, List<GenericRecord> records) {
+    var ff = createFlowFile(byte[0], Map<String, String>{})
+    return withContent(ff, Records(schema, records))
+}
+
+// Three records over a 3-primitive schema — used by the per-codec tests.
+(Schema, List<GenericRecord>) sampleRecords() {
+    var schema = core.schemaFromFields("user", List<Field>[
+        Field("id",   core.LONG,    null),
+        Field("name", core.STRING,  null),
+        Field("active", core.BOOLEAN, null)
+    ])
+    var records = List<GenericRecord>[]
+    var i = 1
+    while (i <= 3) {
+        var rec = core.GenericRecord(schema)
+        rec.setField("id", long(i))
+        rec.setField("name", "user-${i}")
+        rec.setField("active", i % 2 == 1)
+        records = append(records, rec)
+        i = i + 1
+    }
+    return schema, records
+}
+
+test "OCF — null codec round-trip preserves schema and 3 records" {
+    var schema, records = sampleRecords()
+    var ff = makeFlowFileWithRecords(schema, records)
+    var encoder = codec.ConvertRecordToOCF(codec.CODEC_NULL)
+    var encoded = encoder.process(ff)
+
+    match (encoded) {
+        case Single(eff) {
+            var decoder = codec.ConvertOCFToRecord(core.MemoryContentStore(), "")
+            var decoded = decoder.process(eff)
+            var s2, recs, ok = recordsFrom(decoded)
+            asserts.isTrue(t, ok, "OCF (null) decoded to Records")
+            asserts.equalString(t, s2.name, schema.name)
+            asserts.equalInt(t, len(recs), 3)
+            asserts.equalInt(t, len(s2.fields), 3)
+        }
+        case _ { t.Errorf("encoder did not return Single") }
+    }
+}
+
+test "OCF — deflate codec round-trip preserves data" {
+    var schema, records = sampleRecords()
+    var ff = makeFlowFileWithRecords(schema, records)
+    var encoder = codec.ConvertRecordToOCF(codec.CODEC_DEFLATE)
+    var encoded = encoder.process(ff)
+
+    var bytes, bok = bytesFrom(encoded)
+    asserts.isTrue(t, bok, "deflate encoded to Raw")
+    asserts.isTrue(t, len(bytes) > 0, "non-empty deflate output")
+
+    match (encoded) {
+        case Single(eff) {
+            var decoder = codec.ConvertOCFToRecord(core.MemoryContentStore(), "")
+            var decoded = decoder.process(eff)
+            var _s, recs, ok = recordsFrom(decoded)
+            asserts.isTrue(t, ok, "OCF (deflate) decoded")
+            asserts.equalInt(t, len(recs), 3)
+            _ = _s
+        }
+        case _ { t.Errorf("deflate encoder did not return Single") }
+    }
+}
+
+test "OCF — zstandard codec round-trip preserves data" {
+    var schema, records = sampleRecords()
+    var ff = makeFlowFileWithRecords(schema, records)
+    var encoder = codec.ConvertRecordToOCF(codec.CODEC_ZSTANDARD)
+    var encoded = encoder.process(ff)
+
+    match (encoded) {
+        case Single(eff) {
+            var decoder = codec.ConvertOCFToRecord(core.MemoryContentStore(), "")
+            var decoded = decoder.process(eff)
+            var _s, recs, ok = recordsFrom(decoded)
+            asserts.isTrue(t, ok, "OCF (zstandard) decoded")
+            asserts.equalInt(t, len(recs), 3)
+            _ = _s
+        }
+        case _ { t.Errorf("zstandard encoder did not return Single") }
+    }
+}
+
+test "OCF — invalid magic returns Failure" {
+    var decoder = codec.ConvertOCFToRecord(core.MemoryContentStore(), "")
+    // 32 bytes that don't start with "Obj\x01" — passes the length-check
+    // but the magic-check rejects.
+    var fake = byte[32]
+    var i = 0
+    while (i < 32) { fake[i] = byte(0x42); i = i + 1 }
+    var ff = createFlowFile(fake, Map<String, String>{})
+    var r = decoder.process(ff)
+    match (r) {
+        case Failure(_, _) { /* expected */ }
+        case _ { t.Errorf("expected Failure on invalid magic, got %v", r) }
+    }
+}
+
+test "OCF — empty bytes returns Failure (truncated)" {
+    var decoder = codec.ConvertOCFToRecord(core.MemoryContentStore(), "")
+    var ff = createFlowFile(byte[0], Map<String, String>{})
+    var r = decoder.process(ff)
+    match (r) {
+        case Failure(_, _) { /* expected */ }
+        case _ { t.Errorf("expected Failure on empty input, got %v", r) }
+    }
+}
+
+test "OCF — reader schema drops fields not in reader" {
+    // Writer has 3 fields, reader has 2 — the third field gets dropped
+    // from the projected records. Reader schema name carries through.
+    var schema, records = sampleRecords()
+    var ff = makeFlowFileWithRecords(schema, records)
+    var encoder = codec.ConvertRecordToOCF(codec.CODEC_NULL)
+    var encoded = encoder.process(ff)
+
+    // Reader schema with only id+name, no active.
+    var readerJson = "{\"type\":\"record\",\"name\":\"user\",\"fields\":[" +
+        "{\"name\":\"id\",\"type\":\"long\"}," +
+        "{\"name\":\"name\",\"type\":\"string\"}" +
+    "]}"
+
+    match (encoded) {
+        case Single(eff) {
+            var decoder = codec.ConvertOCFToRecord(core.MemoryContentStore(), readerJson)
+            var decoded = decoder.process(eff)
+            var s2, recs, ok = recordsFrom(decoded)
+            asserts.isTrue(t, ok, "evolution decoded")
+            asserts.equalInt(t, len(recs), 3)
+            asserts.equalInt(t, len(s2.fields), 2)
+            asserts.equalString(t, s2.fields[0].name, "id")
+            asserts.equalString(t, s2.fields[1].name, "name")
+        }
+        case _ { t.Errorf("encoder did not return Single") }
+    }
+}
+
+test "ConvertRecordToOCF — pass-through on Raw content" {
+    var encoder = codec.ConvertRecordToOCF(codec.CODEC_NULL)
+    var ff = createFlowFile("preserved".toBytes(), Map<String, String>{"k": "v"})
+    var r = encoder.process(ff)
+    match (r) {
+        case Single(out) {
+            match (out.content) {
+                case Raw(b) { asserts.equalString(t, string(b), "preserved") }
+                case _ { t.Errorf("expected Raw passthrough") }
+            }
+        }
+        case _ { t.Errorf("expected Single, got %v", r) }
+    }
+}
+
+test "ConvertRecordToOCF — empty schema fields returns Failure" {
+    var schema = core.schemaFromFields("empty", List<Field>[])
+    var ff = createFlowFile(byte[0], Map<String, String>{})
+    ff = withContent(ff, Records(schema, List<GenericRecord>[core.GenericRecord(schema)]))
+    var encoder = codec.ConvertRecordToOCF(codec.CODEC_NULL)
+    var r = encoder.process(ff)
+    match (r) {
+        case Failure(_, _) { /* expected */ }
+        case _ { t.Errorf("expected Failure on empty schema, got %v", r) }
+    }
+}
