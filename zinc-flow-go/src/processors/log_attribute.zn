@@ -39,7 +39,7 @@ class LogAttribute : ProcessorFn {
     }
 }
 
-pub Result<ProcessorFn, BaseError> LogAttributeFactory(ScopedContext ctx, Map<String, String> config) {
+pub (ProcessorFn, error) LogAttributeFactory(ScopedContext ctx, Map<String, String> config) {
     var prefix = "flow"
     if (config.containsKey("prefix") && config["prefix"] != "") {
         prefix = config["prefix"]

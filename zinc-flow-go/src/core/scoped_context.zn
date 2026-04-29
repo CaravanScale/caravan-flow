@@ -13,7 +13,7 @@ class ScopedContext {
     }
 
     // getProvider returns a provider by name, or throws if not in scope or not enabled.
-    pub Provider getProvider(String name) {
+    pub (Provider, error) getProvider(String name) {
         if (!providers.containsKey(name)) {
             return errors.ConfigError("provider '${name}' not in scope for this processor")
         }

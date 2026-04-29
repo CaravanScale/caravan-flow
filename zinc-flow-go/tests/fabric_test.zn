@@ -107,16 +107,16 @@ class LoopProc : ProcessorFn {
 
 // --- Registry helpers for addProcessor-style tests ---
 
-ProcessorFn recordSinkFactory(ScopedContext ctx, Map<String, String> cfg) {
+(ProcessorFn, error) recordSinkFactory(ScopedContext ctx, Map<String, String> cfg) {
     return RecordSink(cfg["label"])
 }
-ProcessorFn routerFactory(ScopedContext ctx, Map<String, String> cfg) {
+(ProcessorFn, error) routerFactory(ScopedContext ctx, Map<String, String> cfg) {
     return RouterProc(cfg["attr"], cfg["good"])
 }
-ProcessorFn failFactory(ScopedContext ctx, Map<String, String> cfg) {
+(ProcessorFn, error) failFactory(ScopedContext ctx, Map<String, String> cfg) {
     return FailProc(cfg["reason"])
 }
-ProcessorFn loopFactory(ScopedContext ctx, Map<String, String> cfg) {
+(ProcessorFn, error) loopFactory(ScopedContext ctx, Map<String, String> cfg) {
     return LoopProc()
 }
 

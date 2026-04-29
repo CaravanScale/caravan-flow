@@ -73,7 +73,7 @@ class RouteOnAttribute : ProcessorFn {
     }
 }
 
-pub Result<ProcessorFn, BaseError> RouteOnAttributeFactory(ScopedContext ctx, Map<String, String> config) {
+pub (ProcessorFn, error) RouteOnAttributeFactory(ScopedContext ctx, Map<String, String> config) {
     var spec = ""
     if (config.containsKey("routes")) {
         spec = config["routes"]

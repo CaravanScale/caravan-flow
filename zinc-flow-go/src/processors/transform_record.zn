@@ -201,7 +201,7 @@ class TransformRecord : ProcessorFn {
     }
 }
 
-pub Result<ProcessorFn, BaseError> TransformRecordFactory(ScopedContext ctx, Map<String, String> config) {
+pub (ProcessorFn, error) TransformRecordFactory(ScopedContext ctx, Map<String, String> config) {
     var spec = ""
     if (config.containsKey("operations")) {
         spec = config["operations"]

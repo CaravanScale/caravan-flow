@@ -30,6 +30,6 @@ class UpdateAttribute : ProcessorFn {
     }
 }
 
-pub Result<ProcessorFn, BaseError> UpdateAttributeFactory(ScopedContext ctx, Map<String, String> config) {
+pub (ProcessorFn, error) UpdateAttributeFactory(ScopedContext ctx, Map<String, String> config) {
     return UpdateAttribute(config["key"], config["value"])
 }

@@ -117,11 +117,11 @@ pub void registerBuiltins(Registry reg) {
     )
 }
 
-Result<ProcessorFn, BaseError> AddAttributeFactory(ScopedContext ctx, Map<String, String> config) {
+(ProcessorFn, error) AddAttributeFactory(ScopedContext ctx, Map<String, String> config) {
     return AddAttribute(config["key"], config["value"])
 }
 
-Result<ProcessorFn, BaseError> FileSinkFactory(ScopedContext ctx, Map<String, String> config) {
+(ProcessorFn, error) FileSinkFactory(ScopedContext ctx, Map<String, String> config) {
     var p = ctx.getProvider("content") or {
         return FileSink(config["output_dir"], MemoryContentStore())
     }
@@ -129,11 +129,11 @@ Result<ProcessorFn, BaseError> FileSinkFactory(ScopedContext ctx, Map<String, St
     return FileSink(config["output_dir"], cp.getStore())
 }
 
-Result<ProcessorFn, BaseError> LogProcessorFactory(ScopedContext ctx, Map<String, String> config) {
+(ProcessorFn, error) LogProcessorFactory(ScopedContext ctx, Map<String, String> config) {
     return LogProcessor(config["prefix"])
 }
 
-Result<ProcessorFn, BaseError> JsonToRecordsFactory(ScopedContext ctx, Map<String, String> config) {
+(ProcessorFn, error) JsonToRecordsFactory(ScopedContext ctx, Map<String, String> config) {
     var schemaName = config["schema_name"]
     if (schemaName == "") {
         schemaName = "default"
@@ -145,7 +145,7 @@ Result<ProcessorFn, BaseError> JsonToRecordsFactory(ScopedContext ctx, Map<Strin
     return JsonToRecords(schemaName, cp.getStore())
 }
 
-Result<ProcessorFn, BaseError> RecordsToJsonFactory(ScopedContext ctx, Map<String, String> config) {
+(ProcessorFn, error) RecordsToJsonFactory(ScopedContext ctx, Map<String, String> config) {
     return RecordsToJson()
 }
 

@@ -8,8 +8,8 @@ import stdlib/errors
 // ProcessorFactory creates a configured ProcessorFn instance.
 // Receives scoped context (only declared providers) and config map.
 // Factories may fail (bad config, missing provider, etc.); the
-// Result<...> in the type signals that to the type system.
-type ProcessorFactory = Fn<(ScopedContext, Map<String, String>), Result<ProcessorFn, BaseError>>
+// trailing `error` in the return tuple signals that to the type system.
+type ProcessorFactory = Fn<(ScopedContext, Map<String, String>), (ProcessorFn, error)>
 
 // ProcessorInfo describes a registered processor type.
 data ProcessorInfo(
@@ -32,8 +32,8 @@ class Registry {
     }
 
     // create instantiates a processor by name with the given scoped context and config.
-    // Returns Result so callers see the failability the factory itself declared.
-    pub Result<ProcessorFn, BaseError> create(String name, ScopedContext ctx, Map<String, String> config) {
+    // Returns (ProcessorFn, error) so callers see the failability the factory itself declared.
+    pub (ProcessorFn, error) create(String name, ScopedContext ctx, Map<String, String> config) {
         var factory = factories[name]
         return factory(ctx, config)
     }

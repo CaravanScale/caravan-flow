@@ -108,7 +108,7 @@ class ExtractRecordField : ProcessorFn {
     }
 }
 
-pub Result<ProcessorFn, BaseError> ExtractRecordFieldFactory(ScopedContext ctx, Map<String, String> config) {
+pub (ProcessorFn, error) ExtractRecordFieldFactory(ScopedContext ctx, Map<String, String> config) {
     var fieldsSpec = ""
     if (config.containsKey("fields")) {
         fieldsSpec = config["fields"]

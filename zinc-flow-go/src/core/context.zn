@@ -46,14 +46,14 @@ class ProcessorContext {
         }
     }
 
-    pub Provider getProvider(String name) {
+    pub (Provider, error) getProvider(String name) {
         if (!providers.containsKey(name)) {
             return errors.ConfigError("provider not found: ${name}")
         }
         return providers[name]
     }
 
-    pub Provider getEnabledProvider(String name) {
+    pub (Provider, error) getEnabledProvider(String name) {
         if (!providers.containsKey(name)) {
             return errors.ConfigError("provider not found: ${name}")
         }

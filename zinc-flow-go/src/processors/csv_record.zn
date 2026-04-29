@@ -179,7 +179,7 @@ String anyToString(Object v) {
     return fmt.Sprint(v)
 }
 
-pub Result<ProcessorFn, BaseError> ConvertCSVToRecordFactory(ScopedContext ctx, Map<String, String> config) {
+pub (ProcessorFn, error) ConvertCSVToRecordFactory(ScopedContext ctx, Map<String, String> config) {
     var schemaName = config["schema_name"]
     if (schemaName == "") {
         schemaName = "csv"
@@ -199,7 +199,7 @@ pub Result<ProcessorFn, BaseError> ConvertCSVToRecordFactory(ScopedContext ctx, 
     return ConvertCSVToRecord(schemaName, delimiter, hasHeader, cp.getStore())
 }
 
-pub Result<ProcessorFn, BaseError> ConvertRecordToCSVFactory(ScopedContext ctx, Map<String, String> config) {
+pub (ProcessorFn, error) ConvertRecordToCSVFactory(ScopedContext ctx, Map<String, String> config) {
     var delimiter = config["delimiter"]
     if (delimiter == "") {
         delimiter = ","

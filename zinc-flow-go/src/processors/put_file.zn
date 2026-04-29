@@ -88,7 +88,7 @@ class PutFile : ProcessorFn {
     }
 }
 
-pub Result<ProcessorFn, BaseError> PutFileFactory(ScopedContext ctx, Map<String, String> config) {
+pub (ProcessorFn, error) PutFileFactory(ScopedContext ctx, Map<String, String> config) {
     var outputDir = ""
     if (config.containsKey("output_dir")) { outputDir = config["output_dir"] }
     var namingAttr = "filename"

@@ -63,7 +63,7 @@ class ReplaceText : ProcessorFn {
     }
 }
 
-pub Result<ProcessorFn, BaseError> ReplaceTextFactory(ScopedContext ctx, Map<String, String> config) {
+pub (ProcessorFn, error) ReplaceTextFactory(ScopedContext ctx, Map<String, String> config) {
     var pattern = ""
     if (config.containsKey("pattern")) { pattern = config["pattern"] }
     var replacement = ""
@@ -140,7 +140,7 @@ class ExtractText : ProcessorFn {
     }
 }
 
-pub Result<ProcessorFn, BaseError> ExtractTextFactory(ScopedContext ctx, Map<String, String> config) {
+pub (ProcessorFn, error) ExtractTextFactory(ScopedContext ctx, Map<String, String> config) {
     var pattern = ""
     if (config.containsKey("pattern")) { pattern = config["pattern"] }
     var groupNames = ""
@@ -214,7 +214,7 @@ class SplitText : ProcessorFn {
     }
 }
 
-pub Result<ProcessorFn, BaseError> SplitTextFactory(ScopedContext ctx, Map<String, String> config) {
+pub (ProcessorFn, error) SplitTextFactory(ScopedContext ctx, Map<String, String> config) {
     var delimiter = "\n"
     if (config.containsKey("delimiter") && config["delimiter"] != "") {
         delimiter = config["delimiter"]
