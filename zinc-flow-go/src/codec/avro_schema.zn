@@ -1,0 +1,192 @@
+// Avro schema JSON parser/emitter — pure Zinc, no third-party dep.
+//
+// Mirrors zinc-flow-csharp's AvroSchemaJson (StdLib/AvroSchema.cs:15-262).
+// Replaces the hamba-backed bridge from commit 1.
+//
+// Scope:
+//   • Top-level Avro records with primitive fields
+//     (NULL/BOOLEAN/INT/LONG/FLOAT/DOUBLE/STRING/BYTES).
+//   • Nullable-primitive unions `["null", T]` reduced to T (the local
+//     Schema doesn't track nullability yet — same handling as csharp,
+//     which collapses both branches to the non-null primitive).
+//   • Annotated type objects `{"type": T, "logicalType": ...}` parsed
+//     for `type`; logical metadata ignored (Field doesn't carry it yet).
+//
+// Out of scope (returns Failure / "string" fallback like csharp):
+//   • Nested records, arrays, maps, enums, fixed.
+
+import core
+import encoding/json
+import stdlib/errors
+import strings
+
+// Type aliases — Zinc's `as` parser doesn't accept generic types
+// (`as JsonArray`, `as JsonObject` both fail). Aliasing
+// to single-token names sidesteps the parser limitation while keeping
+// the underlying Go type identical (`[]any`, `map[string]any`).
+type JsonArray = List<Object>
+type JsonObject = Map<String, Object>
+
+// parseSchemaJson — JSON Avro schema text → local core.Schema.
+pub (Schema, error) parseSchemaJson(String text) {
+    var zero = Schema("", List<Field>[])
+    var raw = Map<String, Object>{}
+    var data = text.toBytes()
+    json.Unmarshal(data, raw) or {
+        return zero, errors.ConfigError("invalid JSON: ${err.Error()}")
+    }
+
+    var typeStr = raw["type"] as String or {
+        return zero, errors.ConfigError("schema: missing or non-string 'type'")
+    }
+    if (typeStr != "record") {
+        return zero, errors.ConfigError("top-level avro schema must be a record, got: ${typeStr}")
+    }
+
+    var name = "root"
+    if (raw.containsKey("name")) {
+        var n = raw["name"] as String or {
+            return zero, errors.ConfigError("'name' must be a string")
+        }
+        if (n != "") {
+            name = n
+        }
+    }
+
+    if (!raw.containsKey("fields")) {
+        return zero, errors.ConfigError("record schema missing 'fields' array")
+    }
+    var fieldList = raw["fields"] as JsonArray or {
+        return zero, errors.ConfigError("'fields' must be an array")
+    }
+
+    var fields = List<Field>[]
+    for (item in fieldList) {
+        var fobj = item as JsonObject or {
+            return zero, errors.ConfigError("each field must be an object")
+        }
+        if (!fobj.containsKey("name") || !fobj.containsKey("type")) {
+            return zero, errors.ConfigError("field missing 'name' or 'type'")
+        }
+        var fname = fobj["name"] as String or {
+            return zero, errors.ConfigError("field 'name' must be a string")
+        }
+        var ftype, ferr = parseTypeToken(fobj["type"])
+        if (ferr != nil) {
+            return zero, errors.ConfigError("field '${fname}': ${ferr.Error()}")
+        }
+        fields = append(fields, Field(fname, ftype, null))
+    }
+    return Schema(name, fields), nil
+}
+
+// parseTypeToken — handles primitive string, nullable-union array, and
+// annotated type object. Mirrors csharp's ParseTypeToken/ParseTypeObject.
+(FieldType, error) parseTypeToken(Object token) {
+    // Primitive: bare string.
+    var s = token as String or {
+        // Nullable-union: array form ["null", T].
+        var arr = token as JsonArray or {
+            // Annotated object: {"type": T, "logicalType": ...}.
+            var obj = token as JsonObject or {
+                return STRING, errors.ConfigError("unsupported type token shape")
+            }
+            if (!obj.containsKey("type")) {
+                return STRING, errors.ConfigError("type object missing 'type'")
+            }
+            var inner = obj["type"] as String or {
+                return STRING, errors.ConfigError("nested annotated type not supported")
+            }
+            return mapPrimitive(inner), nil
+        }
+        // Walk the union; ignore "null", take first non-null.
+        for (item in arr) {
+            var iname = item as String or {
+                // Could be an annotated object inside the union — recurse.
+                var ft, e = parseTypeToken(item)
+                if (e == nil) { return ft, nil }
+                continue
+            }
+            if (iname == "null") { continue }
+            return mapPrimitive(iname), nil
+        }
+        return STRING, errors.ConfigError("union with no non-null branch")
+    }
+    return mapPrimitive(s), nil
+}
+
+FieldType mapPrimitive(String name) {
+    if (name == "null")    { return NULL }
+    if (name == "boolean") { return BOOLEAN }
+    if (name == "int")     { return INT }
+    if (name == "long")    { return LONG }
+    if (name == "float")   { return FLOAT }
+    if (name == "double")  { return DOUBLE }
+    if (name == "string")  { return STRING }
+    if (name == "bytes")   { return BYTES }
+    if (name == "enum")    { return ENUM }
+    if (name == "array")   { return ARRAY }
+    if (name == "map")     { return MAP }
+    if (name == "record")  { return RECORD }
+    return STRING
+}
+
+String primitiveName(FieldType ft) {
+    match (ft) {
+        case NULL    { return "null" }
+        case BOOLEAN { return "boolean" }
+        case INT     { return "int" }
+        case LONG    { return "long" }
+        case FLOAT   { return "float" }
+        case DOUBLE  { return "double" }
+        case STRING  { return "string" }
+        case BYTES   { return "bytes" }
+        case ENUM    { return "enum" }
+        case ARRAY   { return "array" }
+        case MAP     { return "map" }
+        case RECORD  { return "record" }
+        case UNION   { return "union" }
+    }
+}
+
+// emitSchemaJson — local core.Schema → canonical Avro JSON.
+// Round-trips: parseSchemaJson(emitSchemaJson(s)) yields a structurally
+// equal Schema for every shape parseSchemaJson supports.
+pub (String, error) emitSchemaJson(Schema s) {
+    var fieldArr = List<Object>[]
+    for (f in s.fields) {
+        var fobj = Map<String, Object>{}
+        fobj["name"] = f.name
+        fobj["type"] = primitiveName(f.fieldType)
+        fieldArr = append(fieldArr, fobj)
+    }
+    var root = Map<String, Object>{}
+    root["type"] = "record"
+    root["name"] = s.name
+    root["fields"] = fieldArr
+
+    var out, err = json.Marshal(root)
+    if (err != nil) {
+        return "", err
+    }
+    return string(out), nil
+}
+
+// schemaFromHamba / schemaToHamba — kept as no-op shims so existing
+// callers (commit 1 tests + any in-flight code) link cleanly during
+// the hamba-removal phase. Will be deleted once hamba is dropped from
+// zinc.toml.
+pub (Schema, error) schemaFromHamba(Schema hs) {
+    return hs, nil
+}
+
+pub (Schema, error) schemaToHamba(Schema s) {
+    return s, nil
+}
+
+// stripWhitespace — tolerated leading/trailing whitespace in JSON input,
+// since hamba.Parse accepted it. Used by callers that read schema from
+// files where editors add trailing newlines.
+pub String stripWhitespace(String json) {
+    return strings.TrimSpace(json)
+}

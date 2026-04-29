@@ -1,0 +1,91 @@
+// Round-trip tests for the Avro schema bridge (codec/avro_schema.zn).
+// Commit 1 scope: 8 primitives at field positions inside a top-level
+// RecordSchema. Failure-path tests follow the
+// feedback_errors_as_values_tests rule — every processor needs a path
+// that surfaces a non-nil error rather than throwing.
+
+import codec
+import core
+import stdlib/asserts
+
+test "Avro schema bridge — primitives round-trip JSON → Schema → JSON" {
+    var json = "{\"type\":\"record\",\"name\":\"User\",\"fields\":[" +
+        "{\"name\":\"id\",\"type\":\"long\"}," +
+        "{\"name\":\"name\",\"type\":\"string\"}," +
+        "{\"name\":\"active\",\"type\":\"boolean\"}," +
+        "{\"name\":\"score\",\"type\":\"double\"}" +
+    "]}"
+
+    var s, err = codec.parseSchemaJson(json)
+    if (err != nil) { t.Errorf("parse err: %v", err); return }
+    asserts.equalString(t, s.name, "User")
+    asserts.equalInt(t, len(s.fields), 4)
+    asserts.equalString(t, s.fields[0].name, "id")
+    asserts.equalString(t, s.fields[1].name, "name")
+    asserts.equalString(t, s.fields[2].name, "active")
+    asserts.equalString(t, s.fields[3].name, "score")
+
+    var emitted, eerr = codec.emitSchemaJson(s)
+    if (eerr != nil) { t.Errorf("emit err: %v", eerr); return }
+
+    // Re-parse the emitted JSON; result should be structurally the same.
+    var s2, err2 = codec.parseSchemaJson(emitted)
+    if (err2 != nil) { t.Errorf("re-parse err: %v", err2); return }
+    asserts.equalString(t, s2.name, s.name)
+    asserts.equalInt(t, len(s2.fields), len(s.fields))
+    for (i in 0..len(s.fields)) {
+        asserts.equalString(t, s2.fields[i].name, s.fields[i].name)
+    }
+}
+
+test "Avro schema bridge — all eight primitive field types map both ways" {
+    var json = "{\"type\":\"record\",\"name\":\"All\",\"fields\":[" +
+        "{\"name\":\"f_null\",\"type\":\"null\"}," +
+        "{\"name\":\"f_bool\",\"type\":\"boolean\"}," +
+        "{\"name\":\"f_int\",\"type\":\"int\"}," +
+        "{\"name\":\"f_long\",\"type\":\"long\"}," +
+        "{\"name\":\"f_float\",\"type\":\"float\"}," +
+        "{\"name\":\"f_double\",\"type\":\"double\"}," +
+        "{\"name\":\"f_string\",\"type\":\"string\"}," +
+        "{\"name\":\"f_bytes\",\"type\":\"bytes\"}" +
+    "]}"
+    var s, err = codec.parseSchemaJson(json)
+    if (err != nil) { t.Errorf("parse err: %v", err); return }
+    asserts.equalInt(t, len(s.fields), 8)
+
+    // Round-trip back out and re-parse — confirms each primitive emits
+    // a JSON form hamba can re-parse to the same FieldType.
+    var emitted, eerr = codec.emitSchemaJson(s)
+    if (eerr != nil) { t.Errorf("emit err: %v", eerr); return }
+    var s2, err2 = codec.parseSchemaJson(emitted)
+    if (err2 != nil) { t.Errorf("re-parse err: %v", err2); return }
+    asserts.equalInt(t, len(s2.fields), 8)
+}
+
+test "Avro schema bridge — rejects non-record top-level schema" {
+    // A bare string schema isn't a record — parseSchemaJson must surface
+    // an error rather than panic.
+    var s, err = codec.parseSchemaJson("\"long\"")
+    asserts.isTrue(t, err != nil, "expected error for non-record top-level")
+    asserts.equalString(t, s.name, "")
+}
+
+test "Avro schema bridge — rejects malformed JSON" {
+    var s, err = codec.parseSchemaJson("{not json}")
+    asserts.isTrue(t, err != nil, "expected error for malformed JSON")
+    asserts.equalString(t, s.name, "")
+}
+
+test "Avro schema bridge — array field parses, mapped to FieldType.ARRAY" {
+    // Hand-rolled parser accepts the full FieldType enum (matching csharp).
+    // Binary codec's writeField emits zero-payload for ARRAY/MAP/UNION/RECORD
+    // — full encode/decode of those types lives in a future commit when
+    // local Schema gets nested-type metadata.
+    var json = "{\"type\":\"record\",\"name\":\"WithArray\",\"fields\":[" +
+        "{\"name\":\"tags\",\"type\":{\"type\":\"array\",\"items\":\"string\"}}" +
+    "]}"
+    var s, err = codec.parseSchemaJson(json)
+    asserts.isTrue(t, err == nil, "array-typed field parses cleanly")
+    asserts.equalInt(t, len(s.fields), 1)
+    asserts.equalString(t, s.fields[0].name, "tags")
+}

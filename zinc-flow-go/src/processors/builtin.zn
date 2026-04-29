@@ -2,6 +2,7 @@
 
 import stdlib/errors
 import core
+import codec
 import fabric/registry
 import stdlib/logging
 import os
@@ -73,6 +74,15 @@ pub void registerBuiltins(Registry reg) {
         ProcessorInfo("PutFile", "Writes FlowFile content to a directory",
             List<String>["output_dir", "naming_attribute", "prefix", "suffix", "format"]),
         PutFileFactory
+    )
+    reg.register(
+        ProcessorInfo("ConvertAvroToRecord", "Parses Avro binary content into a record",
+            List<String>["schema_name", "field_defs"]),
+        codec.ConvertAvroToRecordFactory
+    )
+    reg.register(
+        ProcessorInfo("ConvertRecordToAvro", "Serializes a record to Avro binary bytes", List<String>[]),
+        codec.ConvertRecordToAvroFactory
     )
     reg.register(
         ProcessorInfo("ConvertCSVToRecord", "Parses CSV content into Avro records",
