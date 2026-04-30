@@ -1,0 +1,41 @@
+// Smoke test for hamba/avro through zinc's explicit `&` FFI operator.
+// Hamba's Unmarshal(schema, data, v any) requires v to be a pointer at
+// runtime even though typed as `any`. Before the explicit `&` work,
+// zinc-go relied on a hand-curated implicitPointerParams table; that's
+// gone, and this test confirms the user-facing replacement (writing
+// `&target` at the call site) round-trips a record cleanly.
+//
+// If this test compiles AND the generated Go has `&target` at the
+// Unmarshal call site (not bare `target`), the FFI path works.
+
+import hambaAvro
+import stdlib/asserts
+
+data Person(@Avro("name") String name, @Avro("age") int age)
+
+test "hamba round-trip: Marshal/Unmarshal with explicit & on Unmarshal" {
+    var schemaStr = `{"type":"record","name":"Person","fields":[{"name":"name","type":"string"},{"name":"age","type":"int"}]}`
+    var schema = hambaAvro.Parse(schemaStr) or {
+        asserts.fail(t, "schema parse failed: ${err}")
+        return
+    }
+
+    var p = Person("alice", 30)
+    var data = hambaAvro.Marshal(schema, p) or {
+        asserts.fail(t, "marshal failed: ${err}")
+        return
+    }
+    asserts.isTrue(t, len(data) > 0, "non-empty avro bytes")
+
+    // The interesting bit: `&got` is the explicit FFI escape hatch.
+    // Without it, hamba would receive a value-typed Person and panic
+    // at runtime (the pre-`&` behavior the implicitPointerParams hack
+    // papered over).
+    var got = Person("", 0)
+    hambaAvro.Unmarshal(schema, data, &got) or {
+        asserts.fail(t, "unmarshal failed: ${err}")
+        return
+    }
+    asserts.equalString(t, got.name, "alice")
+    asserts.equalInt(t, got.age, 30)
+}

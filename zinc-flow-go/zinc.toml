@@ -10,10 +10,12 @@ version = "1.26"
 stdlib = "github.com/ZincScale/zinc-stdlib"
 fsnotify = "github.com/fsnotify/fsnotify@v1.7.0"
 klausCompress = "github.com/klauspost/compress@v1.17.9"
+hambaAvro = "github.com/hamba/avro/v2@v2.25.0"
 
 [imports]
 fsnotify = "github.com/fsnotify/fsnotify"
 zstd = "github.com/klauspost/compress/zstd"
+hambaAvro = "github.com/hamba/avro/v2"
 
 [replace]
 stdlib = "../../zinc/zinc-go/stdlib/zinc-out"
