@@ -123,9 +123,6 @@ public sealed class ApiHandler
         // Per-processor stats reset
         app.MapPost("/api/processors/{name}/stats/reset", ResetProcessorStats);
 
-        // Test flowfile injection (push a synthetic FlowFile at an entry point)
-        app.MapPost("/api/flowfiles/ingest", IngestFlowFile);
-
         // Add a new source instance at runtime (palette drop target)
         app.MapPost("/api/sources/add", AddSource);
         // Update a running source's config (drawer save)
@@ -1151,84 +1148,4 @@ public sealed class ApiHandler
             : Json(new Dictionary<string, object?> { ["error"] = "processor not found" });
     }
 
-    // --- Test flowfile injection ---
-    //
-    // Accepts {target, content|contentBase64, attributes}:
-    //   target        — processor name to inject at, or "*" / omitted to use
-    //                   graph entry points (same fan-out as a source would do).
-    //   content       — UTF-8 text payload (most convenient for UI textareas).
-    //   contentBase64 — binary payload as base64 (alternative to content).
-    //   attributes    — string→string attribute map (optional).
-    // Returns {status, flowfile, targets} on success.
-    private IResult IngestFlowFile([FromBody] Dictionary<string, object?>? body)
-    {
-        if (body is null)
-            return Json(new Dictionary<string, object?> { ["error"] = "request body must be a JSON object" });
-
-        // ZINCFLOW_MAX_INGEST_BYTES caps the accepted body size. Default
-        // 16 MiB; shared with ListenHTTP's per-source default so operators
-        // have a single dial. 413 is the right code here.
-        var maxBytes = int.TryParse(
-            Environment.GetEnvironmentVariable("ZINCFLOW_MAX_INGEST_BYTES"),
-            out var m) && m > 0 ? m : 16 * 1024 * 1024;
-
-        byte[] data;
-        if (body.TryGetValue("contentBase64", out var b64) && b64 is string b64Str && b64Str.Length > 0)
-        {
-            try { data = Convert.FromBase64String(b64Str); }
-            catch (FormatException ex) { return Json(new Dictionary<string, object?> { ["error"] = $"contentBase64 invalid: {ex.Message}" }); }
-        }
-        else if (body.TryGetValue("content", out var txt) && txt is string s)
-        {
-            data = System.Text.Encoding.UTF8.GetBytes(s);
-        }
-        else
-        {
-            data = Array.Empty<byte>();
-        }
-
-        if (data.Length > maxBytes)
-        {
-            return Results.Content(
-                ZincJson.SerializeToString(new Dictionary<string, object?>
-                {
-                    ["error"] = $"body {data.Length} bytes exceeds ZINCFLOW_MAX_INGEST_BYTES={maxBytes}",
-                }), "application/json", statusCode: 413);
-        }
-
-        var attrs = new Dictionary<string, string>();
-        if (body.TryGetValue("attributes", out var a) && a is Dictionary<string, object?> aDict)
-        {
-            foreach (var (k, v) in aDict)
-                attrs[k] = v?.ToString() ?? "";
-        }
-
-        var target = body.GetValueOrDefault("target") as string ?? "";
-
-        var ff = FlowFile.Create(data, attrs);
-
-        if (string.IsNullOrEmpty(target) || target == "*")
-        {
-            // No more "entry-points" fan-out. The test-ingest endpoint now
-            // matches the runtime model: every FF enters at a named node.
-            FlowFile.Return(ff);
-            return Results.Content(
-                ZincJson.SerializeToString(new Dictionary<string, object?>
-                {
-                    ["error"] = "target required — pick a processor name; there is no implicit fan-out",
-                }),
-                "application/json",
-                statusCode: 400);
-        }
-        else
-        {
-            var ok = _fab.Execute(ff, target);
-            return Json(new Dictionary<string, object?>
-            {
-                ["status"] = ok ? "ingested" : "rejected",
-                ["flowfile"] = $"ff-{ff.NumericId}",
-                ["target"] = target,
-            });
-        }
-    }
 }

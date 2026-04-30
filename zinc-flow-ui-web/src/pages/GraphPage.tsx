@@ -23,7 +23,6 @@ import { RelationshipEdge } from '../components/RelationshipEdge'
 import { ProcessorDrawer } from '../components/ProcessorDrawer'
 import { EdgeDrawer, type EdgeSelection } from '../components/EdgeDrawer'
 import { SourcesPanel } from '../components/SourcesPanel'
-import { TestFlowFileDialog } from '../components/TestFlowFileDialog'
 import { ProcessorPalette, PALETTE_MIME } from '../components/ProcessorPalette'
 import { EdgeRelationshipPicker } from '../components/EdgeRelationshipPicker'
 import { useAddConnection, useAddProcessor, useAddSource, useReloadFlow } from '../lib/mutations'
@@ -91,7 +90,6 @@ function GraphPageInner() {
   const [selected, setSelected] = useState<string | null>(null)
   const [selectedEdge, setSelectedEdge] = useState<EdgeSelection | null>(null)
   const [sourcesOpen, setSourcesOpen] = useState(false)
-  const [testOpen, setTestOpen] = useState(false)
   const [reloadMsg, setReloadMsg] = useState<string | null>(null)
   const [paletteCollapsed, setPaletteCollapsed] = useState(false)
   const [pendingEdge, setPendingEdge] = useState<{ conn: Connection; anchor: { x: number; y: number } } | null>(null)
@@ -444,14 +442,6 @@ function GraphPageInner() {
             >
               sources
             </button>
-            <button
-              onClick={() => setTestOpen(true)}
-              className="rounded border px-3 py-1 text-[12px]"
-              style={{ background: 'transparent', borderColor: 'var(--border)', color: 'var(--text-muted)' }}
-              title="push a synthetic FlowFile into the graph"
-            >
-              test flowfile
-            </button>
           </div>
         </div>
 
@@ -484,7 +474,6 @@ function GraphPageInner() {
           <EdgeDrawer edge={selectedEdge} onClose={() => setSelectedEdge(null)} />
         )}
         {sourcesOpen && <SourcesPanel onClose={() => setSourcesOpen(false)} />}
-        <TestFlowFileDialog open={testOpen} flow={topology.data} onClose={() => setTestOpen(false)} />
         <EdgeRelationshipPicker
           anchor={pendingEdge?.anchor ?? null}
           suggestions={edgeSuggestions}

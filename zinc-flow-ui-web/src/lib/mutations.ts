@@ -123,13 +123,3 @@ export function useResetProcessorStats() {
     unwrap(await api.resetProcessorStats(name)),
   )
 }
-
-export function useIngestFlowFile() {
-  return useFlowMutation<
-    { target: string; content?: string; contentBase64?: string; attributes?: Record<string, string> },
-    Record<string, unknown>
-  >(async (body) => {
-    const resp = await unwrap(await api.ingestFlowFile(body))
-    return (await resp.json()) as Record<string, unknown>
-  })
-}

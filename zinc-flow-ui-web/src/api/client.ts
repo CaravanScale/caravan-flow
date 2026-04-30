@@ -154,14 +154,6 @@ export const api = {
   resetProcessorStats: (name: string) =>
     send('POST', `/api/processors/${encodeURIComponent(name)}/stats/reset`),
 
-  // --- test ingest ---
-  ingestFlowFile: (body: {
-    target: string
-    content?: string
-    contentBase64?: string
-    attributes?: Record<string, string>
-  }) => send('POST', '/api/flowfiles/ingest', body),
-
   // --- metrics ---
   metrics: () => getText('/metrics'),
 }
