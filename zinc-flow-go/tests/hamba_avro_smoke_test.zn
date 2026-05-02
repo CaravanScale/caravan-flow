@@ -1,14 +1,23 @@
-// Smoke test for hamba/avro through zinc's explicit `&` FFI operator.
-// Hamba's Unmarshal(schema, data, v any) requires v to be a pointer at
-// runtime even though typed as `any`. Before the explicit `&` work,
-// zinc-go relied on a hand-curated implicitPointerParams table; that's
-// gone, and this test confirms the user-facing replacement (writing
-// `&target` at the call site) round-trips a record cleanly.
+// Smoke tests for hamba/avro through zinc's explicit `&` FFI operator.
+// Two distinct seams are exercised:
 //
-// If this test compiles AND the generated Go has `&target` at the
-// Unmarshal call site (not bare `target`), the FFI path works.
+//   1. Package-level call: `hambaAvro.Unmarshal(schema, data, &got)`.
+//      `Unmarshal` takes `v any` but requires a runtime pointer; `&got`
+//      is the explicit escape hatch.
+//
+//   2. Method call on a Go-typed receiver: `dec.Decode(&got)` where
+//      `dec` is the `*ocf.Decoder` returned by `hambaOcf.NewDecoder(r)`.
+//      Same any-boxing problem, different call shape — and the gate that
+//      lets `&` through has to recognize the Go-typed var, not just the
+//      package alias. (Regression net for the formatCallExpr fix that
+//      checks `varGoTypes` outside the user-scope-shadow guard.)
+//
+// If both tests compile AND the generated Go has `&got` at each call
+// site, the FFI path works.
 
+import bytes
 import hambaAvro
+import hambaOcf
 import stdlib/asserts
 
 data Person(@Avro("name") String name, @Avro("age") int age)
@@ -38,4 +47,37 @@ test "hamba round-trip: Marshal/Unmarshal with explicit & on Unmarshal" {
     }
     asserts.equalString(t, got.name, "alice")
     asserts.equalInt(t, got.age, 30)
+}
+
+test "hamba/ocf round-trip: dec.Decode(&got) — method-call FFI seam" {
+    var schemaStr = `{"type":"record","name":"Person","fields":[{"name":"name","type":"string"},{"name":"age","type":"int"}]}`
+
+    // Encode one Person into an OCF blob via the streaming Encoder.
+    var buf = new bytes.Buffer
+    var enc, eerr = hambaOcf.NewEncoder(schemaStr, buf)
+    asserts.isTrue(t, eerr == nil, "ocf encoder construct")
+    var p = Person("bob", 41)
+    enc.Encode(p) or {
+        asserts.fail(t, "encode failed: ${err}")
+        return
+    }
+    enc.Close() or {
+        asserts.fail(t, "encoder close failed: ${err}")
+        return
+    }
+
+    // Decode it back. `dec` is *ocf.Decoder (Go-typed local var); the
+    // `&got` argument exercises the FFI-on-method-call gate.
+    var rdr = bytes.NewReader(buf.Bytes())
+    var dec, derr = hambaOcf.NewDecoder(rdr)
+    asserts.isTrue(t, derr == nil, "ocf decoder construct")
+    asserts.isTrue(t, dec.HasNext(), "decoder has next record")
+
+    var got = Person("", 0)
+    dec.Decode(&got) or {
+        asserts.fail(t, "ocf decode failed: ${err}")
+        return
+    }
+    asserts.equalString(t, got.name, "bob")
+    asserts.equalInt(t, got.age, 41)
 }

@@ -32,7 +32,7 @@ pub (Schema, error) parseSchemaJson(String text) {
     var zero = Schema("", List<Field>[])
     var raw = Map<String, Object>{}
     var data = text.toBytes()
-    json.Unmarshal(data, raw) or {
+    json.Unmarshal(data, &raw) or {
         return zero, errors.ConfigError("invalid JSON: ${err.Error()}")
     }
 

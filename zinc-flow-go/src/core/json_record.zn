@@ -11,7 +11,7 @@ class JsonRecordReader : RecordReader {
     pub List<GenericRecord> read(byte[] data, Schema schema) {
         // Parse JSON into list of maps
         var rawList = List<Map<String, Object>>[]
-        json.Unmarshal(data, rawList) or { return List<GenericRecord>[] }
+        json.Unmarshal(data, &rawList) or { return List<GenericRecord>[] }
 
         // Schema-on-read: if schema has no fields, infer from first object
         var effectiveSchema = schema

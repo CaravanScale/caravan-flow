@@ -1,211 +1,36 @@
 // Avro binary codec — ConvertAvroToRecord / ConvertRecordToAvro processors,
-// AvroBinaryReader / AvroBinaryWriter, parseFieldDefs / emitFieldDefs.
+// plus parseFieldDefs / emitFieldDefs.
 //
-// Hand-rolled per Apache Avro 1.11 spec. No hamba, no third-party dep.
-// Mirrors zinc-flow-csharp's AvroBinary.cs (StdLib/AvroBinary.cs:137-407)
-// — same byte layout, same field-defs syntax, same processor surface.
+// Backed by github.com/hamba/avro/v2 — Marshal/Unmarshal handle the wire
+// format. The zinc-side responsibilities are: schema bridging
+// (zinc Schema → Avro JSON → hamba Schema), shape adaptation
+// (GenericRecord.values is already map[string]any, which hamba accepts
+// directly for record types), and the FlowFile content/attribute plumbing.
 //
 // Scope:
 //   • Single-record raw binary Avro per FlowFile. Multi-record streams
 //     (with framing) live in OCF.
 //   • Primitive field types only (NULL/BOOLEAN/INT/LONG/FLOAT/DOUBLE/
-//     STRING/BYTES). Nested records / arrays / maps / unions are out
-//     of scope here — same as csharp's AvroBinary.
+//     STRING/BYTES) — same as csharp's AvroBinary. hamba supports more,
+//     but emitSchemaJson + the local Schema enum gate at primitives.
 //   • Schema sourcing for ConvertAvroToRecord: config `field_defs`
 //     ("id:long,name:string") wins; falls back to the FlowFile's
-//     `avro.schema` attribute (csharp parity).
+//     `avro.schema` attribute.
 //   • ConvertRecordToAvro stamps `avro.schema` on output so the inverse
 //     processor can round-trip without out-of-band schema config.
 //
-// Failure paths (per feedback_errors_as_values_tests):
+// Failure paths:
 //   • Missing schema → Failure
-//   • Decode underrun / malformed varint → Failure
+//   • hamba.Parse / Marshal / Unmarshal error → Failure
 //   • Zero-field schema after parseFieldDefs → Failure
 //   • ConvertRecordToAvro on Records content with empty schema → Failure
 
 import core
 import fabric/registry
+import hambaAvro
 import stdlib/errors
 import stdlib/logging
 import strings
-
-// --- AvroBinaryWriter ---------------------------------------------------
-
-// writeRecord encodes one GenericRecord to its on-the-wire bytes following
-// the Avro spec: each schema field's value, in order, with no framing.
-pub byte[] writeRecord(byte[] buf, GenericRecord record, Schema schema) {
-    for (f in schema.fields) {
-        var value = record.getField(f.name)
-        buf = writeField(buf, value, f.fieldType)
-    }
-    return buf
-}
-
-byte[] writeField(byte[] buf, Object value, FieldType fieldType) {
-    match (fieldType) {
-        case NULL    { return buf }
-        case BOOLEAN { return writeBoolean(buf, asBool(value)) }
-        case INT     { return writeInt(buf, asInt(value)) }
-        case LONG    { return writeLong(buf, asLong(value)) }
-        case FLOAT   { return writeFloat(buf, asDouble(value)) }
-        case DOUBLE  { return writeDouble(buf, asDouble(value)) }
-        case STRING  { return writeString(buf, asString(value)) }
-        case BYTES   { return writeBytes(buf, asBytes(value)) }
-        // Out-of-scope field types are written as zero-bytes-of-payload —
-        // matches csharp's "skip silently" behavior on the Array/Map/Record
-        // branches when the value is missing or wrong-shape.
-        case ARRAY  { return writeVarint(buf, long(0)) }
-        case MAP    { return writeVarint(buf, long(0)) }
-        case ENUM   { return writeInt(buf, asInt(value)) }
-        case UNION  { return writeVarint(buf, long(0)) }
-        case RECORD { return buf }
-    }
-}
-
-// --- AvroBinaryReader ---------------------------------------------------
-
-// readRecord decodes one GenericRecord from `data` starting at `offset`.
-// Returns (record, bytesConsumed, error). Bytes consumed lets multi-record
-// stream readers (OCF) advance their cursor.
-pub (GenericRecord, int, error) readRecord(byte[] data, int offset, Schema schema) {
-    var record = GenericRecord(schema)
-    var pos = 0
-    for (f in schema.fields) {
-        var value, n, err = readField(data, offset + pos, f.fieldType)
-        if (err != nil) {
-            return record, pos, err
-        }
-        record.setField(f.name, value)
-        pos = pos + n
-    }
-    return record, pos, nil
-}
-
-(Object, int, error) readField(byte[] data, int offset, FieldType fieldType) {
-    match (fieldType) {
-        case NULL {
-            return null, 0, nil
-        }
-        case BOOLEAN {
-            var v, n, err = readBoolean(data, offset)
-            return v, n, err
-        }
-        case INT {
-            var v, n, err = readInt(data, offset)
-            return v, n, err
-        }
-        case LONG {
-            var v, n, err = readLong(data, offset)
-            return v, n, err
-        }
-        case FLOAT {
-            var v, n, err = readFloat(data, offset)
-            return v, n, err
-        }
-        case DOUBLE {
-            var v, n, err = readDouble(data, offset)
-            return v, n, err
-        }
-        case STRING {
-            var v, n, err = readString(data, offset)
-            return v, n, err
-        }
-        case BYTES {
-            var v, n, err = readBytes(data, offset)
-            return v, n, err
-        }
-        case ENUM {
-            var v, n, err = readInt(data, offset)
-            return v, n, err
-        }
-        // Out-of-scope: emit zero progress; caller stops gracefully if the
-        // schema demands them. Matches csharp default-branch behavior.
-        case ARRAY  { return null, 0, nil }
-        case MAP    { return null, 0, nil }
-        case RECORD { return null, 0, nil }
-        case UNION  { return null, 0, nil }
-    }
-}
-
-// --- Type coercion helpers ---------------------------------------------
-// GenericRecord.values stores Object (Go: any). When records are built from
-// JSON (json.Unmarshal yields float64 for every number), CSV (every cell is
-// a string), or user code (int vs long matters), we need to coerce on the
-// fly to the schema's declared FieldType. csharp uses Convert.ToInt32 etc;
-// these helpers mirror that with explicit type-switch fallbacks.
-
-bool asBool(Object v) {
-    if (v == nil) { return false }
-    var b = v as bool or {
-        var s = v as String or { return false }
-        return s == "true"
-    }
-    return b
-}
-
-int asInt(Object v) {
-    if (v == nil) { return 0 }
-    var i = v as int or {
-        var l = v as long or {
-            var f = v as double or { return 0 }
-            return int(f)
-        }
-        return int(l)
-    }
-    return i
-}
-
-long asLong(Object v) {
-    if (v == nil) { return long(0) }
-    var l = v as long or {
-        var i = v as int or {
-            var f = v as double or { return long(0) }
-            return long(f)
-        }
-        return long(i)
-    }
-    return l
-}
-
-double asDouble(Object v) {
-    if (v == nil) { return 0.0 }
-    var f = v as double or {
-        var i = v as int or {
-            var l = v as long or { return 0.0 }
-            return double(l)
-        }
-        return double(i)
-    }
-    return f
-}
-
-String asString(Object v) {
-    if (v == nil) { return "" }
-    var s = v as String or { return "" }
-    return s
-}
-
-byte[] asBytes(Object v) {
-    if (v == nil) { return byte[0] }
-    // Zinc's `as` doesn't accept slice types (`byte[]`). Fall back to
-    // string-with-toBytes for the common JSON/CSV path where a BYTES
-    // field arrived as text; native byte[] values land here unchanged
-    // because the codegen passes Object through.
-    var s = v as String or { return byteValueOrEmpty(v) }
-    return s.toBytes()
-}
-
-// byteValueOrEmpty rescues a byte[] hidden inside an Object via a small
-// Go shim. Pure Zinc can't type-assert to a slice, but a generic helper
-// emitted into the same package can. Empty bytes when the underlying
-// value isn't a byte[].
-byte[] byteValueOrEmpty(Object v) {
-    // The codegen lowers Object → interface{}; Go's `b, ok := v.([]byte)`
-    // is exactly what we want, but we get there via the value-passthrough
-    // that `[]byte` already has when stored in interface{}. If that
-    // unwrap fails, return empty.
-    return byte[0]
-}
 
 // --- ConvertAvroToRecord processor -------------------------------------
 
@@ -254,9 +79,23 @@ class ConvertAvroToRecord : ProcessorFn {
             return Failure("ConvertAvroToRecord: empty schema", ff)
         }
 
-        var rec, _, derr = readRecord(data, 0, schema)
-        if (derr != nil) {
-            return Failure("ConvertAvroToRecord: decode failed: ${derr.Error()}", ff)
+        var schemaJson, jErr = emitSchemaJson(schema)
+        if (jErr != nil) {
+            return Failure("ConvertAvroToRecord: schema emit failed: ${jErr.Error()}", ff)
+        }
+        var hSchema, hErr = hambaAvro.Parse(schemaJson)
+        if (hErr != nil) {
+            return Failure("ConvertAvroToRecord: hamba.Parse: ${hErr.Error()}", ff)
+        }
+
+        var target = Map<String, Object>{}
+        hambaAvro.Unmarshal(hSchema, data, &target) or {
+            return Failure("ConvertAvroToRecord: decode failed: ${err.Error()}", ff)
+        }
+
+        var rec = GenericRecord(schema)
+        for (k, v in target) {
+            rec.setField(k, v)
         }
 
         var records = List<GenericRecord>[]
@@ -297,10 +136,24 @@ class ConvertRecordToAvro : ProcessorFn {
                 if (len(schema.fields) == 0) {
                     return Failure("ConvertRecordToAvro: Records content has empty schema", ff)
                 }
+
+                var schemaJson, jErr = emitSchemaJson(schema)
+                if (jErr != nil) {
+                    return Failure("ConvertRecordToAvro: schema emit failed: ${jErr.Error()}", ff)
+                }
+                var hSchema, hErr = hambaAvro.Parse(schemaJson)
+                if (hErr != nil) {
+                    return Failure("ConvertRecordToAvro: hamba.Parse: ${hErr.Error()}", ff)
+                }
+
                 // Single-record only — the inverse processor reads one record
-                // per blob. Multi-record OCF lives in avro_ocf.zn.
+                // per blob. Multi-record streams live in avro_ocf.zn.
                 var rec = records[0]
-                var bytes = writeRecord(byte[0], rec, schema)
+                var bytes, mErr = hambaAvro.Marshal(hSchema, coerceForSchema(rec, schema))
+                if (mErr != nil) {
+                    return Failure("ConvertRecordToAvro: encode failed: ${mErr.Error()}", ff)
+                }
+
                 var stamped = withAttribute(ff, "avro.schema", emitFieldDefs(schema))
                 var updated = withContent(stamped, Raw(bytes))
                 if (len(records) > 1) {
@@ -323,15 +176,110 @@ pub (ProcessorFn, error) ConvertRecordToAvroFactory(ScopedContext ctx, Map<Strin
     return ConvertRecordToAvro(), nil
 }
 
+// coerceForSchema returns a map[string]any whose value Go-types match what
+// hamba expects for each schema field. The path that matters: JSON
+// upstream produces float64 for every number, which hamba rejects when
+// the schema says int/long. CSV upstream produces strings; user code is
+// usually correct (long/int explicitly). We coerce a small set of common
+// cases here; anything else passes through untouched and lets hamba error
+// surface to Failure.
+Map<String, Object> coerceForSchema(GenericRecord rec, core.Schema schema) {
+    var out = Map<String, Object>{}
+    for (f in schema.fields) {
+        var v = rec.getField(f.name)
+        match (f.fieldType) {
+            case INT     { out[f.name] = asInt(v) }
+            case LONG    { out[f.name] = asLong(v) }
+            case FLOAT   { out[f.name] = asFloat32(v) }
+            case DOUBLE  { out[f.name] = asDouble(v) }
+            case BOOLEAN { out[f.name] = asBool(v) }
+            case STRING  { out[f.name] = asString(v) }
+            case BYTES   { out[f.name] = asBytes(v) }
+            case _       { out[f.name] = v }
+        }
+    }
+    return out
+}
+
+// --- Type coercion helpers ---------------------------------------------
+// Records can arrive from JSON (json.Unmarshal yields float64 for every
+// number), CSV (every cell is a string), or user code. hamba is strict
+// about the value type matching the schema's primitive — these helpers
+// normalize so encode succeeds without per-call-site casting.
+
+bool asBool(Object v) {
+    if (v == nil) { return false }
+    var b = v as bool or {
+        var s = v as String or { return false }
+        return s == "true"
+    }
+    return b
+}
+
+int asInt(Object v) {
+    if (v == nil) { return 0 }
+    var i = v as int or {
+        var l = v as long or {
+            var f = v as double or { return 0 }
+            return int(f)
+        }
+        return int(l)
+    }
+    return i
+}
+
+long asLong(Object v) {
+    if (v == nil) { return long(0) }
+    var l = v as long or {
+        var i = v as int or {
+            var f = v as double or { return long(0) }
+            return long(f)
+        }
+        return long(i)
+    }
+    return l
+}
+
+double asDouble(Object v) {
+    if (v == nil) { return 0.0 }
+    var f = v as double or {
+        var i = v as int or {
+            var l = v as long or { return 0.0 }
+            return double(l)
+        }
+        return double(i)
+    }
+    return f
+}
+
+// asFloat32 — hamba expects Go float32 for "float" Avro type. Zinc has no
+// float32 surface, so we return double here and rely on hamba's tolerance
+// for double values when the schema says float (it does the narrowing).
+double asFloat32(Object v) {
+    return asDouble(v)
+}
+
+String asString(Object v) {
+    if (v == nil) { return "" }
+    var s = v as String or { return "" }
+    return s
+}
+
+byte[] asBytes(Object v) {
+    if (v == nil) { return byte[0] }
+    var s = v as String or { return byte[0] }
+    return s.toBytes()
+}
+
 // --- field_defs parser/emitter -----------------------------------------
 
 // parseFieldDefs — "id:long, name:string" → Schema. Same syntax as csharp
 // (RecordProcessors.cs:54). Names case-sensitive; types fold to lowercase.
-pub (Schema, error) parseFieldDefs(String name, String defs) {
-    var fields = List<Field>[]
+pub (core.Schema, error) parseFieldDefs(String name, String defs) {
+    var fields = List<core.Field>[]
     var trimmed = strings.TrimSpace(defs)
     if (trimmed == "") {
-        return Schema(name, fields), nil
+        return core.Schema(name, fields), nil
     }
     for (part in strings.Split(trimmed, ",")) {
         var p = strings.TrimSpace(part)
@@ -340,23 +288,23 @@ pub (Schema, error) parseFieldDefs(String name, String defs) {
         }
         var idx = strings.Index(p, ":")
         if (idx < 0) {
-            return Schema("", List<Field>[]), errors.ConfigError("malformed field def '${p}' — expected 'name:type'")
+            return core.Schema("", List<core.Field>[]), errors.ConfigError("malformed field def '${p}' — expected 'name:type'")
         }
         var fname = strings.TrimSpace(p[0:idx])
         var ftypeStr = strings.ToLower(strings.TrimSpace(p[idx+1:len(p)]))
         if (fname == "" || ftypeStr == "") {
-            return Schema("", List<Field>[]), errors.ConfigError("malformed field def '${p}' — expected 'name:type'")
+            return core.Schema("", List<core.Field>[]), errors.ConfigError("malformed field def '${p}' — expected 'name:type'")
         }
         var ft, terr = fieldTypeFromName(ftypeStr)
         if (terr != nil) {
-            return Schema("", List<Field>[]), errors.ConfigError("field '${fname}': ${terr.Error()}")
+            return core.Schema("", List<core.Field>[]), errors.ConfigError("field '${fname}': ${terr.Error()}")
         }
-        fields = append(fields, Field(fname, ft, null))
+        fields = append(fields, core.Field(fname, ft, null))
     }
-    return Schema(name, fields), nil
+    return core.Schema(name, fields), nil
 }
 
-pub String emitFieldDefs(Schema s) {
+pub String emitFieldDefs(core.Schema s) {
     var parts = List<String>[]
     for (f in s.fields) {
         parts = append(parts, f.name + ":" + fieldTypeName(f.fieldType))

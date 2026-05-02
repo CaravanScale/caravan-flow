@@ -1,319 +1,111 @@
 // Avro Object Container File (OCF) reader/writer + ConvertOCFToRecord /
-// ConvertRecordToOCF processors. Hand-rolled per Apache Avro 1.11 spec.
+// ConvertRecordToOCF processors.
 //
-// Mirrors zinc-flow-csharp's AvroOCF (StdLib/AvroOCF.cs:20-252).
+// Backed by github.com/hamba/avro/v2/ocf — Encoder/Decoder handle the
+// file format, codec selection (null/deflate/snappy/zstandard), block
+// framing, and sync markers. The zinc side wires bytes.Buffer ↔ FlowFile
+// content and bridges zinc Schema ↔ Avro JSON ↔ hamba Schema.
 //
-// File layout (spec §1.11.1 §object_container_files):
-//   magic     : 4 bytes  = "Obj\x01"
-//   metadata  : Avro-encoded map<string, bytes> — must include
-//               "avro.schema" (JSON), optional "avro.codec"
-//   sync      : 16 random bytes
-//   blocks*   : { count: long, size: long, data: bytes (codec-encoded),
-//                 sync: 16 bytes }
-//
-// Supported codecs: null, deflate (compress/flate), zstandard
-// (klauspost/compress/zstd). snappy intentionally deferred — least
-// common in modern Avro and not on the critical path.
-//
-// Reader handles arbitrary block counts; writer emits one block per
-// call to writeOcf for simplicity.
+// File layout (spec §1.11.1 §object_container_files) is hamba's
+// responsibility. We only deal with byte slices on each end.
 
 import core
 import bytes
-import compress/flate
-import crypto/rand
 import fabric/registry
-import io
+import hambaAvro
+import hambaOcf
 import stdlib/errors
-import zstd
 
 // --- Constants ----------------------------------------------------------
 
 pub const CODEC_NULL = "null"
 pub const CODEC_DEFLATE = "deflate"
 pub const CODEC_ZSTANDARD = "zstandard"
-
-// magic is the 4-byte "Obj\x01" sentinel that opens every OCF file.
-byte[] ocfMagic() {
-    var m = byte[4]
-    m[0] = byte(0x4F) // 'O'
-    m[1] = byte(0x62) // 'b'
-    m[2] = byte(0x6A) // 'j'
-    m[3] = byte(0x01)
-    return m
-}
+pub const CODEC_SNAPPY = "snappy"
 
 bool isSupportedCodec(String c) {
-    return c == CODEC_NULL || c == CODEC_DEFLATE || c == CODEC_ZSTANDARD
+    return c == CODEC_NULL || c == CODEC_DEFLATE ||
+           c == CODEC_ZSTANDARD || c == CODEC_SNAPPY
 }
 
 // --- OCF reader ---------------------------------------------------------
 
-// readOcf parses an OCF blob. Returns the writer schema, all decoded
-// records, and any error encountered. Handles arbitrary block counts.
-pub (Schema, List<GenericRecord>, error) readOcf(byte[] data) {
-    var zero = Schema("", List<Field>[])
-    if (len(data) < 4 + 16) {
-        return zero, List<GenericRecord>[], errors.ConfigError("OCF truncated: missing magic or sync")
+// readOcf parses an OCF blob using hamba's streaming decoder. Returns the
+// writer schema (decoded from header metadata via the JSON we asked for),
+// every record found in the file, and any error from hamba.
+pub (core.Schema, List<GenericRecord>, error) readOcf(byte[] data) {
+    var zero = core.Schema("", List<core.Field>[])
+    if (len(data) == 0) {
+        return zero, List<GenericRecord>[], errors.ConfigError("OCF empty input")
     }
-    var offset = 0
-
-    // Magic
-    var magic = ocfMagic()
-    var i = 0
-    while (i < 4) {
-        if (data[offset + i] != magic[i]) {
-            return zero, List<GenericRecord>[], errors.ConfigError("invalid Avro OCF magic")
-        }
-        i = i + 1
+    var rdr = bytes.NewReader(data)
+    var dec, derr = hambaOcf.NewDecoder(rdr)
+    if (derr != nil) {
+        return zero, List<GenericRecord>[], derr
     }
-    offset = offset + 4
 
-    // Metadata map
-    var metadata, mn, merr = readMetadataMap(data, offset)
-    if (merr != nil) {
-        return zero, List<GenericRecord>[], merr
-    }
-    offset = offset + mn
-
-    if (!metadata.containsKey("avro.schema")) {
+    // hamba doesn't expose the parsed writer schema directly, but
+    // round-trip files written via writeOcf carry the JSON in the
+    // standard `avro.schema` metadata key. Pull it back out, parse on
+    // the zinc side, and use that as the canonical schema.
+    var meta = dec.Metadata()
+    if (!meta.containsKey("avro.schema")) {
         return zero, List<GenericRecord>[], errors.ConfigError("OCF metadata missing avro.schema")
     }
-    var schemaJson = string(metadata["avro.schema"])
+    var schemaJson = string(meta["avro.schema"])
     var schema, sErr = parseSchemaJson(schemaJson)
     if (sErr != nil) {
         return zero, List<GenericRecord>[], errors.ConfigError("OCF schema invalid: ${sErr.Error()}")
     }
 
-    var codec = CODEC_NULL
-    if (metadata.containsKey("avro.codec")) {
-        codec = string(metadata["avro.codec"])
+    var records = List<GenericRecord>[]
+    while (dec.HasNext()) {
+        var raw = Map<String, Object>{}
+        dec.Decode(&raw) or {
+            return zero, records, err
+        }
+        var rec = GenericRecord(schema)
+        for (k, v in raw) {
+            rec.setField(k, v)
+        }
+        records = append(records, rec)
     }
-    if (!isSupportedCodec(codec)) {
-        return zero, List<GenericRecord>[], errors.ConfigError("unsupported OCF codec: ${codec}")
+    if (dec.Error() != nil) {
+        return zero, records, dec.Error()
     }
-
-    // Sync marker
-    if (offset + 16 > len(data)) {
-        return zero, List<GenericRecord>[], errors.ConfigError("OCF truncated before sync marker")
-    }
-    var sync = byte[16]
-    var s = 0
-    while (s < 16) {
-        sync[s] = data[offset + s]
-        s = s + 1
-    }
-    offset = offset + 16
-
-    // Blocks
-    var allRecords = List<GenericRecord>[]
-    while (offset < len(data)) {
-        var count, cn, cErr = readVarint(data, offset)
-        if (cErr != nil) { return zero, allRecords, cErr }
-        offset = offset + cn
-        var size, sn, sizErr = readVarint(data, offset)
-        if (sizErr != nil) { return zero, allRecords, sizErr }
-        offset = offset + sn
-
-        var iSize = int(size)
-        if (iSize < 0 || offset + iSize + 16 > len(data)) {
-            return zero, allRecords, errors.ConfigError("OCF block truncated")
-        }
-
-        var blockData = byte[iSize]
-        var bi = 0
-        while (bi < iSize) {
-            blockData[bi] = data[offset + bi]
-            bi = bi + 1
-        }
-        offset = offset + iSize
-
-        // Sync verify
-        var si = 0
-        while (si < 16) {
-            if (data[offset + si] != sync[si]) {
-                return zero, allRecords, errors.ConfigError("OCF block sync mismatch")
-            }
-            si = si + 1
-        }
-        offset = offset + 16
-
-        // Decompress
-        if (codec == CODEC_DEFLATE) {
-            var decompressed, derr = inflateDeflate(blockData)
-            if (derr != nil) { return zero, allRecords, derr }
-            blockData = decompressed
-        } else if (codec == CODEC_ZSTANDARD) {
-            var decompressed, derr = inflateZstd(blockData)
-            if (derr != nil) { return zero, allRecords, derr }
-            blockData = decompressed
-        }
-
-        // Decode count records out of blockData
-        var blockOffset = 0
-        var rcount = long(0)
-        while (rcount < count) {
-            var rec, n, rerr = readRecord(blockData, blockOffset, schema)
-            if (rerr != nil) { return zero, allRecords, rerr }
-            allRecords = append(allRecords, rec)
-            blockOffset = blockOffset + n
-            rcount = rcount + long(1)
-        }
-    }
-
-    return schema, allRecords, nil
-}
-
-// readMetadataMap parses the Avro-encoded map<string, bytes> at the start
-// of an OCF header. Avro arrays/maps use chunked length encoding: a
-// nonzero count introduces a chunk of |count| key-value pairs; zero
-// terminates. Negative count means a size-in-bytes prefix follows
-// (which we skip and treat as |count| entries).
-(Map<String, byte[]>, int, error) readMetadataMap(byte[] data, int startOffset) {
-    var result = Map<String, byte[]>{}
-    var offset = startOffset
-    while (true) {
-        var count, cn, cErr = readVarint(data, offset)
-        if (cErr != nil) { return result, offset - startOffset, cErr }
-        offset = offset + cn
-        if (count == 0) {
-            return result, offset - startOffset, nil
-        }
-        if (count < 0) {
-            // Spec-defined size prefix — read and discard.
-            var _size, sn, sErr = readVarint(data, offset)
-            if (sErr != nil) { return result, offset - startOffset, sErr }
-            _ = _size
-            offset = offset + sn
-            count = -count
-        }
-        var i = long(0)
-        while (i < count) {
-            var key, kn, kErr = readString(data, offset)
-            if (kErr != nil) { return result, offset - startOffset, kErr }
-            offset = offset + kn
-            var val, vn, vErr = readBytes(data, offset)
-            if (vErr != nil) { return result, offset - startOffset, vErr }
-            offset = offset + vn
-            result[key] = val
-            i = i + long(1)
-        }
-    }
-    return result, offset - startOffset, nil
+    return schema, records, nil
 }
 
 // --- OCF writer ---------------------------------------------------------
 
-// writeOcf serializes records as a single-block OCF. Embeds the schema as
-// JSON in the metadata header. Codec must be one of CODEC_NULL,
-// CODEC_DEFLATE, CODEC_ZSTANDARD.
-pub (byte[], error) writeOcf(List<GenericRecord> records, Schema schema, String codec) {
+// writeOcf serializes records into an OCF blob using hamba's streaming
+// encoder. Writes a single block per Encode call (default block-length
+// behavior — hamba flushes on Close).
+pub (byte[], error) writeOcf(List<GenericRecord> records, core.Schema schema, String codec) {
     if (!isSupportedCodec(codec)) {
         return byte[0], errors.ConfigError("unsupported OCF codec: ${codec}")
     }
-
-    // Encode every record into a contiguous buffer.
-    var blockBuf = byte[0]
-    for (rec in records) {
-        blockBuf = writeRecord(blockBuf, rec, schema)
-    }
-
-    // Compress block per codec.
-    if (codec == CODEC_DEFLATE) {
-        var compressed, cerr = deflateBytes(blockBuf)
-        if (cerr != nil) { return byte[0], cerr }
-        blockBuf = compressed
-    } else if (codec == CODEC_ZSTANDARD) {
-        var compressed, cerr = deflateZstd(blockBuf)
-        if (cerr != nil) { return byte[0], cerr }
-        blockBuf = compressed
-    }
-
-    // Sync marker — 16 random bytes.
-    var sync = byte[16]
-    rand.Read(sync) or {
-        return byte[0], errors.ConfigError("OCF sync marker generation failed: ${err.Error()}")
-    }
-
-    // Build the schema JSON.
     var schemaJson, sjErr = emitSchemaJson(schema)
     if (sjErr != nil) {
         return byte[0], errors.ConfigError("OCF schema JSON emit failed: ${sjErr.Error()}")
     }
 
-    var out = byte[0]
-    // Magic
-    var magic = ocfMagic()
-    for (b in magic) { out = append(out, b) }
-
-    // Metadata: { avro.schema, avro.codec }. `codecName` instead of `codec`
-    // because the latter shadows the package name inside the codec/ pkg.
-    var codecName = codec
-    var meta = Map<String, byte[]>{}
-    meta["avro.schema"] = schemaJson.toBytes()
-    meta["avro.codec"] = codecName.toBytes()
-    out = writeMetadataMap(out, meta)
-
-    // Sync marker
-    for (b in sync) { out = append(out, b) }
-
-    // Single block: count, size, data, sync
-    out = writeVarint(out, long(len(records)))
-    out = writeVarint(out, long(len(blockBuf)))
-    for (b in blockBuf) { out = append(out, b) }
-    for (b in sync) { out = append(out, b) }
-
-    return out, nil
-}
-
-// writeMetadataMap emits an Avro-encoded map<string, bytes> plus the
-// trailing zero terminator.
-byte[] writeMetadataMap(byte[] buf, Map<String, byte[]> m) {
-    buf = writeVarint(buf, long(len(m)))
-    for (k, v in m) {
-        buf = writeString(buf, k)
-        buf = writeVarint(buf, long(len(v)))
-        for (b in v) { buf = append(buf, b) }
-    }
-    buf = writeVarint(buf, long(0))
-    return buf
-}
-
-// --- Codec helpers ------------------------------------------------------
-
-(byte[], error) deflateBytes(byte[] raw) {
     var buf = new bytes.Buffer
-    var w, werr = flate.NewWriter(buf, flate.BestSpeed)
-    if (werr != nil) { return byte[0], werr }
-    w.Write(raw)
-    w.Close()
+    var enc, eerr = hambaOcf.NewEncoder(schemaJson, buf, hambaOcf.WithCodec(hambaOcf.CodecName(codec)))
+    if (eerr != nil) {
+        return byte[0], eerr
+    }
+
+    for (rec in records) {
+        enc.Encode(coerceForSchema(rec, schema)) or {
+            enc.Close()
+            return byte[0], err
+        }
+    }
+    enc.Close() or {
+        return byte[0], err
+    }
     return buf.Bytes(), nil
-}
-
-(byte[], error) inflateDeflate(byte[] compressed) {
-    var rdr = bytes.NewReader(compressed)
-    var fr = flate.NewReader(rdr)
-    var out, rerr = io.ReadAll(fr)
-    if (rerr != nil) { return byte[0], rerr }
-    fr.Close()
-    return out, nil
-}
-
-(byte[], error) deflateZstd(byte[] raw) {
-    var enc, eerr = zstd.NewWriter(nil)
-    if (eerr != nil) { return byte[0], eerr }
-    var compressed = enc.EncodeAll(raw, byte[0])
-    enc.Close()
-    return compressed, nil
-}
-
-(byte[], error) inflateZstd(byte[] compressed) {
-    var dec, derr = zstd.NewReader(nil)
-    if (derr != nil) { return byte[0], derr }
-    var out, rerr = dec.DecodeAll(compressed, byte[0])
-    dec.Close()
-    if (rerr != nil) { return byte[0], rerr }
-    return out, nil
 }
 
 // --- Processors ---------------------------------------------------------
@@ -353,11 +145,11 @@ class ConvertOCFToRecord : ProcessorFn {
             return Failure("ConvertOCFToRecord: no records in OCF", ff)
         }
 
-        // Reader-schema projection (when configured): drop fields the
-        // reader schema doesn't list, keep ones that exist in both.
-        // Full evolution (type promotion, defaults) lives in avro_resolver.zn
-        // — for commit 3 we ship the field-drop case which covers the
-        // most common evolution scenario.
+        // Reader-schema projection (optional): drop fields the reader
+        // schema doesn't list, keep ones that exist in both. Full
+        // evolution (type promotion + defaults) is hamba's job once we
+        // reach for `NewDecoderWithSchema` — for now we ship the field-
+        // drop case which covers the most common evolution scenario.
         var effectiveSchema = writerSchema
         if (readerSchemaJson != "") {
             var readerSchema, rserr = parseSchemaJson(readerSchemaJson)
@@ -430,7 +222,7 @@ pub (ProcessorFn, error) ConvertRecordToOCFFactory(ScopedContext ctx, Map<String
         codec = config["codec"]
     }
     if (!isSupportedCodec(codec)) {
-        return nil, errors.ConfigError("ConvertRecordToOCF: unsupported codec '${codec}' — valid: null, deflate, zstandard")
+        return nil, errors.ConfigError("ConvertRecordToOCF: unsupported codec '${codec}' — valid: null, deflate, snappy, zstandard")
     }
     return ConvertRecordToOCF(codec), nil
 }
@@ -439,19 +231,18 @@ pub (ProcessorFn, error) ConvertRecordToOCFFactory(ScopedContext ctx, Map<String
 
 // projectRecords drops fields not in the reader schema, leaves the rest
 // untouched. Keeps the same record count. Type promotion + defaults are
-// future avro_resolver.zn work.
-List<GenericRecord> projectRecords(List<GenericRecord> records, Schema reader, Schema writer) {
+// future work (hamba's NewDecoderWithSchema already handles this — wire
+// up when we add a reader-schema config that holds the parsed Schema).
+List<GenericRecord> projectRecords(List<GenericRecord> records, core.Schema reader, core.Schema writer) {
     var out = List<GenericRecord>[]
     for (rec in records) {
         var projected = GenericRecord(reader)
         for (rf in reader.fields) {
-            // Use the writer's value if present; nil otherwise (caller can
-            // post-process for default fill via avro_resolver).
             var v = rec.getField(rf.name)
             projected.setField(rf.name, v)
         }
         out = append(out, projected)
-        _ = writer  // reserved for future promotion logic in avro_resolver
+        _ = writer  // reserved for future promotion logic
     }
     return out
 }

@@ -89,7 +89,7 @@ class ApiHandler {
             return
         }
         var req = Map<String, Object>{}
-        json.Unmarshal(body, req) or {
+        json.Unmarshal(body, &req) or {
             writeError(w, 400, "invalid json")
             return
         }
@@ -139,7 +139,7 @@ class ApiHandler {
             return
         }
         var req = Map<String, Object>{}
-        json.Unmarshal(body, req) or {
+        json.Unmarshal(body, &req) or {
             writeError(w, 400, "invalid json")
             return
         }
@@ -173,7 +173,7 @@ class ApiHandler {
             return
         }
         var req = Map<String, Object>{}
-        json.Unmarshal(body, req) or {
+        json.Unmarshal(body, &req) or {
             writeError(w, 400, "invalid json")
             return
         }
@@ -203,7 +203,7 @@ class ApiHandler {
             return
         }
         var req = Map<String, Object>{}
-        json.Unmarshal(body, req) or {
+        json.Unmarshal(body, &req) or {
             writeError(w, 400, "invalid json")
             return
         }
@@ -230,7 +230,7 @@ class ApiHandler {
             return
         }
         var req = Map<String, Object>{}
-        json.Unmarshal(body, req) or {
+        json.Unmarshal(body, &req) or {
             writeError(w, 400, "invalid json")
             return
         }
@@ -262,7 +262,7 @@ class ApiHandler {
             return
         }
         var req = Map<String, Object>{}
-        json.Unmarshal(body, req) or {
+        json.Unmarshal(body, &req) or {
             writeError(w, 400, "invalid json")
             return
         }
@@ -276,7 +276,7 @@ class ApiHandler {
         if (req.containsKey("config")) {
             var rawConfig = Map<String, String>{}
             var configBytes = json.Marshal(req["config"]) or { byte[0] }
-            json.Unmarshal(configBytes, rawConfig) or {}
+            json.Unmarshal(configBytes, &rawConfig) or {}
             var keys = rawConfig.keys()
             for (k in keys) {
                 config[k] = rawConfig[k]
@@ -304,7 +304,7 @@ class ApiHandler {
             return
         }
         var req = Map<String, Object>{}
-        json.Unmarshal(body, req) or {
+        json.Unmarshal(body, &req) or {
             writeError(w, 400, "invalid json")
             return
         }
@@ -364,7 +364,7 @@ class ApiHandler {
             return
         }
         var req = Map<String, Object>{}
-        json.Unmarshal(body, req) or {
+        json.Unmarshal(body, &req) or {
             writeError(w, 400, "invalid json")
             return
         }
@@ -394,7 +394,7 @@ class ApiHandler {
             return
         }
         var req = Map<String, Object>{}
-        json.Unmarshal(body, req) or {
+        json.Unmarshal(body, &req) or {
             writeError(w, 400, "invalid json")
             return
         }
@@ -413,11 +413,12 @@ class ApiHandler {
     }
 }
 
-// readBody reads the full request body, returning null on failure.
-byte[] readBody(Request r) {
-    var body = ReadAll(r.Body) or { return null }
+// readBody reads the full request body. Errors-as-values shape:
+// returns the bytes + nil on success, empty + error on failure.
+(byte[], error) readBody(Request r) {
+    var body = ReadAll(r.Body) or { return byte[0], err }
     r.Body.Close()
-    return body
+    return body, null
 }
 
 // strVal extracts a string value from a map, returning "" if missing.
