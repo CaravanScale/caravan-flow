@@ -1,0 +1,172 @@
+// Avro schema evolution: given a writer schema W (the one bytes were
+// encoded with) and a reader schema R (what consumer code expects),
+// check whether R can read W and, if so, project decoded records onto
+// R, applying type promotion and defaults.
+//
+// Implemented as two-pass: decode using W (existing OCF reader behavior),
+// then per-record project into R. Less efficient than fused
+// promote-on-read but matches the simplicity of the rest of the codec
+// — at zinc-flow's per-record granularity the cost is negligible.
+//
+// Promotion rules (per Avro 1.11 spec §"Schema Resolution"):
+//   int → long, float, double
+//   long → float, double
+//   float → double
+//   string ↔ bytes
+//
+// Mirrors zinc-flow-csharp/ZincFlow/StdLib/SchemaResolver.cs.
+
+import core
+import strings
+
+// SchemaCompatibility — outcome of a Check call. Errors are blocking
+// (the schemas can't roundtrip safely); warnings document permitted
+// divergences (writer-only fields dropped on read, reader-only fields
+// filled src defaults).
+class SchemaCompatibility {
+    pub List<String> errors = List<String>[]
+    pub List<String> warnings = List<String>[]
+
+    init() {}
+
+    pub bool isCompatible() {
+        return len(errors) == 0
+    }
+
+    pub String String() {
+        if (len(errors) == 0 && len(warnings) == 0) {
+            return "compatible"
+        }
+        return "errors=[" + strings.Join(errors, "; ") + "] warnings=[" + strings.Join(warnings, "; ") + "]"
+    }
+}
+
+// check reports whether a reader schema can safely consume bytes
+// written with a writer schema. Returns SchemaCompatibility with
+// errors for blocking incompatibilities and warnings for permitted
+// divergences (writer-only fields dropped, reader-only fields filled
+// src defaults).
+pub SchemaCompatibility check(core.Schema reader, core.Schema writer) {
+    var result = SchemaCompatibility()
+    var writerByName = Map<String, core.Field>{}
+    for (f in writer.fields) {
+        writerByName[f.name] = f
+    }
+    var readerNames = Map<String, bool>{}
+    for (f in reader.fields) {
+        readerNames[f.name] = true
+    }
+
+    for (rField in reader.fields) {
+        if (writerByName.containsKey(rField.name)) {
+            var wField = writerByName[rField.name]
+            if (!isPromotable(wField.fieldType, rField.fieldType)) {
+                result.errors = append(result.errors,
+                    "field '${rField.name}': cannot promote ${wField.fieldType} → ${rField.fieldType}")
+            }
+        } else if (rField.defaultValue == null) {
+            result.errors = append(result.errors,
+                "field '${rField.name}': missing in writer and has no default")
+        } else {
+            result.warnings = append(result.warnings,
+                "field '${rField.name}': missing in writer, will use default")
+        }
+    }
+
+    for (wField in writer.fields) {
+        if (!readerNames.containsKey(wField.name)) {
+            result.warnings = append(result.warnings,
+                "field '${wField.name}': writer-only, will be dropped on read")
+        }
+    }
+
+    return result
+}
+
+// project a record decoded with the writer schema onto the reader
+// schema. Applies field-by-field promotion and fills missing fields
+// src reader defaults. Caller must verify check(reader, writer)
+// returned isCompatible() == true first; this routine assumes the
+// promotions all succeed.
+pub core.GenericRecord project(core.GenericRecord source, core.Schema readerSchema, core.Schema writerSchema) {
+    var target = core.GenericRecord(readerSchema)
+    var writerByName = Map<String, core.Field>{}
+    for (f in writerSchema.fields) {
+        writerByName[f.name] = f
+    }
+
+    for (rField in readerSchema.fields) {
+        if (!writerByName.containsKey(rField.name)) {
+            // Reader-only field — use default (check() guaranteed it's present).
+            target.setField(rField.name, rField.defaultValue)
+            continue
+        }
+        var wField = writerByName[rField.name]
+        var sourceVal = source.getField(rField.name)
+        if (sourceVal == null) {
+            target.setField(rField.name, rField.defaultValue)
+            continue
+        }
+        target.setField(rField.name, promote(sourceVal, wField.fieldType, rField.fieldType))
+    }
+
+    // Writer-only fields are silently dropped (not added to target).
+    return target
+}
+
+// isPromotable reports whether an Avro value of `src` type can be
+// safely converted to `to` type per the spec's resolution rules.
+pub bool isPromotable(core.FieldType src, core.FieldType to) {
+    if (src == to) { return true }
+    if (src == core.INT && to == core.LONG)    { return true }
+    if (src == core.INT && to == core.FLOAT)   { return true }
+    if (src == core.INT && to == core.DOUBLE)  { return true }
+    if (src == core.LONG && to == core.FLOAT)  { return true }
+    if (src == core.LONG && to == core.DOUBLE) { return true }
+    if (src == core.FLOAT && to == core.DOUBLE) { return true }
+    if (src == core.STRING && to == core.BYTES) { return true }
+    // BYTES → STRING is omitted: `value as byte[]` doesn't parse in
+    // zinc-go yet (the `as` form's RHS only accepts dotted ident
+    // chains, no array suffix), so the BYTES → STRING promotion
+    // can't be implemented at the value boundary today. C# parity
+    // gap noted; revisit once `as byte[]` is supported.
+    return false
+}
+
+// promote converts an Avro value across the schema-resolution
+// promotion table. Caller is responsible for ensuring isPromotable
+// returned true; unsupported pairs return the source value unchanged.
+pub Object promote(Object value, core.FieldType src, core.FieldType to) {
+    if (value == null) { return null }
+    if (src == to) { return value }
+    if (src == core.INT && to == core.LONG) {
+        var i = value as int or { return value }
+        return long(i)
+    }
+    if (src == core.INT && to == core.FLOAT) {
+        var i = value as int or { return value }
+        return double(i)
+    }
+    if (src == core.INT && to == core.DOUBLE) {
+        var i = value as int or { return value }
+        return double(i)
+    }
+    if (src == core.LONG && to == core.FLOAT) {
+        var l = value as long or { return value }
+        return double(l)
+    }
+    if (src == core.LONG && to == core.DOUBLE) {
+        var l = value as long or { return value }
+        return double(l)
+    }
+    if (src == core.FLOAT && to == core.DOUBLE) {
+        var f = value as double or { return value }
+        return f
+    }
+    if (src == core.STRING && to == core.BYTES) {
+        var s = value as String or { return value }
+        return s.toBytes()
+    }
+    // BYTES → STRING omitted; see isPromotable.
+    return value
+}
