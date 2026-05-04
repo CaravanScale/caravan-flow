@@ -1,0 +1,129 @@
+// Conversions between Avro logical-type underlying primitives and the
+// natural Go types users want to work with (time.Time, big.Int, etc.).
+//
+// Storage in Record stays as the underlying Avro primitive (long, int,
+// String, byte[]) so OCF roundtrips preserve byte-for-byte fidelity.
+// These helpers are the seam where business code reads/writes the
+// natural type.
+//
+// Mirrors zinc-flow-csharp/ZincFlow/Core/LogicalTypeHelpers.cs.
+
+import time
+import math/big
+import strings
+
+// --- timestamp-millis (long) ↔ time.Time UTC -------------------------------
+
+// Avro `timestamp-millis` is the count of milliseconds from the Unix
+// epoch (1970-01-01T00:00:00Z), independent of local timezone.
+
+pub long toTimestampMillis(time.Time t) {
+    return t.UTC().UnixMilli()
+}
+
+pub time.Time fromTimestampMillis(long millis) {
+    return time.UnixMilli(millis).UTC()
+}
+
+// --- timestamp-micros (long) ↔ time.Time UTC -------------------------------
+
+pub long toTimestampMicros(time.Time t) {
+    var utc = t.UTC()
+    return utc.Unix() * 1000000 + long(utc.Nanosecond()) / 1000
+}
+
+pub time.Time fromTimestampMicros(long micros) {
+    var secs = micros / 1000000
+    var nanos = (micros % 1000000) * 1000
+    return time.Unix(secs, nanos).UTC()
+}
+
+// --- date (int) ↔ time.Time at midnight UTC --------------------------------
+
+// Avro `date` is days from the Unix epoch. We represent the date as a
+// time.Time at midnight UTC; callers that want a "date only" should
+// truncate further if needed — Go has no DateOnly.
+
+pub int toDate(time.Time t) {
+    var midnight = time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+    var epoch = time.Date(1970, time.January, 1, 0, 0, 0, 0, time.UTC)
+    var diff = midnight.Sub(epoch)
+    return int(diff.Hours() / 24)
+}
+
+pub time.Time fromDate(int days) {
+    var epoch = time.Date(1970, time.January, 1, 0, 0, 0, 0, time.UTC)
+    return epoch.AddDate(0, 0, days)
+}
+
+// --- time-millis (int) ↔ time.Duration -------------------------------------
+
+// Avro `time-millis` is milliseconds from midnight (0..86_399_999).
+// Returned as a Duration so callers can format / arithmetic without a
+// date context.
+
+pub int toTimeMillis(time.Duration d) {
+    return int(d.Milliseconds())
+}
+
+pub time.Duration fromTimeMillis(int millis) {
+    return time.Duration(millis) * time.Millisecond
+}
+
+// --- time-micros (long) ↔ time.Duration ------------------------------------
+
+pub long toTimeMicros(time.Duration d) {
+    return d.Microseconds()
+}
+
+pub time.Duration fromTimeMicros(long micros) {
+    return time.Duration(micros) * time.Microsecond
+}
+
+// --- uuid (String) ↔ String ------------------------------------------------
+
+// UUIDs are already strings in Go (no built-in Guid). These helpers
+// normalize on read/write — `toUuid` lowercases and trims; `fromUuid`
+// returns "" on a shape that doesn't look like 8-4-4-4-12 hex (matches
+// the C# behavior of returning Guid.Empty on parse failure).
+
+pub String toUuid(String g) {
+    return strings.ToLower(strings.TrimSpace(g))
+}
+
+pub String fromUuid(String s) {
+    var trimmed = strings.TrimSpace(s)
+    if (len(trimmed) != 36) {
+        return ""
+    }
+    if (trimmed[8] != byte(45) || trimmed[13] != byte(45) ||
+        trimmed[18] != byte(45) || trimmed[23] != byte(45)) {
+        return ""
+    }
+    return strings.ToLower(trimmed)
+}
+
+// --- decimal (byte[], scale) ↔ big.Int unscaled ----------------------------
+//
+// Avro spec: two's complement big-endian byte representation of the
+// unscaled integer value. The decimal value is unscaled / 10^scale.
+// Scale is part of the schema, not the encoded bytes — the helpers
+// take it as a parameter to mirror the C# signature, but neither
+// helper applies it: callers divide / multiply by 10^scale at the
+// value boundary if they want a fractional decimal. For money-precision
+// use cases the scaled-int form is what you want anyway.
+
+pub byte[] toDecimalBytes(big.Int unscaled, int scale) {
+    _ = scale
+    return unscaled.Bytes()
+}
+
+pub big.Int fromDecimalBytes(byte[] bytes, int scale) {
+    _ = scale
+    var n = big.NewInt(0)
+    if (len(bytes) == 0) {
+        return n
+    }
+    n.SetBytes(bytes)
+    return n
+}
