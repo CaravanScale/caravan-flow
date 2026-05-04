@@ -1,0 +1,127 @@
+// QueryRecord — filter records using a JSONPath-style query.
+//
+// Supported query shapes (RFC-9535 subset):
+//   $                              all records (pass-through)
+//   $[*]                           all records (explicit form)
+//   $[?(@.field op value)]         predicate filter
+//   $[?(@.a > 1 && @.b == "x")]    compound predicate
+//
+// Implementation: rather than pull in a full JSONPath library, we
+// reuse the ExpressionEngine as the predicate evaluator. JSONPath
+// `@.field` references map cleanly onto bare-identifier resolution
+// (after stripping the `@.` prefix), and the engine already handles
+// all the operator/type-coercion semantics needed for `==`, `!=`,
+// `<`, `>`, `<=`, `>=`, `&&`, `||`, plus string/numeric mixing.
+//
+// Mirrors zinc-flow-csharp/ZincFlow/StdLib/RecordProcessors.cs#QueryRecord.
+// Both tracks accept the same JSONPath strings in YAML so configs
+// are portable. Full JSONPath features (recursive descent, slices,
+// unions) aren't implemented yet — those queries return a parse error
+// rather than silently mismatching.
+
+import stdlib/errors
+import strings
+import core
+import expressions
+import fabric/registry
+
+// RecordResolver — binds expression identifiers to fields of a single
+// GenericRecord. Drives the predicate evaluation per-record so each
+// candidate's `@.amount > 100` resolves to its own amount.
+class RecordResolver : expressions.ValueResolver {
+    GenericRecord record
+
+    init(GenericRecord record) {
+        this.record = record
+    }
+
+    pub EvalValue resolve(String name) {
+        return expressions.evalFromObject(record.getField(name))
+    }
+}
+
+class QueryRecord : ProcessorFn {
+    String query
+    bool matchAll
+    CompiledExpression? predicate
+
+    init(String query, bool matchAll, CompiledExpression? predicate) {
+        this.query = query
+        this.matchAll = matchAll
+        this.predicate = predicate
+    }
+
+    pub ProcessorResult process(FlowFile ff) {
+        match (ff.content) {
+            case Records(schema, records) {
+                if (len(records) == 0) {
+                    return Single(ff)
+                }
+                if (matchAll) {
+                    return Single(ff)
+                }
+                var p = predicate as CompiledExpression or {
+                    return Failure("QueryRecord: missing compiled predicate", ff)
+                }
+                var kept = List<GenericRecord>[]
+                for (record in records) {
+                    var resolver = RecordResolver(record)
+                    var v = p.eval(resolver)
+                    if (v.isTruthy()) {
+                        kept = append(kept, record)
+                    }
+                }
+                if (len(kept) == 0) {
+                    return Dropped("QueryRecord: no records matched")
+                }
+                var updated = withContent(ff, Records(schema, kept))
+                return Single(updated)
+            }
+            case _ {
+                return Single(ff)
+            }
+        }
+    }
+}
+
+pub (ProcessorFn, error) QueryRecordFactory(ScopedContext ctx, Map<String, String> config) {
+    var query = "$"
+    if (config.containsKey("query")) {
+        query = strings.TrimSpace(config["query"])
+    }
+    if (query == "") { query = "$" }
+    var matchAll = false
+    CompiledExpression? compiled
+
+    if (query == "$" || query == "$[*]") {
+        matchAll = true
+    } else {
+        var predSrc = extractPredicate(query) or {
+            return QueryRecord(query, false, null),
+                errors.ConfigError("QueryRecord: unsupported JSONPath '${query}' — supported shapes: $, $[*], $[?(predicate)]")
+        }
+        var c = expressions.compile(predSrc) or {
+            return QueryRecord(query, false, null),
+                errors.ConfigError("QueryRecord: bad predicate '${predSrc}': ${err.Error()}")
+        }
+        compiled = c
+    }
+    return QueryRecord(query, matchAll, compiled), null
+}
+
+// extractPredicate parses `$[?(predicate)]` and returns the predicate
+// body with `@.` field-references stripped to bare identifiers. Returns
+// an error for any other shape.
+(String, error) extractPredicate(String query) {
+    var prefix = "$[?("
+    var suffix = ")]"
+    if (!strings.HasPrefix(query, prefix) || !strings.HasSuffix(query, suffix)) {
+        return "", errors.ConfigError("not a $[?(...)] form")
+    }
+    var body = query.substring(len(prefix), len(query) - len(suffix))
+    body = strings.TrimSpace(body)
+    if (body == "") {
+        return "", errors.ConfigError("empty predicate")
+    }
+    return strings.ReplaceAll(body, "@.", ""), null
+}

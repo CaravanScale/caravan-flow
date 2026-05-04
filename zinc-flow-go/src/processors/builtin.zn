@@ -120,6 +120,12 @@ pub void registerBuiltins(Registry reg) {
             List<String>["expressions"]),
         EvaluateExpressionFactory
     )
+    reg.register(
+        ProcessorInfo("QueryRecord",
+            "Filter records using a JSONPath-style predicate ($[?(@.field op value)])",
+            List<String>["query"]),
+        QueryRecordFactory
+    )
     // --- zinc-native / legacy names ---
     reg.register(
         ProcessorInfo("add-attribute", "Adds key=value attribute to FlowFiles", List<String>["key", "value"]),
