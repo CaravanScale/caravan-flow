@@ -24,11 +24,6 @@ import core
 import ojgJp
 import fabric/registry
 
-// Local alias so the `as` cast below has a non-generic RHS (the `as`
-// form's type parser doesn't accept generics today; ident-named
-// aliases work.)
-type ObjMap = Map<String, Object>
-
 class QueryRecord : ProcessorFn {
     String query
     bool matchAll
@@ -109,7 +104,7 @@ Map<String, Object> recordToMap(GenericRecord rec) {
 // we ignore them — the per-record predicate shape is what
 // QueryRecord supports today.
 void extractIdx(Object hit, Map<int, bool> keepIdx) {
-    var asMap = hit as ObjMap or { return }
+    var asMap = hit as Map<String, Object> or { return }
     if (!asMap.containsKey("_idx")) { return }
     var idx = asMap["_idx"] as int or { return }
     keepIdx[idx] = true
