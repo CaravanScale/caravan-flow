@@ -1,0 +1,263 @@
+// Confluent-shape REST endpoints for the embedded schema registry.
+// Mounted under /api/schema-registry/* on the management port.
+//
+// Mirrors zinc-flow-csharp/ZincFlow/Fabric/SchemaRegistryHandler.cs.
+// 4xx response bodies use Confluent's error_code/message shape so any
+// existing tooling that handles those errors works against us.
+
+import net/http
+import io
+import strconv
+import core
+import codec
+
+// SchemaRegistryApiHandler holds a direct reference to the embedded
+// registry; the same in-memory store backs both the data path
+// (processor-side lookups via the SchemaRegistryProvider) and these
+// management endpoints.
+class SchemaRegistryApiHandler {
+    SchemaRegistry registry
+
+    init(SchemaRegistry registry) {
+        this.registry = registry
+    }
+
+    // --- GET /schemas/ids/{id} → {"schema":"..."} ---
+    pub void getByIdHandler(ResponseWriter w, Request r) {
+        var idStr = r.PathValue("id")
+        var id = strconv.Atoi(idStr) or {
+            writeSrError(w, 400, 40000, "id must be an integer")
+            return
+        }
+        var entry = registry.getEntryById(id)
+        if (entry == null) {
+            writeSrError(w, 404, 40403, "schema id ${id} not found")
+            return
+        }
+        var schemaJson = emitSchemaJson(entry.schema) or {
+            writeSrError(w, 500, 50001, "schema emit failed: ${err.Error()}")
+            return
+        }
+        writeSrJson(w, '{"schema":' + jsonString(schemaJson) + '}')
+    }
+
+    // --- GET /subjects → ["a","b","c"] ---
+    pub void listSubjectsHandler(ResponseWriter w, Request r) {
+        writeSrJson(w, jsonStringArray(registry.listSubjects()))
+    }
+
+    // --- GET /subjects/{subject}/versions → [1,2,3] ---
+    pub void listVersionsHandler(ResponseWriter w, Request r) {
+        var subject = r.PathValue("subject")
+        var versions = registry.listVersions(subject)
+        if (len(versions) == 0) {
+            writeSrError(w, 404, 40401, "subject '${subject}' not found")
+            return
+        }
+        writeSrJson(w, jsonIntArray(versions))
+    }
+
+    // --- GET /subjects/{subject}/versions/{version|latest} → full payload ---
+    pub void getSubjectVersionHandler(ResponseWriter w, Request r) {
+        var subject = r.PathValue("subject")
+        var version = r.PathValue("version")
+        VersionEntry? entry
+        if (version == "latest") {
+            entry = registry.getLatest(subject)
+            if (entry == null) {
+                writeSrError(w, 404, 40401, "subject '${subject}' not found")
+                return
+            }
+        } else {
+            var v = strconv.Atoi(version) or {
+                writeSrError(w, 400, 40000, "version must be an integer or 'latest'")
+                return
+            }
+            entry = registry.getEntry(subject, v)
+            if (entry == null) {
+                writeSrError(w, 404, 40402, "subject '${subject}' version ${v} not found")
+                return
+            }
+        }
+        var schemaJson = emitSchemaJson(entry.schema) or {
+            writeSrError(w, 500, 50001, "schema emit failed: ${err.Error()}")
+            return
+        }
+        var body = '{"subject":' + jsonString(subject) +
+                   ',"version":' + str(entry.version) +
+                   ',"id":' + str(entry.id) +
+                   ',"schema":' + jsonString(schemaJson) + '}'
+        writeSrJson(w, body)
+    }
+
+    // --- POST /subjects/{subject}/versions  body {"schema":"..."} → {"id":N} ---
+    pub void registerHandler(ResponseWriter w, Request r) {
+        var subject = r.PathValue("subject")
+        var body = ReadAll(r.Body) or {
+            writeSrError(w, 400, 40000, "failed to read body")
+            return
+        }
+        r.Body.Close()
+        var schemaJson = extractSchemaField(string(body))
+        if (schemaJson == "") {
+            writeSrError(w, 422, 42201, "request body missing 'schema' string field")
+            return
+        }
+        var schema = parseSchemaJson(schemaJson) or {
+            writeSrError(w, 422, 42202, "invalid Avro schema: ${err.Error()}")
+            return
+        }
+        var id = registry.register(subject, schema) or {
+            writeSrError(w, 500, 50001, "register failed: ${err.Error()}")
+            return
+        }
+        writeSrJson(w, '{"id":' + str(id) + '}')
+    }
+
+    // --- DELETE /subjects/{subject} → list of deleted versions ---
+    pub void deleteSubjectHandler(ResponseWriter w, Request r) {
+        var subject = r.PathValue("subject")
+        var versions = registry.listVersions(subject)
+        if (len(versions) == 0) {
+            writeSrError(w, 404, 40401, "subject '${subject}' not found")
+            return
+        }
+        registry.deleteSubject(subject)
+        writeSrJson(w, jsonIntArray(versions))
+    }
+
+    // --- DELETE /subjects/{subject}/versions/{version} → version deleted ---
+    pub void deleteVersionHandler(ResponseWriter w, Request r) {
+        var subject = r.PathValue("subject")
+        var versionStr = r.PathValue("version")
+        var v = strconv.Atoi(versionStr) or {
+            writeSrError(w, 400, 40000, "version must be an integer")
+            return
+        }
+        if (!registry.deleteVersion(subject, v)) {
+            writeSrError(w, 404, 40402, "subject '${subject}' version ${v} not found")
+            return
+        }
+        writeSrJson(w, str(v))
+    }
+}
+
+// --- Helpers ------------------------------------------------------------
+
+// writeSrJson writes a Confluent-shape JSON response (200 OK).
+void writeSrJson(ResponseWriter w, String body) {
+    w.Header().Set("Content-Type", "application/vnd.schemaregistry.v1+json")
+    w.Write(body.toBytes())
+}
+
+// writeSrError writes a Confluent-shape error JSON response with the
+// given HTTP status. body shape: {"error_code": N, "message": "..."}
+void writeSrError(ResponseWriter w, int status, int errorCode, String message) {
+    w.Header().Set("Content-Type", "application/vnd.schemaregistry.v1+json")
+    w.WriteHeader(status)
+    var body = '{"error_code":' + str(errorCode) + ',"message":' + jsonString(message) + '}'
+    w.Write(body.toBytes())
+}
+
+// jsonString returns a JSON-encoded string literal — wraps in quotes
+// and escapes \, ", \n, \r, \t. Sufficient for ASCII messages and Avro
+// schema JSON. Non-ASCII / control chars are passed through as-is
+// (Avro schemas don't contain control chars in practice).
+String jsonString(String s) {
+    var out = '"'
+    for (i in 0..len(s)) {
+        var c = s[i]
+        if (c == byte(34)) {
+            out = out + '\\"'
+        } else if (c == byte(92)) {
+            out = out + '\\\\'
+        } else if (c == byte(10)) {
+            out = out + '\\n'
+        } else if (c == byte(13)) {
+            out = out + '\\r'
+        } else if (c == byte(9)) {
+            out = out + '\\t'
+        } else {
+            out = out + string(byte[c])
+        }
+    }
+    return out + '"'
+}
+
+// jsonStringArray builds a JSON array of strings.
+String jsonStringArray(List<String> items) {
+    var out = "["
+    for (i in 0..len(items)) {
+        if (i > 0) { out = out + "," }
+        out = out + jsonString(items[i])
+    }
+    return out + "]"
+}
+
+// jsonIntArray builds a JSON array of integers.
+String jsonIntArray(List<int> items) {
+    var out = "["
+    for (i in 0..len(items)) {
+        if (i > 0) { out = out + "," }
+        out = out + str(items[i])
+    }
+    return out + "]"
+}
+
+// extractSchemaField pulls the "schema" string field from a Confluent
+// register-request body. Hand-rolled scan rather than full JSON parse —
+// the body is always {"schema": "<escaped Avro schema JSON>"} and we
+// just want that one value. Returns "" when not found / wrong shape.
+String extractSchemaField(String body) {
+    var key = '"schema"'
+    var idx = stringsIndex(body, key)
+    if (idx < 0) { return "" }
+    // Skip whitespace and the colon after the key.
+    var i = idx + len(key)
+    while (i < len(body) && (body[i] == byte(32) || body[i] == byte(9) ||
+                              body[i] == byte(10) || body[i] == byte(13) ||
+                              body[i] == byte(58))) {
+        i = i + 1
+    }
+    if (i >= len(body) || body[i] != byte(34)) { return "" }
+    i = i + 1
+    var out = byte[0]
+    while (i < len(body)) {
+        var c = body[i]
+        if (c == byte(92) && i + 1 < len(body)) {
+            // Escape sequence — copy the next char as-is (handles \" \\ \/ \n \r \t).
+            var next = body[i + 1]
+            if (next == byte(110)) { out = append(out, byte(10)) }
+            else if (next == byte(114)) { out = append(out, byte(13)) }
+            else if (next == byte(116)) { out = append(out, byte(9)) }
+            else { out = append(out, next) }
+            i = i + 2
+        } else if (c == byte(34)) {
+            return string(out)
+        } else {
+            out = append(out, c)
+            i = i + 1
+        }
+    }
+    return ""
+}
+
+// stringsIndex is a thin helper around Go's strings.Index so the
+// extractSchemaField scan stays in pure Zinc.
+int stringsIndex(String s, String substr) {
+    var ns = len(s)
+    var nt = len(substr)
+    if (nt == 0) { return 0 }
+    if (nt > ns) { return -1 }
+    for (i in 0..ns - nt + 1) {
+        var eq = true
+        for (j in 0..nt) {
+            if (s[i + j] != substr[j]) {
+                eq = false
+                break
+            }
+        }
+        if (eq) { return i }
+    }
+    return -1
+}

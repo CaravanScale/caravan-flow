@@ -9,6 +9,7 @@ import fabric/registry
 import fabric/runtime
 import fabric/source
 import fabric/api
+import codec
 import processors
 import os
 import os/signal
@@ -44,11 +45,16 @@ void main() {
     var loggingProvider = LoggingProvider(lm)
     loggingProvider.enable()
 
+    var schemaRegistry = SchemaRegistry()
+    var schemaRegistryProvider = SchemaRegistryProvider(schemaRegistry)
+    schemaRegistryProvider.enable()
+
     // Build global context
     var globalCtx = ProcessorContext()
     globalCtx.addProvider(contentProvider)
     globalCtx.addProvider(configProvider)
     globalCtx.addProvider(loggingProvider)
+    globalCtx.addProvider(schemaRegistryProvider)
 
     // Create processor registry and register built-ins
     var reg = Registry()
@@ -88,6 +94,16 @@ void main() {
     HandleFunc("/api/providers", api.providersHandler)
     HandleFunc("/api/providers/enable", api.enableProviderHandler)
     HandleFunc("/api/providers/disable", api.disableProviderHandler)
+
+    // Embedded schema registry — Confluent-shape REST endpoints.
+    var srApi = fabric.api.SchemaRegistryApiHandler(schemaRegistry)
+    HandleFunc("GET /api/schema-registry/schemas/ids/{id}", srApi.getByIdHandler)
+    HandleFunc("GET /api/schema-registry/subjects", srApi.listSubjectsHandler)
+    HandleFunc("GET /api/schema-registry/subjects/{subject}/versions", srApi.listVersionsHandler)
+    HandleFunc("GET /api/schema-registry/subjects/{subject}/versions/{version}", srApi.getSubjectVersionHandler)
+    HandleFunc("POST /api/schema-registry/subjects/{subject}/versions", srApi.registerHandler)
+    HandleFunc("DELETE /api/schema-registry/subjects/{subject}", srApi.deleteSubjectHandler)
+    HandleFunc("DELETE /api/schema-registry/subjects/{subject}/versions/{version}", srApi.deleteVersionHandler)
 
     // Start periodic stats reporter
     spawn {
