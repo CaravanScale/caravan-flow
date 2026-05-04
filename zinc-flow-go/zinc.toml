@@ -13,6 +13,8 @@ klausCompress = "github.com/klauspost/compress@v1.17.9"
 zstd          = "github.com/klauspost/compress/zstd"
 hambaAvro     = "github.com/hamba/avro/v2@v2.25.0"
 hambaOcf      = "github.com/hamba/avro/v2/ocf"
+ojg           = "github.com/ohler55/ojg@v1.28.1"
+ojgJp         = "github.com/ohler55/ojg/jp"
 
 [replace]
 stdlib = "../../zinc/zinc-go/stdlib/zinc-out"

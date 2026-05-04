@@ -1,54 +1,43 @@
-// QueryRecord — filter records using a JSONPath-style query.
+// QueryRecord — filter records using a JSONPath query (RFC-9535).
 //
-// Supported query shapes (RFC-9535 subset):
-//   $                              all records (pass-through)
-//   $[*]                           all records (explicit form)
-//   $[?(@.field op value)]         predicate filter
-//   $[?(@.a > 1 && @.b == "x")]    compound predicate
+// Backed by github.com/ohler55/ojg/jp — well-maintained Go JSONPath
+// implementation with a precompile step (jp.ParseString → expr) so
+// the path is parsed once at factory time and re-applied per FlowFile.
 //
-// Implementation: rather than pull in a full JSONPath library, we
-// reuse the ExpressionEngine as the predicate evaluator. JSONPath
-// `@.field` references map cleanly onto bare-identifier resolution
-// (after stripping the `@.` prefix), and the engine already handles
-// all the operator/type-coercion semantics needed for `==`, `!=`,
-// `<`, `>`, `<=`, `>=`, `&&`, `||`, plus string/numeric mixing.
+// Examples:
+//   $[?(@.amount > 100)]                  rows where amount exceeds 100
+//   $[?(@.priority == 'high')]            rows with a specific string value
+//   $[?(@.address.country == 'US')]       nested predicate
+//   $[?(@.qty >= 2 && @.qty <= 10)]       compound filter
+//   $[*]                                  match everything
+//
+// Implementation: each record is mirrored into a Go map (with the
+// original index tagged as "_idx") so jp.Get returns matched maps from
+// which we recover the original record indices. Schema and original
+// types are preserved — no re-materialization from JSON.
 //
 // Mirrors zinc-flow-csharp/ZincFlow/StdLib/RecordProcessors.cs#QueryRecord.
-// Both tracks accept the same JSONPath strings in YAML so configs
-// are portable. Full JSONPath features (recursive descent, slices,
-// unions) aren't implemented yet — those queries return a parse error
-// rather than silently mismatching.
 
 import stdlib/errors
 import strings
 import core
-import expressions
+import ojgJp
 import fabric/registry
 
-// RecordResolver — binds expression identifiers to fields of a single
-// GenericRecord. Drives the predicate evaluation per-record so each
-// candidate's `@.amount > 100` resolves to its own amount.
-class RecordResolver : expressions.ValueResolver {
-    GenericRecord record
-
-    init(GenericRecord record) {
-        this.record = record
-    }
-
-    pub EvalValue resolve(String name) {
-        return expressions.evalFromObject(record.getField(name))
-    }
-}
+// Local alias so the `as` cast below has a non-generic RHS (the `as`
+// form's type parser doesn't accept generics today; ident-named
+// aliases work.)
+type ObjMap = Map<String, Object>
 
 class QueryRecord : ProcessorFn {
     String query
     bool matchAll
-    CompiledExpression? predicate
+    ojgJp.Expr expr
 
-    init(String query, bool matchAll, CompiledExpression? predicate) {
+    init(String query, bool matchAll, ojgJp.Expr expr) {
         this.query = query
         this.matchAll = matchAll
-        this.predicate = predicate
+        this.expr = expr
     }
 
     pub ProcessorResult process(FlowFile ff) {
@@ -60,19 +49,33 @@ class QueryRecord : ProcessorFn {
                 if (matchAll) {
                     return Single(ff)
                 }
-                var p = predicate as CompiledExpression or {
-                    return Failure("QueryRecord: missing compiled predicate", ff)
+                // Build a tagged []any view: each record becomes
+                // map[string]any with an "_idx" sentinel preserving
+                // the original record's position so we can rebuild
+                // the kept-records list from jp.Get's matches.
+                var view = List<Object>[]
+                var i = 0
+                while (i < len(records)) {
+                    var m = recordToMap(records[i])
+                    m["_idx"] = i
+                    view = append(view, m)
+                    i = i + 1
+                }
+                var matches = expr.Get(view)
+                var keepIdx = Map<int, bool>{}
+                for (hit in matches) {
+                    extractIdx(hit, keepIdx)
+                }
+                if (len(keepIdx) == 0) {
+                    return Dropped("QueryRecord: no records matched")
                 }
                 var kept = List<GenericRecord>[]
-                for (record in records) {
-                    var resolver = RecordResolver(record)
-                    var v = p.eval(resolver)
-                    if (v.isTruthy()) {
-                        kept = append(kept, record)
+                var j = 0
+                while (j < len(records)) {
+                    if (keepIdx.containsKey(j)) {
+                        kept = append(kept, records[j])
                     }
-                }
-                if (len(kept) == 0) {
-                    return Dropped("QueryRecord: no records matched")
+                    j = j + 1
                 }
                 var updated = withContent(ff, Records(schema, kept))
                 return Single(updated)
@@ -84,44 +87,46 @@ class QueryRecord : ProcessorFn {
     }
 }
 
+// recordToMap mirrors a GenericRecord into Map<String, Object> so the
+// JSONPath evaluator (which expects a Go-native any-tree) can walk
+// fields by name. Field-by-field copy preserves typed values; OCF
+// roundtrip semantics aren't disturbed because the original record
+// list is what gets returned (matches just tell us which to keep).
+Map<String, Object> recordToMap(GenericRecord rec) {
+    var m = Map<String, Object>{}
+    for (f in rec.getSchema().fields) {
+        var v = rec.getField(f.name)
+        if (v != null) {
+            m[f.name] = v
+        }
+    }
+    return m
+}
+
+// extractIdx pulls the "_idx" sentinel out of a JSONPath match. A
+// match at the record level is map[string]any (the record-as-map);
+// deeper-path matches (e.g. `$[*].name`) come back as scalars and
+// we ignore them — the per-record predicate shape is what
+// QueryRecord supports today.
+void extractIdx(Object hit, Map<int, bool> keepIdx) {
+    var asMap = hit as ObjMap or { return }
+    if (!asMap.containsKey("_idx")) { return }
+    var idx = asMap["_idx"] as int or { return }
+    keepIdx[idx] = true
+}
+
 pub (ProcessorFn, error) QueryRecordFactory(ScopedContext ctx, Map<String, String> config) {
     var query = "$"
     if (config.containsKey("query")) {
         query = strings.TrimSpace(config["query"])
     }
     if (query == "") { query = "$" }
-    var matchAll = false
-    CompiledExpression? compiled
-
     if (query == "$" || query == "$[*]") {
-        matchAll = true
-    } else {
-        var predSrc = extractPredicate(query) or {
-            return QueryRecord(query, false, null),
-                errors.ConfigError("QueryRecord: unsupported JSONPath '${query}' — supported shapes: $, $[*], $[?(predicate)]")
-        }
-        var c = expressions.compile(predSrc) or {
-            return QueryRecord(query, false, null),
-                errors.ConfigError("QueryRecord: bad predicate '${predSrc}': ${err.Error()}")
-        }
-        compiled = c
+        return QueryRecord(query, true, null), null
     }
-    return QueryRecord(query, matchAll, compiled), null
-}
-
-// extractPredicate parses `$[?(predicate)]` and returns the predicate
-// body with `@.` field-references stripped to bare identifiers. Returns
-// an error for any other shape.
-(String, error) extractPredicate(String query) {
-    var prefix = "$[?("
-    var suffix = ")]"
-    if (!strings.HasPrefix(query, prefix) || !strings.HasSuffix(query, suffix)) {
-        return "", errors.ConfigError("not a $[?(...)] form")
+    var expr = ojgJp.ParseString(query) or {
+        return QueryRecord(query, false, null),
+            errors.ConfigError("QueryRecord: bad JSONPath '${query}': ${err.Error()}")
     }
-    var body = query.substring(len(prefix), len(query) - len(suffix))
-    body = strings.TrimSpace(body)
-    if (body == "") {
-        return "", errors.ConfigError("empty predicate")
-    }
-    return strings.ReplaceAll(body, "@.", ""), null
+    return QueryRecord(query, false, expr), null
 }
