@@ -19,18 +19,32 @@ enum FieldType {
     UNION
 }
 
-// Field — a named, typed column in a schema.
-data Field(
-    String name,
-    FieldType fieldType,
-    Object defaultValue
-)
+// Field — a named, typed column in a schema. Reference type so a "missing
+// field" lookup can return null without a sentinel zero value.
+class Field {
+    pub String name
+    pub FieldType fieldType
+    pub Object defaultValue
 
-// Schema — ordered list of fields with a name.
-data Schema(
-    String name,
-    List<Field> fields
-)
+    init(String name, FieldType fieldType, Object defaultValue) {
+        this.name = name
+        this.fieldType = fieldType
+        this.defaultValue = defaultValue
+    }
+}
+
+// Schema — ordered list of fields with a name. Reference type so registry
+// lookups, OCF reader-schema slots, and other "may be absent" sites can
+// use Schema? naturally instead of an empty-Schema sentinel.
+class Schema {
+    pub String name
+    pub List<Field> fields
+
+    init(String name, List<Field> fields) {
+        this.name = name
+        this.fields = fields
+    }
+}
 
 // GenericRecord — a schema-aware row of data.
 // Backed by a map of field name → value.

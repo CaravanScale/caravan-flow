@@ -39,9 +39,8 @@ pub (core.Schema, List<GenericRecord>, error) readOcf(byte[] data) {
         return zero, List<GenericRecord>[], errors.ConfigError("OCF empty input")
     }
     var rdr = bytes.NewReader(data)
-    var dec, derr = hambaOcf.NewDecoder(rdr)
-    if (derr != nil) {
-        return zero, List<GenericRecord>[], derr
+    var dec = hambaOcf.NewDecoder(rdr) or {
+        return zero, List<GenericRecord>[], err
     }
 
     // hamba doesn't expose the parsed writer schema directly, but
@@ -52,10 +51,8 @@ pub (core.Schema, List<GenericRecord>, error) readOcf(byte[] data) {
     if (!meta.containsKey("avro.schema")) {
         return zero, List<GenericRecord>[], errors.ConfigError("OCF metadata missing avro.schema")
     }
-    var schemaJson = string(meta["avro.schema"])
-    var schema, sErr = parseSchemaJson(schemaJson)
-    if (sErr != nil) {
-        return zero, List<GenericRecord>[], errors.ConfigError("OCF schema invalid: ${sErr.Error()}")
+    var schema = parseSchemaJson(string(meta["avro.schema"])) or {
+        return zero, List<GenericRecord>[], errors.ConfigError("OCF schema invalid: ${err.Error()}")
     }
 
     var records = List<GenericRecord>[]
@@ -70,10 +67,10 @@ pub (core.Schema, List<GenericRecord>, error) readOcf(byte[] data) {
         }
         records = append(records, rec)
     }
-    if (dec.Error() != nil) {
+    if (dec.Error() != null) {
         return zero, records, dec.Error()
     }
-    return schema, records, nil
+    return schema, records, null
 }
 
 // --- OCF writer ---------------------------------------------------------
@@ -85,15 +82,13 @@ pub (byte[], error) writeOcf(List<GenericRecord> records, core.Schema schema, St
     if (!isSupportedCodec(codec)) {
         return byte[0], errors.ConfigError("unsupported OCF codec: ${codec}")
     }
-    var schemaJson, sjErr = emitSchemaJson(schema)
-    if (sjErr != nil) {
-        return byte[0], errors.ConfigError("OCF schema JSON emit failed: ${sjErr.Error()}")
+    var schemaJson = emitSchemaJson(schema) or {
+        return byte[0], errors.ConfigError("OCF schema JSON emit failed: ${err.Error()}")
     }
 
     var buf = new bytes.Buffer
-    var enc, eerr = hambaOcf.NewEncoder(schemaJson, buf, hambaOcf.WithCodec(hambaOcf.CodecName(codec)))
-    if (eerr != nil) {
-        return byte[0], eerr
+    var enc = hambaOcf.NewEncoder(schemaJson, buf, hambaOcf.WithCodec(hambaOcf.CodecName(codec))) or {
+        return byte[0], err
     }
 
     for (rec in records) {
@@ -105,7 +100,7 @@ pub (byte[], error) writeOcf(List<GenericRecord> records, core.Schema schema, St
     enc.Close() or {
         return byte[0], err
     }
-    return buf.Bytes(), nil
+    return buf.Bytes(), null
 }
 
 // --- Processors ---------------------------------------------------------
@@ -137,8 +132,7 @@ class ConvertOCFToRecord : ProcessorFn {
             }
         }
 
-        var writerSchema, records, err = readOcf(data)
-        if (err != nil) {
+        var writerSchema, records = readOcf(data) or {
             return Failure("ConvertOCFToRecord: ${err.Error()}", ff)
         }
         if (len(records) == 0) {
@@ -152,9 +146,8 @@ class ConvertOCFToRecord : ProcessorFn {
         // drop case which covers the most common evolution scenario.
         var effectiveSchema = writerSchema
         if (readerSchemaJson != "") {
-            var readerSchema, rserr = parseSchemaJson(readerSchemaJson)
-            if (rserr != nil) {
-                return Failure("ConvertOCFToRecord: reader schema invalid: ${rserr.Error()}", ff)
+            var readerSchema = parseSchemaJson(readerSchemaJson) or {
+                return Failure("ConvertOCFToRecord: reader schema invalid: ${err.Error()}", ff)
             }
             records = projectRecords(records, readerSchema, writerSchema)
             effectiveSchema = readerSchema
@@ -171,16 +164,16 @@ pub (ProcessorFn, error) ConvertOCFToRecordFactory(ScopedContext ctx, Map<String
         readerSchema = config["reader_schema"]
     }
     if (config.containsKey("reader_schema_subject") && config["reader_schema_subject"] != "") {
-        return nil, errors.ConfigError("ConvertOCFToRecord: reader_schema_subject not yet supported (registry path) — use reader_schema for inline JSON")
+        return null, errors.ConfigError("ConvertOCFToRecord: reader_schema_subject not yet supported (registry path) — use reader_schema for inline JSON")
     }
     if (config.containsKey("auto_register_subject") && config["auto_register_subject"] != "") {
-        return nil, errors.ConfigError("ConvertOCFToRecord: auto_register_subject not yet supported (registry path)")
+        return null, errors.ConfigError("ConvertOCFToRecord: auto_register_subject not yet supported (registry path)")
     }
     var p = ctx.getProvider("content") or {
-        return ConvertOCFToRecord(MemoryContentStore(), readerSchema), nil
+        return ConvertOCFToRecord(MemoryContentStore(), readerSchema), null
     }
     var cp = p as ContentProvider
-    return ConvertOCFToRecord(cp.getStore(), readerSchema), nil
+    return ConvertOCFToRecord(cp.getStore(), readerSchema), null
 }
 
 class ConvertRecordToOCF : ProcessorFn {
@@ -199,8 +192,7 @@ class ConvertRecordToOCF : ProcessorFn {
                 if (len(schema.fields) == 0) {
                     return Failure("ConvertRecordToOCF: Records content has empty schema", ff)
                 }
-                var bytes, err = writeOcf(records, schema, codec)
-                if (err != nil) {
+                var bytes = writeOcf(records, schema, codec) or {
                     return Failure("ConvertRecordToOCF: ${err.Error()}", ff)
                 }
                 var updated = withContent(ff, Raw(bytes))
@@ -222,9 +214,9 @@ pub (ProcessorFn, error) ConvertRecordToOCFFactory(ScopedContext ctx, Map<String
         codec = config["codec"]
     }
     if (!isSupportedCodec(codec)) {
-        return nil, errors.ConfigError("ConvertRecordToOCF: unsupported codec '${codec}' — valid: null, deflate, snappy, zstandard")
+        return null, errors.ConfigError("ConvertRecordToOCF: unsupported codec '${codec}' — valid: null, deflate, snappy, zstandard")
     }
-    return ConvertRecordToOCF(codec), nil
+    return ConvertRecordToOCF(codec), null
 }
 
 // --- Reader-schema projection ------------------------------------------

@@ -1,0 +1,146 @@
+// Embedded Schema Registry — register/lookup/version semantics.
+// Mirrors zinc-flow-csharp's behavior: identical-schema dedup, monotonic
+// versions per subject, globally-unique ids, latest alias.
+
+import codec
+import core
+import stdlib/asserts
+
+core.Schema schemaWithId() {
+    return core.Schema("User", List<core.Field>[
+        core.Field("id", core.LONG, "")
+    ])
+}
+
+core.Schema schemaWithIdAndName() {
+    return core.Schema("User", List<core.Field>[
+        core.Field("id", core.LONG, ""),
+        core.Field("name", core.STRING, "")
+    ])
+}
+
+test "registry — register returns id 1 for first subject" {
+    var reg = codec.SchemaRegistry()
+    var id = reg.register("users", schemaWithId()) or { t.Errorf("register: %v", err); return }
+    asserts.equalInt(t, id, 1)
+}
+
+test "registry — register identical schema returns same id" {
+    var reg = codec.SchemaRegistry()
+    var id1 = reg.register("users", schemaWithId()) or { t.Errorf("register: %v", err); return }
+    var id2 = reg.register("users", schemaWithId()) or { t.Errorf("register: %v", err); return }
+    asserts.equalInt(t, id1, id2)
+}
+
+test "registry — register different schema bumps version + id" {
+    var reg = codec.SchemaRegistry()
+    var id1 = reg.register("users", schemaWithId()) or { t.Errorf("register: %v", err); return }
+    var id2 = reg.register("users", schemaWithIdAndName()) or { t.Errorf("register: %v", err); return }
+    asserts.isTrue(t, id1 != id2, "ids must differ for different schemas")
+    asserts.equalInt(t, id1, 1)
+    asserts.equalInt(t, id2, 2)
+    var versions = reg.listVersions("users")
+    asserts.equalInt(t, len(versions), 2)
+    asserts.equalInt(t, versions[0], 1)
+    asserts.equalInt(t, versions[1], 2)
+}
+
+test "registry — getById round-trips schema" {
+    var reg = codec.SchemaRegistry()
+    var id = reg.register("users", schemaWithId()) or { t.Errorf("register: %v", err); return }
+    var schema = reg.getById(id)
+    if (schema == null) { t.Errorf("getById null"); return }
+    asserts.equalString(t, schema.name, "User")
+    asserts.equalInt(t, len(schema.fields), 1)
+}
+
+test "registry — getById on unknown id is null" {
+    var reg = codec.SchemaRegistry()
+    asserts.isTrue(t, reg.getById(42) == null, "expected null for unknown id")
+}
+
+test "registry — getLatest returns the newest entry" {
+    var reg = codec.SchemaRegistry()
+    var id1 = reg.register("users", schemaWithId()) or { t.Errorf("register1: %v", err); return }
+    var id2 = reg.register("users", schemaWithIdAndName()) or { t.Errorf("register2: %v", err); return }
+    asserts.isTrue(t, id1 < id2, "ids monotonic")
+    var entry = reg.getLatest("users")
+    if (entry == null) { t.Errorf("getLatest null"); return }
+    asserts.equalInt(t, entry.id, id2)
+    asserts.equalInt(t, len(entry.schema.fields), 2)
+}
+
+test "registry — getEntry returns specific version" {
+    var reg = codec.SchemaRegistry()
+    var id1 = reg.register("users", schemaWithId()) or { t.Errorf("register1: %v", err); return }
+    var id2 = reg.register("users", schemaWithIdAndName()) or { t.Errorf("register2: %v", err); return }
+    asserts.isTrue(t, id1 < id2, "ids monotonic")
+    var entry = reg.getEntry("users", 1)
+    if (entry == null) { t.Errorf("getEntry null"); return }
+    asserts.equalInt(t, entry.id, id1)
+    asserts.equalInt(t, len(entry.schema.fields), 1)
+}
+
+test "registry — getLatest on unknown subject is null" {
+    var reg = codec.SchemaRegistry()
+    asserts.isTrue(t, reg.getLatest("ghost") == null, "expected null")
+}
+
+test "registry — getEntry on unknown subject/version is null" {
+    var reg = codec.SchemaRegistry()
+    var id = reg.register("users", schemaWithId()) or { t.Errorf("register: %v", err); return }
+    asserts.isTrue(t, id > 0, "register ok")
+    asserts.isTrue(t, reg.getEntry("users", 99) == null, "missing version → null")
+    asserts.isTrue(t, reg.getEntry("ghost", 1) == null, "missing subject → null")
+}
+
+test "registry — listSubjects" {
+    var reg = codec.SchemaRegistry()
+    var idA = reg.register("a", schemaWithId()) or { t.Errorf("register a: %v", err); return }
+    var idB = reg.register("b", schemaWithId()) or { t.Errorf("register b: %v", err); return }
+    asserts.isTrue(t, idA != idB, "distinct ids")
+    asserts.equalInt(t, len(reg.listSubjects()), 2)
+}
+
+test "registry — deleteSubject removes all versions" {
+    var reg = codec.SchemaRegistry()
+    var id1 = reg.register("users", schemaWithId()) or { t.Errorf("register1: %v", err); return }
+    var id2 = reg.register("users", schemaWithIdAndName()) or { t.Errorf("register2: %v", err); return }
+    asserts.isTrue(t, id1 < id2, "ids monotonic")
+    asserts.isTrue(t, reg.deleteSubject("users"), "deleteSubject returned false")
+    asserts.equalInt(t, len(reg.listSubjects()), 0)
+    asserts.equalInt(t, len(reg.listVersions("users")), 0)
+    asserts.isTrue(t, reg.getById(id1) == null, "schema id1 should be removed")
+    asserts.isTrue(t, reg.getById(id2) == null, "schema id2 should be removed")
+}
+
+test "registry — deleteVersion removes one version, keeps others" {
+    var reg = codec.SchemaRegistry()
+    var id1 = reg.register("users", schemaWithId()) or { t.Errorf("register1: %v", err); return }
+    var id2 = reg.register("users", schemaWithIdAndName()) or { t.Errorf("register2: %v", err); return }
+    asserts.isTrue(t, reg.deleteVersion("users", 1), "deleteVersion returned false")
+    var versions = reg.listVersions("users")
+    asserts.equalInt(t, len(versions), 1)
+    asserts.equalInt(t, versions[0], 2)
+    asserts.isTrue(t, reg.getById(id1) == null, "id1 should be deleted")
+    asserts.isTrue(t, reg.getById(id2) != null, "id2 should remain")
+}
+
+test "registry — deleteVersion unknown returns false" {
+    var reg = codec.SchemaRegistry()
+    var id = reg.register("users", schemaWithId()) or { t.Errorf("register: %v", err); return }
+    asserts.isTrue(t, id > 0, "setup ok")
+    asserts.isTrue(t, !reg.deleteVersion("users", 99), "missing version → false")
+    asserts.isTrue(t, !reg.deleteVersion("ghost", 1), "missing subject → false")
+}
+
+test "registry — getEntryById admin path" {
+    var reg = codec.SchemaRegistry()
+    var id1 = reg.register("users", schemaWithId()) or { t.Errorf("register1: %v", err); return }
+    var id2 = reg.register("users", schemaWithIdAndName()) or { t.Errorf("register2: %v", err); return }
+    asserts.isTrue(t, id1 < id2, "ids monotonic")
+    var byid = reg.getEntryById(id2)
+    if (byid == null) { t.Errorf("getEntryById null"); return }
+    asserts.equalInt(t, byid.version, 2)
+    asserts.isTrue(t, reg.getEntryById(9999) == null, "missing id → null")
+}

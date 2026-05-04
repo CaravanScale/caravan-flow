@@ -1,0 +1,248 @@
+// Embedded Schema Registry — in-process, in-memory Avro schema store.
+//
+// Mirrors zinc-flow-csharp's EmbeddedSchemaRegistry (StdLib/EmbeddedSchemaRegistry.cs).
+// The sole backend in airgapped deployments — no external HTTP service,
+// schemas live in this process for the lifetime of the worker.
+//
+// Three population paths:
+//   • loadFromConfig at startup / hot-reload (declarative)
+//   • register via REST (runtime, ad-hoc)
+//   • Auto-capture from ConvertOCFToRecord (writer schema in incoming
+//     .avro files registered automatically; identical-schema dedup
+//     means re-reading a known file is a no-op)
+//
+// Storage is in-memory only. Restart loses runtime registrations;
+// config-loaded ones come back. Disk persistence is a future follow-up.
+//
+// Concurrency: a single coarse mutex guards the maps + list mutations.
+// The registry is on the read path of every record-decode that uses
+// readerSchemaSubject, but the lookup is a map read under the lock and
+// returns immediately — Avro decode itself happens outside the lock.
+
+import core
+import sync
+import stdlib/errors
+
+// VersionEntry — one schema version under a subject. Reference type so
+// lookups can return null on miss without a sentinel-empty entry.
+//   id            globally unique across all subjects (monotonic)
+//   version       1-based, monotonic per subject
+//   schema        the parsed Avro schema
+//   canonicalJson canonical form, used for identical-schema dedup
+class VersionEntry {
+    pub int id
+    pub int version
+    pub core.Schema schema
+    pub String canonicalJson
+
+    init(int id, int version, core.Schema schema, String canonicalJson) {
+        this.id = id
+        this.version = version
+        this.schema = schema
+        this.canonicalJson = canonicalJson
+    }
+}
+
+// SchemaRegistry — in-process store of subjects → versions and id → schema.
+class SchemaRegistry {
+    var byId = Map<int, core.Schema>{}
+    var subjects = Map<String, List<VersionEntry>>{}
+    sync.Mutex mu
+    int nextId
+
+    init() {
+        this.nextId = 0
+    }
+
+    // --- Read API ---------------------------------------------------------
+
+    // getById looks up a schema by globally-unique id. Returns null when
+    // no schema with that id has been registered.
+    pub core.Schema? getById(int id) {
+        lock (mu) {
+            if (byId.containsKey(id)) {
+                return byId[id]
+            }
+        }
+        return null
+    }
+
+    // getLatest returns the highest-version entry for a subject, or null
+    // when the subject is unknown.
+    pub VersionEntry? getLatest(String subject) {
+        lock (mu) {
+            if (subjects.containsKey(subject)) {
+                var versions = subjects[subject]
+                if (len(versions) > 0) {
+                    return versions[len(versions) - 1]
+                }
+            }
+        }
+        return null
+    }
+
+    // getEntry returns the entry for a specific subject + version, or null
+    // when either the subject or the version is unknown.
+    pub VersionEntry? getEntry(String subject, int version) {
+        lock (mu) {
+            if (subjects.containsKey(subject)) {
+                for (entry in subjects[subject]) {
+                    if (entry.version == version) {
+                        return entry
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    // getEntryById walks all subjects to find the version entry with this
+    // id, returning null when no entry has that id. The REST handler's
+    // GET /schemas/ids/{id} response wants the full entry (subject +
+    // version), not just the schema, so this lookup is separate from
+    // getById.
+    pub VersionEntry? getEntryById(int id) {
+        lock (mu) {
+            for (subject in subjects.keys()) {
+                for (entry in subjects[subject]) {
+                    if (entry.id == id) {
+                        return entry
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    // --- Write API --------------------------------------------------------
+
+    // register stores a schema under a subject. Confluent-style identical-
+    // schema dedup: re-registering the same canonical JSON returns the
+    // existing id without bumping the version. Fails only when canonical
+    // JSON emission rejects the schema.
+    pub (int, error) register(String subject, core.Schema schema) {
+        var canonical = emitSchemaJson(schema) or {
+            return 0, errors.ConfigError("schema canonicalization failed: ${err.Error()}")
+        }
+        lock (mu) {
+            var versions = List<VersionEntry>[]
+            if (subjects.containsKey(subject)) {
+                versions = subjects[subject]
+                for (existing in versions) {
+                    if (existing.canonicalJson == canonical) {
+                        return existing.id, null
+                    }
+                }
+            }
+            nextId = nextId + 1
+            var nextVersion = 1
+            if (len(versions) > 0) {
+                nextVersion = versions[len(versions) - 1].version + 1
+            }
+            var entry = VersionEntry(nextId, nextVersion, schema, canonical)
+            versions = append(versions, entry)
+            subjects[subject] = versions
+            byId[nextId] = schema
+            return nextId, null
+        }
+    }
+
+    // --- Admin API --------------------------------------------------------
+
+    // listSubjects returns all known subject names. No order guarantee.
+    pub List<String> listSubjects() {
+        lock (mu) {
+            return subjects.keys()
+        }
+    }
+
+    // listVersions returns all version numbers for a subject (empty list
+    // if the subject doesn't exist).
+    pub List<int> listVersions(String subject) {
+        var out = List<int>[]
+        lock (mu) {
+            if (!subjects.containsKey(subject)) {
+                return out
+            }
+            for (entry in subjects[subject]) {
+                out = append(out, entry.version)
+            }
+        }
+        return out
+    }
+
+    // deleteSubject removes a subject and all its versions. Returns true
+    // iff the subject existed.
+    pub bool deleteSubject(String subject) {
+        lock (mu) {
+            if (!subjects.containsKey(subject)) {
+                return false
+            }
+            for (entry in subjects[subject]) {
+                byId.delete(entry.id)
+            }
+            subjects.delete(subject)
+            return true
+        }
+    }
+
+    // deleteVersion removes a single version from a subject. Empties the
+    // subject if it was the last version. Returns true iff the version
+    // existed.
+    pub bool deleteVersion(String subject, int version) {
+        lock (mu) {
+            if (!subjects.containsKey(subject)) {
+                return false
+            }
+            var rebuilt = List<VersionEntry>[]
+            var found = false
+            for (entry in subjects[subject]) {
+                if (entry.version == version) {
+                    byId.delete(entry.id)
+                    found = true
+                } else {
+                    rebuilt = append(rebuilt, entry)
+                }
+            }
+            if (!found) {
+                return false
+            }
+            if (len(rebuilt) == 0) {
+                subjects.delete(subject)
+            } else {
+                subjects[subject] = rebuilt
+            }
+            return true
+        }
+    }
+}
+
+// SchemaRegistryProvider wraps the embedded registry as a runtime Provider.
+// Processors that need registry-backed schemas (ConvertOCFToRecord with
+// readerSchemaSubject or autoRegisterSubject) request this via
+// requires=["schema_registry"]; the REST handler holds a direct reference.
+//
+// The registry instance is injected at construction so the same in-memory
+// store backs both the data path and the management API. Lifecycle is
+// state-tracking only — the store has no resources to enable/drain.
+class SchemaRegistryProvider : core.Provider {
+    String providerName
+    core.ComponentState state
+    SchemaRegistry registry
+
+    init(SchemaRegistry registry) {
+        this.providerName = "schema_registry"
+        this.state = core.DISABLED
+        this.registry = registry
+    }
+
+    pub String getName() { return providerName }
+    pub String getType() { return "schema_registry" }
+    pub core.ComponentState getState() { return state }
+    pub void enable() { state = core.ENABLED }
+    pub void disable(int drainTimeoutSeconds) { state = core.DISABLED }
+    pub void shutdown() { state = core.DISABLED }
+    pub bool isEnabled() { return state == core.ENABLED }
+
+    pub SchemaRegistry getRegistry() { return registry }
+}

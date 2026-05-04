@@ -101,7 +101,7 @@ class GetFile : ConnectorSource {
             return
         }
         var addErr = w.Add(directory)
-        if (addErr != nil) {
+        if (addErr != null) {
             logging.error("getfile: watcher.Add failed", "dir", directory, "err", addErr.Error())
             w.Close()
             return
@@ -122,7 +122,7 @@ class GetFile : ConnectorSource {
                     case ev = w.Events.recv():
                         handleEvent(ev)
                     case watcherErr = w.Errors.recv():
-                        if (watcherErr != nil) {
+                        if (watcherErr != null) {
                             logging.warn("getfile: watcher error", "err", watcherErr.Error())
                         }
                     case done.recv():

@@ -1,0 +1,134 @@
+// ProcessorConfig — typed accessor over a processor's configuration block.
+//
+// Replaces the raw `Map<String, String>` that factories used to receive.
+// The map carried Go-style empty-string-as-absent semantics — every
+// config read had to check both `containsKey(key)` and `value != ""`.
+// This class hides that impedance mismatch behind idiomatic Zinc
+// accessors using `(String, bool)` for presence (Zinc forbids `T?` on
+// value types — String, int, bool always have a value), or a typed
+// value with a caller-supplied default.
+
+import stdlib/errors
+
+class ProcessorConfig {
+    var values = Map<String, String>{}
+
+    init() {}
+
+    // initFrom copies entries from a raw `Map<String, String>` into this
+    // config. Used by the runtime when decoding a flow's processor block.
+    pub void initFrom(Map<String, String> raw) {
+        for (k, v in raw) {
+            values[k] = v
+        }
+    }
+
+    // set inserts a single entry. Test-friendly construction path.
+    pub void set(String key, String value) {
+        values[key] = value
+    }
+
+    // has reports whether a key is present (regardless of value).
+    pub bool has(String key) {
+        return values.containsKey(key)
+    }
+
+    // getString returns the value at key plus a present flag.
+    // Intentionally treats "" as absent — empty config values almost
+    // always mean "default" in YAML / form-driven configs, and forcing
+    // every caller to write `c.has(k) && c.values[k] != ""` was the
+    // origin of the empty-string-sentinel pattern across the codebase.
+    pub (String, bool) getString(String key) {
+        if (!values.containsKey(key)) {
+            return "", false
+        }
+        var v = values[key]
+        if (v == "") {
+            return "", false
+        }
+        return v, true
+    }
+
+    // getStringOr returns the value at key, or `defaultValue` when
+    // missing or empty.
+    pub String getStringOr(String key, String defaultValue) {
+        var v, ok = getString(key)
+        if (!ok) {
+            return defaultValue
+        }
+        return v
+    }
+
+    // getBool returns the value at key parsed as a bool, or
+    // `defaultValue` when missing/empty/unparsable.
+    pub bool getBool(String key, bool defaultValue) {
+        var raw, ok = getString(key)
+        if (!ok) {
+            return defaultValue
+        }
+        if (raw == "true" || raw == "1" || raw == "yes") {
+            return true
+        }
+        if (raw == "false" || raw == "0" || raw == "no") {
+            return false
+        }
+        return defaultValue
+    }
+
+    // getInt returns the value at key parsed as an int, or `defaultValue`
+    // when missing/empty/unparsable.
+    pub int getInt(String key, int defaultValue) {
+        var raw, ok = getString(key)
+        if (!ok) {
+            return defaultValue
+        }
+        var n = parseInt(raw) or { return defaultValue }
+        return n
+    }
+
+    // requireString returns the value at key, or an error when missing
+    // or empty. Used for required config keys where a default would
+    // silently mask a misconfiguration.
+    pub (String, error) requireString(String key) {
+        var v, ok = getString(key)
+        if (!ok) {
+            return "", errors.ConfigError("required config key missing or empty: ${key}")
+        }
+        return v, null
+    }
+
+    // keys returns all keys present, regardless of value.
+    pub List<String> keys() {
+        return values.keys()
+    }
+}
+
+// parseInt is a small, dependency-free integer parser used by
+// ProcessorConfig.getInt. Returns an error on non-digit input or empty
+// string. Negative numbers are supported via leading '-'.
+(int, error) parseInt(String s) {
+    if (s == "") {
+        return 0, errors.ConfigError("empty integer string")
+    }
+    var negative = false
+    var start = 0
+    if (s[0] == byte(45)) {
+        negative = true
+        start = 1
+        if (len(s) == 1) {
+            return 0, errors.ConfigError("lone '-' is not an integer")
+        }
+    }
+    var n = 0
+    for (i in start..len(s)) {
+        var c = s[i]
+        if (c < byte(48) || c > byte(57)) {
+            return 0, errors.ConfigError("non-digit in integer: ${s}")
+        }
+        n = n * 10 + int(c - byte(48))
+    }
+    if (negative) {
+        n = -n
+    }
+    return n, null
+}

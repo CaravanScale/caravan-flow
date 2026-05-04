@@ -71,21 +71,18 @@ class ConvertAvroToRecord : ProcessorFn {
         if (defs == "") {
             return Failure("ConvertAvroToRecord: no schema — set 'field_defs' config or 'avro.schema' attribute", ff)
         }
-        var schema, sErr = parseFieldDefs(schemaName, defs)
-        if (sErr != nil) {
-            return Failure("ConvertAvroToRecord: ${sErr.Error()}", ff)
+        var schema = parseFieldDefs(schemaName, defs) or {
+            return Failure("ConvertAvroToRecord: ${err.Error()}", ff)
         }
         if (len(schema.fields) == 0) {
             return Failure("ConvertAvroToRecord: empty schema", ff)
         }
 
-        var schemaJson, jErr = emitSchemaJson(schema)
-        if (jErr != nil) {
-            return Failure("ConvertAvroToRecord: schema emit failed: ${jErr.Error()}", ff)
+        var schemaJson = emitSchemaJson(schema) or {
+            return Failure("ConvertAvroToRecord: schema emit failed: ${err.Error()}", ff)
         }
-        var hSchema, hErr = hambaAvro.Parse(schemaJson)
-        if (hErr != nil) {
-            return Failure("ConvertAvroToRecord: hamba.Parse: ${hErr.Error()}", ff)
+        var hSchema = hambaAvro.Parse(schemaJson) or {
+            return Failure("ConvertAvroToRecord: hamba.Parse: ${err.Error()}", ff)
         }
 
         var target = Map<String, Object>{}
@@ -115,10 +112,10 @@ pub (ProcessorFn, error) ConvertAvroToRecordFactory(ScopedContext ctx, Map<Strin
         fieldDefs = config["field_defs"]
     }
     var p = ctx.getProvider("content") or {
-        return ConvertAvroToRecord(schemaName, fieldDefs, MemoryContentStore()), nil
+        return ConvertAvroToRecord(schemaName, fieldDefs, MemoryContentStore()), null
     }
     var cp = p as ContentProvider
-    return ConvertAvroToRecord(schemaName, fieldDefs, cp.getStore()), nil
+    return ConvertAvroToRecord(schemaName, fieldDefs, cp.getStore()), null
 }
 
 // --- ConvertRecordToAvro processor -------------------------------------
@@ -137,21 +134,18 @@ class ConvertRecordToAvro : ProcessorFn {
                     return Failure("ConvertRecordToAvro: Records content has empty schema", ff)
                 }
 
-                var schemaJson, jErr = emitSchemaJson(schema)
-                if (jErr != nil) {
-                    return Failure("ConvertRecordToAvro: schema emit failed: ${jErr.Error()}", ff)
+                var schemaJson = emitSchemaJson(schema) or {
+                    return Failure("ConvertRecordToAvro: schema emit failed: ${err.Error()}", ff)
                 }
-                var hSchema, hErr = hambaAvro.Parse(schemaJson)
-                if (hErr != nil) {
-                    return Failure("ConvertRecordToAvro: hamba.Parse: ${hErr.Error()}", ff)
+                var hSchema = hambaAvro.Parse(schemaJson) or {
+                    return Failure("ConvertRecordToAvro: hamba.Parse: ${err.Error()}", ff)
                 }
 
                 // Single-record only — the inverse processor reads one record
                 // per blob. Multi-record streams live in avro_ocf.zn.
                 var rec = records[0]
-                var bytes, mErr = hambaAvro.Marshal(hSchema, coerceForSchema(rec, schema))
-                if (mErr != nil) {
-                    return Failure("ConvertRecordToAvro: encode failed: ${mErr.Error()}", ff)
+                var bytes = hambaAvro.Marshal(hSchema, coerceForSchema(rec, schema)) or {
+                    return Failure("ConvertRecordToAvro: encode failed: ${err.Error()}", ff)
                 }
 
                 var stamped = withAttribute(ff, "avro.schema", emitFieldDefs(schema))
@@ -173,7 +167,7 @@ class ConvertRecordToAvro : ProcessorFn {
 }
 
 pub (ProcessorFn, error) ConvertRecordToAvroFactory(ScopedContext ctx, Map<String, String> config) {
-    return ConvertRecordToAvro(), nil
+    return ConvertRecordToAvro(), null
 }
 
 // coerceForSchema returns a map[string]any whose value Go-types match what
@@ -208,7 +202,7 @@ Map<String, Object> coerceForSchema(GenericRecord rec, core.Schema schema) {
 // normalize so encode succeeds without per-call-site casting.
 
 bool asBool(Object v) {
-    if (v == nil) { return false }
+    if (v == null) { return false }
     var b = v as bool or {
         var s = v as String or { return false }
         return s == "true"
@@ -217,7 +211,7 @@ bool asBool(Object v) {
 }
 
 int asInt(Object v) {
-    if (v == nil) { return 0 }
+    if (v == null) { return 0 }
     var i = v as int or {
         var l = v as long or {
             var f = v as double or { return 0 }
@@ -229,7 +223,7 @@ int asInt(Object v) {
 }
 
 long asLong(Object v) {
-    if (v == nil) { return long(0) }
+    if (v == null) { return long(0) }
     var l = v as long or {
         var i = v as int or {
             var f = v as double or { return long(0) }
@@ -241,7 +235,7 @@ long asLong(Object v) {
 }
 
 double asDouble(Object v) {
-    if (v == nil) { return 0.0 }
+    if (v == null) { return 0.0 }
     var f = v as double or {
         var i = v as int or {
             var l = v as long or { return 0.0 }
@@ -260,13 +254,13 @@ double asFloat32(Object v) {
 }
 
 String asString(Object v) {
-    if (v == nil) { return "" }
+    if (v == null) { return "" }
     var s = v as String or { return "" }
     return s
 }
 
 byte[] asBytes(Object v) {
-    if (v == nil) { return byte[0] }
+    if (v == null) { return byte[0] }
     var s = v as String or { return byte[0] }
     return s.toBytes()
 }
@@ -279,7 +273,7 @@ pub (core.Schema, error) parseFieldDefs(String name, String defs) {
     var fields = List<core.Field>[]
     var trimmed = strings.TrimSpace(defs)
     if (trimmed == "") {
-        return core.Schema(name, fields), nil
+        return core.Schema(name, fields), null
     }
     for (part in strings.Split(trimmed, ",")) {
         var p = strings.TrimSpace(part)
@@ -295,13 +289,12 @@ pub (core.Schema, error) parseFieldDefs(String name, String defs) {
         if (fname == "" || ftypeStr == "") {
             return core.Schema("", List<core.Field>[]), errors.ConfigError("malformed field def '${p}' — expected 'name:type'")
         }
-        var ft, terr = fieldTypeFromName(ftypeStr)
-        if (terr != nil) {
-            return core.Schema("", List<core.Field>[]), errors.ConfigError("field '${fname}': ${terr.Error()}")
+        var ft = fieldTypeFromName(ftypeStr) or {
+            return core.Schema("", List<core.Field>[]), errors.ConfigError("field '${fname}': ${err.Error()}")
         }
         fields = append(fields, core.Field(fname, ft, null))
     }
-    return core.Schema(name, fields), nil
+    return core.Schema(name, fields), null
 }
 
 pub String emitFieldDefs(core.Schema s) {
@@ -313,14 +306,14 @@ pub String emitFieldDefs(core.Schema s) {
 }
 
 (FieldType, error) fieldTypeFromName(String name) {
-    if (name == "null")                        { return NULL,    nil }
-    if (name == "boolean" || name == "bool")   { return BOOLEAN, nil }
-    if (name == "int" || name == "int32")      { return INT,     nil }
-    if (name == "long" || name == "int64")     { return LONG,    nil }
-    if (name == "float" || name == "float32")  { return FLOAT,   nil }
-    if (name == "double" || name == "float64") { return DOUBLE,  nil }
-    if (name == "string")                      { return STRING,  nil }
-    if (name == "bytes")                       { return BYTES,   nil }
+    if (name == "null")                        { return NULL,    null }
+    if (name == "boolean" || name == "bool")   { return BOOLEAN, null }
+    if (name == "int" || name == "int32")      { return INT,     null }
+    if (name == "long" || name == "int64")     { return LONG,    null }
+    if (name == "float" || name == "float32")  { return FLOAT,   null }
+    if (name == "double" || name == "float64") { return DOUBLE,  null }
+    if (name == "string")                      { return STRING,  null }
+    if (name == "bytes")                       { return BYTES,   null }
     return NULL, errors.ConfigError("unknown field type '${name}' — valid: null, boolean, int, long, float, double, string, bytes")
 }
 

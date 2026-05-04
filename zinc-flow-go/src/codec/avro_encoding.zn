@@ -78,13 +78,13 @@ pub (long, int, error) readVarint(byte[] data, int offset) {
         shift = shift + 7
         bytesRead = bytesRead + 1
         if ((b & 0x80) == 0) {
-            return zigzagDecodeLong(encoded), bytesRead, nil
+            return zigzagDecodeLong(encoded), bytesRead, null
         }
         if (shift >= 64) {
             return 0, bytesRead, fmt.Errorf("varint too large")
         }
     }
-    return 0, bytesRead, nil
+    return 0, bytesRead, null
 }
 
 // --- Primitive writers -----------------------------------------------------
@@ -147,15 +147,15 @@ pub (bool, int, error) readBoolean(byte[] data, int offset) {
     if (offset >= len(data)) {
         return false, 0, fmt.Errorf("readBoolean: buffer underrun")
     }
-    return data[offset] != 0, 1, nil
+    return data[offset] != 0, 1, null
 }
 
 pub (int, int, error) readInt(byte[] data, int offset) {
     var v, n, err = readVarint(data, offset)
-    if (err != nil) {
+    if (err != null) {
         return 0, n, err
     }
-    return int(v), n, nil
+    return int(v), n, null
 }
 
 pub (long, int, error) readLong(byte[] data, int offset) {
@@ -167,7 +167,7 @@ pub (double, int, error) readFloat(byte[] data, int offset) {
         return 0.0, 0, fmt.Errorf("readFloat: buffer underrun")
     }
     var bits = binary.LittleEndian.Uint32(data[offset:offset+4])
-    return double(math.Float32frombits(bits)), 4, nil
+    return double(math.Float32frombits(bits)), 4, null
 }
 
 pub (double, int, error) readDouble(byte[] data, int offset) {
@@ -175,12 +175,12 @@ pub (double, int, error) readDouble(byte[] data, int offset) {
         return 0.0, 0, fmt.Errorf("readDouble: buffer underrun")
     }
     var bits = binary.LittleEndian.Uint64(data[offset:offset+8])
-    return math.Float64frombits(bits), 8, nil
+    return math.Float64frombits(bits), 8, null
 }
 
 pub (String, int, error) readString(byte[] data, int offset) {
     var length, n, err = readVarint(data, offset)
-    if (err != nil) {
+    if (err != null) {
         return "", n, err
     }
     var ilen = int(length)
@@ -188,12 +188,12 @@ pub (String, int, error) readString(byte[] data, int offset) {
         return "", n, fmt.Errorf("readString: buffer underrun")
     }
     var slice = data[offset+n:offset+n+ilen]
-    return string(slice), n + ilen, nil
+    return string(slice), n + ilen, null
 }
 
 pub (byte[], int, error) readBytes(byte[] data, int offset) {
     var length, n, err = readVarint(data, offset)
-    if (err != nil) {
+    if (err != null) {
         return byte[0], n, err
     }
     var ilen = int(length)
@@ -206,6 +206,6 @@ pub (byte[], int, error) readBytes(byte[] data, int offset) {
         out[i] = data[offset+n+i]
         i = i + 1
     }
-    return out, n + ilen, nil
+    return out, n + ilen, null
 }
 

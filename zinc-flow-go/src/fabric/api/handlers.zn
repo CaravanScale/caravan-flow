@@ -414,7 +414,7 @@ class ApiHandler {
 }
 
 // readBody reads the full request body. Errors-as-values shape:
-// returns the bytes + nil on success, empty + error on failure.
+// returns the bytes + null on success, empty + error on failure.
 (byte[], error) readBody(Request r) {
     var body = ReadAll(r.Body) or { return byte[0], err }
     r.Body.Close()

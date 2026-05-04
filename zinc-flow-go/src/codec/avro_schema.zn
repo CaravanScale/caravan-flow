@@ -71,13 +71,12 @@ pub (Schema, error) parseSchemaJson(String text) {
         var fname = fobj["name"] as String or {
             return zero, errors.ConfigError("field 'name' must be a string")
         }
-        var ftype, ferr = parseTypeToken(fobj["type"])
-        if (ferr != nil) {
-            return zero, errors.ConfigError("field '${fname}': ${ferr.Error()}")
+        var ftype = parseTypeToken(fobj["type"]) or {
+            return zero, errors.ConfigError("field '${fname}': ${err.Error()}")
         }
         fields = append(fields, Field(fname, ftype, null))
     }
-    return Schema(name, fields), nil
+    return Schema(name, fields), null
 }
 
 // parseTypeToken — handles primitive string, nullable-union array, and
@@ -97,22 +96,22 @@ pub (Schema, error) parseSchemaJson(String text) {
             var inner = obj["type"] as String or {
                 return STRING, errors.ConfigError("nested annotated type not supported")
             }
-            return mapPrimitive(inner), nil
+            return mapPrimitive(inner), null
         }
         // Walk the union; ignore "null", take first non-null.
         for (item in arr) {
             var iname = item as String or {
                 // Could be an annotated object inside the union — recurse.
                 var ft, e = parseTypeToken(item)
-                if (e == nil) { return ft, nil }
+                if (e == null) { return ft, null }
                 continue
             }
             if (iname == "null") { continue }
-            return mapPrimitive(iname), nil
+            return mapPrimitive(iname), null
         }
         return STRING, errors.ConfigError("union with no non-null branch")
     }
-    return mapPrimitive(s), nil
+    return mapPrimitive(s), null
 }
 
 FieldType mapPrimitive(String name) {
@@ -165,11 +164,10 @@ pub (String, error) emitSchemaJson(Schema s) {
     root["name"] = s.name
     root["fields"] = fieldArr
 
-    var out, err = json.Marshal(root)
-    if (err != nil) {
+    var out = json.Marshal(root) or {
         return "", err
     }
-    return string(out), nil
+    return string(out), null
 }
 
 // schemaFromHamba / schemaToHamba — kept as no-op shims so existing
@@ -177,11 +175,11 @@ pub (String, error) emitSchemaJson(Schema s) {
 // the hamba-removal phase. Will be deleted once hamba is dropped from
 // zinc.toml.
 pub (Schema, error) schemaFromHamba(Schema hs) {
-    return hs, nil
+    return hs, null
 }
 
 pub (Schema, error) schemaToHamba(Schema s) {
-    return s, nil
+    return s, null
 }
 
 // stripWhitespace — tolerated leading/trailing whitespace in JSON input,
