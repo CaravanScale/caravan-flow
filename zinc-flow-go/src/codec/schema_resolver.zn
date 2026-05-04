@@ -125,11 +125,7 @@ pub bool isPromotable(core.FieldType src, core.FieldType to) {
     if (src == core.LONG && to == core.DOUBLE) { return true }
     if (src == core.FLOAT && to == core.DOUBLE) { return true }
     if (src == core.STRING && to == core.BYTES) { return true }
-    // BYTES → STRING is omitted: `value as byte[]` doesn't parse in
-    // zinc-go yet (the `as` form's RHS only accepts dotted ident
-    // chains, no array suffix), so the BYTES → STRING promotion
-    // can't be implemented at the value boundary today. C# parity
-    // gap noted; revisit once `as byte[]` is supported.
+    if (src == core.BYTES && to == core.STRING) { return true }
     return false
 }
 
@@ -167,6 +163,9 @@ pub Object promote(Object value, core.FieldType src, core.FieldType to) {
         var s = value as String or { return value }
         return s.toBytes()
     }
-    // BYTES → STRING omitted; see isPromotable.
+    if (src == core.BYTES && to == core.STRING) {
+        var b = value as byte[] or { return value }
+        return string(b)
+    }
     return value
 }
