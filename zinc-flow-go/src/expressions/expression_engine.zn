@@ -1,0 +1,756 @@
+// Hand-rolled expression parser + evaluator. No reflection, AOT-safe.
+//
+// Grammar (precedence low → high):
+//   logicalOr  := logicalAnd  ('||' logicalAnd)*
+//   logicalAnd := equality    ('&&' equality)*
+//   equality   := comparison  (('=='|'!=') comparison)*
+//   comparison := additive    (('<'|'>'|'<='|'>=') additive)*
+//   additive   := multiplicative (('+'|'-') multiplicative)*
+//   multiplicative := unary (('*'|'/'|'%') unary)*
+//   unary      := ('-'|'!') unary | primary
+//   primary    := Number | String | Bool | Null | Ident | Function | '(' logicalOr ')'
+//   Function   := Ident '(' (logicalOr (',' logicalOr)*)? ')'
+//
+// Type rules:
+//   long  + long  → long
+//   double + any number → double
+//   string + any → string concat
+//   division by zero → 0 for long, NaN for double (not thrown — data-engineering friendly)
+//   missing identifier → null (EvalValue.kind == KIND_NULL)
+//
+// Mirrors zinc-flow-csharp's ExpressionEngine + CompiledExpression.
+
+import strconv
+import strings
+import math
+import stdlib/errors
+
+// --- Token kinds -----------------------------------------------------------
+
+pub const TK_NUMBER     = 0
+pub const TK_STRING     = 1
+pub const TK_BOOL       = 2
+pub const TK_NULL       = 3
+pub const TK_IDENT      = 4
+pub const TK_LPAREN     = 5
+pub const TK_RPAREN     = 6
+pub const TK_COMMA      = 7
+pub const TK_PLUS       = 8
+pub const TK_MINUS      = 9
+pub const TK_STAR       = 10
+pub const TK_SLASH      = 11
+pub const TK_PERCENT    = 12
+pub const TK_EQ         = 13
+pub const TK_NEQ        = 14
+pub const TK_LT         = 15
+pub const TK_GT         = 16
+pub const TK_LE         = 17
+pub const TK_GE         = 18
+pub const TK_AND        = 19
+pub const TK_OR         = 20
+pub const TK_NOT        = 21
+pub const TK_UNARY_MINUS = 22
+pub const TK_FUNCTION   = 23
+
+// Token — a tagged-union token with payload slots for each kind. Same
+// shape rationale as EvalValue: avoids per-token allocation and keeps
+// the RPN buffer cache-friendly.
+data Token(int kind, String text, long longVal, double doubleVal, bool boolVal, bool isLong, int arity)
+
+// Convenience constructors so call sites stay readable.
+pub Token tkBare(int kind) {
+    return Token(kind, "", long(0), 0.0, false, false, 0)
+}
+pub Token tkNumberLong(long v) {
+    return Token(TK_NUMBER, "", v, 0.0, false, true, 0)
+}
+pub Token tkNumberDouble(double v) {
+    return Token(TK_NUMBER, "", long(0), v, false, false, 0)
+}
+pub Token tkString(String v) {
+    return Token(TK_STRING, v, long(0), 0.0, false, false, 0)
+}
+pub Token tkBool(bool v) {
+    return Token(TK_BOOL, "", long(0), 0.0, v, false, 0)
+}
+pub Token tkIdent(String name) {
+    return Token(TK_IDENT, name, long(0), 0.0, false, false, 0)
+}
+pub Token tkFunction(String name, int arity) {
+    return Token(TK_FUNCTION, name, long(0), 0.0, false, false, arity)
+}
+
+// --- Value resolver --------------------------------------------------------
+
+// ValueResolver — strategy interface for binding bare identifiers in
+// an expression to their values. Implementations close over a record,
+// an attribute map, or any other key-value source.
+interface ValueResolver {
+    EvalValue resolve(String name)
+}
+
+// --- Compiled expression ---------------------------------------------------
+
+class CompiledExpression {
+    List<Token> rpn
+
+    init(List<Token> rpn) {
+        this.rpn = rpn
+    }
+
+    pub EvalValue eval(ValueResolver context) {
+        var stack = List<EvalValue>[]
+        for (tok in rpn) {
+            if (tok.kind == TK_NUMBER) {
+                if (tok.isLong) {
+                    stack = append(stack, evalLong(tok.longVal))
+                } else {
+                    stack = append(stack, evalDouble(tok.doubleVal))
+                }
+            } else if (tok.kind == TK_STRING) {
+                stack = append(stack, evalString(tok.text))
+            } else if (tok.kind == TK_BOOL) {
+                stack = append(stack, evalBool(tok.boolVal))
+            } else if (tok.kind == TK_NULL) {
+                stack = append(stack, evalNull())
+            } else if (tok.kind == TK_IDENT) {
+                stack = append(stack, context.resolve(tok.text))
+            } else if (tok.kind == TK_UNARY_MINUS) {
+                var top = stack[len(stack) - 1]
+                stack = stack[0..len(stack) - 1]
+                stack = append(stack, negate(top))
+            } else if (tok.kind == TK_NOT) {
+                var top = stack[len(stack) - 1]
+                stack = stack[0..len(stack) - 1]
+                stack = append(stack, evalBool(!top.isTruthy()))
+            } else if (tok.kind == TK_PLUS) {
+                stack = applyAdd(stack)
+            } else if (tok.kind == TK_MINUS) {
+                stack = applyArith(stack, "-")
+            } else if (tok.kind == TK_STAR) {
+                stack = applyArith(stack, "*")
+            } else if (tok.kind == TK_SLASH) {
+                stack = applyArith(stack, "/")
+            } else if (tok.kind == TK_PERCENT) {
+                stack = applyArith(stack, "%")
+            } else if (tok.kind == TK_EQ) {
+                stack = applyCmp(stack, 0)
+            } else if (tok.kind == TK_NEQ) {
+                stack = applyCmp(stack, 1)
+            } else if (tok.kind == TK_LT) {
+                stack = applyCmp(stack, 2)
+            } else if (tok.kind == TK_GT) {
+                stack = applyCmp(stack, 3)
+            } else if (tok.kind == TK_LE) {
+                stack = applyCmp(stack, 4)
+            } else if (tok.kind == TK_GE) {
+                stack = applyCmp(stack, 5)
+            } else if (tok.kind == TK_AND) {
+                var b = stack[len(stack) - 1]
+                var a = stack[len(stack) - 2]
+                stack = stack[0..len(stack) - 2]
+                stack = append(stack, evalBool(a.isTruthy() && b.isTruthy()))
+            } else if (tok.kind == TK_OR) {
+                var b = stack[len(stack) - 1]
+                var a = stack[len(stack) - 2]
+                stack = stack[0..len(stack) - 2]
+                stack = append(stack, evalBool(a.isTruthy() || b.isTruthy()))
+            } else if (tok.kind == TK_FUNCTION) {
+                var args = popArgs(stack, tok.arity)
+                stack = stack[0..len(stack) - tok.arity]
+                stack = append(stack, callFunction(tok.text, args))
+            }
+        }
+        if (len(stack) == 0) { return evalNull() }
+        return stack[len(stack) - 1]
+    }
+}
+
+// popArgs returns the top `arity` values from the stack in
+// left-to-right (call-site) order. Caller is responsible for
+// truncating the stack afterwards.
+List<EvalValue> popArgs(List<EvalValue> stack, int arity) {
+    var args = List<EvalValue>[]
+    var start = len(stack) - arity
+    for (i in 0..arity) {
+        args = append(args, stack[start + i])
+    }
+    return args
+}
+
+// negate — unary minus. String operand parses to a number then negates.
+EvalValue negate(EvalValue v) {
+    if (v.kind == KIND_LONG)   { return evalLong(-v.longVal) }
+    if (v.kind == KIND_DOUBLE) { return evalDouble(-v.doubleVal) }
+    if (v.kind == KIND_STRING) {
+        var d = strconv.ParseFloat(v.stringVal, 64) or { return evalNull() }
+        return evalDouble(-d)
+    }
+    return evalNull()
+}
+
+// applyAdd — pop two, push a+b. String concat if either is string;
+// long+long stays long; otherwise widen to double.
+List<EvalValue> applyAdd(List<EvalValue> stack) {
+    var b = stack[len(stack) - 1]
+    var a = stack[len(stack) - 2]
+    stack = stack[0..len(stack) - 2]
+    if (a.kind == KIND_STRING || b.kind == KIND_STRING) {
+        return append(stack, evalString(a.asString() + b.asString()))
+    }
+    if (a.kind == KIND_NULL || b.kind == KIND_NULL) {
+        return append(stack, evalNull())
+    }
+    if (a.kind == KIND_DOUBLE || b.kind == KIND_DOUBLE) {
+        return append(stack, evalDouble(a.asDouble() + b.asDouble()))
+    }
+    return append(stack, evalLong(a.asLong() + b.asLong()))
+}
+
+// applyArith — pop two, apply non-add binary op. Null operand short-
+// circuits to null. Float widens. Division by zero is 0 (long) or NaN
+// (double) — data-engineering friendly, doesn't crash a flow.
+List<EvalValue> applyArith(List<EvalValue> stack, String op) {
+    var b = stack[len(stack) - 1]
+    var a = stack[len(stack) - 2]
+    stack = stack[0..len(stack) - 2]
+    if (a.kind == KIND_NULL || b.kind == KIND_NULL) {
+        return append(stack, evalNull())
+    }
+    var useDouble = a.kind == KIND_DOUBLE || b.kind == KIND_DOUBLE
+    if (useDouble) {
+        var da = a.asDouble()
+        var db = b.asDouble()
+        if (op == "-") { return append(stack, evalDouble(da - db)) }
+        if (op == "*") { return append(stack, evalDouble(da * db)) }
+        if (op == "/") {
+            if (db == 0.0) { return append(stack, evalDouble(math.NaN())) }
+            return append(stack, evalDouble(da / db))
+        }
+        if (op == "%") {
+            if (db == 0.0) { return append(stack, evalDouble(math.NaN())) }
+            return append(stack, evalDouble(math.Mod(da, db)))
+        }
+        return append(stack, evalNull())
+    }
+    var la = a.asLong()
+    var lb = b.asLong()
+    if (op == "-") { return append(stack, evalLong(la - lb)) }
+    if (op == "*") { return append(stack, evalLong(la * lb)) }
+    if (op == "/") {
+        if (lb == long(0)) { return append(stack, evalLong(long(0))) }
+        return append(stack, evalLong(la / lb))
+    }
+    if (op == "%") {
+        if (lb == long(0)) { return append(stack, evalLong(long(0))) }
+        return append(stack, evalLong(la % lb))
+    }
+    return append(stack, evalNull())
+}
+
+// applyCmp — pop two, push a comparison result.
+//   op 0: ==   1: !=   2: <   3: >   4: <=   5: >=
+List<EvalValue> applyCmp(List<EvalValue> stack, int op) {
+    var b = stack[len(stack) - 1]
+    var a = stack[len(stack) - 2]
+    stack = stack[0..len(stack) - 2]
+    if (op == 0 || op == 1) {
+        var result = false
+        if (a.isNumeric() && b.isNumeric()) {
+            result = a.asDouble() == b.asDouble()
+        } else {
+            result = a.equal(b)
+        }
+        if (op == 1) { result = !result }
+        return append(stack, evalBool(result))
+    }
+    if (a.kind == KIND_NULL || b.kind == KIND_NULL) {
+        return append(stack, evalBool(false))
+    }
+    var cmp = 0
+    if (a.kind == KIND_STRING && b.kind == KIND_STRING) {
+        cmp = strings.Compare(a.stringVal, b.stringVal)
+    } else {
+        var da = a.asDouble()
+        var db = b.asDouble()
+        if (da < db) { cmp = -1 }
+        else if (da > db) { cmp = 1 }
+    }
+    var result = false
+    if (op == 2) { result = cmp < 0 }
+    if (op == 3) { result = cmp > 0 }
+    if (op == 4) { result = cmp <= 0 }
+    if (op == 5) { result = cmp >= 0 }
+    return append(stack, evalBool(result))
+}
+
+// --- Built-in functions ---------------------------------------------------
+
+EvalValue callFunction(String name, List<EvalValue> args) {
+    // String functions
+    if (name == "upper") {
+        if (len(args) < 1) { return evalNull() }
+        return evalString(strings.ToUpper(args[0].asString()))
+    }
+    if (name == "lower") {
+        if (len(args) < 1) { return evalNull() }
+        return evalString(strings.ToLower(args[0].asString()))
+    }
+    if (name == "trim") {
+        if (len(args) < 1) { return evalNull() }
+        return evalString(strings.TrimSpace(args[0].asString()))
+    }
+    if (name == "length") {
+        if (len(args) < 1) { return evalLong(long(0)) }
+        if (args[0].kind == KIND_STRING) {
+            return evalLong(long(len(args[0].stringVal)))
+        }
+        return evalLong(long(len(args[0].asString())))
+    }
+    if (name == "substring") {
+        if (len(args) < 2) { return evalNull() }
+        var s = args[0].asString()
+        var start = int(args[1].asLong())
+        if (start < 0) { start = 0 }
+        if (start > len(s)) { start = len(s) }
+        if (len(args) >= 3) {
+            var ln = int(args[2].asLong())
+            if (ln < 0) { ln = 0 }
+            if (start + ln > len(s)) { ln = len(s) - start }
+            return evalString(s.substring(start, start + ln))
+        }
+        return evalString(s.substring(start))
+    }
+    if (name == "replace") {
+        if (len(args) < 3) { return evalNull() }
+        return evalString(strings.ReplaceAll(args[0].asString(), args[1].asString(), args[2].asString()))
+    }
+    if (name == "concat") {
+        var out = ""
+        for (a in args) { out = out + a.asString() }
+        return evalString(out)
+    }
+    if (name == "contains") {
+        if (len(args) < 2) { return evalBool(false) }
+        return evalBool(strings.Contains(args[0].asString(), args[1].asString()))
+    }
+    if (name == "startsWith") {
+        if (len(args) < 2) { return evalBool(false) }
+        return evalBool(strings.HasPrefix(args[0].asString(), args[1].asString()))
+    }
+    if (name == "endsWith") {
+        if (len(args) < 2) { return evalBool(false) }
+        return evalBool(strings.HasSuffix(args[0].asString(), args[1].asString()))
+    }
+    // coalesce: first non-null, non-empty argument
+    if (name == "coalesce") {
+        for (a in args) {
+            if (a.kind == KIND_NULL) { continue }
+            if (a.kind == KIND_STRING && a.stringVal == "") { continue }
+            return a
+        }
+        return evalNull()
+    }
+    // Conditional: if(cond, then, else)
+    if (name == "if") {
+        if (len(args) < 2) { return evalNull() }
+        if (args[0].isTruthy()) { return args[1] }
+        if (len(args) >= 3) { return args[2] }
+        return evalNull()
+    }
+    // Type casts
+    if (name == "int" || name == "long") {
+        if (len(args) < 1) { return evalNull() }
+        return evalLong(args[0].asLong())
+    }
+    if (name == "double") {
+        if (len(args) < 1) { return evalNull() }
+        return evalDouble(args[0].asDouble())
+    }
+    if (name == "string") {
+        if (len(args) < 1) { return evalNull() }
+        return evalString(args[0].asString())
+    }
+    if (name == "bool") {
+        if (len(args) < 1) { return evalBool(false) }
+        return evalBool(args[0].isTruthy())
+    }
+    // Math
+    if (name == "abs") {
+        if (len(args) < 1) { return evalNull() }
+        if (args[0].kind == KIND_LONG) {
+            var v = args[0].longVal
+            if (v < long(0)) { return evalLong(-v) }
+            return evalLong(v)
+        }
+        return evalDouble(math.Abs(args[0].asDouble()))
+    }
+    if (name == "min") {
+        if (len(args) < 2) { return evalNull() }
+        if (args[0].asDouble() <= args[1].asDouble()) { return args[0] }
+        return args[1]
+    }
+    if (name == "max") {
+        if (len(args) < 2) { return evalNull() }
+        if (args[0].asDouble() >= args[1].asDouble()) { return args[0] }
+        return args[1]
+    }
+    if (name == "floor") {
+        if (len(args) < 1) { return evalNull() }
+        return evalLong(long(math.Floor(args[0].asDouble())))
+    }
+    if (name == "ceil") {
+        if (len(args) < 1) { return evalNull() }
+        return evalLong(long(math.Ceil(args[0].asDouble())))
+    }
+    if (name == "round") {
+        if (len(args) < 1) { return evalNull() }
+        return evalLong(long(math.Round(args[0].asDouble())))
+    }
+    if (name == "pow") {
+        if (len(args) < 2) { return evalNull() }
+        return evalDouble(math.Pow(args[0].asDouble(), args[1].asDouble()))
+    }
+    if (name == "sqrt") {
+        if (len(args) < 1) { return evalNull() }
+        return evalDouble(math.Sqrt(args[0].asDouble()))
+    }
+    // Null / missing checks
+    if (name == "isNull") {
+        if (len(args) < 1) { return evalBool(true) }
+        return evalBool(args[0].kind == KIND_NULL)
+    }
+    if (name == "isEmpty") {
+        if (len(args) < 1) { return evalBool(true) }
+        if (args[0].kind == KIND_NULL) { return evalBool(true) }
+        return evalBool(args[0].asString() == "")
+    }
+    return evalNull()
+}
+
+// --- Public API ------------------------------------------------------------
+
+// compile parses an expression source into an executable form. Lift
+// out of the hot path when the same expression is used per-record.
+pub (CompiledExpression, error) compile(String expression) {
+    var tokens = tokenize(expression) or {
+        return CompiledExpression(List<Token>[]), err
+    }
+    var rpn = toRpn(tokens) or {
+        return CompiledExpression(List<Token>[]), err
+    }
+    return CompiledExpression(rpn), null
+}
+
+// evaluate compiles and runs in one shot. For per-record loops use
+// compile() once and call .eval() per record to amortize parsing.
+pub (EvalValue, error) evaluate(String expression, ValueResolver context) {
+    var compiled = compile(expression) or {
+        return evalNull(), err
+    }
+    return compiled.eval(context), null
+}
+
+// --- Tokenizer ------------------------------------------------------------
+
+(List<Token>, error) tokenize(String src) {
+    var tokens = List<Token>[]
+    var i = 0
+    while (i < len(src)) {
+        var c = src[i]
+        if (c == byte(32) || c == byte(9) || c == byte(10) || c == byte(13)) {
+            i = i + 1
+            continue
+        }
+        if (c >= byte(48) && c <= byte(57)) {
+            var nextI, tok = readNumber(src, i) or {
+                return List<Token>[], err
+            }
+            tokens = append(tokens, tok)
+            i = nextI
+            continue
+        }
+        if (c == byte(34) || c == byte(39)) {
+            var nextI, tok = readString(src, i) or {
+                return List<Token>[], err
+            }
+            tokens = append(tokens, tok)
+            i = nextI
+            continue
+        }
+        if (c == byte(95) || isAlpha(c)) {
+            var nextI, tok = readIdent(src, i)
+            tokens = append(tokens, tok)
+            i = nextI
+            continue
+        }
+        // Punctuation / operators.
+        if (c == byte(40)) { tokens = append(tokens, tkBare(TK_LPAREN));  i = i + 1; continue }
+        if (c == byte(41)) { tokens = append(tokens, tkBare(TK_RPAREN));  i = i + 1; continue }
+        if (c == byte(44)) { tokens = append(tokens, tkBare(TK_COMMA));   i = i + 1; continue }
+        if (c == byte(43)) { tokens = append(tokens, tkBare(TK_PLUS));    i = i + 1; continue }
+        if (c == byte(45)) { tokens = append(tokens, tkBare(TK_MINUS));   i = i + 1; continue }
+        if (c == byte(42)) { tokens = append(tokens, tkBare(TK_STAR));    i = i + 1; continue }
+        if (c == byte(47)) { tokens = append(tokens, tkBare(TK_SLASH));   i = i + 1; continue }
+        if (c == byte(37)) { tokens = append(tokens, tkBare(TK_PERCENT)); i = i + 1; continue }
+        if (c == byte(61)) {
+            if (i + 1 < len(src) && src[i + 1] == byte(61)) {
+                tokens = append(tokens, tkBare(TK_EQ))
+                i = i + 2
+                continue
+            }
+            return List<Token>[], errors.ConfigError("unexpected '=' at position ${i} (use '==' for equality)")
+        }
+        if (c == byte(33)) {
+            if (i + 1 < len(src) && src[i + 1] == byte(61)) {
+                tokens = append(tokens, tkBare(TK_NEQ))
+                i = i + 2
+            } else {
+                tokens = append(tokens, tkBare(TK_NOT))
+                i = i + 1
+            }
+            continue
+        }
+        if (c == byte(60)) {
+            if (i + 1 < len(src) && src[i + 1] == byte(61)) {
+                tokens = append(tokens, tkBare(TK_LE))
+                i = i + 2
+            } else {
+                tokens = append(tokens, tkBare(TK_LT))
+                i = i + 1
+            }
+            continue
+        }
+        if (c == byte(62)) {
+            if (i + 1 < len(src) && src[i + 1] == byte(61)) {
+                tokens = append(tokens, tkBare(TK_GE))
+                i = i + 2
+            } else {
+                tokens = append(tokens, tkBare(TK_GT))
+                i = i + 1
+            }
+            continue
+        }
+        if (c == byte(38)) {
+            if (i + 1 < len(src) && src[i + 1] == byte(38)) {
+                tokens = append(tokens, tkBare(TK_AND))
+                i = i + 2
+                continue
+            }
+            return List<Token>[], errors.ConfigError("unexpected '&' at position ${i} (use '&&' for logical and)")
+        }
+        if (c == byte(124)) {
+            if (i + 1 < len(src) && src[i + 1] == byte(124)) {
+                tokens = append(tokens, tkBare(TK_OR))
+                i = i + 2
+                continue
+            }
+            return List<Token>[], errors.ConfigError("unexpected '|' at position ${i} (use '||' for logical or)")
+        }
+        return List<Token>[], errors.ConfigError("unexpected character at position ${i}")
+    }
+    return tokens, null
+}
+
+bool isAlpha(byte c) {
+    return (c >= byte(65) && c <= byte(90)) || (c >= byte(97) && c <= byte(122))
+}
+bool isDigit(byte c) {
+    return c >= byte(48) && c <= byte(57)
+}
+bool isAlnum(byte c) {
+    return isAlpha(c) || isDigit(c) || c == byte(95) || c == byte(46)
+}
+
+(int, Token, error) readNumber(String src, int start) {
+    var i = start
+    var isDouble = false
+    while (i < len(src) && isDigit(src[i])) { i = i + 1 }
+    if (i < len(src) && src[i] == byte(46)) {
+        isDouble = true
+        i = i + 1
+        while (i < len(src) && isDigit(src[i])) { i = i + 1 }
+    }
+    if (i < len(src) && (src[i] == byte(101) || src[i] == byte(69))) {
+        isDouble = true
+        i = i + 1
+        if (i < len(src) && (src[i] == byte(43) || src[i] == byte(45))) {
+            i = i + 1
+        }
+        while (i < len(src) && isDigit(src[i])) { i = i + 1 }
+    }
+    var text = src.substring(start, i)
+    if (isDouble) {
+        var d = strconv.ParseFloat(text, 64) or {
+            return 0, tkBare(TK_NULL), errors.ConfigError("invalid number literal: ${text}")
+        }
+        return i, tkNumberDouble(d), null
+    }
+    var l = strconv.ParseInt(text, 10, 64) or {
+        return 0, tkBare(TK_NULL), errors.ConfigError("invalid number literal: ${text}")
+    }
+    return i, tkNumberLong(l), null
+}
+
+(int, Token, error) readString(String src, int start) {
+    var quote = src[start]
+    var i = start + 1
+    var out = byte[0]
+    while (i < len(src) && src[i] != quote) {
+        if (src[i] == byte(92) && i + 1 < len(src)) {
+            var esc = src[i + 1]
+            if (esc == byte(110))      { out = append(out, byte(10)) }
+            else if (esc == byte(116)) { out = append(out, byte(9)) }
+            else if (esc == byte(114)) { out = append(out, byte(13)) }
+            else                        { out = append(out, esc) }
+            i = i + 2
+        } else {
+            out = append(out, src[i])
+            i = i + 1
+        }
+    }
+    if (i >= len(src)) {
+        return 0, tkBare(TK_NULL), errors.ConfigError("unterminated string literal at ${start}")
+    }
+    return i + 1, tkString(string(out)), null
+}
+
+(int, Token) readIdent(String src, int start) {
+    var i = start
+    while (i < len(src) && isAlnum(src[i])) { i = i + 1 }
+    var name = src.substring(start, i)
+    if (name == "true")  { return i, tkBool(true) }
+    if (name == "false") { return i, tkBool(false) }
+    if (name == "null")  { return i, tkBare(TK_NULL) }
+    return i, tkIdent(name)
+}
+
+// --- Shunting-yard infix → RPN --------------------------------------------
+
+int precedence(int kind) {
+    if (kind == TK_OR) { return 1 }
+    if (kind == TK_AND) { return 2 }
+    if (kind == TK_EQ || kind == TK_NEQ) { return 3 }
+    if (kind == TK_LT || kind == TK_GT || kind == TK_LE || kind == TK_GE) { return 4 }
+    if (kind == TK_PLUS || kind == TK_MINUS) { return 5 }
+    if (kind == TK_STAR || kind == TK_SLASH || kind == TK_PERCENT) { return 6 }
+    if (kind == TK_UNARY_MINUS || kind == TK_NOT) { return 7 }
+    return 0
+}
+
+bool isRightAssoc(int kind) {
+    return kind == TK_UNARY_MINUS || kind == TK_NOT
+}
+
+bool isOperator(int kind) {
+    if (kind == TK_PLUS || kind == TK_MINUS || kind == TK_STAR ||
+        kind == TK_SLASH || kind == TK_PERCENT) { return true }
+    if (kind == TK_EQ || kind == TK_NEQ || kind == TK_LT ||
+        kind == TK_GT || kind == TK_LE || kind == TK_GE) { return true }
+    if (kind == TK_AND || kind == TK_OR || kind == TK_NOT) { return true }
+    if (kind == TK_UNARY_MINUS || kind == TK_COMMA) { return true }
+    return false
+}
+
+(List<Token>, error) toRpn(List<Token> tokens) {
+    var output = List<Token>[]
+    var ops = List<Token>[]
+    var arity = List<int>[]
+    var sawValue = List<bool>[]
+
+    var prevKind = -1
+    var idx = 0
+    while (idx < len(tokens)) {
+        var t = tokens[idx]
+        if (t.kind == TK_NUMBER || t.kind == TK_STRING ||
+            t.kind == TK_BOOL || t.kind == TK_NULL) {
+            output = append(output, t)
+            if (len(sawValue) > 0) {
+                sawValue[len(sawValue) - 1] = true
+            }
+        } else if (t.kind == TK_IDENT) {
+            // Function call if followed by '('.
+            if (idx + 1 < len(tokens) && tokens[idx + 1].kind == TK_LPAREN) {
+                ops = append(ops, tkFunction(t.text, 0))
+                ops = append(ops, tkBare(TK_LPAREN))
+                arity = append(arity, 0)
+                sawValue = append(sawValue, false)
+                idx = idx + 2
+                prevKind = TK_LPAREN
+                continue
+            }
+            output = append(output, t)
+            if (len(sawValue) > 0) {
+                sawValue[len(sawValue) - 1] = true
+            }
+        } else if (t.kind == TK_COMMA) {
+            while (len(ops) > 0 && ops[len(ops) - 1].kind != TK_LPAREN) {
+                output = append(output, ops[len(ops) - 1])
+                ops = ops[0..len(ops) - 1]
+            }
+            if (len(arity) == 0) {
+                return List<Token>[], errors.ConfigError("comma outside function call")
+            }
+            if (sawValue[len(sawValue) - 1]) {
+                arity[len(arity) - 1] = arity[len(arity) - 1] + 1
+            }
+            sawValue[len(sawValue) - 1] = false
+        } else if (t.kind == TK_LPAREN) {
+            ops = append(ops, t)
+        } else if (t.kind == TK_RPAREN) {
+            while (len(ops) > 0 && ops[len(ops) - 1].kind != TK_LPAREN) {
+                output = append(output, ops[len(ops) - 1])
+                ops = ops[0..len(ops) - 1]
+            }
+            if (len(ops) == 0) {
+                return List<Token>[], errors.ConfigError("mismatched parentheses")
+            }
+            ops = ops[0..len(ops) - 1] // discard LParen
+            // If a Function is now on top, finalize its arity.
+            if (len(ops) > 0 && ops[len(ops) - 1].kind == TK_FUNCTION) {
+                var fnTok = ops[len(ops) - 1]
+                ops = ops[0..len(ops) - 1]
+                var arityCount = arity[len(arity) - 1]
+                arity = arity[0..len(arity) - 1]
+                if (sawValue[len(sawValue) - 1]) { arityCount = arityCount + 1 }
+                sawValue = sawValue[0..len(sawValue) - 1]
+                output = append(output, tkFunction(fnTok.text, arityCount))
+                if (len(sawValue) > 0) {
+                    sawValue[len(sawValue) - 1] = true
+                }
+            }
+        } else {
+            // Binary or unary operator.
+            var opTok = t
+            if (t.kind == TK_MINUS && (prevKind == -1 ||
+                prevKind == TK_LPAREN || prevKind == TK_COMMA ||
+                isOperator(prevKind))) {
+                opTok = tkBare(TK_UNARY_MINUS)
+            }
+            while (len(ops) > 0) {
+                var top = ops[len(ops) - 1]
+                if (top.kind == TK_LPAREN || top.kind == TK_FUNCTION) { break }
+                var topPrec = precedence(top.kind)
+                var curPrec = precedence(opTok.kind)
+                if (topPrec > curPrec || (topPrec == curPrec && !isRightAssoc(opTok.kind))) {
+                    output = append(output, top)
+                    ops = ops[0..len(ops) - 1]
+                } else {
+                    break
+                }
+            }
+            ops = append(ops, opTok)
+        }
+        prevKind = t.kind
+        idx = idx + 1
+    }
+    while (len(ops) > 0) {
+        var op = ops[len(ops) - 1]
+        ops = ops[0..len(ops) - 1]
+        if (op.kind == TK_LPAREN || op.kind == TK_RPAREN) {
+            return List<Token>[], errors.ConfigError("mismatched parentheses")
+        }
+        output = append(output, op)
+    }
+    return output, null
+}

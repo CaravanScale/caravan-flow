@@ -114,6 +114,12 @@ pub void registerBuiltins(Registry reg) {
             List<String>[]),
         UnpackageFlowFileV3Factory
     )
+    reg.register(
+        ProcessorInfo("EvaluateExpression",
+            "Compute new FlowFile attributes from typed expressions (target=expr; ...)",
+            List<String>["expressions"]),
+        EvaluateExpressionFactory
+    )
     // --- zinc-native / legacy names ---
     reg.register(
         ProcessorInfo("add-attribute", "Adds key=value attribute to FlowFiles", List<String>["key", "value"]),

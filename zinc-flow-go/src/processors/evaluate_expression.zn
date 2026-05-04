@@ -1,0 +1,103 @@
+// EvaluateExpression — compute new FlowFile attributes from typed
+// expressions. Config key `expressions` is a semicolon-separated list
+// of `target=expr` pairs; each expression evaluates through
+// expressions.compile/eval (arithmetic, comparisons, booleans,
+// ternary via if(c,a,b), string ops, math functions).
+//
+// Attribute references are bare identifiers — e.g. `env`, `tenant`.
+// The typed result is stringified for storage (FlowFile attributes
+// are String → String).
+//
+// Mirrors zinc-flow-csharp/ZincFlow/StdLib/ExpressionProcessors.cs
+// — both tracks now accept the same expression shape and operator
+// set, so `expressions` configs are portable between workers.
+//
+// Examples:
+//   tax=amount*0.07; label=upper(region)+"-"+string(round(amount))
+//   flag=amount>100 && region=="US"
+//   greeting="Hello "+name
+//   fallback=coalesce(nickname, name)
+
+import stdlib/errors
+import strings
+import core
+import expressions
+import fabric/registry
+
+// AttributeResolver — binds expression identifiers to FlowFile
+// attribute values (always String-typed). Missing attributes resolve
+// to EvalValue.Null so coalesce/isNull work correctly.
+class AttributeResolver : expressions.ValueResolver {
+    Map<String, String> attrs
+
+    init(Map<String, String> attrs) {
+        this.attrs = attrs
+    }
+
+    pub EvalValue resolve(String name) {
+        if (!attrs.containsKey(name)) {
+            return expressions.evalNull()
+        }
+        return expressions.evalString(attrs[name])
+    }
+}
+
+class EvaluateExpression : ProcessorFn {
+    List<String> targets
+    List<CompiledExpression> compiled
+
+    init(List<String> targets, List<CompiledExpression> compiled) {
+        this.targets = targets
+        this.compiled = compiled
+    }
+
+    pub ProcessorResult process(FlowFile ff) {
+        var result = ff
+        var i = 0
+        while (i < len(targets)) {
+            var resolver = AttributeResolver(result.attributes)
+            var val = compiled[i].eval(resolver)
+            // Null result skips the attribute write — matches the C# port,
+            // where downstream code uses coalesce()/isNull() to detect.
+            if (val.kind != expressions.KIND_NULL) {
+                result = withAttribute(result, targets[i], val.asString())
+            }
+            i = i + 1
+        }
+        return Single(result)
+    }
+}
+
+// EvaluateExpressionFactory — parses the `expressions` config (a
+// semicolon-separated list of `target=expr` pairs) and compiles each
+// to amortize parsing across the per-record hot path.
+pub (ProcessorFn, error) EvaluateExpressionFactory(ScopedContext ctx, Map<String, String> config) {
+    var raw = ""
+    if (config.containsKey("expressions")) {
+        raw = config["expressions"]
+    }
+    var targets = List<String>[]
+    var compiled = List<CompiledExpression>[]
+    for (part in strings.Split(raw, ";")) {
+        var trimmed = strings.TrimSpace(part)
+        if (trimmed == "") { continue }
+        var eqIdx = strings.Index(trimmed, "=")
+        if (eqIdx < 0) {
+            return EvaluateExpression(List<String>[], List<CompiledExpression>[]),
+                errors.ConfigError("expression '${trimmed}' missing '=' separator (expected 'target=expr')")
+        }
+        var target = strings.TrimSpace(trimmed.substring(0, eqIdx))
+        var exprSrc = strings.TrimSpace(trimmed.substring(eqIdx + 1))
+        if (target == "" || exprSrc == "") {
+            return EvaluateExpression(List<String>[], List<CompiledExpression>[]),
+                errors.ConfigError("expression '${trimmed}' has empty target or body")
+        }
+        var c = expressions.compile(exprSrc) or {
+            return EvaluateExpression(List<String>[], List<CompiledExpression>[]),
+                errors.ConfigError("expression for '${target}': ${err.Error()}")
+        }
+        targets = append(targets, target)
+        compiled = append(compiled, c)
+    }
+    return EvaluateExpression(targets, compiled), null
+}

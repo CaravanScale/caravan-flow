@@ -1,0 +1,146 @@
+// Tagged-union value type for the expression engine. Preserves type
+// information through evaluation so arithmetic / string concat / type
+// casts produce the natural result without object boxing on every step.
+//
+// Mirrors zinc-flow-csharp's EvalValue (StdLib/ExpressionEngine.cs).
+// The C# port uses a struct with an inline enum; Zinc gets a `data`
+// class with five payload slots and an int-encoded kind discriminator.
+// Methods on `data` classes lower to value-receiver Go funcs — same
+// no-allocation property as the C# struct.
+
+import strconv
+
+// Kind discriminator. Plain int constants rather than an enum so the
+// data-class field type stays simple (Zinc enums lower to int aliases
+// in Go but the surface is heavier than needed for an internal tag).
+pub const KIND_NULL = 0
+pub const KIND_BOOL = 1
+pub const KIND_LONG = 2
+pub const KIND_DOUBLE = 3
+pub const KIND_STRING = 4
+
+data EvalValue(int kind, long longVal, double doubleVal, String stringVal, bool boolVal) {
+    pub bool isNumeric() {
+        return kind == KIND_LONG || kind == KIND_DOUBLE
+    }
+
+    pub bool isTruthy() {
+        if (kind == KIND_NULL)   { return false }
+        if (kind == KIND_BOOL)   { return boolVal }
+        if (kind == KIND_LONG)   { return longVal != long(0) }
+        if (kind == KIND_DOUBLE) { return doubleVal != 0.0 }
+        if (kind == KIND_STRING) { return stringVal != "" }
+        return false
+    }
+
+    pub double asDouble() {
+        if (kind == KIND_LONG)   { return double(longVal) }
+        if (kind == KIND_DOUBLE) { return doubleVal }
+        if (kind == KIND_BOOL) {
+            if (boolVal) { return 1.0 }
+            return 0.0
+        }
+        if (kind == KIND_STRING) {
+            var d = strconv.ParseFloat(stringVal, 64) or { return 0.0 }
+            return d
+        }
+        return 0.0
+    }
+
+    pub long asLong() {
+        if (kind == KIND_LONG)   { return longVal }
+        if (kind == KIND_DOUBLE) { return long(doubleVal) }
+        if (kind == KIND_BOOL) {
+            if (boolVal) { return long(1) }
+            return long(0)
+        }
+        if (kind == KIND_STRING) {
+            var l = strconv.ParseInt(stringVal, 10, 64) or { return long(0) }
+            return l
+        }
+        return long(0)
+    }
+
+    pub String asString() {
+        if (kind == KIND_NULL)   { return "" }
+        if (kind == KIND_BOOL) {
+            if (boolVal) { return "true" }
+            return "false"
+        }
+        if (kind == KIND_LONG)   { return strconv.FormatInt(longVal, 10) }
+        if (kind == KIND_DOUBLE) { return strconv.FormatFloat(doubleVal, byte(103), -1, 64) }
+        if (kind == KIND_STRING) { return stringVal }
+        return ""
+    }
+
+    pub bool equals(EvalValue other) {
+        if (kind != other.kind) { return false }
+        if (kind == KIND_NULL)   { return true }
+        if (kind == KIND_BOOL)   { return boolVal == other.boolVal }
+        if (kind == KIND_LONG)   { return longVal == other.longVal }
+        if (kind == KIND_DOUBLE) { return doubleVal == other.doubleVal }
+        if (kind == KIND_STRING) { return stringVal == other.stringVal }
+        return false
+    }
+}
+
+// --- Factories -------------------------------------------------------------
+
+pub EvalValue evalNull() {
+    return EvalValue(KIND_NULL, long(0), 0.0, "", false)
+}
+
+pub EvalValue evalBool(bool v) {
+    return EvalValue(KIND_BOOL, long(0), 0.0, "", v)
+}
+
+pub EvalValue evalLong(long v) {
+    return EvalValue(KIND_LONG, v, 0.0, "", false)
+}
+
+pub EvalValue evalInt(int v) {
+    return EvalValue(KIND_LONG, long(v), 0.0, "", false)
+}
+
+pub EvalValue evalDouble(double v) {
+    return EvalValue(KIND_DOUBLE, long(0), v, "", false)
+}
+
+pub EvalValue evalString(String v) {
+    return EvalValue(KIND_STRING, long(0), 0.0, v, false)
+}
+
+// evalFromObject wraps an `Object`-typed field value (typically a
+// record cell or attribute lookup result) into an EvalValue. The
+// typed fast path (long, double, string, bool) avoids stringifying;
+// anything else falls back to the toString form.
+pub EvalValue evalFromObject(Object v) {
+    if (v == null) { return evalNull() }
+    var b = v as bool or {
+        var i = v as int or {
+            var l = v as long or {
+                var d = v as double or {
+                    var s = v as String or {
+                        return evalString(str(v))
+                    }
+                    return evalString(s)
+                }
+                return evalDouble(d)
+            }
+            return evalLong(l)
+        }
+        return evalInt(i)
+    }
+    return evalBool(b)
+}
+
+// evalToObject unwraps an EvalValue back to an Object suitable for
+// storing into a record field or attribute.
+pub Object evalToObject(EvalValue v) {
+    if (v.kind == KIND_NULL)   { return null }
+    if (v.kind == KIND_BOOL)   { return v.boolVal }
+    if (v.kind == KIND_LONG)   { return v.longVal }
+    if (v.kind == KIND_DOUBLE) { return v.doubleVal }
+    if (v.kind == KIND_STRING) { return v.stringVal }
+    return null
+}
