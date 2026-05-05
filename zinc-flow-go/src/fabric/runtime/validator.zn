@@ -1,0 +1,140 @@
+// FlowValidator — pre-flight config checks. Surfaces issues that
+// would otherwise crash the running server: unknown processor types,
+// missing required config keys, factory-side errors (bad regex,
+// malformed expressions, etc.). Used by the `validate` subcommand
+// to gate CI / pre-commit on a clean config.
+//
+// Mirrors zinc-flow-csharp/ZincFlow/Fabric/FlowValidator.cs +
+// ConfigValidator.Validate. Connection/DAG validation is done by
+// the runtime when loadFlow runs and isn't duplicated here.
+
+import stdlib/config
+import stdlib/logging
+import core
+import fabric/registry
+
+// Issue — a single validator finding. Severity is "error" (blocks
+// load) or "warning" (proceeds with a yellow flag). The auto-derived
+// String() (from the data-class machinery) prints
+// `Issue(severity=error, path=..., message=...)` — fine for logs.
+data Issue(String severity, String path, String message)
+
+class ValidateResult {
+    pub List<Issue> issues = List<Issue>[]
+
+    init() {}
+
+    pub int errorCount() {
+        var n = 0
+        for (i in issues) {
+            if (i.severity == "error") { n = n + 1 }
+        }
+        return n
+    }
+
+    pub int warningCount() {
+        var n = 0
+        for (i in issues) {
+            if (i.severity == "warning") { n = n + 1 }
+        }
+        return n
+    }
+
+    pub bool hasErrors() {
+        return errorCount() > 0
+    }
+
+    pub void addError(String path, String message) {
+        issues = append(issues, Issue("error", path, message))
+    }
+
+    pub void addWarning(String path, String message) {
+        issues = append(issues, Issue("warning", path, message))
+    }
+}
+
+// validateFlow runs the validator against a loaded config + a built
+// registry. Two passes:
+//   (1) structural — every flow.processors.<name> declares a known
+//       type; unknown config keys produce warnings against the
+//       declared ProcessorInfo.configKeys list.
+//   (2) factory construction — instantiate each processor against a
+//       synthetic context so missing-key / bad-regex / bad-expression
+//       errors surface up front instead of crashing the running
+//       server. The synthetic context wires the standard providers
+//       (content, schema_registry) so processors that `requires` them
+//       can be built during validation.
+pub ValidateResult validateFlow(config.Config cfg, Registry reg) {
+    var result = ValidateResult()
+
+    var procKeys = cfg.getSubKeys("flow.processors")
+    if (len(procKeys) == 0) {
+        result.addError("flow.processors", "no processors defined")
+        return result
+    }
+
+    var ctx = buildSyntheticContext()
+
+    for (name in procKeys) {
+        var prefix = "flow.processors.${name}"
+        var typeName = cfg.getString(prefix + ".type")
+        if (typeName == "") {
+            result.addError(prefix + ".type", "missing processor type")
+            continue
+        }
+        if (!reg.has(typeName)) {
+            result.addError(prefix + ".type", "unknown processor type: ${typeName}")
+            continue
+        }
+
+        var procConfig = cfg.getStringMap(prefix + ".config")
+
+        // Warn on config keys that don't appear in the processor's
+        // declared key list — typo catcher (e.g. `ouput_dir`).
+        var info, ok = reg.getInfo(typeName)
+        if (ok) {
+            var declared = info.configKeys
+            if (len(declared) > 0) {
+                var known = Map<String, bool>{}
+                for (k in declared) { known[k] = true }
+                for (k in procConfig.keys()) {
+                    if (!known.containsKey(k)) {
+                        result.addWarning(prefix + ".config." + k,
+                            "unrecognized config key for ${typeName}; known: ${declared}")
+                    }
+                }
+            }
+        }
+
+        // Try to construct. The factory may raise on missing required
+        // keys, malformed regex/JSONPath/expressions, etc.
+        var _proc = reg.create(typeName, ctx, procConfig) or {
+            result.addError(prefix, "construction failed: ${err.Error()}")
+            continue
+        }
+        _ = _proc
+    }
+    return result
+}
+
+// buildSyntheticContext mirrors the standard provider set so processors
+// that `requires` them (e.g. content, schema_registry) can be built
+// during validation. No data load — the validator only checks that
+// construction works, not that fetches succeed.
+ScopedContext buildSyntheticContext() {
+    var providers = Map<String, Provider>{}
+
+    var contentProvider = ContentProvider("content", MemoryContentStore())
+    contentProvider.enable()
+    providers["content"] = contentProvider
+
+    var configProvider = ConfigProvider(config.Config())
+    configProvider.enable()
+    providers["config"] = configProvider
+
+    var loggingProvider = LoggingProvider(logging.LogManager())
+    loggingProvider.enable()
+    providers["logging"] = loggingProvider
+
+    return ScopedContext(providers)
+}

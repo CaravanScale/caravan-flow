@@ -1,0 +1,176 @@
+// CompressContent / DecompressContent — gzip or zstd compression of
+// FlowFile content. CompressContent stamps `compression.algorithm` +
+// `compression.originalSize` so DecompressContent can reverse without
+// extra config (algorithm = "auto" reads the stamped attribute).
+//
+// Mirrors zinc-flow-csharp/ZincFlow/StdLib/CompressionProcessors.cs.
+// Both tracks accept the same algorithm / level keys in YAML so flow
+// configs stay portable.
+
+import stdlib/errors
+import bytes
+import compress/gzip
+import zstd
+import io
+import strconv
+import core
+import fabric/registry
+
+class CompressContent : ProcessorFn {
+    String algorithm
+    String level
+    ContentStore store
+
+    init(String algorithm, String level, ContentStore store) {
+        this.algorithm = algorithm
+        this.level = level
+        this.store = store
+    }
+
+    pub ProcessorResult process(FlowFile ff) {
+        var resolved = resolve(store, ff.content)
+        if (resolved.errorMsg != "") {
+            return Failure(resolved.errorMsg, ff)
+        }
+        var data = resolved.data
+        var compressed = byte[0]
+        if (algorithm == "gzip") {
+            var out = gzipCompress(data, level) or {
+                return Failure("compress failed: ${err.Error()}", ff)
+            }
+            compressed = out
+        } else if (algorithm == "zstd") {
+            var out = zstdCompress(data, level) or {
+                return Failure("compress failed: ${err.Error()}", ff)
+            }
+            compressed = out
+        } else {
+            return Failure("CompressContent: unknown algorithm '${algorithm}' — valid: gzip, zstd", ff)
+        }
+        var withRaw = withContent(ff, Raw(compressed))
+        var withAlg = withAttribute(withRaw, "compression.algorithm", algorithm)
+        var stamped = withAttribute(withAlg, "compression.originalSize", strconv.Itoa(len(data)))
+        return Single(stamped)
+    }
+}
+
+class DecompressContent : ProcessorFn {
+    String algorithm
+    ContentStore store
+
+    init(String algorithm, ContentStore store) {
+        this.algorithm = algorithm
+        this.store = store
+    }
+
+    pub ProcessorResult process(FlowFile ff) {
+        var resolved = resolve(store, ff.content)
+        if (resolved.errorMsg != "") {
+            return Failure(resolved.errorMsg, ff)
+        }
+        var data = resolved.data
+        var alg = algorithm
+        if (alg == "auto") {
+            if (!ff.attributes.containsKey("compression.algorithm")) {
+                return Failure("DecompressContent: algorithm=auto but compression.algorithm attribute missing", ff)
+            }
+            alg = ff.attributes["compression.algorithm"]
+            if (alg == "") {
+                return Failure("DecompressContent: algorithm=auto but compression.algorithm attribute empty", ff)
+            }
+        }
+        var decompressed = byte[0]
+        if (alg == "gzip") {
+            var out = gzipDecompress(data) or {
+                return Failure("decompress failed: ${err.Error()}", ff)
+            }
+            decompressed = out
+        } else if (alg == "zstd") {
+            var out = zstdDecompress(data) or {
+                return Failure("decompress failed: ${err.Error()}", ff)
+            }
+            decompressed = out
+        } else {
+            return Failure("DecompressContent: unknown algorithm '${alg}' — valid: gzip, zstd", ff)
+        }
+        // Strip compression.* attributes so downstream processors don't
+        // try to decode twice off the same stamp.
+        var withRaw = withContent(ff, Raw(decompressed))
+        var stripped = withoutAttribute(withRaw, "compression.algorithm")
+        stripped = withoutAttribute(stripped, "compression.originalSize")
+        return Single(stripped)
+    }
+}
+
+// --- Codec helpers ---------------------------------------------------------
+
+(byte[], error) gzipCompress(byte[] data, String level) {
+    var lvl = gzip.DefaultCompression
+    if (level == "fastest") { lvl = gzip.BestSpeed }
+    else if (level == "smallest") { lvl = gzip.BestCompression }
+    else if (level == "balanced") { lvl = gzip.DefaultCompression }
+    var buf = new bytes.Buffer
+    var gw = gzip.NewWriterLevel(buf, lvl) or { return byte[0], err }
+    gw.Write(data) or {
+        gw.Close()
+        return byte[0], err
+    }
+    gw.Close() or { return byte[0], err }
+    return buf.Bytes(), null
+}
+
+(byte[], error) gzipDecompress(byte[] data) {
+    var rdr = bytes.NewReader(data)
+    using (var gr = gzip.NewReader(rdr) or { return byte[0], err }) {
+        return io.ReadAll(gr)
+    }
+}
+
+(byte[], error) zstdCompress(byte[] data, String level) {
+    var encLevel = zstd.SpeedDefault
+    if (level == "fastest") { encLevel = zstd.SpeedFastest }
+    else if (level == "smallest") { encLevel = zstd.SpeedBestCompression }
+    else if (level == "balanced") { encLevel = zstd.SpeedDefault }
+    using (var enc = zstd.NewWriter(null, zstd.WithEncoderLevel(encLevel)) or { return byte[0], err }) {
+        return enc.EncodeAll(data, byte[0]), null
+    }
+    return byte[0], errors.IllegalStateError("zstdCompress unreachable")
+}
+
+(byte[], error) zstdDecompress(byte[] data) {
+    using (var dec = zstd.NewReader(null) or { return byte[0], err }) {
+        var out, derr = dec.DecodeAll(data, byte[0])
+        return out, derr
+    }
+    return byte[0], errors.IllegalStateError("zstdDecompress unreachable")
+}
+
+// --- Factories -------------------------------------------------------------
+
+pub (ProcessorFn, error) CompressContentFactory(ScopedContext ctx, Map<String, String> config) {
+    var algorithm = "gzip"
+    if (config.containsKey("algorithm")) {
+        algorithm = config["algorithm"]
+    }
+    var level = "balanced"
+    if (config.containsKey("level")) {
+        level = config["level"]
+    }
+    var p = ctx.getProvider("content") or {
+        return CompressContent(algorithm, level, MemoryContentStore()), null
+    }
+    var cp = p as ContentProvider
+    return CompressContent(algorithm, level, cp.getStore()), null
+}
+
+pub (ProcessorFn, error) DecompressContentFactory(ScopedContext ctx, Map<String, String> config) {
+    var algorithm = "auto"
+    if (config.containsKey("algorithm")) {
+        algorithm = config["algorithm"]
+    }
+    var p = ctx.getProvider("content") or {
+        return DecompressContent(algorithm, MemoryContentStore()), null
+    }
+    var cp = p as ContentProvider
+    return DecompressContent(algorithm, cp.getStore()), null
+}

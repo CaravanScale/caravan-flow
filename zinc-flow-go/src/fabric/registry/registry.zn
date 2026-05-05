@@ -52,4 +52,15 @@ class Registry {
         }
         return result
     }
+
+    // getInfo returns the ProcessorInfo for a type plus a present
+    // flag — ProcessorInfo is a data (value) class so `?` isn't
+    // available. Used by the validator to surface unknown-config-key
+    // warnings against the declared key set.
+    pub (ProcessorInfo, bool) getInfo(String name) {
+        if (info.containsKey(name)) {
+            return info[name], true
+        }
+        return ProcessorInfo("", "", List<String>[]), false
+    }
 }

@@ -105,6 +105,10 @@ void main() {
     HandleFunc("DELETE /api/schema-registry/subjects/{subject}", srApi.deleteSubjectHandler)
     HandleFunc("DELETE /api/schema-registry/subjects/{subject}/versions/{version}", srApi.deleteVersionHandler)
 
+    // Prometheus /metrics — text-exposition format, no external deps.
+    var metricsApi = MetricsApiHandler(fab, time.Now())
+    HandleFunc("/metrics", metricsApi.metricsHandler)
+
     // Start periodic stats reporter
     spawn {
         while (true) {

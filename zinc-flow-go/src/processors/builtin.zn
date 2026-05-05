@@ -126,6 +126,18 @@ pub void registerBuiltins(Registry reg) {
             List<String>["query"]),
         QueryRecordFactory
     )
+    reg.register(
+        ProcessorInfo("CompressContent",
+            "Compresses FlowFile content (gzip/zstd, level=fastest|balanced|smallest)",
+            List<String>["algorithm", "level"]),
+        CompressContentFactory
+    )
+    reg.register(
+        ProcessorInfo("DecompressContent",
+            "Decompresses FlowFile content (gzip/zstd, algorithm=auto reads stamp)",
+            List<String>["algorithm"]),
+        DecompressContentFactory
+    )
     // --- zinc-native / legacy names ---
     reg.register(
         ProcessorInfo("add-attribute", "Adds key=value attribute to FlowFiles", List<String>["key", "value"]),

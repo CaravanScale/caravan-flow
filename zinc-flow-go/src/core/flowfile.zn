@@ -44,3 +44,12 @@ pub FlowFile withAttribute(FlowFile ff, String key, String value) {
 pub FlowFile withContent(FlowFile ff, Content content) {
     return FlowFile(ff.id, ff.attributes, content, ff.timestamp)
 }
+
+// Create a copy with the named attribute removed. No-op if absent.
+pub FlowFile withoutAttribute(FlowFile ff, String key) {
+    var attrs = Map<String, String>{}
+    for (k, v in ff.attributes) {
+        if (k != key) { attrs[k] = v }
+    }
+    return FlowFile(ff.id, attrs, ff.content, ff.timestamp)
+}

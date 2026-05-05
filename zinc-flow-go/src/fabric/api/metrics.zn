@@ -1,0 +1,90 @@
+// Prometheus /metrics endpoint — text-exposition format. Reads from
+// the running Fabric and emits counter / gauge series with no external
+// dependencies. Same metric names as zinc-flow-csharp's MetricsHandler
+// so dashboards built against either binary are interchangeable.
+//
+// Mirrors zinc-flow-csharp/ZincFlow/Fabric/Metrics.cs#MetricsHandler.
+
+import net/http
+import strings
+import strconv
+import time
+import core
+import fabric/runtime
+
+class MetricsApiHandler {
+    Fabric fab
+    time.Time startedAt
+
+    init(Fabric fab, time.Time startedAt) {
+        this.fab = fab
+        this.startedAt = startedAt
+    }
+
+    // GET /metrics — Prometheus text-exposition format. The handler
+    // walks Fabric state and emits the canonical counter/gauge series
+    // without buffering through a separate marshaller — the format
+    // is straightforward and the volume is bounded by processor count.
+    pub void metricsHandler(ResponseWriter w, Request r) {
+        w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
+        var out = ""
+
+        // Aggregate processed count.
+        var stats = fab.getStats()
+        out = out + "# HELP zinc_flow_processed_total Total FlowFiles processed\n"
+        out = out + "# TYPE zinc_flow_processed_total counter\n"
+        var processed = 0
+        if (stats.containsKey("processed")) { processed = stats["processed"] }
+        out = out + "zinc_flow_processed_total " + strconv.Itoa(processed) + "\n"
+
+        // Active executions.
+        out = out + "# HELP zinc_flow_active_executions Currently in-flight pipeline executions\n"
+        out = out + "# TYPE zinc_flow_active_executions gauge\n"
+        var active = 0
+        if (stats.containsKey("activeExecutions")) { active = stats["activeExecutions"] }
+        out = out + "zinc_flow_active_executions " + strconv.Itoa(active) + "\n"
+
+        // Per-processor processed.
+        var procStats = fab.getProcessorStats()
+        out = out + "# HELP zinc_flow_processor_processed_total FlowFiles processed per processor\n"
+        out = out + "# TYPE zinc_flow_processor_processed_total counter\n"
+        for (name, ps in procStats) {
+            var n = 0
+            if (ps.containsKey("processed")) { n = ps["processed"] }
+            out = out + "zinc_flow_processor_processed_total{processor=\"" + name + "\"} " + strconv.Itoa(n) + "\n"
+        }
+
+        // Per-processor errors.
+        out = out + "# HELP zinc_flow_processor_errors_total Errors per processor\n"
+        out = out + "# TYPE zinc_flow_processor_errors_total counter\n"
+        for (name, ps in procStats) {
+            var n = 0
+            if (ps.containsKey("errors")) { n = ps["errors"] }
+            out = out + "zinc_flow_processor_errors_total{processor=\"" + name + "\"} " + strconv.Itoa(n) + "\n"
+        }
+
+        // Source connectors.
+        var sources = fab.getSources()
+        out = out + "# HELP zinc_flow_source_running Whether connector source is running (1/0)\n"
+        out = out + "# TYPE zinc_flow_source_running gauge\n"
+        for (src in sources) {
+            var running = "0"
+            if (src.containsKey("running") && src["running"] == "true") { running = "1" }
+            var srcName = ""
+            if (src.containsKey("name")) { srcName = src["name"] }
+            var srcType = ""
+            if (src.containsKey("type")) { srcType = src["type"] }
+            out = out + "zinc_flow_source_running{name=\"" + srcName + "\",type=\"" + srcType + "\"} " + running + "\n"
+        }
+
+        // Uptime since startedAt.
+        out = out + "# HELP zinc_flow_uptime_seconds Time since process start\n"
+        out = out + "# TYPE zinc_flow_uptime_seconds gauge\n"
+        var elapsed = time.Since(startedAt)
+        var seconds = elapsed.Seconds()
+        out = out + "zinc_flow_uptime_seconds " + strconv.FormatFloat(seconds, byte(102), 1, 64) + "\n"
+
+        w.Write(out.toBytes())
+        _ = strings.TrimSpace
+    }
+}
