@@ -400,7 +400,7 @@ Factories receive only the scoped providers they declared:
 ```zinc
 fn FileSinkFactory(ScopedContext ctx, Map<String, String> config): ProcessorFn {
     var cp = ctx.getProvider("content") as ContentProvider
-    return FileSink(config["output_dir"], cp.getStore())
+    return FileSink(config["outputDir"], cp.getStore())
 }
 ```
 
@@ -461,7 +461,7 @@ flow:
       backpressure:
         max_count: 5000           # override default for this processor
       config:
-        output_dir: /tmp/zinc-flow/output
+        outputDir: /tmp/zinc-flow/output
 
   routes:
     tag-all:

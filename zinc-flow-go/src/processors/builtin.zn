@@ -29,16 +29,16 @@ pub void registerBuiltins(Registry reg) {
         PutStdoutFactory
     )
     reg.register(
-        ProcessorInfo("ConvertJSONToRecord", "Parses JSON content into Avro records", List<String>["schema_name"]),
-        JsonToRecordsFactory
+        ProcessorInfo("ConvertJSONToRecord", "Parses JSON content into Avro records", List<String>["schemaName"]),
+        ConvertJSONToRecordFactory
     )
     reg.register(
         ProcessorInfo("ConvertRecordToJSON", "Serializes Avro records back to JSON", List<String>[]),
-        RecordsToJsonFactory
+        ConvertRecordToJSONFactory
     )
     reg.register(
         ProcessorInfo("ExtractRecordField", "Extracts record fields onto FlowFile attributes",
-            List<String>["fields", "record_index"]),
+            List<String>["fields", "recordIndex"]),
         ExtractRecordFieldFactory
     )
     reg.register(
@@ -53,12 +53,12 @@ pub void registerBuiltins(Registry reg) {
     )
     reg.register(
         ProcessorInfo("ExtractText", "Regex captures → FlowFile attributes",
-            List<String>["pattern", "group_names"]),
+            List<String>["pattern", "groupNames"]),
         ExtractTextFactory
     )
     reg.register(
         ProcessorInfo("SplitText", "Regex delimiter → Multiple FlowFiles",
-            List<String>["delimiter", "header_lines"]),
+            List<String>["delimiter", "headerLines"]),
         SplitTextFactory
     )
     reg.register(
@@ -72,12 +72,12 @@ pub void registerBuiltins(Registry reg) {
     )
     reg.register(
         ProcessorInfo("PutFile", "Writes FlowFile content to a directory",
-            List<String>["output_dir", "naming_attribute", "prefix", "suffix", "format"]),
+            List<String>["outputDir", "namingAttribute", "prefix", "suffix", "format"]),
         PutFileFactory
     )
     reg.register(
         ProcessorInfo("ConvertAvroToRecord", "Parses Avro binary content into a record",
-            List<String>["schema_name", "field_defs"]),
+            List<String>["schemaName", "fieldDefs"]),
         codec.ConvertAvroToRecordFactory
     )
     reg.register(
@@ -86,7 +86,7 @@ pub void registerBuiltins(Registry reg) {
     )
     reg.register(
         ProcessorInfo("ConvertOCFToRecord", "Decode Avro OCF (.avro file) into records",
-            List<String>["reader_schema"]),
+            List<String>["readerSchema"]),
         codec.ConvertOCFToRecordFactory
     )
     reg.register(
@@ -96,12 +96,12 @@ pub void registerBuiltins(Registry reg) {
     )
     reg.register(
         ProcessorInfo("ConvertCSVToRecord", "Parses CSV content into Avro records",
-            List<String>["delimiter", "has_header", "schema_name"]),
+            List<String>["delimiter", "hasHeader", "schemaName"]),
         ConvertCSVToRecordFactory
     )
     reg.register(
         ProcessorInfo("ConvertRecordToCSV", "Serializes Avro records to CSV bytes",
-            List<String>["delimiter", "include_header"]),
+            List<String>["delimiter", "includeHeader"]),
         ConvertRecordToCSVFactory
     )
     reg.register(
@@ -144,7 +144,7 @@ pub void registerBuiltins(Registry reg) {
         AddAttributeFactory
     )
     reg.register(
-        ProcessorInfo("file-sink", "Writes FlowFile content to disk", List<String>["output_dir"]),
+        ProcessorInfo("file-sink", "Writes FlowFile content to disk", List<String>["outputDir"]),
         FileSinkFactory
     )
     reg.register(
@@ -152,12 +152,12 @@ pub void registerBuiltins(Registry reg) {
         LogProcessorFactory
     )
     reg.register(
-        ProcessorInfo("json-to-records", "Parses JSON content into Avro records", List<String>["schema_name"]),
-        JsonToRecordsFactory
+        ProcessorInfo("json-to-records", "Parses JSON content into Avro records", List<String>["schemaName"]),
+        ConvertJSONToRecordFactory
     )
     reg.register(
         ProcessorInfo("records-to-json", "Serializes Avro records back to JSON", List<String>[]),
-        RecordsToJsonFactory
+        ConvertRecordToJSONFactory
     )
 }
 
@@ -167,30 +167,30 @@ pub void registerBuiltins(Registry reg) {
 
 (ProcessorFn, error) FileSinkFactory(ScopedContext ctx, Map<String, String> config) {
     var p = ctx.getProvider("content") or {
-        return FileSink(config["output_dir"], MemoryContentStore())
+        return FileSink(config["outputDir"], MemoryContentStore())
     }
     var cp = p as ContentProvider
-    return FileSink(config["output_dir"], cp.getStore())
+    return FileSink(config["outputDir"], cp.getStore())
 }
 
 (ProcessorFn, error) LogProcessorFactory(ScopedContext ctx, Map<String, String> config) {
     return LogProcessor(config["prefix"])
 }
 
-(ProcessorFn, error) JsonToRecordsFactory(ScopedContext ctx, Map<String, String> config) {
-    var schemaName = config["schema_name"]
+(ProcessorFn, error) ConvertJSONToRecordFactory(ScopedContext ctx, Map<String, String> config) {
+    var schemaName = config["schemaName"]
     if (schemaName == "") {
         schemaName = "default"
     }
     var p = ctx.getProvider("content") or {
-        return JsonToRecords(schemaName, MemoryContentStore())
+        return ConvertJSONToRecord(schemaName, MemoryContentStore())
     }
     var cp = p as ContentProvider
-    return JsonToRecords(schemaName, cp.getStore())
+    return ConvertJSONToRecord(schemaName, cp.getStore())
 }
 
-(ProcessorFn, error) RecordsToJsonFactory(ScopedContext ctx, Map<String, String> config) {
-    return RecordsToJson()
+(ProcessorFn, error) ConvertRecordToJSONFactory(ScopedContext ctx, Map<String, String> config) {
+    return ConvertRecordToJSON()
 }
 
 // AddAttribute — tags a FlowFile with a key=value attribute.
@@ -245,9 +245,9 @@ class LogProcessor : ProcessorFn {
     }
 }
 
-// JsonToRecords — parses Raw JSON content into Avro Records.
+// ConvertJSONToRecord — parses Raw JSON content into Avro Records.
 // If content is already Records, passes through unchanged.
-class JsonToRecords : ProcessorFn {
+class ConvertJSONToRecord : ProcessorFn {
     String schemaName
     ContentStore store
 
@@ -288,9 +288,9 @@ class JsonToRecords : ProcessorFn {
     }
 }
 
-// RecordsToJson — serializes Avro Records content back to JSON bytes.
+// ConvertRecordToJSON — serializes Avro Records content back to JSON bytes.
 // If content is already Raw, passes through unchanged.
-class RecordsToJson : ProcessorFn {
+class ConvertRecordToJSON : ProcessorFn {
 
     init() {}
 

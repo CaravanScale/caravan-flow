@@ -39,7 +39,7 @@ pub (byte[], bool) bytesFrom(ProcessorResult r) {
     }
 }
 
-test "ConvertAvroToRecord — round-trip single-primitive long via field_defs" {
+test "ConvertAvroToRecord — round-trip single-primitive long via fieldDefs" {
     var encoder = codec.ConvertRecordToAvro()
     var decoder = codec.ConvertAvroToRecord("test", "id:long", core.MemoryContentStore())
 
@@ -112,7 +112,7 @@ test "ConvertAvroToRecord — schema sources from avro.schema attribute when no 
 
     var encoder = codec.ConvertRecordToAvro()
     var encoded = encoder.process(ff)
-    // Decoder constructed with NO field_defs — must fall back to the
+    // Decoder constructed with NO fieldDefs — must fall back to the
     // avro.schema attribute the encoder stamped.
     match (encoded) {
         case Single(eff) {
@@ -139,13 +139,13 @@ test "ConvertAvroToRecord — Failure when no schema available" {
     }
 }
 
-test "ConvertAvroToRecord — malformed field_defs surfaces error" {
+test "ConvertAvroToRecord — malformed fieldDefs surfaces error" {
     var decoder = codec.ConvertAvroToRecord("x", "id-long", core.MemoryContentStore())
     var ff = createFlowFile("data".toBytes(), Map<String, String>{})
     var r = decoder.process(ff)
     match (r) {
         case Failure(_, _) { /* expected */ }
-        case _ { t.Errorf("expected Failure on malformed field_defs, got %v", r) }
+        case _ { t.Errorf("expected Failure on malformed fieldDefs, got %v", r) }
     }
 }
 

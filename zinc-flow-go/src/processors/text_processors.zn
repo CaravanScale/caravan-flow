@@ -144,7 +144,7 @@ pub (ProcessorFn, error) ExtractTextFactory(ScopedContext ctx, Map<String, Strin
     var pattern = ""
     if (config.containsKey("pattern")) { pattern = config["pattern"] }
     var groupNames = ""
-    if (config.containsKey("group_names")) { groupNames = config["group_names"] }
+    if (config.containsKey("groupNames")) { groupNames = config["groupNames"] }
     var store = resolveStore(ctx)
     return ExtractText(pattern, groupNames, store)
 }
@@ -172,7 +172,7 @@ class SplitText : ProcessorFn {
         }
         var text = string(resolved.data)
 
-        // If header_lines is set, peel them off first and prepend to
+        // If headerLines is set, peel them off first and prepend to
         // each split — keeps CSV/TSV-style headers with their rows.
         var header = ""
         var body = text
@@ -220,8 +220,8 @@ pub (ProcessorFn, error) SplitTextFactory(ScopedContext ctx, Map<String, String>
         delimiter = config["delimiter"]
     }
     var headerLines = 0
-    if (config.containsKey("header_lines")) {
-        headerLines = textParseInt(config["header_lines"], 0)
+    if (config.containsKey("headerLines")) {
+        headerLines = textParseInt(config["headerLines"], 0)
     }
     var store = resolveStore(ctx)
     return SplitText(delimiter, headerLines, store)

@@ -13,7 +13,7 @@
 //   • Primitive field types only (NULL/BOOLEAN/INT/LONG/FLOAT/DOUBLE/
 //     STRING/BYTES) — same as csharp's AvroBinary. hamba supports more,
 //     but emitSchemaJson + the local Schema enum gate at primitives.
-//   • Schema sourcing for ConvertAvroToRecord: config `field_defs`
+//   • Schema sourcing for ConvertAvroToRecord: config `fieldDefs`
 //     ("id:long,name:string") wins; falls back to the FlowFile's
 //     `avro.schema` attribute.
 //   • ConvertRecordToAvro stamps `avro.schema` on output so the inverse
@@ -63,13 +63,13 @@ class ConvertAvroToRecord : ProcessorFn {
             }
         }
 
-        // Schema priority: config field_defs > avro.schema attribute.
+        // Schema priority: config fieldDefs > avro.schema attribute.
         var defs = fieldDefs
         if (defs == "" && ff.attributes.containsKey("avro.schema")) {
             defs = ff.attributes["avro.schema"]
         }
         if (defs == "") {
-            return Failure("ConvertAvroToRecord: no schema — set 'field_defs' config or 'avro.schema' attribute", ff)
+            return Failure("ConvertAvroToRecord: no schema — set 'fieldDefs' config or 'avro.schema' attribute", ff)
         }
         var schema = parseFieldDefs(schemaName, defs) or {
             return Failure("ConvertAvroToRecord: ${err.Error()}", ff)
@@ -104,12 +104,12 @@ class ConvertAvroToRecord : ProcessorFn {
 
 pub (ProcessorFn, error) ConvertAvroToRecordFactory(ScopedContext ctx, Map<String, String> config) {
     var schemaName = "avro"
-    if (config.containsKey("schema_name") && config["schema_name"] != "") {
-        schemaName = config["schema_name"]
+    if (config.containsKey("schemaName") && config["schemaName"] != "") {
+        schemaName = config["schemaName"]
     }
     var fieldDefs = ""
-    if (config.containsKey("field_defs")) {
-        fieldDefs = config["field_defs"]
+    if (config.containsKey("fieldDefs")) {
+        fieldDefs = config["fieldDefs"]
     }
     var p = ctx.getProvider("content") or {
         return ConvertAvroToRecord(schemaName, fieldDefs, MemoryContentStore()), null
@@ -265,7 +265,7 @@ byte[] asBytes(Object v) {
     return s.toBytes()
 }
 
-// --- field_defs parser/emitter -----------------------------------------
+// --- fieldDefs parser/emitter -----------------------------------------
 
 // parseFieldDefs — "id:long, name:string" → Schema. Same syntax as csharp
 // (RecordProcessors.cs:54). Names case-sensitive; types fold to lowercase.

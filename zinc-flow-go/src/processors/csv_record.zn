@@ -5,21 +5,21 @@
 //
 // ConvertCSVToRecord:
 //   • Raw bytes → Records. First row optionally read as header
-//     (config: has_header). Without a header, fields are named
+//     (config: hasHeader). Without a header, fields are named
 //     col_0, col_1, ... All field types are STRING (CSV is untyped).
 //   • Empty input → Failure.
 //   • Already-Records content → pass-through.
 //
 // ConvertRecordToCSV:
 //   • Records → Raw bytes. Header row emitted by default
-//     (config: include_header). Quoting per RFC 4180 via stdlib.
+//     (config: includeHeader). Quoting per RFC 4180 via stdlib.
 //   • Already-Raw content → pass-through.
 //
 // Config:
 //   delimiter       — single-char (default ",")
-//   has_header      — "true" | "false" (default "true") — reader only
-//   include_header  — "true" | "false" (default "true") — writer only
-//   schema_name     — name embedded in the inferred Schema (default "csv")
+//   hasHeader      — "true" | "false" (default "true") — reader only
+//   includeHeader  — "true" | "false" (default "true") — writer only
+//   schemaName     — name embedded in the inferred Schema (default "csv")
 
 import stdlib/errors
 import core
@@ -180,7 +180,7 @@ String anyToString(Object v) {
 }
 
 pub (ProcessorFn, error) ConvertCSVToRecordFactory(ScopedContext ctx, Map<String, String> config) {
-    var schemaName = config["schema_name"]
+    var schemaName = config["schemaName"]
     if (schemaName == "") {
         schemaName = "csv"
     }
@@ -189,7 +189,7 @@ pub (ProcessorFn, error) ConvertCSVToRecordFactory(ScopedContext ctx, Map<String
         delimiter = ","
     }
     var hasHeader = true
-    if (config.containsKey("has_header") && config["has_header"] == "false") {
+    if (config.containsKey("hasHeader") && config["hasHeader"] == "false") {
         hasHeader = false
     }
     var p = ctx.getProvider("content") or {
@@ -205,7 +205,7 @@ pub (ProcessorFn, error) ConvertRecordToCSVFactory(ScopedContext ctx, Map<String
         delimiter = ","
     }
     var includeHeader = true
-    if (config.containsKey("include_header") && config["include_header"] == "false") {
+    if (config.containsKey("includeHeader") && config["includeHeader"] == "false") {
         includeHeader = false
     }
     return ConvertRecordToCSV(delimiter, includeHeader)

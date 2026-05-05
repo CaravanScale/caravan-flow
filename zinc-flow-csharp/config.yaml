@@ -5,6 +5,27 @@ flow:
       config:
         mode: remove
         attributes: http.headers;internal.tmp
+    ConvertAvroToRecord:
+      type: ConvertAvroToRecord
+      config:
+        schemaName: default
+    ConvertJSONToRecord:
+      type: ConvertJSONToRecord
+      config:
+        schemaName: default
+    QueryRecord:
+      type: QueryRecord
+      config:
+        query: "$[?(@.amount > 100)]"
+    ExtractRecordField:
+      type: ExtractRecordField
+      config:
+        fields: "amount:order.amount;region:tenant.region"
+        recordIndex: "0"
+    EvaluateExpression:
+      type: EvaluateExpression
+      config:
+        expressions: "tax=amount*0.07; label=upper(region)"
 sources:
   ListenHTTP:
     type: ListenHTTP
@@ -12,3 +33,5 @@ sources:
       port: "9100"
       path: /
       maxBodyBytes: "16777216"
+    connections:
+      success: [FilterAttribute]

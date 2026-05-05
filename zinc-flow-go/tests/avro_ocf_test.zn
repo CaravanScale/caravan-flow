@@ -177,3 +177,81 @@ test "ConvertRecordToOCF — empty schema fields returns Failure" {
         case _ { t.Errorf("expected Failure on empty schema, got %v", r) }
     }
 }
+
+// --- Registry-backed reader schema -----------------------------------------
+
+test "OCF — registry-backed reader schema (latest) projects" {
+    var schema, records = sampleRecords()
+    var ff = makeFlowFileWithRecords(schema, records)
+    var encoded = codec.ConvertRecordToOCF(codec.CODEC_NULL).process(ff)
+
+    // Pre-populate registry with a 2-field reader schema; writer has 3.
+    var reg = codec.SchemaRegistry()
+    var readerSchema = core.schemaFromFields("user", List<Field>[
+        Field("id",   core.LONG,   null),
+        Field("name", core.STRING, null)
+    ])
+    reg.register("user-value", readerSchema) or { t.Errorf("seed register failed: %v", err) ; return }
+
+    match (encoded) {
+        case Single(eff) {
+            var dec = codec.ConvertOCFToRecord(core.MemoryContentStore(), "")
+            dec.useRegistryReader(reg, "user-value", "latest")
+            var out = dec.process(eff)
+            var s2, recs, ok = recordsFrom(out)
+            asserts.isTrue(t, ok, "registry-backed decode landed in Records")
+            asserts.equalInt(t, len(recs), 3)
+            asserts.equalInt(t, len(s2.fields), 2)
+            asserts.equalString(t, s2.fields[0].name, "id")
+            asserts.equalString(t, s2.fields[1].name, "name")
+        }
+        case _ { t.Errorf("encoder did not return Single") }
+    }
+}
+
+test "OCF — autoRegisterSubject captures writer schema in registry" {
+    var schema, records = sampleRecords()
+    var ff = makeFlowFileWithRecords(schema, records)
+    var encoded = codec.ConvertRecordToOCF(codec.CODEC_NULL).process(ff)
+
+    var reg = codec.SchemaRegistry()
+    asserts.equalInt(t, len(reg.listSubjects()), 0)
+
+    match (encoded) {
+        case Single(eff) {
+            var dec = codec.ConvertOCFToRecord(core.MemoryContentStore(), "")
+            dec.useAutoRegister(reg, "user-writer")
+            var out = dec.process(eff)
+            // Decode succeeds (no reader schema → records keep writer's).
+            var _s, recs, ok = recordsFrom(out)
+            asserts.isTrue(t, ok, "decode landed in Records")
+            asserts.equalInt(t, len(recs), 3)
+            _ = _s
+            // Writer schema landed under the configured subject.
+            var versions = reg.listVersions("user-writer")
+            asserts.equalInt(t, len(versions), 1)
+        }
+        case _ { t.Errorf("encoder did not return Single") }
+    }
+}
+
+test "OCF — registry miss surfaces as Failure not panic" {
+    var schema, records = sampleRecords()
+    var ff = makeFlowFileWithRecords(schema, records)
+    var encoded = codec.ConvertRecordToOCF(codec.CODEC_NULL).process(ff)
+
+    // Empty registry — looking up a never-registered subject must Fail cleanly.
+    var reg = codec.SchemaRegistry()
+    match (encoded) {
+        case Single(eff) {
+            var dec = codec.ConvertOCFToRecord(core.MemoryContentStore(), "")
+            dec.useRegistryReader(reg, "missing-subject", "latest")
+            var out = dec.process(eff)
+            match (out) {
+                case Failure(_, _) { /* expected */ }
+                case _ { t.Errorf("expected Failure on registry miss, got %v", out) }
+            }
+        }
+        case _ { t.Errorf("encoder did not return Single") }
+    }
+}

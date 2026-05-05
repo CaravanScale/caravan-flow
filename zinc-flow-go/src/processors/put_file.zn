@@ -1,8 +1,8 @@
 // PutFile — writes the FlowFile content to a file on disk.
 //
 // Mirrors csharp ZincFlow.StdLib.PutFile (Processors.cs:300). Config:
-//   output_dir       — target directory (created if missing).
-//   naming_attribute — attribute to use as the file name. Falls back
+//   outputDir       — target directory (created if missing).
+//   namingAttribute — attribute to use as the file name. Falls back
 //                      to a monotonically-incrementing counter if the
 //                      attribute is absent/empty.
 //   prefix           — prepended to the chosen file name.
@@ -90,10 +90,10 @@ class PutFile : ProcessorFn {
 
 pub (ProcessorFn, error) PutFileFactory(ScopedContext ctx, Map<String, String> config) {
     var outputDir = ""
-    if (config.containsKey("output_dir")) { outputDir = config["output_dir"] }
+    if (config.containsKey("outputDir")) { outputDir = config["outputDir"] }
     var namingAttr = "filename"
-    if (config.containsKey("naming_attribute") && config["naming_attribute"] != "") {
-        namingAttr = config["naming_attribute"]
+    if (config.containsKey("namingAttribute") && config["namingAttribute"] != "") {
+        namingAttr = config["namingAttribute"]
     }
     var prefix = ""
     if (config.containsKey("prefix")) { prefix = config["prefix"] }

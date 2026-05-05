@@ -15,6 +15,10 @@ import fabric/registry
 import hambaAvro
 import hambaOcf
 import stdlib/errors
+import stdlib/logging
+import strconv
+import strings
+import sync
 
 // --- Constants ----------------------------------------------------------
 
@@ -105,13 +109,55 @@ pub (byte[], error) writeOcf(List<GenericRecord> records, core.Schema schema, St
 
 // --- Processors ---------------------------------------------------------
 
+// ConvertOCFToRecord — decodes an OCF blob to records, optionally projecting
+// onto a reader schema for evolution. Reader schema can be supplied three
+// ways (mutually exclusive): inline JSON via `readerSchema`; registry-backed
+// via `readerSchemaSubject` (+ optional `readerSchemaVersion`, default
+// "latest"); or absent (records keep the writer schema verbatim).
+//
+// `autoRegisterSubject`: after each successful decode, register the writer
+// schema embedded in the OCF under this subject. Identical-schema dedup
+// means re-reading a known file is a no-op; a never-before-seen schema
+// becomes a new version. Auto-register failures are logged at WARN but
+// never block the FlowFile (advisory side effect).
+//
+// Registry paths require the `schema_registry` provider; the factory
+// rejects the config if it's missing.
 class ConvertOCFToRecord : ProcessorFn {
     ContentStore store
-    String readerSchemaJson  // optional inline reader schema for evolution
+    String readerSchemaJson
+    SchemaRegistry? schemaRegistry
+    String readerSchemaSubject
+    String readerSchemaVersion
+    String autoRegisterSubject
+    core.Schema? resolvedReaderSchema  // cached registry result; bypassed when version=="latest"
+    sync.Mutex resolveMu
 
     init(ContentStore store, String readerSchemaJson) {
         this.store = store
         this.readerSchemaJson = readerSchemaJson
+        this.schemaRegistry = null
+        this.readerSchemaSubject = ""
+        this.readerSchemaVersion = "latest"
+        this.autoRegisterSubject = ""
+        this.resolvedReaderSchema = null
+    }
+
+    // Setter for registry-backed reader schema. Called from the factory when
+    // `readerSchemaSubject` is in config; tests can call directly.
+    pub void useRegistryReader(SchemaRegistry sr, String subject, String version) {
+        this.schemaRegistry = sr
+        this.readerSchemaSubject = subject
+        if (version != "") {
+            this.readerSchemaVersion = version
+        }
+    }
+
+    // Setter for auto-register-on-decode of the writer schema. Independent of
+    // `useRegistryReader` — a processor may auto-register without projecting.
+    pub void useAutoRegister(SchemaRegistry sr, String subject) {
+        this.schemaRegistry = sr
+        this.autoRegisterSubject = subject
     }
 
     pub ProcessorResult process(FlowFile ff) {
@@ -132,6 +178,22 @@ class ConvertOCFToRecord : ProcessorFn {
             }
         }
 
+        // Resolve the reader schema lazily. Inline JSON wins; otherwise hit
+        // the registry (cached unless version == "latest"). A registry miss
+        // becomes a Failure on this FlowFile, never a runtime panic.
+        core.Schema? readerSchema = null
+        if (readerSchemaJson != "") {
+            var s = parseSchemaJson(readerSchemaJson) or {
+                return Failure("ConvertOCFToRecord: reader schema invalid: ${err.Error()}", ff)
+            }
+            readerSchema = s
+        } else if (readerSchemaSubject != "" && schemaRegistry != null) {
+            var s = resolveReaderFromRegistry() or {
+                return Failure("ConvertOCFToRecord: registry lookup failed for ${readerSchemaSubject}@${readerSchemaVersion}: ${err.Error()}", ff)
+            }
+            readerSchema = s
+        }
+
         var writerSchema, records = readOcf(data) or {
             return Failure("ConvertOCFToRecord: ${err.Error()}", ff)
         }
@@ -139,41 +201,130 @@ class ConvertOCFToRecord : ProcessorFn {
             return Failure("ConvertOCFToRecord: no records in OCF", ff)
         }
 
-        // Reader-schema projection (optional): drop fields the reader
-        // schema doesn't list, keep ones that exist in both. Full
-        // evolution (type promotion + defaults) is hamba's job once we
-        // reach for `NewDecoderWithSchema` — for now we ship the field-
-        // drop case which covers the most common evolution scenario.
-        var effectiveSchema = writerSchema
-        if (readerSchemaJson != "") {
-            var readerSchema = parseSchemaJson(readerSchemaJson) or {
-                return Failure("ConvertOCFToRecord: reader schema invalid: ${err.Error()}", ff)
+        // Auto-register the writer schema if configured. Advisory: a registry
+        // failure logs WARN and is dropped; the FlowFile continues.
+        if (autoRegisterSubject != "" && schemaRegistry != null) {
+            var sr = schemaRegistry as SchemaRegistry
+            sr.register(autoRegisterSubject, writerSchema) or {
+                logging.warn("ConvertOCFToRecord: auto-register failed",
+                    "subject", autoRegisterSubject, "err", err.Error())
             }
-            records = projectRecords(records, readerSchema, writerSchema)
-            effectiveSchema = readerSchema
+        }
+
+        // Project records onto the reader schema if one is in play.
+        // schema_resolver.check enforces compatibility per Avro 1.11
+        // resolution rules; .project handles per-field promotion + defaults.
+        var effectiveSchema = writerSchema
+        if (readerSchema != null) {
+            var rs = readerSchema as core.Schema
+            var compat = check(rs, writerSchema)
+            if (!compat.isCompatible()) {
+                return Failure("ConvertOCFToRecord: reader schema incompatible: " + strings.Join(compat.errors, "; "), ff)
+            }
+            var projected = List<GenericRecord>[]
+            for (rec in records) {
+                projected = append(projected, project(rec, rs, writerSchema))
+            }
+            records = projected
+            effectiveSchema = rs
         }
 
         var updated = withContent(ff, Records(effectiveSchema, records))
         return Single(updated)
     }
+
+    // resolveReaderFromRegistry returns the cached schema when version is
+    // pinned and we've already fetched once; otherwise hits the registry and
+    // caches the result (skipping the cache for "latest" so newly promoted
+    // versions get picked up).
+    (core.Schema, error) resolveReaderFromRegistry() {
+        if (schemaRegistry == null) {
+            return core.Schema("", List<core.Field>[]), errors.ConfigError("schema_registry not configured")
+        }
+        var sr = schemaRegistry as SchemaRegistry
+
+        if (readerSchemaVersion != "latest") {
+            lock (resolveMu) {
+                if (resolvedReaderSchema != null) {
+                    return resolvedReaderSchema as core.Schema, null
+                }
+            }
+        }
+
+        VersionEntry? entry = null
+        if (readerSchemaVersion == "latest") {
+            entry = sr.getLatest(readerSchemaSubject)
+        } else {
+            var v = strconv.Atoi(readerSchemaVersion) or {
+                return core.Schema("", List<core.Field>[]), errors.ConfigError("invalid version '${readerSchemaVersion}': not an integer")
+            }
+            entry = sr.getEntry(readerSchemaSubject, v)
+        }
+        if (entry == null) {
+            return core.Schema("", List<core.Field>[]), errors.ConfigError("subject '${readerSchemaSubject}' version '${readerSchemaVersion}' not found")
+        }
+        var schema = (entry as VersionEntry).schema
+
+        if (readerSchemaVersion != "latest") {
+            lock (resolveMu) {
+                resolvedReaderSchema = schema
+            }
+        }
+        return schema, null
+    }
 }
 
 pub (ProcessorFn, error) ConvertOCFToRecordFactory(ScopedContext ctx, Map<String, String> config) {
-    var readerSchema = ""
-    if (config.containsKey("reader_schema")) {
-        readerSchema = config["reader_schema"]
+    var inlineReader = ""
+    if (config.containsKey("readerSchema")) {
+        inlineReader = config["readerSchema"]
     }
-    if (config.containsKey("reader_schema_subject") && config["reader_schema_subject"] != "") {
-        return null, errors.ConfigError("ConvertOCFToRecord: reader_schema_subject not yet supported (registry path) — use reader_schema for inline JSON")
+    var subject = ""
+    if (config.containsKey("readerSchemaSubject")) {
+        subject = config["readerSchemaSubject"]
     }
-    if (config.containsKey("auto_register_subject") && config["auto_register_subject"] != "") {
-        return null, errors.ConfigError("ConvertOCFToRecord: auto_register_subject not yet supported (registry path)")
+    var version = ""
+    if (config.containsKey("readerSchemaVersion")) {
+        version = config["readerSchemaVersion"]
     }
+    var autoRegister = ""
+    if (config.containsKey("autoRegisterSubject")) {
+        autoRegister = config["autoRegisterSubject"]
+    }
+
+    if (inlineReader != "" && subject != "") {
+        return null, errors.ConfigError("ConvertOCFToRecord: set readerSchema OR readerSchemaSubject, not both")
+    }
+
+    // Registry lookup: only when the user actually asked for it.
+    SchemaRegistry? sr = null
+    if (subject != "" || autoRegister != "") {
+        var p = ctx.getProvider("schema_registry") or {
+            return null, errors.ConfigError("ConvertOCFToRecord: readerSchemaSubject/autoRegisterSubject require the 'schema_registry' provider")
+        }
+        var srp = p as SchemaRegistryProvider
+        sr = srp.getRegistry()
+    }
+
+    // Content store path mirrors ConvertAvroToRecordFactory: fall back to
+    // MemoryContentStore when no provider is registered (test fixtures, etc.).
     var p = ctx.getProvider("content") or {
-        return ConvertOCFToRecord(MemoryContentStore(), readerSchema), null
+        return buildOCFReader(MemoryContentStore(), inlineReader, sr, subject, version, autoRegister), null
     }
     var cp = p as ContentProvider
-    return ConvertOCFToRecord(cp.getStore(), readerSchema), null
+    return buildOCFReader(cp.getStore(), inlineReader, sr, subject, version, autoRegister), null
+}
+
+ConvertOCFToRecord buildOCFReader(ContentStore store, String inlineReader,
+        SchemaRegistry? sr, String subject, String version, String autoRegister) {
+    var proc = ConvertOCFToRecord(store, inlineReader)
+    if (subject != "" && sr != null) {
+        proc.useRegistryReader(sr as SchemaRegistry, subject, version)
+    }
+    if (autoRegister != "" && sr != null) {
+        proc.useAutoRegister(sr as SchemaRegistry, autoRegister)
+    }
+    return proc
 }
 
 class ConvertRecordToOCF : ProcessorFn {
@@ -219,22 +370,6 @@ pub (ProcessorFn, error) ConvertRecordToOCFFactory(ScopedContext ctx, Map<String
     return ConvertRecordToOCF(codec), null
 }
 
-// --- Reader-schema projection ------------------------------------------
-
-// projectRecords drops fields not in the reader schema, leaves the rest
-// untouched. Keeps the same record count. Type promotion + defaults are
-// future work (hamba's NewDecoderWithSchema already handles this — wire
-// up when we add a reader-schema config that holds the parsed Schema).
-List<GenericRecord> projectRecords(List<GenericRecord> records, core.Schema reader, core.Schema writer) {
-    var out = List<GenericRecord>[]
-    for (rec in records) {
-        var projected = GenericRecord(reader)
-        for (rf in reader.fields) {
-            var v = rec.getField(rf.name)
-            projected.setField(rf.name, v)
-        }
-        out = append(out, projected)
-        _ = writer  // reserved for future promotion logic
-    }
-    return out
-}
+// Reader-schema projection lives in schema_resolver.zn (check + project) —
+// the per-record path applied above handles promotion + defaults per the
+// Avro 1.11 resolution rules. Earlier ad-hoc projectRecords removed.

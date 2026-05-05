@@ -138,7 +138,7 @@ test "scenario: provider disable cascades — dependent processors become DISABL
     var reg = Registry()
     registerBuiltins(reg)
     var fab = Fabric(reg, globalCtx)
-    fab.addProcessor("file-sink", "file-sink", Map<String, String>{"output_dir": "/tmp/test"})
+    fab.addProcessor("file-sink", "file-sink", Map<String, String>{"outputDir": "/tmp/test"})
 
     match (fab.getProcessorState("file-sink")) {
         case ENABLED { }
@@ -168,7 +168,7 @@ test "scenario: enableProcessor — refuses when a required provider is disabled
     var fab = Fabric(reg, globalCtx)
 
     // addProcessor auto-enables, then we disable to set up the scenario.
-    fab.addProcessor("sink", "file-sink", Map<String, String>{"output_dir": "/tmp/test"})
+    fab.addProcessor("sink", "file-sink", Map<String, String>{"outputDir": "/tmp/test"})
     fab.disableProcessor("sink", 0)
 
     // With `requires` empty on this addProcessor path there's no

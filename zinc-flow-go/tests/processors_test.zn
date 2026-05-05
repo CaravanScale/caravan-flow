@@ -52,9 +52,9 @@ test "FileSink — writes to disk, returns Dropped" {
     }
 }
 
-test "JsonToRecords — parses JSON array into records" {
+test "ConvertJSONToRecord — parses JSON array into records" {
     var store = MemoryContentStore()
-    var proc = JsonToRecords("order", store)
+    var proc = ConvertJSONToRecord("order", store)
     var ff = createFlowFile(jsonArrayFixture(), Map<String, String>{})
     var result = proc.process(ff)
 
@@ -66,7 +66,7 @@ test "JsonToRecords — parses JSON array into records" {
     }
 }
 
-test "RecordsToJson — serializes records back to JSON bytes" {
+test "ConvertRecordToJSON — serializes records back to JSON bytes" {
     var fields = List<Field>[Field("name", STRING, null)]
     var schema = schemaFromFields("test", fields)
     var rec = GenericRecord(schema)
@@ -77,7 +77,7 @@ test "RecordsToJson — serializes records back to JSON bytes" {
         Map<String, String>{}
     )
 
-    var proc = RecordsToJson()
+    var proc = ConvertRecordToJSON()
     var result = proc.process(ff)
 
     match (result) {
@@ -103,7 +103,7 @@ test "JSON roundtrip — Records→JSON→Records preserves data" {
     )
 
     var store = MemoryContentStore()
-    var toJson = RecordsToJson()
+    var toJson = ConvertRecordToJSON()
     var step1 = toJson.process(ff)
 
     match (step1) {
@@ -112,7 +112,7 @@ test "JSON roundtrip — Records→JSON→Records preserves data" {
             var resolved = resolve(store, jsonFF.content)
             asserts.contains(t, string(resolved.data), "Portland")
 
-            var toRec = JsonToRecords("geo", store)
+            var toRec = ConvertJSONToRecord("geo", store)
             var step2 = toRec.process(jsonFF)
             match (step2) {
                 case Single(recordsFF) {
@@ -125,9 +125,9 @@ test "JSON roundtrip — Records→JSON→Records preserves data" {
     }
 }
 
-test "JsonToRecords — empty JSON array returns Failure" {
+test "ConvertJSONToRecord — empty JSON array returns Failure" {
     var store = MemoryContentStore()
-    var proc = JsonToRecords("test", store)
+    var proc = ConvertJSONToRecord("test", store)
     var ff = createFlowFile("[]".toBytes(), Map<String, String>{})
     var result = proc.process(ff)
 
@@ -286,7 +286,7 @@ test "PutStdout — raw format with Raw content passes through" {
 
 // --- GenerateFlowFile source ---
 
-test "GenerateFlowFile — pollOnce emits batch_size FlowFiles with base attrs" {
+test "GenerateFlowFile — pollOnce emits batchSize FlowFiles with base attrs" {
     var src = GenerateFlowFile("gen-test", 0, "hello", "", "env:dev;region:us", 3)
     var batch = src.pollOnce()
     asserts.equalInt(t, len(batch), 3)
@@ -525,7 +525,7 @@ test "ExtractText — named capture groups become attributes" {
     }
 }
 
-test "ExtractText — positional groups via group_names config" {
+test "ExtractText — positional groups via groupNames config" {
     var store = MemoryContentStore()
     var proc = ExtractText("(\\d+)-(\\d+)", "major,minor", store)
     var ff = createFlowFile("version 42-7 released".toBytes(), Map<String, String>{})
@@ -598,7 +598,7 @@ test "SplitText — single-chunk content (no delimiter match) passes through as 
     }
 }
 
-test "SplitText — header_lines prepended to each split" {
+test "SplitText — headerLines prepended to each split" {
     var store = MemoryContentStore()
     // CSV-style: first line is the header, splits carry it.
     var proc = SplitText("\n", 1, store)
@@ -682,7 +682,7 @@ test "LogAttribute — passes through unchanged (logs are observational)" {
     }
 }
 
-test "PutFile — writes content under output_dir, records output.path + output.size" {
+test "PutFile — writes content under outputDir, records output.path + output.size" {
     var store = MemoryContentStore()
     // Use a per-test subdir so parallel tests don't collide.
     var dir = "/tmp/zinc-flow-test/put-file-basic"
@@ -768,7 +768,7 @@ test "ConvertCSVToRecord — parses header+rows into records" {
     }
 }
 
-test "ConvertCSVToRecord — has_header=false auto-names columns" {
+test "ConvertCSVToRecord — hasHeader=false auto-names columns" {
     var store = MemoryContentStore()
     var proc = ConvertCSVToRecord("csv", ",", false, store)
     var csvData = "x,y,z\n1,2,3\n"

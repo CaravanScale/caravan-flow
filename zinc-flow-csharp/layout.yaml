@@ -1,19 +1,28 @@
 positions:
   ListenHTTP:
-    x: -6.83
-    y: 47.36
+    x: -91.58
+    y: -167.59
   FilterAttribute:
-    x: -181.64
-    y: -84.47
+    x: -107.98
+    y: 23.57
   GetFile:
     x: -264.27
     y: 68.41
   ConvertJSONToRecord:
-    x: -397.26
-    y: 162.68
+    x: -412.26
+    y: -74.51
   ConvertCSVToRecord:
     x: -436.31
     y: -43.05
   ConvertAvroToRecord:
-    x: -73.68
-    y: 155.71
+    x: -371.12
+    y: 114.27
+  QueryRecord:
+    x: 17.19
+    y: 180.13
+  ExtractRecordField:
+    x: -493.54
+    y: -241.27
+  EvaluateExpression:
+    x: 187.72
+    y: -26.06

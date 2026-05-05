@@ -19,13 +19,13 @@
 //        path     — absolute path at ingest time
 //        size     — byte length (decimal string)
 //   3. ingest(ff) — non-blocking. Backpressure is the fabric's job.
-//   4. Move file to <directory>/<move_subdir>/<filename> (default
+//   4. Move file to <directory>/<moveSubdir>/<filename> (default
 //      `.processed`). On move failure (e.g. cross-device) the file is
 //      deleted instead — the FlowFile already carries the bytes.
 //
 // Config keys:
 //   directory      — required. Absolute or relative path to watch.
-//   move_subdir    — default ".processed".
+//   moveSubdir    — default ".processed".
 //   pattern        — glob filter applied to the basename. Default "*".
 
 import core
@@ -267,8 +267,8 @@ pub ConnectorSource GetFileFactory(String name, Map<String, String> config) {
         dir = config["directory"]
     }
     var moveSubdir = ""
-    if (config.containsKey("move_subdir")) {
-        moveSubdir = config["move_subdir"]
+    if (config.containsKey("moveSubdir")) {
+        moveSubdir = config["moveSubdir"]
     }
     var pattern = ""
     if (config.containsKey("pattern")) {

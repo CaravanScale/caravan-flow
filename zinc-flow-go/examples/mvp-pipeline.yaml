@@ -27,10 +27,10 @@ content:
 sources:
   generate:
     content: "ping"
-    content_type: "text/plain"
+    contentType: "text/plain"
     attributes: "env:dev"
-    batch_size: 1
-    poll_interval_ms: 100
+    batchSize: 1
+    pollIntervalMs: 100
 
 flow:
   processors:
