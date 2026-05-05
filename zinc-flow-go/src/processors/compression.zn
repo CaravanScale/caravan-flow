@@ -110,18 +110,15 @@ class DecompressContent : ProcessorFn {
     else if (level == "smallest") { lvl = gzip.BestCompression }
     else if (level == "balanced") { lvl = gzip.DefaultCompression }
     var buf = new bytes.Buffer
-    var gw = gzip.NewWriterLevel(buf, lvl) or { return byte[0], err }
-    gw.Write(data) or {
-        gw.Close()
-        return byte[0], err
+    using (var gw = gzip.NewWriterLevel(buf, lvl)) {
+        gw.Write(data)
     }
-    gw.Close() or { return byte[0], err }
     return buf.Bytes(), null
 }
 
 (byte[], error) gzipDecompress(byte[] data) {
     var rdr = bytes.NewReader(data)
-    using (var gr = gzip.NewReader(rdr) or { return byte[0], err }) {
+    using (var gr = gzip.NewReader(rdr)) {
         return io.ReadAll(gr)
     }
 }
@@ -131,18 +128,16 @@ class DecompressContent : ProcessorFn {
     if (level == "fastest") { encLevel = zstd.SpeedFastest }
     else if (level == "smallest") { encLevel = zstd.SpeedBestCompression }
     else if (level == "balanced") { encLevel = zstd.SpeedDefault }
-    using (var enc = zstd.NewWriter(null, zstd.WithEncoderLevel(encLevel)) or { return byte[0], err }) {
+    using (var enc = zstd.NewWriter(null, zstd.WithEncoderLevel(encLevel))) {
         return enc.EncodeAll(data, byte[0]), null
     }
-    return byte[0], errors.IllegalStateError("zstdCompress unreachable")
 }
 
 (byte[], error) zstdDecompress(byte[] data) {
-    using (var dec = zstd.NewReader(null) or { return byte[0], err }) {
+    using (var dec = zstd.NewReader(null)) {
         var out, derr = dec.DecodeAll(data, byte[0])
         return out, derr
     }
-    return byte[0], errors.IllegalStateError("zstdDecompress unreachable")
 }
 
 // --- Factories -------------------------------------------------------------
