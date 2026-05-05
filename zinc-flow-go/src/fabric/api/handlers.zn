@@ -413,12 +413,13 @@ class ApiHandler {
     }
 }
 
-// readBody reads the full request body. Errors-as-values shape:
-// returns the bytes + null on success, empty + error on failure.
+// readBody reads the full request body. The body is a closable
+// resource so `using` defers Close at scope exit; ReadAll's error
+// auto-propagates through the enclosing thrower signature.
 (byte[], error) readBody(Request r) {
-    var body = ReadAll(r.Body) or { return byte[0], err }
-    r.Body.Close()
-    return body, null
+    using (var body = r.Body) {
+        return ReadAll(body)
+    }
 }
 
 // strVal extracts a string value from a map, returning "" if missing.
