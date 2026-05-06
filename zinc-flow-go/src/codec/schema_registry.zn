@@ -21,7 +21,11 @@
 
 import core
 import sync
+import stdlib/config
 import stdlib/errors
+import stdlib/logging
+import os
+import path/filepath
 
 // VersionEntry — one schema version under a subject. Reference type so
 // lookups can return null on miss without a sentinel-empty entry.
@@ -184,6 +188,58 @@ class SchemaRegistry {
             subjects.delete(subject)
             return true
         }
+    }
+
+    // loadFromConfig reads the `schemas:` section of cfg and registers
+    // each entry under its subject key. Each subject value must be a
+    // mapping with either `inline:` (literal Avro JSON) or `file:` (path
+    // resolved relative to configDir when not absolute). Bad entries are
+    // logged and skipped — the call is best-effort and never aborts. Returns
+    // the count of successfully registered subjects. Mirrors csharp
+    // EmbeddedSchemaRegistry.LoadFromConfig (StdLib/EmbeddedSchemaRegistry.cs:140).
+    pub int loadFromConfig(config.Config cfg, String configDir) {
+        if (!cfg.has("schemas")) { return 0 }
+        var loaded = 0
+        for (subject in cfg.getSubKeys("schemas")) {
+            var inlineKey = "schemas." + subject + ".inline"
+            var fileKey = "schemas." + subject + ".file"
+
+            var schemaJson = ""
+            if (cfg.has(inlineKey)) {
+                schemaJson = cfg.getString(inlineKey)
+            } else if (cfg.has(fileKey)) {
+                var file = cfg.getString(fileKey)
+                var path = file
+                if (!filepath.IsAbs(file) && configDir != "") {
+                    path = filepath.Join(configDir, file)
+                }
+                var data = os.ReadFile(path) or {
+                    logging.warn("schema-registry: file not found",
+                        "subject", subject, "path", path, "err", err.Error())
+                    continue
+                }
+                schemaJson = string(data)
+            } else {
+                logging.warn("schema-registry: subject missing 'inline' or 'file'",
+                    "subject", subject)
+                continue
+            }
+
+            var schema, perr = parseSchemaJson(schemaJson)
+            if (perr != null) {
+                logging.warn("schema-registry: parse failed",
+                    "subject", subject, "err", perr.Error())
+                continue
+            }
+            var _, rerr = register(subject, schema)
+            if (rerr != null) {
+                logging.warn("schema-registry: register failed",
+                    "subject", subject, "err", rerr.Error())
+                continue
+            }
+            loaded = loaded + 1
+        }
+        return loaded
     }
 
     // deleteVersion removes a single version from a subject. Empties the

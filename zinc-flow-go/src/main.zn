@@ -46,6 +46,10 @@ void main() {
     loggingProvider.enable()
 
     var schemaRegistry = SchemaRegistry()
+    var loadedSchemas = schemaRegistry.loadFromConfig(cfg, ".")
+    if (loadedSchemas > 0) {
+        logging.info("schema-registry: loaded from config", "count", loadedSchemas)
+    }
     var schemaRegistryProvider = SchemaRegistryProvider(schemaRegistry)
     schemaRegistryProvider.enable()
 

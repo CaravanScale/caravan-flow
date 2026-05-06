@@ -5,6 +5,8 @@
 import codec
 import core
 import stdlib/asserts
+import stdlib/config
+import viper
 
 core.Schema schemaWithId() {
     return core.Schema("User", List<core.Field>[
@@ -143,4 +145,55 @@ test "registry — getEntryById admin path" {
     if (byid == null) { t.Errorf("getEntryById null"); return }
     asserts.equalInt(t, byid.version, 2)
     asserts.isTrue(t, reg.getEntryById(9999) == null, "missing id → null")
+}
+
+test "registry — loadFromConfig inline registers schemas" {
+    viper.Reset()
+    var cfg = config.Config()
+    cfg.set("schemas.users.inline",
+        "{\"type\":\"record\",\"name\":\"User\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}")
+    cfg.set("schemas.orders.inline",
+        "{\"type\":\"record\",\"name\":\"Order\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"},{\"name\":\"sku\",\"type\":\"string\"}]}")
+
+    var reg = codec.SchemaRegistry()
+    var loaded = reg.loadFromConfig(cfg, ".")
+    asserts.equalInt(t, loaded, 2)
+
+    var subjects = reg.listSubjects()
+    asserts.equalInt(t, len(subjects), 2)
+
+    var users = reg.getLatest("users")
+    if (users == null) { t.Errorf("users subject missing"); return }
+    asserts.equalString(t, users.schema.name, "User")
+    asserts.equalInt(t, len(users.schema.fields), 1)
+
+    var orders = reg.getLatest("orders")
+    if (orders == null) { t.Errorf("orders subject missing"); return }
+    asserts.equalInt(t, len(orders.schema.fields), 2)
+}
+
+test "registry — loadFromConfig skips bad entries, returns count of good" {
+    viper.Reset()
+    var cfg = config.Config()
+    cfg.set("schemas.good.inline",
+        "{\"type\":\"record\",\"name\":\"Good\",\"fields\":[{\"name\":\"id\",\"type\":\"long\"}]}")
+    cfg.set("schemas.badjson.inline", "{not valid json")
+    cfg.set("schemas.missing.file", "/nonexistent/path/schema.avsc")
+    // 'noinput' subject has no inline or file key — also skipped.
+    cfg.set("schemas.noinput.something", "ignored")
+
+    var reg = codec.SchemaRegistry()
+    var loaded = reg.loadFromConfig(cfg, ".")
+    asserts.equalInt(t, loaded, 1)
+
+    asserts.isTrue(t, reg.getLatest("good") != null, "good subject loaded")
+    asserts.isTrue(t, reg.getLatest("badjson") == null, "badjson skipped")
+    asserts.isTrue(t, reg.getLatest("missing") == null, "missing-file skipped")
+}
+
+test "registry — loadFromConfig with no schemas section returns 0" {
+    viper.Reset()
+    var cfg = config.Config()
+    var reg = codec.SchemaRegistry()
+    asserts.equalInt(t, reg.loadFromConfig(cfg, "."), 0)
 }
