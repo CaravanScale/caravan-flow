@@ -65,6 +65,18 @@ class ProcessSession {
                     source.ack(entry.id)
                 }
             }
+            case MultiRouted(outputs) {
+                var allRouted = true
+                for (entry2 in outputs) {
+                    if (!routeResult(entry2.ff, entry)) {
+                        allRouted = false
+                        break
+                    }
+                }
+                if (allRouted) {
+                    source.ack(entry.id)
+                }
+            }
             case Dropped(_) {
                 source.ack(entry.id)
             }

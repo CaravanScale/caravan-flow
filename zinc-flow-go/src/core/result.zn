@@ -1,10 +1,19 @@
 // ProcessorResult — sealed type for processor output routing.
 // Worker loop uses match to route each variant.
 
+// RoutedFlowFile — one (relationship, flowfile) pair carried inside a
+// MultiRouted result. Mirrors csharp's MultiRoutedResult.Outputs entry.
+data RoutedFlowFile(String route, FlowFile ff)
+
 sealed class ProcessorResult {
     data Single(FlowFile ff)
     data Multiple(List<FlowFile> ffs)
     data Routed(String route, FlowFile ff)
+    // MultiRouted carries an ordered list of (route, ff) pairs the
+    // runtime fans out to named relationships independently. Used by
+    // RouteRecord, which partitions one record stream across multiple
+    // route names in a single processor call.
+    data MultiRouted(List<RoutedFlowFile> outputs)
     data Dropped(String reason)
     data Failure(String reason, FlowFile ff)
 }

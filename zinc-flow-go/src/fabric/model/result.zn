@@ -19,6 +19,9 @@ pub String serializeResult(ProcessorResult result) {
         case Routed(route, ff) {
             return '{"type":"routed","route":"' + route + '","id":"' + ff.id + '"}'
         }
+        case MultiRouted(outputs) {
+            return '{"type":"multi_routed","count":' + str(len(outputs)) + '}'
+        }
         case Failure(reason, ff) {
             return '{"type":"failure","reason":"' + reason + '","id":"' + ff.id + '"}'
         }

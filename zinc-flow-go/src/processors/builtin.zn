@@ -91,6 +91,11 @@ pub void registerBuiltins(Registry reg) {
         SplitRecordFactory
     )
     reg.register(
+        ProcessorInfo("RouteRecord", "Partitions records across named routes via predicate expressions",
+            List<String>["routes"]),
+        RouteRecordFactory
+    )
+    reg.register(
         ProcessorInfo("ConvertAvroToRecord", "Parses Avro binary content into a record",
             List<String>["schemaName", "fieldDefs"]),
         codec.ConvertAvroToRecordFactory

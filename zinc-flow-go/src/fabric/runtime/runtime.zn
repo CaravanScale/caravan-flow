@@ -270,6 +270,11 @@ class Fabric {
                 case Routed(route, out) {
                     work = pushDownstream(work, g, out, item.processor, route, item.hops + 1)
                 }
+                case MultiRouted(outputs) {
+                    for (entry in outputs) {
+                        work = pushDownstream(work, g, entry.ff, item.processor, entry.route, item.hops + 1)
+                    }
+                }
                 case Dropped(_) {
                     // terminal — no downstream delivery
                 }

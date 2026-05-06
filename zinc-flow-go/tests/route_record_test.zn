@@ -1,0 +1,140 @@
+// RouteRecord — partitions records across named relationships via
+// per-route predicates evaluated against record fields. First match
+// wins; records matching no rule fall through to "unmatched".
+
+import core
+import processors
+import stdlib/asserts
+
+Schema routeUsersSchema() {
+    return Schema("user", List<Field>[
+        Field("id", LONG, null),
+        Field("tier", STRING, null),
+        Field("age", LONG, null)
+    ])
+}
+
+GenericRecord routeUserRow(long id, String tier, long age) {
+    var rec = GenericRecord(routeUsersSchema())
+    rec.setField("id", id)
+    rec.setField("tier", tier)
+    rec.setField("age", age)
+    return rec
+}
+
+test "RouteRecord — partitions records across named routes" {
+    var ctx = mkScopedContext()
+    var cfg = Map<String, String>{}
+    cfg["routes"] = 'premium: tier == "gold"; minors: age < 18'
+    var proc, err = processors.RouteRecordFactory(ctx, cfg)
+    if (err != null) { t.Errorf("factory: %v", err); return }
+
+    var rs = List<GenericRecord>[
+        routeUserRow(long(1), "gold", long(40)),     // premium
+        routeUserRow(long(2), "silver", long(15)),   // minors
+        routeUserRow(long(3), "silver", long(25)),   // unmatched
+        routeUserRow(long(4), "gold", long(12))      // premium (first-match wins over minors)
+    ]
+    var ff = createFlowFileWithContent(Records(routeUsersSchema(), rs), Map<String, String>{})
+    var result = proc.process(ff)
+
+    match (result) {
+        case MultiRouted(outputs) {
+            // Build a name → bucket-size view for assertion order independence.
+            var sizes = Map<String, int>{}
+            for (entry in outputs) {
+                match (entry.ff.content) {
+                    case Records(_, rows) { sizes[entry.route] = len(rows) }
+                    case _ { t.Errorf("non-record bucket on route %v", entry.route) }
+                }
+            }
+            asserts.equalInt(t, sizes["premium"], 2)
+            asserts.equalInt(t, sizes["minors"], 1)
+            asserts.equalInt(t, sizes["unmatched"], 1)
+        }
+        case _ { t.Errorf("expected MultiRouted, got %v", result) }
+    }
+}
+
+test "RouteRecord — empty record list yields Dropped" {
+    var ctx = mkScopedContext()
+    var cfg = Map<String, String>{}
+    cfg["routes"] = 'all: true'
+    var proc, _ = processors.RouteRecordFactory(ctx, cfg)
+    var ff = createFlowFileWithContent(
+        Records(routeUsersSchema(), List<GenericRecord>[]),
+        Map<String, String>{}
+    )
+    var result = proc.process(ff)
+    match (result) {
+        case Dropped(_) {}
+        case _ { t.Errorf("expected Dropped, got %v", result) }
+    }
+}
+
+test "RouteRecord — non-Record content passes through" {
+    var ctx = mkScopedContext()
+    var cfg = Map<String, String>{}
+    cfg["routes"] = 'all: true'
+    var proc, _ = processors.RouteRecordFactory(ctx, cfg)
+    var ff = createFlowFile("raw bytes".toBytes(), Map<String, String>{})
+    var result = proc.process(ff)
+    match (result) {
+        case Single(_) {}
+        case _ { t.Errorf("expected Single, got %v", result) }
+    }
+}
+
+test "RouteRecord — reserved 'unmatched' name is rejected" {
+    var ctx = mkScopedContext()
+    var cfg = Map<String, String>{}
+    cfg["routes"] = 'unmatched: tier == "gold"'
+    var _, err = processors.RouteRecordFactory(ctx, cfg)
+    asserts.isTrue(t, err != null, "unmatched route name must be rejected")
+}
+
+test "RouteRecord — malformed entry returns config error" {
+    var ctx = mkScopedContext()
+    var cfg = Map<String, String>{}
+    cfg["routes"] = "no_colon_here"
+    var _, err = processors.RouteRecordFactory(ctx, cfg)
+    asserts.isTrue(t, err != null, "expected factory error for missing colon")
+}
+
+test "RouteRecord — first matching route wins" {
+    var ctx = mkScopedContext()
+    var cfg = Map<String, String>{}
+    cfg["routes"] = 'gold: tier == "gold"; senior: age >= 60'
+    var proc, _ = processors.RouteRecordFactory(ctx, cfg)
+    // age 70 + tier gold matches both — gold should win because it's first.
+    var rs = List<GenericRecord>[routeUserRow(long(1), "gold", long(70))]
+    var ff = createFlowFileWithContent(Records(routeUsersSchema(), rs), Map<String, String>{})
+    var result = proc.process(ff)
+    match (result) {
+        case MultiRouted(outputs) {
+            asserts.equalInt(t, len(outputs), 1)
+            asserts.equalString(t, outputs[0].route, "gold")
+        }
+        case _ { t.Errorf("expected MultiRouted") }
+    }
+}
+
+test "RouteRecord — preserves parent attributes on each route output" {
+    var ctx = mkScopedContext()
+    var cfg = Map<String, String>{}
+    cfg["routes"] = 'all: true'
+    var proc, _ = processors.RouteRecordFactory(ctx, cfg)
+    var attrs = Map<String, String>{}
+    attrs["source"] = "ingest-1"
+    var ff = createFlowFileWithContent(
+        Records(routeUsersSchema(), List<GenericRecord>[routeUserRow(long(1), "gold", long(40))]),
+        attrs
+    )
+    var result = proc.process(ff)
+    match (result) {
+        case MultiRouted(outputs) {
+            asserts.equalString(t, outputs[0].ff.attributes["source"], "ingest-1")
+        }
+        case _ { t.Errorf("expected MultiRouted") }
+    }
+}

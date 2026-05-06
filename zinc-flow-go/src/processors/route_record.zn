@@ -1,0 +1,163 @@
+// RouteRecord — partitions each incoming RecordContent's records
+// across named relationships based on per-route expression predicates.
+// First matching route wins; records matching no route fall through to
+// the reserved `unmatched` route.
+//
+// Mirrors csharp ZincFlow.StdLib.RouteRecord (ExpressionProcessors.cs:452).
+// Config:
+//   routes — semicolon-separated list of `routeName: expression` pairs.
+//
+// Example:
+//   premium: tier == "gold";
+//   minors:  age < 18;
+//   adults:  age >= 18
+//
+// Behavior:
+//   • Non-Record content → pass-through Single(ff).
+//   • Empty record list → Dropped (no records to route).
+//   • Otherwise emits MultiRouted with one (route, ff) entry per route
+//     that received records (plus `unmatched` if any records fell
+//     through). Each output FlowFile carries a RecordContent built
+//     from that route's bucket and reuses the parent attributes.
+//   • Per-record evaluation errors (divide-by-zero, missing field)
+//     are treated as "no match" for that route — the record falls to
+//     the next route or to `unmatched`. Records never bubble up the
+//     whole-FlowFile failure path src predicate errors.
+//
+// `routeName` "unmatched" is reserved at config time. `failure` and
+// `success` are accepted but discouraged — the router uses those as
+// implicit relationships, so collisions there create surprising
+// fan-out. We don't reject them to stay shape-compatible with csharp.
+
+import stdlib/errors
+import strings
+import core
+import expressions
+import fabric/registry
+
+data RouteRule(String name, CompiledExpression predicate)
+
+class RouteRecord : ProcessorFn {
+    List<RouteRule> rules
+
+    init(List<RouteRule> rules) {
+        this.rules = rules
+    }
+
+    pub ProcessorResult process(FlowFile ff) {
+        match (ff.content) {
+            case Records(schema, records) {
+                if (len(records) == 0) {
+                    return Dropped("RouteRecord: empty record set")
+                }
+                // Bucket per matched route. Insertion order preserved by
+                // the parallel `routeOrder` slice so output ordering is
+                // deterministic across runs (tests + replay).
+                var buckets = Map<String, List<GenericRecord>>{}
+                var routeOrder = List<String>[]
+
+                for (record in records) {
+                    var matched = ""
+                    var resolver = RouteResolver(record)
+                    for (rule in rules) {
+                        var v = rule.predicate.eval(resolver)
+                        if (v.kind == expressions.KIND_NULL) {
+                            // Resolver returned null for a referenced field.
+                            // Treat as "no match" for this route. csharp
+                            // catches the same case via try/continue.
+                            continue
+                        }
+                        if (v.isTruthy()) {
+                            matched = rule.name
+                            break
+                        }
+                    }
+                    var key = matched
+                    if (key == "") { key = "unmatched" }
+                    if (!buckets.containsKey(key)) {
+                        buckets[key] = List<GenericRecord>[]
+                        routeOrder = append(routeOrder, key)
+                    }
+                    buckets[key] = append(buckets[key], record)
+                }
+
+                var outputs = List<RoutedFlowFile>[]
+                for (route in routeOrder) {
+                    var content = Records(schema, buckets[route])
+                    var childAttrs = Map<String, String>{}
+                    for (k, v in ff.attributes) {
+                        childAttrs[k] = v
+                    }
+                    var child = createFlowFileWithContent(content, childAttrs)
+                    outputs = append(outputs, RoutedFlowFile(route, child))
+                }
+                return MultiRouted(outputs)
+            }
+            case _ {
+                return Single(ff)
+            }
+        }
+    }
+}
+
+// RouteResolver — binds expression identifiers to record field values.
+// Returns evalNull for missing fields so predicates that reference
+// non-existent fields evaluate to null and the record falls through to
+// the next route (matches csharp's try/catch-as-continue semantics).
+class RouteResolver : expressions.ValueResolver {
+    GenericRecord record
+
+    init(GenericRecord record) {
+        this.record = record
+    }
+
+    pub EvalValue resolve(String name) {
+        var v = record.getField(name)
+        if (v == null) {
+            return expressions.evalNull()
+        }
+        return expressions.evalFromObject(v)
+    }
+}
+
+pub (ProcessorFn, error) RouteRecordFactory(ScopedContext ctx, Map<String, String> config) {
+    var raw = ""
+    if (config.containsKey("routes")) {
+        raw = config["routes"]
+    }
+    var rules = List<RouteRule>[]
+    var idx = 0
+    for (part in strings.Split(raw, ";")) {
+        var entry = strings.TrimSpace(part)
+        if (entry == "") {
+            idx = idx + 1
+            continue
+        }
+        var colonIdx = strings.Index(entry, ":")
+        if (colonIdx <= 0) {
+            return RouteRecord(List<RouteRule>[]),
+                errors.ConfigError("RouteRecord: malformed route at index ${str(idx)}: '${entry}' — expected 'name: expression'")
+        }
+        var name = strings.TrimSpace(entry.substring(0, colonIdx))
+        var exprSrc = strings.TrimSpace(entry.substring(colonIdx + 1))
+        if (name == "") {
+            return RouteRecord(List<RouteRule>[]),
+                errors.ConfigError("RouteRecord: route at index ${str(idx)} has empty name")
+        }
+        if (exprSrc == "") {
+            return RouteRecord(List<RouteRule>[]),
+                errors.ConfigError("RouteRecord: route '${name}' has empty expression")
+        }
+        if (name == "unmatched") {
+            return RouteRecord(List<RouteRule>[]),
+                errors.ConfigError("RouteRecord: 'unmatched' is reserved for records that match no route")
+        }
+        var c = expressions.compile(exprSrc) or {
+            return RouteRecord(List<RouteRule>[]),
+                errors.ConfigError("RouteRecord: route '${name}' has invalid expression '${exprSrc}': ${err.Error()}")
+        }
+        rules = append(rules, RouteRule(name, c))
+        idx = idx + 1
+    }
+    return RouteRecord(rules), null
+}
