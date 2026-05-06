@@ -66,6 +66,32 @@ test "ConvertJSONToRecord — parses JSON array into records" {
     }
 }
 
+test "ConvertJSONToRecord — accepts single JSON object (csharp parity)" {
+    var store = MemoryContentStore()
+    var proc = ConvertJSONToRecord("order", store)
+    var ff = createFlowFile('{"name": "Alice", "amount": 42}'.toBytes(), Map<String, String>{})
+    var result = proc.process(ff)
+
+    match (result) {
+        case Single(out) {
+            asserts.isTrue(t, isRecord(out.content), "single object becomes single-record list")
+        }
+        case _ { t.Errorf("expected Single, got %v", result) }
+    }
+}
+
+test "ConvertJSONToRecord — leading whitespace before JSON is tolerated" {
+    var store = MemoryContentStore()
+    var proc = ConvertJSONToRecord("order", store)
+    var ff = createFlowFile('   \n\t{"name": "Bob"}'.toBytes(), Map<String, String>{})
+    var result = proc.process(ff)
+
+    match (result) {
+        case Single(out) { asserts.isTrue(t, isRecord(out.content), "still a record") }
+        case _ { t.Errorf("expected Single, got %v", result) }
+    }
+}
+
 test "ConvertRecordToJSON — serializes records back to JSON bytes" {
     var fields = List<Field>[Field("name", STRING, null)]
     var schema = schemaFromFields("test", fields)

@@ -3,15 +3,38 @@
 
 import encoding/json
 
-// JsonRecordReader parses a JSON array of objects into GenericRecords.
+// JsonRecordReader parses a JSON array of objects (or a single object) into GenericRecords.
+// Mirrors csharp JsonRecordReader (Core/JsonRecord.cs): both `[{...}, ...]` and `{...}`
+// are accepted; whitespace-only or non-array/object input yields an empty list.
 class JsonRecordReader : RecordReader {
 
     init() {}
 
     pub List<GenericRecord> read(byte[] data, Schema schema) {
-        // Parse JSON into list of maps
+        if (len(data) == 0) { return List<GenericRecord>[] }
+
+        // Peek first non-whitespace byte to determine JSON shape.
+        var firstChar = default(byte)
+        var found = false
+        for (b in data) {
+            if (b != byte(' ') && b != byte('\t') && b != byte('\n') && b != byte('\r')) {
+                firstChar = b
+                found = true
+                break
+            }
+        }
+        if (!found) { return List<GenericRecord>[] }
+
         var rawList = List<Map<String, Object>>[]
-        json.Unmarshal(data, &rawList) or { return List<GenericRecord>[] }
+        if (firstChar == byte('[')) {
+            json.Unmarshal(data, &rawList) or { return List<GenericRecord>[] }
+        } else if (firstChar == byte('{')) {
+            var single = Map<String, Object>{}
+            json.Unmarshal(data, &single) or { return List<GenericRecord>[] }
+            rawList = append(rawList, single)
+        } else {
+            return List<GenericRecord>[]
+        }
 
         // Schema-on-read: if schema has no fields, infer from first object
         var effectiveSchema = schema
