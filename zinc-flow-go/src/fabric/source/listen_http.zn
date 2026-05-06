@@ -1,0 +1,133 @@
+// ListenHTTP — config-driven HTTP listener source. Binds an
+// http.Server on a configured port and ingests each POST/PUT body as
+// a FlowFile. Event-driven (not polling): Go's http.Server handles
+// scheduling; per-request handlers call ingest.
+//
+// Mirrors csharp ZincFlow.StdLib.ListenHTTP (StdLib/ListenHTTP.cs:20).
+// Existence of this source is the answer to "how do I POST a file to
+// the flow?" — in the visual flow model, ingress belongs on the
+// canvas as a source node. The worker's management API stays on its
+// own port; ListenHTTP gets its own.
+//
+// Request headers prefixed with `X-Flow-` become FlowFile attributes
+// (header `X-Flow-filename` → attribute `filename`). Returns 202 on
+// accept, 503 on backpressure, 405 on non-POST/PUT, 413 on
+// over-limit body.
+
+import core
+import net/http
+import io
+import context
+import time
+import strings
+
+class ListenHTTP : ConnectorSource {
+    String name
+    int port
+    String path
+    int maxBodyBytes
+    bool running
+    IngestFn ingestFn
+    http.Server server
+
+    init(String name, int port, String path, int maxBodyBytes) {
+        this.name = name
+        this.port = port
+        this.path = normalizePath(path)
+        this.maxBodyBytes = maxBodyBytes
+        if (maxBodyBytes <= 0) {
+            this.maxBodyBytes = 16 * 1024 * 1024
+        }
+        this.running = false
+    }
+
+    pub String getName() { return name }
+    pub String getSourceType() { return "ListenHTTP" }
+    pub bool isRunning() { return running }
+
+    pub void start(IngestFn ingest) {
+        ingestFn = ingest
+        var mux = http.NewServeMux()
+        mux.HandleFunc(path, handleRequest)
+        server = http.Server{Addr: ":" + str(port), Handler: mux}
+        running = true
+        spawn {
+            // Blocks until server.Shutdown is called.
+            server.ListenAndServe()
+            running = false
+        }
+    }
+
+    pub void stop() {
+        if (!running) { return }
+        running = false
+        // Graceful: 5s drain for in-flight requests, then force-close
+        // the listener. Mirrors csharp's Stop sequence (Stop + Close
+        // pair). zinc has no defer so the cancel hand-off uses the
+        // background context as a hard fallback.
+        var ctx, cancel = context.WithTimeout(context.Background(), 5 * time.Second)
+        server.Shutdown(ctx)
+        cancel()
+    }
+
+    pub List<FlowFile> pollOnce() {
+        // ListenHTTP is event-driven — there's no synthetic poll path,
+        // so this returns empty. Tests should drive via real HTTP.
+        return List<FlowFile>[]
+    }
+
+    void handleRequest(http.ResponseWriter w, http.Request r) {
+        if (r.Method != "POST" && r.Method != "PUT") {
+            w.Header().Set("Allow", "POST, PUT")
+            w.WriteHeader(405)
+            return
+        }
+        // Reject over-limit before reading the body. ContentLength
+        // isn't authoritative for chunked encoding, so we wrap with
+        // io.LimitReader as a hard cap below.
+        if (r.ContentLength > long(maxBodyBytes)) {
+            w.WriteHeader(413)
+            return
+        }
+
+        var bytes = byte[0]
+        using (var rc = r.Body) {
+            var limited = io.LimitReader(rc, long(maxBodyBytes) + long(1))
+            bytes = io.ReadAll(limited) or {
+                w.WriteHeader(500)
+                return
+            }
+        }
+        if (len(bytes) > maxBodyBytes) {
+            w.WriteHeader(413)
+            return
+        }
+
+        var attrs = Map<String, String>{}
+        var ct = r.Header.Get("Content-Type")
+        if (ct != "") { attrs["content.type"] = ct }
+        for (k, v in r.Header) {
+            var lower = strings.ToLower(k)
+            if (strings.HasPrefix(lower, "x-flow-") && len(v) > 0) {
+                attrs[lower[7:len(lower)]] = v[0]
+            }
+        }
+
+        var ff = createFlowFile(bytes, attrs)
+        var ok = ingestFn(ff)
+        if (ok) {
+            w.WriteHeader(202)
+        } else {
+            w.WriteHeader(503)
+        }
+        w.Write(ff.id.toBytes())
+    }
+}
+
+// normalizePath ensures the listener path always starts with "/".
+// Trailing slash is fine; Go's net/http handles both.
+String normalizePath(String p) {
+    if (p == "") { return "/" }
+    if (p[0:1] != "/") { return "/" + p }
+    return p
+}

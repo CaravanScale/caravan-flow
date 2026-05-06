@@ -57,6 +57,29 @@ class ApiHandler {
         writeJson(w, flow)
     }
 
+    // GET /readyz — k8s-style readiness probe. Ready iff the graph
+    // is loaded (≥1 processor) AND every registered source is
+    // actually running. Returns 503 + the same JSON body when not
+    // ready so the caller sees both the boolean and the breakdown.
+    pub void readyzHandler(ResponseWriter w, Request r) {
+        var procCount = len(fab.getProcessorNames())
+        var sources = fab.getSources()
+        var notRunning = List<String>[]
+        for (s in sources) {
+            if (s["running"] != "true") {
+                notRunning = append(notRunning, s["name"])
+            }
+        }
+        var ready = procCount > 0 && len(notRunning) == 0
+        var body = Map<String, Object>{}
+        body["ready"] = ready
+        body["processors"] = procCount
+        body["sourcesTotal"] = len(sources)
+        body["sourcesNotRunning"] = notRunning
+        if (!ready) { w.WriteHeader(503) }
+        writeJson(w, body)
+    }
+
     // GET /api/connections — connection map only (csharp parity).
     // Subset of /api/flow for callers that just want the wiring graph
     // without processor stats / entry-point info weighing the response down.

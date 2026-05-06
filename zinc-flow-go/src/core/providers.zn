@@ -13,8 +13,8 @@ class ConfigProvider : Provider {
     config.Config cfg
 
     init(config.Config cfg) {
-        this.providerName = "config"
-        this.state = DISABLED
+        providerName = "config"
+        state = DISABLED
         this.cfg = cfg
     }
 
@@ -48,8 +48,8 @@ class LoggingProvider : Provider {
     logging.LogManager lm
 
     init(logging.LogManager lm) {
-        this.providerName = "logging"
-        this.state = DISABLED
+        providerName = "logging"
+        state = DISABLED
         this.lm = lm
     }
 
@@ -106,16 +106,16 @@ class ProvenanceProvider : Provider {
     sync.Mutex mu
 
     init(int capacity) {
-        this.providerName = "provenance"
-        this.state = DISABLED
+        providerName = "provenance"
+        state = DISABLED
         this.capacity = capacity
-        this.head = 0
-        this.count = 0
+        head = 0
+        count = 0
         // Pre-size with sentinels so ring writes are direct slot
         // assignments — no append/realloc on the per-record path.
         var i = 0
         while (i < capacity) {
-            this.events = append(this.events,
+            events = append(events,
                 ProvenanceEvent("", PROV_CREATED, "", "", long(0)))
             i = i + 1
         }
@@ -199,7 +199,7 @@ class ContentProvider : Provider {
 
     init(String providerName, ContentStore store) {
         this.providerName = providerName
-        this.state = DISABLED
+        state = DISABLED
         this.store = store
     }
 

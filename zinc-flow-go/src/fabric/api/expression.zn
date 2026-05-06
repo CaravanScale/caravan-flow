@@ -1,0 +1,104 @@
+// Expression-builder REST endpoint. Mounted at POST /api/expression/parse
+// on the management port. Lets the dashboard's expression-builder UI
+// preview-evaluate an expression against a sample context using the
+// same engine processors run at runtime — so "preview ran green"
+// implies runtime parity. Mirrors csharp ApiHandler.ExpressionParse
+// (Fabric/ApiHandler.cs:659).
+
+import net/http
+import encoding/json
+import io
+import expressions
+
+class ExpressionApiHandler {
+    init() {}
+
+    // POST /api/expression/parse
+    //   body: { "expression": "...", "context": { "attributes": {...},
+    //                                             "record":     {...} } }
+    //   200 ok response shapes:
+    //     - parse failure: {ok:false, error:"..."}
+    //     - eval failure:  {ok:true, parse:"ok", eval:"error", error:"..."}
+    //     - success:       {ok:true, kind:"...", value:"..."}
+    pub void parseHandler(ResponseWriter w, Request r) {
+        var raw = byte[0]
+        using (var rc = r.Body) {
+            raw = io.ReadAll(rc) or {
+                writeJson(w, errResp("body read failed: ${err.Error()}"))
+                return
+            }
+        }
+        var body = Map<String, Object>{}
+        json.Unmarshal(raw, &body) or {
+            writeJson(w, errResp("body must be valid JSON"))
+            return
+        }
+
+        var expression = body["expression"] as String or { "" }
+        if (expression == "") {
+            writeJson(w, errResp("expression must not be blank"))
+            return
+        }
+
+        var compiled = expressions.compile(expression) or {
+            writeJson(w, errResp(err.Error()))
+            return
+        }
+
+        // Merge context.attributes ∪ context.record into a single
+        // resolver — matches csharp's DictValueResolver shape so
+        // dotted paths like `record.id` resolve.
+        var merged = Map<String, Object>{}
+        var ctx = body["context"] as Map<String, Object> or { Map<String, Object>{} }
+        var attrs = ctx["attributes"] as Map<String, Object> or { Map<String, Object>{} }
+        for (k, v in attrs) {
+            merged[k] = v
+        }
+        var rec = ctx["record"] as Map<String, Object> or { Map<String, Object>{} }
+        for (k, v in rec) {
+            merged[k] = v
+        }
+
+        var resolver = MapResolver(merged)
+        var value = compiled.eval(resolver)
+        var out = Map<String, Object>{}
+        out["ok"] = true
+        out["kind"] = kindName(value.kind)
+        out["value"] = value.asString()
+        writeJson(w, out)
+    }
+}
+
+// MapResolver — binds expression identifiers to entries in an
+// arbitrary Object map. Used only by the parse endpoint; processors
+// hit RecordValueResolver / AttributeResolver directly.
+class MapResolver : expressions.ValueResolver {
+    Map<String, Object> data
+
+    init(Map<String, Object> data) {
+        this.data = data
+    }
+
+    pub EvalValue resolve(String name) {
+        if (!data.containsKey(name)) {
+            return expressions.evalNull()
+        }
+        return expressions.evalFromObject(data[name])
+    }
+}
+
+Map<String, Object> errResp(String msg) {
+    var out = Map<String, Object>{}
+    out["ok"] = false
+    out["error"] = msg
+    return out
+}
+
+String kindName(int k) {
+    if (k == expressions.KIND_NULL)   { return "null" }
+    if (k == expressions.KIND_BOOL)   { return "bool" }
+    if (k == expressions.KIND_LONG)   { return "long" }
+    if (k == expressions.KIND_DOUBLE) { return "double" }
+    if (k == expressions.KIND_STRING) { return "string" }
+    return "unknown"
+}

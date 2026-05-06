@@ -171,6 +171,7 @@ void main() {
     HandleFunc("/api/providers", api.providersHandler)
     HandleFunc("/api/providers/enable", api.enableProviderHandler)
     HandleFunc("/api/providers/disable", api.disableProviderHandler)
+    HandleFunc("GET /readyz", api.readyzHandler)
 
     // Embedded schema registry — Confluent-shape REST endpoints.
     var srApi = fabric.api.SchemaRegistryApiHandler(schemaRegistry)
@@ -198,6 +199,11 @@ void main() {
     HandleFunc("GET /api/sources", srcApi.listHandler)
     HandleFunc("POST /api/sources/start", srcApi.startHandler)
     HandleFunc("POST /api/sources/stop", srcApi.stopHandler)
+
+    // Expression-builder live-parse — UI uses this to preview-evaluate
+    // expressions against a sample record/attribute context.
+    var exprApi = ExpressionApiHandler()
+    HandleFunc("POST /api/expression/parse", exprApi.parseHandler)
 
     // Prometheus /metrics — text-exposition format, no external deps.
     var metricsApi = MetricsApiHandler(fab, time.Now())

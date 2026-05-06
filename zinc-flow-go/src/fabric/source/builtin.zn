@@ -19,6 +19,12 @@ pub void registerBuiltinSources(SourceRegistry reg) {
             "Polls a directory; emits one FlowFile per file landing in it.",
             List<String>["inputDir", "pattern", "moveSubdir"]),
         GetFileFactory)
+
+    reg.register(
+        SourceInfo("ListenHTTP",
+            "Binds an HTTP listener on {port}{path}; each POST body becomes a FlowFile.",
+            List<String>["port", "path", "maxBodyBytes"]),
+        ListenHTTPFactory)
 }
 
 (ConnectorSource, error) GenerateFlowFileFactory(String name, Map<String, String> config, ContentStore store) {
@@ -42,6 +48,27 @@ pub void registerBuiltinSources(SourceRegistry reg) {
         pollMs = strconv.Atoi(config["pollIntervalMs"]) or { 1000 }
     }
     return GenerateFlowFile(name, pollMs, content, contentType, attrs, batchSize), null
+}
+
+(ConnectorSource, error) ListenHTTPFactory(String name, Map<String, String> config, ContentStore store) {
+    var port = 0
+    if (config.containsKey("port") && config["port"] != "") {
+        port = strconv.Atoi(config["port"]) or { 0 }
+    }
+    if (port <= 0) {
+        // No port = disabled. Operators must opt in; we never default to
+        // a port that could collide with the management server.
+        return null, null
+    }
+    var path = "/"
+    if (config.containsKey("path") && config["path"] != "") {
+        path = config["path"]
+    }
+    var maxBytes = 16 * 1024 * 1024
+    if (config.containsKey("maxBodyBytes") && config["maxBodyBytes"] != "") {
+        maxBytes = strconv.Atoi(config["maxBodyBytes"]) or { 16 * 1024 * 1024 }
+    }
+    return ListenHTTP(name, port, path, maxBytes), null
 }
 
 (ConnectorSource, error) GetFileFactory(String name, Map<String, String> config, ContentStore store) {

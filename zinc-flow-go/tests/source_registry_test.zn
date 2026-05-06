@@ -24,7 +24,7 @@ test "SourceRegistry — list returns all registered" {
     var reg = SourceRegistry()
     source.registerBuiltinSources(reg)
     var infos = reg.list()
-    asserts.equalInt(t, len(infos), 2)
+    asserts.equalInt(t, len(infos), 3)
 }
 
 test "SourceRegistry — GenerateFlowFile factory builds source from config" {
