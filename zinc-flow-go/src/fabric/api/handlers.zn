@@ -57,6 +57,13 @@ class ApiHandler {
         writeJson(w, flow)
     }
 
+    // GET /api/connections — connection map only (csharp parity).
+    // Subset of /api/flow for callers that just want the wiring graph
+    // without processor stats / entry-point info weighing the response down.
+    pub void connectionsHandler(ResponseWriter w, Request r) {
+        writeJson(w, fab.getConnections())
+    }
+
     // GET /api/dlq — DLQ entries
     pub void dlqHandler(ResponseWriter w, Request r) {
         var dlq = fab.getDLQ()

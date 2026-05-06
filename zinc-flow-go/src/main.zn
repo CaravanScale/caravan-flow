@@ -78,6 +78,7 @@ void main() {
     // Setup management API
     var api = ApiHandler(fab)
     HandleFunc("/api/flow", api.flowHandler)
+    HandleFunc("/api/connections", api.connectionsHandler)
     HandleFunc("/api/processors", api.processorsHandler)
     HandleFunc("/api/processors/add", api.addProcessorHandler)
     HandleFunc("/api/processors/remove", api.removeProcessorHandler)
