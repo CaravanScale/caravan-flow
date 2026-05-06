@@ -250,6 +250,89 @@ test "DELETE /api/sources/remove — unknown name returns 404" {
     asserts.equalInt(t, w.Code, 404)
 }
 
+test "POST /api/connections — missing fields returns 400" {
+    var reg = Registry()
+    processors.registerBuiltins(reg)
+    var fab = Fabric(reg, ProcessorContext())
+    var apiH = api.ApiHandler(fab)
+
+    var body = '{"from":"a"}' // missing relationship + to
+    var req = httptest.NewRequest("POST", "/api/connections", bytes.NewBufferString(body))
+    var w = httptest.NewRecorder()
+    apiH.addConnectionHandler(w, req)
+    asserts.equalInt(t, w.Code, 400)
+}
+
+test "POST /api/connections — unknown processor returns 400" {
+    var reg = Registry()
+    processors.registerBuiltins(reg)
+    var fab = Fabric(reg, ProcessorContext())
+    var apiH = api.ApiHandler(fab)
+
+    var body = '{"from":"ghost","relationship":"success","to":"phantom"}'
+    var req = httptest.NewRequest("POST", "/api/connections", bytes.NewBufferString(body))
+    var w = httptest.NewRecorder()
+    apiH.addConnectionHandler(w, req)
+    asserts.equalInt(t, w.Code, 400)
+}
+
+test "DELETE /api/connections — missing edge returns 400" {
+    var reg = Registry()
+    processors.registerBuiltins(reg)
+    var fab = Fabric(reg, ProcessorContext())
+    var apiH = api.ApiHandler(fab)
+
+    var body = '{"from":"a","relationship":"success","to":"b"}'
+    var req = httptest.NewRequest("DELETE", "/api/connections", bytes.NewBufferString(body))
+    var w = httptest.NewRecorder()
+    apiH.deleteConnectionHandler(w, req)
+    asserts.equalInt(t, w.Code, 400)
+}
+
+test "PUT /api/processors/{name}/config — unknown processor returns 400" {
+    var reg = Registry()
+    processors.registerBuiltins(reg)
+    var fab = Fabric(reg, ProcessorContext())
+    var apiH = api.ApiHandler(fab)
+
+    var body = '{"config":{"k":"v"}}'
+    var req = httptest.NewRequest("PUT", "/api/processors/ghost/config", bytes.NewBufferString(body))
+    req.SetPathValue("name", "ghost")
+    var w = httptest.NewRecorder()
+    apiH.updateProcessorConfigHandler(w, req)
+    asserts.equalInt(t, w.Code, 400)
+}
+
+test "GET /api/flow/status — clean fabric reports dirty=false" {
+    var reg = Registry()
+    processors.registerBuiltins(reg)
+    var fab = Fabric(reg, ProcessorContext())
+    var apiH = api.ApiHandler(fab)
+
+    var req = httptest.NewRequest("GET", "/api/flow/status", null)
+    var w = httptest.NewRecorder()
+    apiH.flowStatusHandler(w, req)
+    var got = Map<String, Object>{}
+    json.Unmarshal(w.Body.Bytes(), &got) catch { t.Errorf("decode: %v", err); return }
+    asserts.isTrue(t, got["dirty"] == false, "dirty=false on fresh fabric")
+}
+
+test "PUT /api/sources/{name}/config — unknown source returns 404" {
+    var reg = Registry()
+    processors.registerBuiltins(reg)
+    var fab = Fabric(reg, ProcessorContext())
+    var sreg = SourceRegistry()
+    source.registerBuiltinSources(sreg)
+    var h = api.SourcesApiHandler(fab, sreg, MemoryContentStore())
+
+    var body = '{"config":{}}'
+    var req = httptest.NewRequest("PUT", "/api/sources/ghost/config", bytes.NewBufferString(body))
+    req.SetPathValue("name", "ghost")
+    var w = httptest.NewRecorder()
+    h.updateConfigHandler(w, req)
+    asserts.equalInt(t, w.Code, 404)
+}
+
 test "POST /api/sources/start — missing name returns 400" {
     var reg = Registry()
     processors.registerBuiltins(reg)

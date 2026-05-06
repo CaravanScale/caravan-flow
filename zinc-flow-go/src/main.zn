@@ -204,6 +204,23 @@ void main() {
     HandleFunc("POST /api/sources/stop", srcApi.stopHandler)
     HandleFunc("POST /api/sources/add", srcApi.addHandler)
     HandleFunc("DELETE /api/sources/remove", srcApi.removeHandler)
+    HandleFunc("PUT /api/sources/{name}/config", srcApi.updateConfigHandler)
+
+    // Graph mutation endpoints (palette drag, drawer save).
+    HandleFunc("POST /api/connections", api.addConnectionHandler)
+    HandleFunc("DELETE /api/connections", api.deleteConnectionHandler)
+    HandleFunc("PUT /api/connections/{from}", api.setConnectionsHandler)
+    HandleFunc("PUT /api/processors/{name}/connections", api.setProcessorConnectionsHandler)
+    HandleFunc("PUT /api/processors/{name}/config", api.updateProcessorConfigHandler)
+    HandleFunc("PUT /api/providers/{name}/config", api.updateProviderConfigHandler)
+    HandleFunc("GET /api/flow/status", api.flowStatusHandler)
+
+    // Lifecycle: hot reload, flow save (501 stub), layout sidecar.
+    var lifeApi = fabric.api.LifecycleApiHandler(fab, "config", "yaml", ".")
+    HandleFunc("POST /api/reload", lifeApi.reloadHandler)
+    HandleFunc("POST /api/flow/save", lifeApi.flowSaveHandler)
+    HandleFunc("GET /api/layout", lifeApi.getLayoutHandler)
+    HandleFunc("POST /api/layout", lifeApi.saveLayoutHandler)
 
     // Expression-builder live-parse — UI uses this to preview-evaluate
     // expressions against a sample record/attribute context.

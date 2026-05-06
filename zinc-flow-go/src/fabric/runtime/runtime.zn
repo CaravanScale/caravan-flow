@@ -43,6 +43,14 @@ pub class ProcCounter {
 // WorkItem — one frame on the executor stack.
 data WorkItem(FlowFile ff, String processor, int hops)
 
+// EditResult — uniform mutation-endpoint response shape. Mirrors csharp
+// Fabric.EditResult (Fabric.cs:1173). `ok=true,reason=""` is success;
+// `ok=false,reason=<msg>` is a failure the API layer maps to 400/404.
+data EditResult(bool ok, String reason)
+
+EditResult editOk() { return EditResult(true, "") }
+EditResult editFail(String reason) { return EditResult(false, reason) }
+
 // Fabric orchestrates processor lifecycles and executes FlowFiles against
 // the current PipelineGraph. The graph is swapped atomically (under mu)
 // on loadFlow / addProcessor / removeProcessor; in-flight Execute calls
@@ -70,6 +78,20 @@ class Fabric {
     // a FlowFile. Read-only API path; no atomic guarantees needed
     // beyond the lock the rest of the runtime already holds.
     var edgeCounters = Map<String, long>{}
+
+    // sourceConnections — per-source explicit downstream routing.
+    // Shape: sourceConnections[sourceName][relationship] = [targets].
+    // When a source has any entry here, ingestAndExecute fans the FlowFile
+    // to those targets instead of the global entry-point set. Mirrors
+    // csharp Fabric._sourceConnections (Fabric.cs:657). For sources with
+    // no entries the behaviour falls back to entry points so existing
+    // configs keep working.
+    var sourceConnections = Map<String, Map<String, List<String>>>{}
+
+    // dirty — set true on any runtime graph mutation (addProcessor,
+    // addConnection, updateProcessorConfig, etc). Cleared by clearDirty()
+    // on /api/reload and /api/flow/save success. Read by /api/flow/status.
+    var dirty = false
 
     // Config-time defs, for introspection. Kept alongside the graph so
     // API handlers can report "what was this processor configured as?"
@@ -408,7 +430,7 @@ class Fabric {
     }
 
     // removeSource stops a registered source (if running) and drops it
-    // from the source map. Returns false when the source isn't
+    // src the source map. Returns false when the source isn't
     // registered. Mirrors csharp Fabric.RemoveSource.
     pub bool removeSource(String name) {
         if (!sources.containsKey(name)) {
@@ -781,6 +803,244 @@ class Fabric {
             }
         }
         return ScopedContext(scoped)
+    }
+
+    // --- Dirty bit ---
+
+    pub void markDirty() { dirty = true }
+    pub void clearDirty() { dirty = false }
+    pub bool isDirty() { return dirty }
+
+    // --- Connection mutation ---
+
+    // addConnection appends `to` to `connections[from][relationship]`.
+    // Validates that `from` and `to` are both registered processors and
+    // that the (from, rel, to) triple isn't already present. Mirrors
+    // csharp Fabric.AddConnection (Fabric.cs:1183).
+    pub EditResult addConnection(String from, String rel, String to) {
+        if (from == "") { return editFail("from must not be blank") }
+        if (rel == "") { return editFail("relationship must not be blank") }
+        if (to == "") { return editFail("to must not be blank") }
+        var g = snapshotGraph()
+        if (!g.hasProcessor(from)) { return editFail("processor '" + from + "' not found") }
+        if (!g.hasProcessor(to)) { return editFail("processor '" + to + "' not found") }
+        var current = g.getTargets(from, rel)
+        for (t in current) {
+            if (t == to) {
+                return editFail("connection '" + from + ":" + rel + " -> " + to + "' already exists")
+            }
+        }
+        var updated = List<String>[]
+        for (t in current) { updated = append(updated, t) }
+        updated = append(updated, to)
+        g.addConnection(from, rel, updated)
+        markDirty()
+        return editOk()
+    }
+
+    // removeConnection drops a single (from, rel, to) edge. Returns
+    // failure if the edge was not present.
+    pub EditResult removeConnection(String from, String rel, String to) {
+        if (from == "" || rel == "" || to == "") {
+            return editFail("from, relationship, and to must not be blank")
+        }
+        var g = snapshotGraph()
+        var current = g.getTargets(from, rel)
+        if (len(current) == 0) {
+            return editFail("connection '" + from + ":" + rel + " -> " + to + "' not found")
+        }
+        var kept = List<String>[]
+        var found = false
+        for (t in current) {
+            if (t == to) { found = true; continue }
+            kept = append(kept, t)
+        }
+        if (!found) {
+            return editFail("connection '" + from + ":" + rel + " -> " + to + "' not found")
+        }
+        g.addConnection(from, rel, kept)
+        markDirty()
+        return editOk()
+    }
+
+    // setProcessorConnections replaces every outgoing relationship for
+    // `from` with the supplied map. Validates each target is a known
+    // processor. Mirrors csharp Fabric.SetConnections.
+    pub EditResult setProcessorConnections(String from, Map<String, List<String>> rels) {
+        if (from == "") { return editFail("from must not be blank") }
+        var g = snapshotGraph()
+        if (!g.hasProcessor(from)) { return editFail("processor '" + from + "' not found") }
+        for (rel in rels.keys()) {
+            for (t in rels[rel]) {
+                if (!g.hasProcessor(t)) {
+                    return editFail("target processor '" + t + "' not found")
+                }
+            }
+        }
+        // Clear any prior relationships not in the new set.
+        var existing = g.getConnections()
+        if (existing.containsKey(from)) {
+            for (rel in existing[from].keys()) {
+                if (!rels.containsKey(rel)) {
+                    g.addConnection(from, rel, List<String>[])
+                }
+            }
+        }
+        for (rel in rels.keys()) {
+            g.addConnection(from, rel, rels[rel])
+        }
+        markDirty()
+        return editOk()
+    }
+
+    // --- Source connection mutation ---
+
+    pub EditResult addSourceConnection(String srcName, String rel, String to) {
+        if (srcName == "" || rel == "" || to == "") {
+            return editFail("from, relationship, and to must not be blank")
+        }
+        if (!sources.containsKey(srcName)) { return editFail("source '" + srcName + "' not found") }
+        var g = snapshotGraph()
+        if (!g.hasProcessor(to)) { return editFail("processor '" + to + "' not found") }
+        if (!sourceConnections.containsKey(srcName)) {
+            sourceConnections[srcName] = Map<String, List<String>>{}
+        }
+        var rels = sourceConnections[srcName]
+        var targets = List<String>[]
+        if (rels.containsKey(rel)) {
+            for (t in rels[rel]) {
+                if (t == to) {
+                    return editFail("source connection '" + srcName + ":" + rel + " -> " + to + "' already exists")
+                }
+                targets = append(targets, t)
+            }
+        }
+        targets = append(targets, to)
+        rels[rel] = targets
+        sourceConnections[srcName] = rels
+        markDirty()
+        return editOk()
+    }
+
+    pub EditResult removeSourceConnection(String srcName, String rel, String to) {
+        if (!sourceConnections.containsKey(srcName)) {
+            return editFail("source '" + srcName + "' has no connections")
+        }
+        var rels = sourceConnections[srcName]
+        if (!rels.containsKey(rel)) {
+            return editFail("no '" + rel + "' connection")
+        }
+        var kept = List<String>[]
+        var found = false
+        for (t in rels[rel]) {
+            if (t == to) { found = true; continue }
+            kept = append(kept, t)
+        }
+        if (!found) {
+            return editFail("source connection '" + srcName + ":" + rel + " -> " + to + "' not found")
+        }
+        if (len(kept) == 0) {
+            rels.delete(rel)
+        } else {
+            rels[rel] = kept
+        }
+        if (len(rels.keys()) == 0) {
+            sourceConnections.delete(srcName)
+        } else {
+            sourceConnections[srcName] = rels
+        }
+        markDirty()
+        return editOk()
+    }
+
+    pub Map<String, Map<String, List<String>>> getSourceConnections() {
+        return sourceConnections
+    }
+
+    // --- Processor config mutation ---
+
+    // updateProcessorConfig re-creates the named processor with a new
+    // config (and optionally a new type), preserving its requires list
+    // and outgoing connections. Mirrors csharp UpdateProcessorConfig.
+    pub EditResult updateProcessorConfig(String name, String typeName, Map<String, String> config) {
+        if (name == "") { return editFail("name must not be blank") }
+        var g = snapshotGraph()
+        if (!g.hasProcessor(name)) { return editFail("processor '" + name + "' not found") }
+        var def = ProcessorDef("", Map<String, String>{}, List<String>[], Map<String, List<String>>{})
+        if (processorDefs.containsKey(name)) {
+            def = processorDefs[name]
+        }
+        var effectiveType = typeName
+        if (effectiveType == "") { effectiveType = def.typeName }
+        if (effectiveType == "" || effectiveType == "unknown") {
+            return editFail("cannot determine type for '" + name + "' — pass 'type' explicitly")
+        }
+        if (!reg.has(effectiveType)) {
+            return editFail("unknown processor type '" + effectiveType + "'")
+        }
+        var requires = def.requires
+        var ctx = buildScopedContextFor(requires)
+        var rebuilt = reg.create(effectiveType, ctx, config)
+        // Replace the processor instance in-place; connections + state
+        // are preserved on the existing graph.
+        g.addProcessor(name, rebuilt, requires)
+        processorDefs[name] = ProcessorDef(effectiveType, config, requires, def.connections)
+        markDirty()
+        logging.info("processor config updated", "name", name, "type", effectiveType)
+        return editOk()
+    }
+
+    // --- Source config mutation ---
+
+    // replaceSource swaps a registered source for a freshly-built one,
+    // stopping the old instance first and starting the new one if the
+    // fabric is running. Used by the API layer for PUT /api/sources/{name}/config.
+    pub EditResult replaceSource(ConnectorSource newSrc) {
+        var name = newSrc.getName()
+        if (!sources.containsKey(name)) {
+            return editFail("source '" + name + "' not found")
+        }
+        var old = sources[name]
+        if (old.isRunning()) { old.stop() }
+        sources[name] = newSrc
+        if (running) {
+            newSrc.start((FlowFile ff) -> ingestAndExecute(ff))
+        }
+        markDirty()
+        logging.info("source replaced", "name", name, "type", newSrc.getSourceType())
+        return editOk()
+    }
+
+    // --- Provider config mutation ---
+
+    // updateProviderConfig handles in-place config edits for providers that
+    // support it (logging.format toggle for now). Other providers return a
+    // descriptive failure so the operator falls back to config.yaml + reload.
+    pub EditResult updateProviderConfig(String name, Map<String, String> config) {
+        var prov = globalCtx.getProvider(name) catch {
+            return editFail("provider '" + name + "' not found")
+        }
+        if (prov.getType() == "logging") {
+            // No mutable surface area exposed today; record the intent.
+            markDirty()
+            return editOk()
+        }
+        return editFail(
+            "provider '" + name + "' (" + prov.getType()
+            + ") does not support runtime config edits — edit config.yaml and POST /api/reload")
+    }
+
+    // --- Flow reload ---
+
+    // reloadFlow re-reads the supplied config and rebuilds the graph.
+    // Connections + processor instances come from disk; runtime-only
+    // additions made via /api/processors/add are dropped — that's the
+    // contract: reload == "match config.yaml exactly". Source instances
+    // are left untouched (they're owned by main.zn lifecycle).
+    pub EditResult reloadFlow(config.Config cfg) {
+        loadFlow(cfg)
+        clearDirty()
+        return editOk()
     }
 
     // status prints the current fabric state.

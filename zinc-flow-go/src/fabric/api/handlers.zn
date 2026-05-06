@@ -477,6 +477,162 @@ class ApiHandler {
         }
         writeJson(w, Map<String, Object>{"status": "disabled", "name": name})
     }
+
+    // POST /api/connections — body {"from","relationship","to"}.
+    // If `from` names a source, dispatches to addSourceConnection;
+    // otherwise treats it as a processor->processor edge. Mirrors
+    // csharp ApiHandler.AddConnection (Fabric/ApiHandler.cs:806).
+    pub void addConnectionHandler(ResponseWriter w, Request r) {
+        if (r.Method != "POST") { writeError(w, 405, "method not allowed"); return }
+        var body = readBody(r)
+        if (body == null) { writeError(w, 400, "failed to read body"); return }
+        var req = Map<String, Object>{}
+        json.Unmarshal(body, &req) catch { writeError(w, 400, "invalid json"); return }
+        var from = strVal(req, "from")
+        var rel = strVal(req, "relationship")
+        var to = strVal(req, "to")
+        var srcs = fab.getSources()
+        var fromIsSource = false
+        for (s in srcs) {
+            if (s["name"] == from) { fromIsSource = true; break }
+        }
+        var res = EditResult(false, "")
+        if (fromIsSource) {
+            res = fab.addSourceConnection(from, rel, to)
+        } else {
+            res = fab.addConnection(from, rel, to)
+        }
+        writeEdit(w, res, Map<String, Object>{
+            "status": "added", "from": from, "relationship": rel, "to": to})
+    }
+
+    // DELETE /api/connections — body {"from","relationship","to"}.
+    pub void deleteConnectionHandler(ResponseWriter w, Request r) {
+        if (r.Method != "DELETE") { writeError(w, 405, "method not allowed"); return }
+        var body = readBody(r)
+        if (body == null) { writeError(w, 400, "failed to read body"); return }
+        var req = Map<String, Object>{}
+        json.Unmarshal(body, &req) catch { writeError(w, 400, "invalid json"); return }
+        var from = strVal(req, "from")
+        var rel = strVal(req, "relationship")
+        var to = strVal(req, "to")
+        var srcs = fab.getSources()
+        var fromIsSource = false
+        for (s in srcs) {
+            if (s["name"] == from) { fromIsSource = true; break }
+        }
+        var res = EditResult(false, "")
+        if (fromIsSource) {
+            res = fab.removeSourceConnection(from, rel, to)
+        } else {
+            res = fab.removeConnection(from, rel, to)
+        }
+        writeEdit(w, res, Map<String, Object>{
+            "status": "removed", "from": from, "relationship": rel, "to": to})
+    }
+
+    // PUT /api/connections/{from} — replace every relationship for `from`.
+    // Body: {"relationships": {"success": ["a","b"], "failure": ["dlq"]}}.
+    pub void setConnectionsHandler(ResponseWriter w, Request r) {
+        if (r.Method != "PUT") { writeError(w, 405, "method not allowed"); return }
+        var from = r.PathValue("from")
+        if (from == "") { writeError(w, 400, "from required"); return }
+        var body = readBody(r)
+        if (body == null) { writeError(w, 400, "failed to read body"); return }
+        var req = Map<String, Object>{}
+        json.Unmarshal(body, &req) catch { writeError(w, 400, "invalid json"); return }
+        var rels = extractRelationshipMap(req)
+        var res = fab.setProcessorConnections(from, rels)
+        writeEdit(w, res, Map<String, Object>{
+            "status": "replaced", "from": from, "relationships": rels})
+    }
+
+    // PUT /api/processors/{name}/connections — same payload as above but
+    // path-keyed off the processor name. Kept as a parity alias of the
+    // /api/connections/{from} endpoint; csharp ships both routes.
+    pub void setProcessorConnectionsHandler(ResponseWriter w, Request r) {
+        if (r.Method != "PUT") { writeError(w, 405, "method not allowed"); return }
+        var name = r.PathValue("name")
+        if (name == "") { writeError(w, 400, "name required"); return }
+        var body = readBody(r)
+        if (body == null) { writeError(w, 400, "failed to read body"); return }
+        var req = Map<String, Object>{}
+        json.Unmarshal(body, &req) catch { writeError(w, 400, "invalid json"); return }
+        var rels = extractRelationshipMap(req)
+        var res = fab.setProcessorConnections(name, rels)
+        writeEdit(w, res, Map<String, Object>{
+            "status": "replaced", "from": name, "relationships": rels})
+    }
+
+    // PUT /api/processors/{name}/config — body {"type": "...", "config": {...}}.
+    // `type` is optional — if absent we keep the existing typeName.
+    pub void updateProcessorConfigHandler(ResponseWriter w, Request r) {
+        if (r.Method != "PUT") { writeError(w, 405, "method not allowed"); return }
+        var name = r.PathValue("name")
+        if (name == "") { writeError(w, 400, "name required"); return }
+        var body = readBody(r)
+        if (body == null) { writeError(w, 400, "failed to read body"); return }
+        var req = Map<String, Object>{}
+        json.Unmarshal(body, &req) catch { writeError(w, 400, "invalid json"); return }
+        var typeName = strVal(req, "type")
+        var config = extractStringMap(req, "config")
+        var res = fab.updateProcessorConfig(name, typeName, config)
+        writeEdit(w, res, Map<String, Object>{"status": "updated", "name": name})
+    }
+
+    // PUT /api/providers/{name}/config — body {"config": {...}}.
+    pub void updateProviderConfigHandler(ResponseWriter w, Request r) {
+        if (r.Method != "PUT") { writeError(w, 405, "method not allowed"); return }
+        var name = r.PathValue("name")
+        if (name == "") { writeError(w, 400, "name required"); return }
+        var body = readBody(r)
+        if (body == null) { writeError(w, 400, "failed to read body"); return }
+        var req = Map<String, Object>{}
+        json.Unmarshal(body, &req) catch { writeError(w, 400, "invalid json"); return }
+        var config = extractStringMap(req, "config")
+        var res = fab.updateProviderConfig(name, config)
+        writeEdit(w, res, Map<String, Object>{"status": "updated", "name": name})
+    }
+
+    // GET /api/flow/status — { dirty: bool, processors: int, sources: int }.
+    pub void flowStatusHandler(ResponseWriter w, Request r) {
+        var body = Map<String, Object>{}
+        body["dirty"] = fab.isDirty()
+        body["processors"] = len(fab.getProcessorNames())
+        body["sources"] = len(fab.getSources())
+        writeJson(w, body)
+    }
+}
+
+// extractStringMap pulls a Map<String, String> out of a json-parsed
+// outer map at `key`. Returns an empty map when absent or wrong-typed.
+Map<String, String> extractStringMap(Map<String, Object> req, String key) {
+    var out = Map<String, String>{}
+    if (!req.containsKey(key)) { return out }
+    var rawBytes = json.Marshal(req[key]) catch { return out }
+    var parsed = Map<String, String>{}
+    json.Unmarshal(rawBytes, &parsed) catch { return out }
+    for (k in parsed.keys()) { out[k] = parsed[k] }
+    return out
+}
+
+// extractRelationshipMap pulls Map<String, List<String>> from req["relationships"].
+Map<String, List<String>> extractRelationshipMap(Map<String, Object> req) {
+    var out = Map<String, List<String>>{}
+    if (!req.containsKey("relationships")) { return out }
+    var rawBytes = json.Marshal(req["relationships"]) catch { return out }
+    json.Unmarshal(rawBytes, &out) catch { return out }
+    return out
+}
+
+// writeEdit renders an EditResult as either a 200 success body or a
+// 400 failure JSON. Mirrors csharp ApiHandler.EditResultJson.
+void writeEdit(ResponseWriter w, EditResult res, Map<String, Object> ok) {
+    if (!res.ok) {
+        writeError(w, 400, res.reason)
+        return
+    }
+    writeJson(w, ok)
 }
 
 // readBody reads the full request body. The body is a closable
