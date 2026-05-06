@@ -45,6 +45,11 @@ void main() {
     var loggingProvider = LoggingProvider(lm)
     loggingProvider.enable()
 
+    // Provenance: bounded ring buffer of FlowFile lifecycle events.
+    // Capacity matches csharp default (100k).
+    var provenance = ProvenanceProvider(100000)
+    provenance.enable()
+
     var schemaRegistry = SchemaRegistry()
     var loadedSchemas = schemaRegistry.loadFromConfig(cfg, ".")
     if (loadedSchemas > 0) {
@@ -59,6 +64,7 @@ void main() {
     globalCtx.addProvider(configProvider)
     globalCtx.addProvider(loggingProvider)
     globalCtx.addProvider(schemaRegistryProvider)
+    globalCtx.addProvider(provenance)
 
     // Create processor registry and register built-ins
     var reg = Registry()

@@ -37,6 +37,7 @@ class PutHTTP : ProcessorFn {
     int retries
     int retryInitialDelayMs
     int retryMaxDelayMs
+    http.Client client
 
     init(String endpoint, String format, ContentStore store,
          int retries, int retryInitialDelayMs, int retryMaxDelayMs) {
@@ -49,11 +50,10 @@ class PutHTTP : ProcessorFn {
         if (retryInitialDelayMs <= 0) { this.retryInitialDelayMs = 200 }
         this.retryMaxDelayMs = retryMaxDelayMs
         if (retryMaxDelayMs <= 0) { this.retryMaxDelayMs = 5000 }
+        this.client = http.Client{Timeout: 30 * time.Second}
     }
 
     pub ProcessorResult process(FlowFile ff) {
-        var client = http.Client{Timeout: 30 * time.Second}
-
         var resolved = resolve(store, ff.content)
         if (resolved.errorMsg != "") {
             return Failure(resolved.errorMsg, ff)

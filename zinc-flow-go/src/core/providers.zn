@@ -3,6 +3,8 @@
 
 import stdlib/config
 import stdlib/logging
+import sync
+import time
 
 // ConfigProvider wraps Config. The bootstrap provider — used to configure everything else.
 class ConfigProvider : Provider {
@@ -60,6 +62,133 @@ class LoggingProvider : Provider {
     pub bool isEnabled() { return state == ENABLED }
 
     pub logging.LogManager getLogManager() { return lm }
+}
+
+// ProvenanceEventType — kind of FlowFile lifecycle event recorded by
+// ProvenanceProvider. Mirrors csharp ProvenanceEventType (Providers.cs:204).
+enum ProvenanceEventType {
+    PROV_CREATED,
+    PROV_PROCESSED,
+    PROV_ROUTED,
+    PROV_DROPPED,
+    PROV_FAILED
+}
+
+// ProvenanceEvent — one observation in the lifecycle of a FlowFile.
+// `flowFileId` is the FlowFile's id (string in zinc-flow-go vs csharp's
+// numeric id — semantics identical, identifier shape differs).
+data ProvenanceEvent(
+    String flowFileId,
+    ProvenanceEventType eventType,
+    String component,
+    String details,
+    long timestamp
+)
+
+// ProvenanceProvider — bounded ring-buffer recorder of FlowFile
+// lifecycle events. Used by /api/provenance and the dashboard's
+// per-FlowFile timeline. Mirrors csharp ProvenanceProvider
+// (Providers.cs:224): fixed capacity, oldest events evicted, indexed
+// only by FlowFile id (no per-component or per-event-type secondary
+// indexes — callers filter when reading).
+//
+// Concurrency: a single mutex guards the events slice + head/count.
+// Record is on every processor's hot path, so the lock window is just
+// the slot write — event construction (Now() etc) happens outside the
+// lock.
+class ProvenanceProvider : Provider {
+    String providerName
+    ComponentState state
+    var events = List<ProvenanceEvent>[]
+    int capacity
+    int head
+    int count
+    sync.Mutex mu
+
+    init(int capacity) {
+        this.providerName = "provenance"
+        this.state = DISABLED
+        this.capacity = capacity
+        this.head = 0
+        this.count = 0
+        // Pre-size with sentinels so ring writes are direct slot
+        // assignments — no append/realloc on the per-record path.
+        var i = 0
+        while (i < capacity) {
+            this.events = append(this.events,
+                ProvenanceEvent("", PROV_CREATED, "", "", long(0)))
+            i = i + 1
+        }
+    }
+
+    pub String getName() { return providerName }
+    pub String getType() { return "provenance" }
+    pub ComponentState getState() { return state }
+    pub void enable() { state = ENABLED }
+    pub void disable(int drainTimeoutSeconds) { state = DISABLED }
+    pub void shutdown() { state = DISABLED }
+    pub bool isEnabled() { return state == ENABLED }
+
+    // record adds an event to the ring buffer. Silently drops when the
+    // provider is disabled — matches csharp; the alternative (failing
+    // hot-path writes) would couple processor execution to provenance
+    // health.
+    pub void record(String ffId, ProvenanceEventType eventType, String component, String details) {
+        if (state != ENABLED) { return }
+        var ts = time.Now().UnixMilli()
+        var evt = ProvenanceEvent(ffId, eventType, component, details, ts)
+        lock (mu) {
+            events[head] = evt
+            head = (head + 1) % capacity
+            if (count < capacity) { count = count + 1 }
+        }
+    }
+
+    // getEvents returns every event for `ffId`, oldest first. Linear
+    // scan over the ring; called from /api/provenance/{id} which is a
+    // human-clicked endpoint, not a hot path.
+    pub List<ProvenanceEvent> getEvents(String ffId) {
+        var out = List<ProvenanceEvent>[]
+        lock (mu) {
+            var start = 0
+            if (count >= capacity) { start = head }
+            var i = 0
+            while (i < count) {
+                var evt = events[(start + i) % capacity]
+                if (evt.flowFileId == ffId) {
+                    out = append(out, evt)
+                }
+                i = i + 1
+            }
+        }
+        return out
+    }
+
+    // getRecent returns the n most-recent events across all FlowFiles
+    // (newest last). Used by /api/provenance/recent for the dashboard
+    // tail view.
+    pub List<ProvenanceEvent> getRecent(int n) {
+        var out = List<ProvenanceEvent>[]
+        lock (mu) {
+            var take = n
+            if (take > count) { take = count }
+            // Wrap-aware backwards walk: newest is at (head-1), so the
+            // window of `take` items starts at (head - take) mod cap.
+            var start = ((head - take) + capacity) % capacity
+            var i = 0
+            while (i < take) {
+                out = append(out, events[(start + i) % capacity])
+                i = i + 1
+            }
+        }
+        return out
+    }
+
+    pub int getCount() {
+        var n = 0
+        lock (mu) { n = count }
+        return n
+    }
 }
 
 // ContentProvider wraps ContentStore (FileContentStore or MemoryContentStore).

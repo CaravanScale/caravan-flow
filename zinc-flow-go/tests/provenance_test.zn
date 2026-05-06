@@ -1,0 +1,107 @@
+// ProvenanceProvider — bounded ring buffer of FlowFile lifecycle
+// events. Mirrors csharp ProvenanceProvider semantics:
+//   - record() is a no-op when disabled
+//   - getEvents(id) returns all events for that FlowFile, oldest first
+//   - getRecent(n) returns the n most-recent across all FlowFiles
+//   - capacity-bounded; oldest entries evicted on overflow
+
+import core
+import stdlib/asserts
+
+test "ProvenanceProvider — record is a no-op when disabled" {
+    var p = ProvenanceProvider(10)
+    // Default state DISABLED; do NOT enable.
+    p.record("ff-1", PROV_CREATED, "source", "ingest")
+    asserts.equalInt(t, p.getCount(), 0)
+}
+
+test "ProvenanceProvider — record appends, getCount tracks" {
+    var p = ProvenanceProvider(10)
+    p.enable()
+    p.record("ff-1", PROV_CREATED, "source", "ingest")
+    p.record("ff-1", PROV_PROCESSED, "tag", "")
+    p.record("ff-2", PROV_CREATED, "source", "")
+    asserts.equalInt(t, p.getCount(), 3)
+}
+
+test "ProvenanceProvider — getEvents filters by FlowFile id, oldest first" {
+    var p = ProvenanceProvider(10)
+    p.enable()
+    p.record("ff-1", PROV_CREATED, "source", "")
+    p.record("ff-2", PROV_CREATED, "source", "")
+    p.record("ff-1", PROV_PROCESSED, "tag", "")
+    p.record("ff-1", PROV_ROUTED, "router", "")
+
+    var events = p.getEvents("ff-1")
+    asserts.equalInt(t, len(events), 3)
+    match (events[0].eventType) {
+        case PROV_CREATED {}
+        case _ { t.Errorf("first event must be CREATED") }
+    }
+    match (events[1].eventType) {
+        case PROV_PROCESSED {}
+        case _ { t.Errorf("second event must be PROCESSED") }
+    }
+    match (events[2].eventType) {
+        case PROV_ROUTED {}
+        case _ { t.Errorf("third event must be ROUTED") }
+    }
+}
+
+test "ProvenanceProvider — getEvents on unknown id returns empty" {
+    var p = ProvenanceProvider(10)
+    p.enable()
+    p.record("ff-1", PROV_CREATED, "source", "")
+    asserts.equalInt(t, len(p.getEvents("ghost")), 0)
+}
+
+test "ProvenanceProvider — getRecent returns last N events newest-last" {
+    var p = ProvenanceProvider(10)
+    p.enable()
+    var i = 0
+    while (i < 5) {
+        p.record("ff-${str(i)}", PROV_CREATED, "src", "")
+        i = i + 1
+    }
+    var recent = p.getRecent(3)
+    asserts.equalInt(t, len(recent), 3)
+    asserts.equalString(t, recent[0].flowFileId, "ff-2")
+    asserts.equalString(t, recent[1].flowFileId, "ff-3")
+    asserts.equalString(t, recent[2].flowFileId, "ff-4")
+}
+
+test "ProvenanceProvider — capacity overflow evicts oldest" {
+    var p = ProvenanceProvider(3)
+    p.enable()
+    p.record("ff-1", PROV_CREATED, "src", "")
+    p.record("ff-2", PROV_CREATED, "src", "")
+    p.record("ff-3", PROV_CREATED, "src", "")
+    p.record("ff-4", PROV_CREATED, "src", "")
+    asserts.equalInt(t, p.getCount(), 3)
+    // ff-1 evicted; ff-2..ff-4 remain.
+    asserts.equalInt(t, len(p.getEvents("ff-1")), 0)
+    asserts.equalInt(t, len(p.getEvents("ff-2")), 1)
+    asserts.equalInt(t, len(p.getEvents("ff-4")), 1)
+
+    var recent = p.getRecent(3)
+    asserts.equalString(t, recent[0].flowFileId, "ff-2")
+    asserts.equalString(t, recent[2].flowFileId, "ff-4")
+}
+
+test "ProvenanceProvider — getRecent caps at count when n > count" {
+    var p = ProvenanceProvider(10)
+    p.enable()
+    p.record("ff-1", PROV_CREATED, "src", "")
+    p.record("ff-2", PROV_CREATED, "src", "")
+    var recent = p.getRecent(100)
+    asserts.equalInt(t, len(recent), 2)
+}
+
+test "ProvenanceProvider — disable stops further records" {
+    var p = ProvenanceProvider(10)
+    p.enable()
+    p.record("ff-1", PROV_CREATED, "src", "")
+    p.disable(0)
+    p.record("ff-2", PROV_CREATED, "src", "")
+    asserts.equalInt(t, p.getCount(), 1)
+}
