@@ -182,6 +182,23 @@ void main() {
     HandleFunc("DELETE /api/schema-registry/subjects/{subject}", srApi.deleteSubjectHandler)
     HandleFunc("DELETE /api/schema-registry/subjects/{subject}/versions/{version}", srApi.deleteVersionHandler)
 
+    // Provenance — bounded ring of FlowFile lifecycle events.
+    var provApi = ProvenanceApiHandler(provenance)
+    HandleFunc("GET /api/provenance", provApi.recentHandler)
+    HandleFunc("GET /api/provenance/{id}", provApi.byIdHandler)
+
+    // VersionControl — git-status / commit / push proxies.
+    var vcApi = VcApiHandler(vc)
+    HandleFunc("GET /api/vc/status", vcApi.statusHandler)
+    HandleFunc("POST /api/vc/commit", vcApi.commitHandler)
+    HandleFunc("POST /api/vc/push", vcApi.pushHandler)
+
+    // Sources — list / start / stop config-driven source instances.
+    var srcApi = SourcesApiHandler(fab)
+    HandleFunc("GET /api/sources", srcApi.listHandler)
+    HandleFunc("POST /api/sources/start", srcApi.startHandler)
+    HandleFunc("POST /api/sources/stop", srcApi.stopHandler)
+
     // Prometheus /metrics — text-exposition format, no external deps.
     var metricsApi = MetricsApiHandler(fab, time.Now())
     HandleFunc("/metrics", metricsApi.metricsHandler)

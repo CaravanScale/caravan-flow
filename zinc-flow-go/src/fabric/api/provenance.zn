@@ -1,0 +1,62 @@
+// Provenance REST endpoints. Mounted at /api/provenance and
+// /api/provenance/{id}. Mirrors csharp ApiHandler ProvenanceRecent /
+// ProvenanceById (Fabric/ApiHandler.cs:64-65). Both endpoints return
+// JSON arrays of event objects so the dashboard's timeline view can
+// render directly.
+
+import net/http
+import core
+import strconv
+
+class ProvenanceApiHandler {
+    ProvenanceProvider provenance
+
+    init(ProvenanceProvider provenance) {
+        this.provenance = provenance
+    }
+
+    // GET /api/provenance — most-recent N events across all FlowFiles.
+    // Default N=100; clamped to whatever's in the ring buffer.
+    pub void recentHandler(ResponseWriter w, Request r) {
+        var n = 100
+        var limit = r.URL.Query().Get("limit")
+        if (limit != "") {
+            n = strconv.Atoi(limit) or { 100 }
+        }
+        writeJson(w, eventsToJson(provenance.getRecent(n)))
+    }
+
+    // GET /api/provenance/{id} — every event recorded for FlowFile id.
+    pub void byIdHandler(ResponseWriter w, Request r) {
+        var ffId = r.PathValue("id")
+        writeJson(w, eventsToJson(provenance.getEvents(ffId)))
+    }
+}
+
+// eventsToJson — produces the dashboard's expected event-shape array.
+// Type names match csharp's enum string form so existing UI parsers
+// don't need a fork: "Created" / "Processed" / "Routed" / "Dropped" /
+// "Failed".
+List<Map<String, Object>> eventsToJson(List<ProvenanceEvent> events) {
+    var out = List<Map<String, Object>>[]
+    for (e in events) {
+        var entry = Map<String, Object>{}
+        entry["flowFileId"] = e.flowFileId
+        entry["eventType"] = eventTypeName(e.eventType)
+        entry["component"] = e.component
+        entry["details"] = e.details
+        entry["timestamp"] = e.timestamp
+        out = append(out, entry)
+    }
+    return out
+}
+
+String eventTypeName(ProvenanceEventType t) {
+    match (t) {
+        case PROV_CREATED   { return "Created" }
+        case PROV_PROCESSED { return "Processed" }
+        case PROV_ROUTED    { return "Routed" }
+        case PROV_DROPPED   { return "Dropped" }
+        case PROV_FAILED    { return "Failed" }
+    }
+}

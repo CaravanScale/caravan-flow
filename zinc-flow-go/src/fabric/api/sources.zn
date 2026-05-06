@@ -1,0 +1,85 @@
+// Source-control REST endpoints. Mounted at /api/sources,
+// /api/sources/start, /api/sources/stop on the management port.
+// Mirrors csharp ApiHandler Sources / StartSource / StopSource
+// (Fabric/ApiHandler.cs:71-73).
+
+import net/http
+import encoding/json
+import core
+import io
+import fabric/runtime
+
+class SourcesApiHandler {
+    Fabric fab
+
+    init(Fabric fab) {
+        this.fab = fab
+    }
+
+    // GET /api/sources — every registered source instance with its
+    // type and live running state.
+    pub void listHandler(ResponseWriter w, Request r) {
+        writeJson(w, fab.getSources())
+    }
+
+    // POST /api/sources/start — body {"name": "..."}.
+    pub void startHandler(ResponseWriter w, Request r) {
+        var name = readNameField(r) or {
+            w.WriteHeader(400)
+            w.Write('{"error":"failed to parse body"}'.toBytes())
+            return
+        }
+        if (name == "") {
+            w.WriteHeader(400)
+            w.Write('{"error":"missing name"}'.toBytes())
+            return
+        }
+        if (!fab.startSource(name)) {
+            w.WriteHeader(404)
+            w.Write(('{"error":"unknown source: ' + name + '"}').toBytes())
+            return
+        }
+        writeJson(w, simpleOk(name, "started"))
+    }
+
+    // POST /api/sources/stop — body {"name": "..."}.
+    pub void stopHandler(ResponseWriter w, Request r) {
+        var name = readNameField(r) or {
+            w.WriteHeader(400)
+            w.Write('{"error":"failed to parse body"}'.toBytes())
+            return
+        }
+        if (name == "") {
+            w.WriteHeader(400)
+            w.Write('{"error":"missing name"}'.toBytes())
+            return
+        }
+        if (!fab.stopSource(name)) {
+            w.WriteHeader(404)
+            w.Write(('{"error":"unknown source: ' + name + '"}').toBytes())
+            return
+        }
+        writeJson(w, simpleOk(name, "stopped"))
+    }
+}
+
+(String, error) readNameField(Request r) {
+    var raw = byte[0]
+    using (var rc = r.Body) {
+        raw = io.ReadAll(rc) or { return "", err }
+    }
+    var parsed = Map<String, String>{}
+    json.Unmarshal(raw, &parsed) or { return "", err }
+    if (parsed.containsKey("name")) {
+        return parsed["name"], null
+    }
+    return "", null
+}
+
+Map<String, Object> simpleOk(String name, String action) {
+    var out = Map<String, Object>{}
+    out["ok"] = true
+    out["name"] = name
+    out["action"] = action
+    return out
+}

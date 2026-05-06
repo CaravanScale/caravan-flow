@@ -1,0 +1,130 @@
+// API endpoints — exercise the new /api/provenance, /api/vc/*, and
+// /api/sources/* handlers via httptest. Focused on the request/response
+// shape; the underlying providers are tested separately.
+
+import core
+import fabric/api
+import fabric/registry
+import fabric/runtime
+import fabric/source
+import processors
+import stdlib/asserts
+import net/http
+import net/http/httptest
+import io
+import bytes
+import encoding/json
+
+// --- Provenance ---
+
+test "GET /api/provenance — recent events shape" {
+    var prov = ProvenanceProvider(50)
+    prov.enable()
+    prov.record("ff-1", PROV_CREATED, "src", "")
+    prov.record("ff-1", PROV_PROCESSED, "tag", "")
+    prov.record("ff-2", PROV_FAILED, "sink", "boom")
+
+    var h = api.ProvenanceApiHandler(prov)
+    var req = httptest.NewRequest("GET", "/api/provenance", null)
+    var w = httptest.NewRecorder()
+    h.recentHandler(w, req)
+
+    asserts.equalInt(t, w.Code, 200)
+    var got = List<Map<String, Object>>[]
+    json.Unmarshal(w.Body.Bytes(), &got) or { t.Errorf("decode: %v", err); return }
+    asserts.equalInt(t, len(got), 3)
+}
+
+test "GET /api/provenance respects limit query param" {
+    var prov = ProvenanceProvider(50)
+    prov.enable()
+    var i = 0
+    while (i < 10) {
+        prov.record("ff-${str(i)}", PROV_CREATED, "src", "")
+        i = i + 1
+    }
+    var h = api.ProvenanceApiHandler(prov)
+    var req = httptest.NewRequest("GET", "/api/provenance?limit=4", null)
+    var w = httptest.NewRecorder()
+    h.recentHandler(w, req)
+    var got = List<Map<String, Object>>[]
+    json.Unmarshal(w.Body.Bytes(), &got) or { t.Errorf("decode: %v", err); return }
+    asserts.equalInt(t, len(got), 4)
+}
+
+test "GET /api/provenance/{id} filters to one FlowFile" {
+    var prov = ProvenanceProvider(50)
+    prov.enable()
+    prov.record("ff-1", PROV_CREATED, "src", "")
+    prov.record("ff-2", PROV_CREATED, "src", "")
+    prov.record("ff-1", PROV_ROUTED, "router", "")
+
+    var h = api.ProvenanceApiHandler(prov)
+    var req = httptest.NewRequest("GET", "/api/provenance/ff-1", null)
+    req.SetPathValue("id", "ff-1")
+    var w = httptest.NewRecorder()
+    h.byIdHandler(w, req)
+
+    var got = List<Map<String, Object>>[]
+    json.Unmarshal(w.Body.Bytes(), &got) or { t.Errorf("decode: %v", err); return }
+    asserts.equalInt(t, len(got), 2)
+}
+
+// --- VersionControl ---
+
+test "GET /api/vc/status — disabled provider" {
+    var vc = VersionControlProvider("/tmp", "git", "origin", "main")
+    var h = api.VcApiHandler(vc)
+    var req = httptest.NewRequest("GET", "/api/vc/status", null)
+    var w = httptest.NewRecorder()
+    h.statusHandler(w, req)
+
+    var got = Map<String, Object>{}
+    json.Unmarshal(w.Body.Bytes(), &got) or { t.Errorf("decode: %v", err); return }
+    asserts.isTrue(t, got["enabled"] == false, "enabled=false")
+    asserts.equalString(t, got["error"] as String or { "" }, "provider disabled")
+}
+
+// --- Sources ---
+
+test "GET /api/sources — empty fabric" {
+    var reg = Registry()
+    processors.registerBuiltins(reg)
+    var fab = Fabric(reg, ProcessorContext())
+    var h = api.SourcesApiHandler(fab)
+    var req = httptest.NewRequest("GET", "/api/sources", null)
+    var w = httptest.NewRecorder()
+    h.listHandler(w, req)
+
+    var got = List<Map<String, String>>[]
+    json.Unmarshal(w.Body.Bytes(), &got) or { t.Errorf("decode: %v", err); return }
+    asserts.equalInt(t, len(got), 0)
+}
+
+test "POST /api/sources/start — unknown name returns 404" {
+    var reg = Registry()
+    processors.registerBuiltins(reg)
+    var fab = Fabric(reg, ProcessorContext())
+    var h = api.SourcesApiHandler(fab)
+
+    var body = '{"name":"ghost"}'
+    var req = httptest.NewRequest("POST", "/api/sources/start", bytes.NewBufferString(body))
+    var w = httptest.NewRecorder()
+    h.startHandler(w, req)
+
+    asserts.equalInt(t, w.Code, 404)
+}
+
+test "POST /api/sources/start — missing name returns 400" {
+    var reg = Registry()
+    processors.registerBuiltins(reg)
+    var fab = Fabric(reg, ProcessorContext())
+    var h = api.SourcesApiHandler(fab)
+
+    var body = '{}'
+    var req = httptest.NewRequest("POST", "/api/sources/start", bytes.NewBufferString(body))
+    var w = httptest.NewRecorder()
+    h.startHandler(w, req)
+
+    asserts.equalInt(t, w.Code, 400)
+}
