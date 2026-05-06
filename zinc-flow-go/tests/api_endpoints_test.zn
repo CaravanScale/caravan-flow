@@ -128,7 +128,7 @@ test "GET /api/sources — empty fabric" {
     var reg = Registry()
     processors.registerBuiltins(reg)
     var fab = Fabric(reg, ProcessorContext())
-    var h = api.SourcesApiHandler(fab)
+    var h = api.SourcesApiHandler(fab, SourceRegistry(), MemoryContentStore())
     var req = httptest.NewRequest("GET", "/api/sources", null)
     var w = httptest.NewRecorder()
     h.listHandler(w, req)
@@ -142,7 +142,7 @@ test "POST /api/sources/start — unknown name returns 404" {
     var reg = Registry()
     processors.registerBuiltins(reg)
     var fab = Fabric(reg, ProcessorContext())
-    var h = api.SourcesApiHandler(fab)
+    var h = api.SourcesApiHandler(fab, SourceRegistry(), MemoryContentStore())
 
     var body = '{"name":"ghost"}'
     var req = httptest.NewRequest("POST", "/api/sources/start", bytes.NewBufferString(body))
@@ -192,11 +192,69 @@ test "GET /api/edge-stats — empty fabric returns empty map" {
     asserts.equalInt(t, len(got), 0)
 }
 
+test "POST /api/sources/add — missing name/type returns 400" {
+    var reg = Registry()
+    processors.registerBuiltins(reg)
+    var fab = Fabric(reg, ProcessorContext())
+    var sreg = SourceRegistry()
+    source.registerBuiltinSources(sreg)
+    var h = api.SourcesApiHandler(fab, sreg, MemoryContentStore())
+
+    var body = '{"type":"GenerateFlowFile"}' // missing name
+    var req = httptest.NewRequest("POST", "/api/sources/add", bytes.NewBufferString(body))
+    var w = httptest.NewRecorder()
+    h.addHandler(w, req)
+    asserts.equalInt(t, w.Code, 400)
+}
+
+test "POST /api/sources/add — unknown type returns 400" {
+    var reg = Registry()
+    processors.registerBuiltins(reg)
+    var fab = Fabric(reg, ProcessorContext())
+    var sreg = SourceRegistry()
+    source.registerBuiltinSources(sreg)
+    var h = api.SourcesApiHandler(fab, sreg, MemoryContentStore())
+
+    var body = '{"name":"x","type":"NotASource"}'
+    var req = httptest.NewRequest("POST", "/api/sources/add", bytes.NewBufferString(body))
+    var w = httptest.NewRecorder()
+    h.addHandler(w, req)
+    asserts.equalInt(t, w.Code, 400)
+}
+
+test "POST /api/sources/add — well-formed creates source" {
+    var reg = Registry()
+    processors.registerBuiltins(reg)
+    var fab = Fabric(reg, ProcessorContext())
+    var sreg = SourceRegistry()
+    source.registerBuiltinSources(sreg)
+    var h = api.SourcesApiHandler(fab, sreg, MemoryContentStore())
+
+    var body = '{"name":"hb","type":"GenerateFlowFile","config":{"content":"ping"}}'
+    var req = httptest.NewRequest("POST", "/api/sources/add", bytes.NewBufferString(body))
+    var w = httptest.NewRecorder()
+    h.addHandler(w, req)
+    asserts.equalInt(t, w.Code, 201)
+    asserts.equalInt(t, len(fab.getSources()), 1)
+}
+
+test "DELETE /api/sources/remove — unknown name returns 404" {
+    var reg = Registry()
+    processors.registerBuiltins(reg)
+    var fab = Fabric(reg, ProcessorContext())
+    var h = api.SourcesApiHandler(fab, SourceRegistry(), MemoryContentStore())
+
+    var req = httptest.NewRequest("DELETE", "/api/sources/remove?name=ghost", null)
+    var w = httptest.NewRecorder()
+    h.removeHandler(w, req)
+    asserts.equalInt(t, w.Code, 404)
+}
+
 test "POST /api/sources/start — missing name returns 400" {
     var reg = Registry()
     processors.registerBuiltins(reg)
     var fab = Fabric(reg, ProcessorContext())
-    var h = api.SourcesApiHandler(fab)
+    var h = api.SourcesApiHandler(fab, SourceRegistry(), MemoryContentStore())
 
     var body = '{}'
     var req = httptest.NewRequest("POST", "/api/sources/start", bytes.NewBufferString(body))

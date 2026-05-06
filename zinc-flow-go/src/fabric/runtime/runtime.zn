@@ -407,6 +407,22 @@ class Fabric {
         return true
     }
 
+    // removeSource stops a registered source (if running) and drops it
+    // from the source map. Returns false when the source isn't
+    // registered. Mirrors csharp Fabric.RemoveSource.
+    pub bool removeSource(String name) {
+        if (!sources.containsKey(name)) {
+            return false
+        }
+        var src = sources[name]
+        if (src.isRunning()) {
+            src.stop()
+        }
+        sources.delete(name)
+        logging.info("source removed", "name", name)
+        return true
+    }
+
     // resetProcessorStats zeroes the hits + errors atomics for `name`.
     // Returns false when the processor isn't registered. Mirrors csharp
     // Fabric.ResetProcessorStats. The counter value-type entries stay

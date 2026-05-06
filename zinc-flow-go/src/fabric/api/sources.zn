@@ -7,13 +7,18 @@ import net/http
 import encoding/json
 import core
 import io
+import fabric/registry
 import fabric/runtime
 
 class SourcesApiHandler {
     Fabric fab
+    SourceRegistry sreg
+    ContentStore store
 
-    init(Fabric fab) {
+    init(Fabric fab, SourceRegistry sreg, ContentStore store) {
         this.fab = fab
+        this.sreg = sreg
+        this.store = store
     }
 
     // GET /api/sources — every registered source instance with its
@@ -40,6 +45,93 @@ class SourcesApiHandler {
             return
         }
         writeJson(w, simpleOk(name, "started"))
+    }
+
+    // POST /api/sources/add — body {"name", "type", "config": {...}}.
+    // Builds a ConnectorSource via the registry, adds it to the fabric.
+    // Mirrors csharp Fabric.ApiHandler.AddSource (palette drop target).
+    pub void addHandler(ResponseWriter w, Request r) {
+        var raw = byte[0]
+        using (var rc = r.Body) {
+            raw = io.ReadAll(rc) catch {
+                w.WriteHeader(400)
+                w.Write('{"error":"failed to read body"}'.toBytes())
+                return
+            }
+        }
+        var req = Map<String, Object>{}
+        json.Unmarshal(raw, &req) catch {
+            w.WriteHeader(400)
+            w.Write('{"error":"invalid json"}'.toBytes())
+            return
+        }
+        var name = req["name"] as String catch { "" }
+        var typeName = req["type"] as String catch { "" }
+        if (name == "" || typeName == "") {
+            w.WriteHeader(400)
+            w.Write('{"error":"name and type are required"}'.toBytes())
+            return
+        }
+        if (!sreg.has(typeName)) {
+            w.WriteHeader(400)
+            w.Write(('{"error":"unknown source type: ' + typeName + '"}').toBytes())
+            return
+        }
+        var cfg = Map<String, String>{}
+        var rawCfg = req["config"] as Map<String, Object> catch { Map<String, Object>{} }
+        for (k, v in rawCfg) {
+            cfg[k] = v as String catch { "" }
+        }
+        var src = sreg.create(typeName, name, cfg, store) catch {
+            w.WriteHeader(400)
+            w.Write(('{"error":"' + err.Error() + '"}').toBytes())
+            return
+        }
+        if (src == null) {
+            w.WriteHeader(400)
+            w.Write('{"error":"factory returned null — required config likely missing"}'.toBytes())
+            return
+        }
+        fab.addSource(src)
+        w.WriteHeader(201)
+        var out = Map<String, Object>{}
+        out["status"] = "added"
+        out["name"] = name
+        out["type"] = typeName
+        writeJson(w, out)
+    }
+
+    // DELETE /api/sources/remove?name=X — stop and drop a source.
+    pub void removeHandler(ResponseWriter w, Request r) {
+        var name = r.URL.Query().Get("name")
+        if (name == "") {
+            // Body fallback: allow {"name": "..."} for symmetry with start/stop.
+            var raw = byte[0]
+            using (var rc = r.Body) {
+                raw = io.ReadAll(rc) catch { byte[0] }
+            }
+            if (len(raw) > 0) {
+                var req = Map<String, String>{}
+                json.Unmarshal(raw, &req) catch {}
+                if (req.containsKey("name")) {
+                    name = req["name"]
+                }
+            }
+        }
+        if (name == "") {
+            w.WriteHeader(400)
+            w.Write('{"error":"name required"}'.toBytes())
+            return
+        }
+        if (!fab.removeSource(name)) {
+            w.WriteHeader(404)
+            w.Write(('{"error":"source not found: ' + name + '"}').toBytes())
+            return
+        }
+        var out = Map<String, Object>{}
+        out["status"] = "removed"
+        out["name"] = name
+        writeJson(w, out)
     }
 
     // POST /api/sources/stop — body {"name": "..."}.

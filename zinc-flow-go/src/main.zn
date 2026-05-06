@@ -198,10 +198,12 @@ void main() {
     HandleFunc("POST /api/vc/push", vcApi.pushHandler)
 
     // Sources — list / start / stop config-driven source instances.
-    var srcApi = SourcesApiHandler(fab)
+    var srcApi = SourcesApiHandler(fab, sreg, store)
     HandleFunc("GET /api/sources", srcApi.listHandler)
     HandleFunc("POST /api/sources/start", srcApi.startHandler)
     HandleFunc("POST /api/sources/stop", srcApi.stopHandler)
+    HandleFunc("POST /api/sources/add", srcApi.addHandler)
+    HandleFunc("DELETE /api/sources/remove", srcApi.removeHandler)
 
     // Expression-builder live-parse — UI uses this to preview-evaluate
     // expressions against a sample record/attribute context.
