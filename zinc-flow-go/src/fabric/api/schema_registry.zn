@@ -93,11 +93,13 @@ class SchemaRegistryApiHandler {
     // --- POST /subjects/{subject}/versions  body {"schema":"..."} → {"id":N} ---
     pub void registerHandler(ResponseWriter w, Request r) {
         var subject = r.PathValue("subject")
-        var body = ReadAll(r.Body) or {
-            writeSrError(w, 400, 40000, "failed to read body")
-            return
+        var body = byte[0]
+        using (var rc = r.Body) {
+            body = ReadAll(rc) or {
+                writeSrError(w, 400, 40000, "failed to read body")
+                return
+            }
         }
-        r.Body.Close()
         var schemaJson = extractSchemaField(string(body))
         if (schemaJson == "") {
             writeSrError(w, 422, 42201, "request body missing 'schema' string field")

@@ -91,18 +91,12 @@ pub (byte[], error) writeOcf(List<GenericRecord> records, core.Schema schema, St
     }
 
     var buf = new bytes.Buffer
-    var enc = hambaOcf.NewEncoder(schemaJson, buf, hambaOcf.WithCodec(hambaOcf.CodecName(codec))) or {
-        return byte[0], err
-    }
-
-    for (rec in records) {
-        enc.Encode(coerceForSchema(rec, schema)) or {
-            enc.Close()
-            return byte[0], err
+    using (var enc = hambaOcf.NewEncoder(schemaJson, buf, hambaOcf.WithCodec(hambaOcf.CodecName(codec))) or { return byte[0], err }) {
+        for (rec in records) {
+            enc.Encode(coerceForSchema(rec, schema)) or {
+                return byte[0], err
+            }
         }
-    }
-    enc.Close() or {
-        return byte[0], err
     }
     return buf.Bytes(), null
 }

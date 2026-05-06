@@ -97,9 +97,12 @@ class PutHTTP : ProcessorFn {
                 break
             }
 
-            // Always drain + close to free the connection for reuse.
-            io.Copy(io.Discard, resp.Body)
-            resp.Body.Close()
+            // Drain + close (via using) so the connection can return to
+            // the keep-alive pool. Closing without draining would force
+            // the transport to abandon and reopen the next request.
+            using (var body = resp.Body) {
+                io.Copy(io.Discard, body)
+            }
 
             lastStatus = resp.StatusCode
             if (resp.StatusCode >= 200 && resp.StatusCode < 300) {

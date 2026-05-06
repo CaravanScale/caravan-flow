@@ -28,10 +28,12 @@ pub DeliveryResult deliverJson(String endpoint, FlowFile ff, ContentStore store)
     var resp = Post(endpoint, "application/json", NewBuffer(payload)) or {
         return DeliveryResult(false, 0, byte[0], "http error")
     }
-    var respBody = ReadAll(resp.Body) or {
-        return DeliveryResult(false, resp.StatusCode, byte[0], "read error")
+    var respBody = byte[0]
+    using (var body = resp.Body) {
+        respBody = ReadAll(body) or {
+            return DeliveryResult(false, resp.StatusCode, byte[0], "read error")
+        }
     }
-    resp.Body.Close()
 
     if (resp.StatusCode == 429) {
         return DeliveryResult(false, 429, byte[0], "backpressure")
@@ -55,10 +57,12 @@ pub DeliveryResult deliverV3(String endpoint, FlowFile ff, ContentStore store) {
     var resp = Post(endpoint, "application/octet-stream", NewBuffer(packed)) or {
         return DeliveryResult(false, 0, byte[0], "http error")
     }
-    var respBody = ReadAll(resp.Body) or {
-        return DeliveryResult(false, resp.StatusCode, byte[0], "read error")
+    var respBody = byte[0]
+    using (var body = resp.Body) {
+        respBody = ReadAll(body) or {
+            return DeliveryResult(false, resp.StatusCode, byte[0], "read error")
+        }
     }
-    resp.Body.Close()
 
     if (resp.StatusCode == 429) {
         return DeliveryResult(false, 429, byte[0], "backpressure")

@@ -20,17 +20,17 @@ bool gitAvailable() {
     return err
 }
 
-// makeRepo creates an isolated temp repo with one initial commit.
-// Temp dir leaks under /tmp on test exit; the OS cleans /tmp eventually.
-(String, error) makeRepo() {
-    var dir = os.MkdirTemp("", "zinc-vc-test-") or { return "", err }
-    runGit(dir, List<String>["init", "--initial-branch=main", "--quiet"]) or { return "", err }
-    runGit(dir, List<String>["config", "user.email", "test@example.com"]) or { return "", err }
-    runGit(dir, List<String>["config", "user.name", "Zinc Test"]) or { return "", err }
-    os.WriteFile(dir + "/README.md", "hello".toBytes(), 0o644) or { return "", err }
-    runGit(dir, List<String>["add", "README.md"]) or { return "", err }
-    runGit(dir, List<String>["commit", "-m", "initial", "--quiet"]) or { return "", err }
-    return dir, null
+// initRepo seeds dir with a fresh repo + one commit. dir is provided
+// by t.TempDir() so the test framework handles cleanup — no os.MkdirTemp
+// here, no need to defer/RemoveAll. Same pattern Go's stdlib tests use.
+(error) initRepo(String dir) {
+    runGit(dir, List<String>["init", "--initial-branch=main", "--quiet"]) or { return err }
+    runGit(dir, List<String>["config", "user.email", "test@example.com"]) or { return err }
+    runGit(dir, List<String>["config", "user.name", "Zinc Test"]) or { return err }
+    os.WriteFile(dir + "/README.md", "hello".toBytes(), 0o644) or { return err }
+    runGit(dir, List<String>["add", "README.md"]) or { return err }
+    runGit(dir, List<String>["commit", "-m", "initial", "--quiet"]) or { return err }
+    return null
 }
 
 test "VersionControlProvider — disabled provider reports provider disabled" {
@@ -43,7 +43,8 @@ test "VersionControlProvider — disabled provider reports provider disabled" {
 
 test "VersionControlProvider — enabled provider reports clean status on a fresh repo" {
     if (!gitAvailable()) { t.Skip("git not available"); return }
-    var dir = makeRepo() or { t.Fatalf("setup: %v", err); return }
+    var dir = t.TempDir()
+    initRepo(dir) or { t.Fatalf("setup: %v", err); return }
     var vc = VersionControlProvider(dir, "git", "origin", "main")
     vc.enable()
     var status = vc.getStatus()
@@ -54,7 +55,8 @@ test "VersionControlProvider — enabled provider reports clean status on a fres
 
 test "VersionControlProvider — dirty working tree reports clean=false" {
     if (!gitAvailable()) { t.Skip("git not available"); return }
-    var dir = makeRepo() or { t.Fatalf("setup: %v", err); return }
+    var dir = t.TempDir()
+    initRepo(dir) or { t.Fatalf("setup: %v", err); return }
     os.WriteFile(dir + "/extra.txt", "untracked".toBytes(), 0o644)
 
     var vc = VersionControlProvider(dir, "git", "origin", "main")
@@ -65,7 +67,8 @@ test "VersionControlProvider — dirty working tree reports clean=false" {
 
 test "VersionControlProvider — commit with empty message returns error" {
     if (!gitAvailable()) { t.Skip("git not available"); return }
-    var dir = makeRepo() or { t.Fatalf("setup: %v", err); return }
+    var dir = t.TempDir()
+    initRepo(dir) or { t.Fatalf("setup: %v", err); return }
     var vc = VersionControlProvider(dir, "git", "origin", "main")
     vc.enable()
     var res = vc.commit("", "")
@@ -75,7 +78,8 @@ test "VersionControlProvider — commit with empty message returns error" {
 
 test "VersionControlProvider — commit succeeds, status reverts to clean" {
     if (!gitAvailable()) { t.Skip("git not available"); return }
-    var dir = makeRepo() or { t.Fatalf("setup: %v", err); return }
+    var dir = t.TempDir()
+    initRepo(dir) or { t.Fatalf("setup: %v", err); return }
     os.WriteFile(dir + "/note.txt", "hello".toBytes(), 0o644)
 
     var vc = VersionControlProvider(dir, "git", "origin", "main")
