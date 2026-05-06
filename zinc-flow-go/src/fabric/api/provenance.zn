@@ -31,6 +31,43 @@ class ProvenanceApiHandler {
         var ffId = r.PathValue("id")
         writeJson(w, eventsToJson(provenance.getEvents(ffId)))
     }
+
+    // GET /api/provenance/failures — last N FAILED events, where N
+    // defaults to 50 (override via ?n=). Scans a 20× window of the
+    // recent ring so a low N still finds failures even when the
+    // success:failure ratio is skewed (typical operational case).
+    // Mirrors csharp ApiHandler.ProvenanceFailures.
+    pub void failuresHandler(ResponseWriter w, Request r) {
+        var n = 50
+        var nStr = r.URL.Query().Get("n")
+        if (nStr != "") {
+            n = strconv.Atoi(nStr) or {
+                w.WriteHeader(400)
+                w.Write(('{"error":"query param n is not an integer: ' + nStr + '"}').toBytes())
+                return
+            }
+        }
+        var window = n * 20
+        if (window < 500) { window = 500 }
+
+        var out = List<Map<String, Object>>[]
+        for (e in provenance.getRecent(window)) {
+            match (e.eventType) {
+                case PROV_FAILED {
+                    var entry = Map<String, Object>{}
+                    entry["flowFileId"] = e.flowFileId
+                    entry["eventType"] = "Failed"
+                    entry["component"] = e.component
+                    entry["details"] = e.details
+                    entry["timestamp"] = e.timestamp
+                    out = append(out, entry)
+                    if (len(out) >= n) { break }
+                }
+                case _ {}
+            }
+        }
+        writeJson(w, out)
+    }
 }
 
 // eventsToJson — produces the dashboard's expected event-shape array.

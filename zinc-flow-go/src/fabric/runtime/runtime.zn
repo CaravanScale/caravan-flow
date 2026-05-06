@@ -63,6 +63,14 @@ class Fabric {
     // mutate the map structure; never during the actual increment.
     var counters = Map<String, ProcCounter>{}
 
+    // edgeCounters — per-(from, relationship, to) FlowFile delivery
+    // counts. Keyed "from|rel|to" matching csharp's GetEdgeCounts
+    // shape (the dashboard normalizes the delimiter on the client
+    // side). Bumped from pushDownstream every time a target receives
+    // a FlowFile. Read-only API path; no atomic guarantees needed
+    // beyond the lock the rest of the runtime already holds.
+    var edgeCounters = Map<String, long>{}
+
     // Config-time defs, for introspection. Kept alongside the graph so
     // API handlers can report "what was this processor configured as?"
     var processorDefs = Map<String, ProcessorDef>{}
@@ -305,11 +313,42 @@ class Fabric {
         }
         var i = len(targets) - 1
         while (i >= 1) {
+            bumpEdgeCount(fromProcessor, relationship, targets[i])
             work = append(work, WorkItem(cloneFlowFile(ff), targets[i], hops))
             i = i - 1
         }
+        bumpEdgeCount(fromProcessor, relationship, targets[0])
         work = append(work, WorkItem(ff, targets[0], hops))
         return work
+    }
+
+    // bumpEdgeCount increments the per-edge delivery counter for the
+    // (from, rel, to) triple. countersMu guards both proc counters and
+    // the edge counters; same lock keeps the API read path consistent
+    // with the runtime write path.
+    void bumpEdgeCount(String fromProc, String rel, String to) {
+        var key = fromProc + "|" + rel + "|" + to
+        lock (countersMu) {
+            if (edgeCounters.containsKey(key)) {
+                edgeCounters[key] = edgeCounters[key] + long(1)
+            } else {
+                edgeCounters[key] = long(1)
+            }
+        }
+    }
+
+    // getEdgeCounts returns a snapshot of the per-edge delivery
+    // counters keyed "from|rel|to". The map is copied under
+    // countersMu so callers can iterate without coordinating with
+    // concurrent runtime writes.
+    pub Map<String, long> getEdgeCounts() {
+        var out = Map<String, long>{}
+        lock (countersMu) {
+            for (k, v in edgeCounters) {
+                out[k] = v
+            }
+        }
+        return out
     }
 
     // incProcCount bumps the success counter for `name`. The map lookup is
@@ -366,6 +405,22 @@ class Fabric {
         sources[name].stop()
         logging.info("source stopped", "name", name)
         return true
+    }
+
+    // resetProcessorStats zeroes the hits + errors atomics for `name`.
+    // Returns false when the processor isn't registered. Mirrors csharp
+    // Fabric.ResetProcessorStats. The counter value-type entries stay
+    // in the map; we just store fresh zero atomics.
+    pub bool resetProcessorStats(String name) {
+        var ok = false
+        lock (countersMu) {
+            if (counters.containsKey(name)) {
+                counters[name].hits.Store(long(0))
+                counters[name].errors.Store(long(0))
+                ok = true
+            }
+        }
+        return ok
     }
 
     // getSources returns (name, type, running) triples for every

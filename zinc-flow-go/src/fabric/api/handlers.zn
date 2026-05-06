@@ -57,6 +57,42 @@ class ApiHandler {
         writeJson(w, flow)
     }
 
+    // GET /api/edge-stats — per-(from, rel, to) FlowFile delivery
+    // counts. Keyed "from|rel|to" matching csharp ApiHandler.EdgeStats;
+    // the dashboard normalizes the delimiter on the React Flow side.
+    // Used by the live-motion edge animation in the UI.
+    pub void edgeStatsHandler(ResponseWriter w, Request r) {
+        var counts = fab.getEdgeCounts()
+        var out = Map<String, Object>{}
+        for (k, v in counts) {
+            var entry = Map<String, Object>{}
+            entry["processed"] = v
+            out[k] = entry
+        }
+        writeJson(w, out)
+    }
+
+    // POST /api/processors/{name}/stats/reset — zero a processor's
+    // hits + errors counters. Returns 404 if the processor is unknown.
+    // Mirrors csharp Fabric.ResetProcessorStats / ApiHandler.
+    pub void resetProcessorStatsHandler(ResponseWriter w, Request r) {
+        var name = r.PathValue("name")
+        if (name == "") {
+            w.WriteHeader(400)
+            w.Write('{"error":"name required"}'.toBytes())
+            return
+        }
+        if (!fab.resetProcessorStats(name)) {
+            w.WriteHeader(404)
+            w.Write(('{"error":"processor not found: ' + name + '"}').toBytes())
+            return
+        }
+        var out = Map<String, Object>{}
+        out["status"] = "reset"
+        out["name"] = name
+        writeJson(w, out)
+    }
+
     // GET /readyz — k8s-style readiness probe. Ready iff the graph
     // is loaded (≥1 processor) AND every registered source is
     // actually running. Returns 503 + the same JSON body when not

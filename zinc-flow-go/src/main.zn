@@ -186,7 +186,10 @@ void main() {
     // Provenance — bounded ring of FlowFile lifecycle events.
     var provApi = ProvenanceApiHandler(provenance)
     HandleFunc("GET /api/provenance", provApi.recentHandler)
+    HandleFunc("GET /api/provenance/failures", provApi.failuresHandler)
     HandleFunc("GET /api/provenance/{id}", provApi.byIdHandler)
+    HandleFunc("POST /api/processors/{name}/stats/reset", api.resetProcessorStatsHandler)
+    HandleFunc("GET /api/edge-stats", api.edgeStatsHandler)
 
     // VersionControl — git-status / commit / push proxies.
     var vcApi = VcApiHandler(vc)

@@ -70,6 +70,43 @@ test "GET /api/provenance/{id} filters to one FlowFile" {
     asserts.equalInt(t, len(got), 2)
 }
 
+test "GET /api/provenance/failures — filters to FAILED only" {
+    var prov = ProvenanceProvider(50)
+    prov.enable()
+    prov.record("ff-1", PROV_CREATED, "src", "")
+    prov.record("ff-2", PROV_FAILED, "sink", "boom")
+    prov.record("ff-3", PROV_PROCESSED, "tag", "")
+    prov.record("ff-4", PROV_FAILED, "router", "bad route")
+
+    var h = api.ProvenanceApiHandler(prov)
+    var req = httptest.NewRequest("GET", "/api/provenance/failures", null)
+    var w = httptest.NewRecorder()
+    h.failuresHandler(w, req)
+
+    asserts.equalInt(t, w.Code, 200)
+    var got = List<Map<String, Object>>[]
+    json.Unmarshal(w.Body.Bytes(), &got) or { t.Errorf("decode: %v", err); return }
+    asserts.equalInt(t, len(got), 2)
+    asserts.equalString(t, got[0]["eventType"] as String or { "" }, "Failed")
+}
+
+test "GET /api/provenance/failures honors n query param" {
+    var prov = ProvenanceProvider(50)
+    prov.enable()
+    var i = 0
+    while (i < 10) {
+        prov.record("ff-${str(i)}", PROV_FAILED, "x", "")
+        i = i + 1
+    }
+    var h = api.ProvenanceApiHandler(prov)
+    var req = httptest.NewRequest("GET", "/api/provenance/failures?n=3", null)
+    var w = httptest.NewRecorder()
+    h.failuresHandler(w, req)
+    var got = List<Map<String, Object>>[]
+    json.Unmarshal(w.Body.Bytes(), &got) or { t.Errorf("decode: %v", err); return }
+    asserts.equalInt(t, len(got), 3)
+}
+
 // --- VersionControl ---
 
 test "GET /api/vc/status — disabled provider" {
@@ -113,6 +150,46 @@ test "POST /api/sources/start — unknown name returns 404" {
     h.startHandler(w, req)
 
     asserts.equalInt(t, w.Code, 404)
+}
+
+test "POST /api/processors/{name}/stats/reset — unknown name 404" {
+    var reg = Registry()
+    processors.registerBuiltins(reg)
+    var fab = Fabric(reg, ProcessorContext())
+    var apiH = api.ApiHandler(fab)
+
+    var req = httptest.NewRequest("POST", "/api/processors/ghost/stats/reset", null)
+    req.SetPathValue("name", "ghost")
+    var w = httptest.NewRecorder()
+    apiH.resetProcessorStatsHandler(w, req)
+    asserts.equalInt(t, w.Code, 404)
+}
+
+test "POST /api/processors/{name}/stats/reset — missing name 400" {
+    var reg = Registry()
+    processors.registerBuiltins(reg)
+    var fab = Fabric(reg, ProcessorContext())
+    var apiH = api.ApiHandler(fab)
+
+    var req = httptest.NewRequest("POST", "/api/processors//stats/reset", null)
+    req.SetPathValue("name", "")
+    var w = httptest.NewRecorder()
+    apiH.resetProcessorStatsHandler(w, req)
+    asserts.equalInt(t, w.Code, 400)
+}
+
+test "GET /api/edge-stats — empty fabric returns empty map" {
+    var reg = Registry()
+    processors.registerBuiltins(reg)
+    var fab = Fabric(reg, ProcessorContext())
+    var apiH = api.ApiHandler(fab)
+
+    var req = httptest.NewRequest("GET", "/api/edge-stats", null)
+    var w = httptest.NewRecorder()
+    apiH.edgeStatsHandler(w, req)
+    var got = Map<String, Object>{}
+    json.Unmarshal(w.Body.Bytes(), &got) or { t.Errorf("decode: %v", err); return }
+    asserts.equalInt(t, len(got), 0)
 }
 
 test "POST /api/sources/start — missing name returns 400" {
