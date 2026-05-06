@@ -17,6 +17,50 @@ import syscall
 import time
 import net/http
 
+// loadSources walks the `sources:` config block and instantiates each
+// entry via the registry, registering with the fabric. Mirrors csharp
+// Program.cs:184. A factory returning null source + null error is
+// "skip this instance" (e.g. required key missing); a non-null error
+// is logged. Called once at startup before fab.startAsync.
+void loadSources(config.Config cfg, SourceRegistry sreg, Fabric fab, ContentStore store) {
+    if (!cfg.has("sources")) { return }
+    for (sourceName in cfg.getSubKeys("sources")) {
+        var typeKey = "sources." + sourceName + ".type"
+        if (!cfg.has(typeKey)) {
+            logging.warn("source missing 'type' key", "name", sourceName)
+            continue
+        }
+        var typeName = cfg.getString(typeKey)
+        if (!sreg.has(typeName)) {
+            logging.warn("unknown source type", "name", sourceName, "type", typeName)
+            continue
+        }
+        // Flatten config.<name>.* into a Map<String, String>. The csharp
+        // shape is sources.<name>.config.<k>: <v>; carrying that through
+        // viper means iterating sub-keys of the config sub-map.
+        var instCfg = Map<String, String>{}
+        var configBase = "sources." + sourceName + ".config"
+        if (cfg.has(configBase)) {
+            for (k in cfg.getSubKeys(configBase)) {
+                instCfg[k] = cfg.getString(configBase + "." + k)
+            }
+        }
+        var src, err = sreg.create(typeName, sourceName, instCfg, store)
+        if (err != null) {
+            logging.error("source factory failed",
+                "name", sourceName, "type", typeName, "err", err.Error())
+            continue
+        }
+        if (src == null) {
+            logging.info("source skipped — factory returned null",
+                "name", sourceName, "type", typeName)
+            continue
+        }
+        fab.addSource(src)
+        logging.info("source registered", "name", sourceName, "type", typeName)
+    }
+}
+
 void main() {
     // Load config
     var cfg = config.Config()
@@ -84,9 +128,18 @@ void main() {
     registerBuiltins(reg)
     logging.info("registry loaded", "processors", len(reg.list()))
 
+    // Source registry — config-driven `sources:` block. Mirrors the
+    // processor registry shape; each named entry under sources: maps
+    // to a SourceFactory that builds a ConnectorSource bound to the
+    // shared content store.
+    var sreg = SourceRegistry()
+    registerBuiltinSources(sreg)
+    logging.info("source registry loaded", "types", len(sreg.list()))
+
     // Create fabric and load flow graph from config
     var fab = Fabric(reg, globalCtx)
     fab.loadFlow(cfg)
+    loadSources(cfg, sreg, fab, store)
     fab.startAsync()
     fab.status()
 

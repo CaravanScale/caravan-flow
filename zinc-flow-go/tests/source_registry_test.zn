@@ -1,0 +1,85 @@
+// SourceRegistry — registers source factories and instantiates
+// configured sources. Mirrors the ProcessorRegistry test shape, plus
+// the factory's null-source-on-empty-config "skip" semantics.
+
+import core
+import fabric/registry
+import fabric/source
+import stdlib/asserts
+
+test "SourceRegistry — register + has + getInfo" {
+    var reg = SourceRegistry()
+    source.registerBuiltinSources(reg)
+
+    asserts.isTrue(t, reg.has("GenerateFlowFile"), "GenerateFlowFile registered")
+    asserts.isTrue(t, reg.has("GetFile"), "GetFile registered")
+    asserts.isTrue(t, !reg.has("nope"), "unknown type → false")
+
+    var info, ok = reg.getInfo("GenerateFlowFile")
+    asserts.isTrue(t, ok, "getInfo found")
+    asserts.equalString(t, info.typeName, "GenerateFlowFile")
+}
+
+test "SourceRegistry — list returns all registered" {
+    var reg = SourceRegistry()
+    source.registerBuiltinSources(reg)
+    var infos = reg.list()
+    asserts.equalInt(t, len(infos), 2)
+}
+
+test "SourceRegistry — GenerateFlowFile factory builds source from config" {
+    var reg = SourceRegistry()
+    source.registerBuiltinSources(reg)
+
+    var cfg = Map<String, String>{}
+    cfg["content"] = "heartbeat"
+    cfg["pollIntervalMs"] = "500"
+    var store = MemoryContentStore()
+
+    var src, err = reg.create("GenerateFlowFile", "hb", cfg, store)
+    asserts.isTrue(t, err == null, "factory ok")
+    if (src == null) { t.Errorf("expected source, got null"); return }
+    asserts.equalString(t, src.getName(), "hb")
+    asserts.equalString(t, src.getSourceType(), "GenerateFlowFile")
+}
+
+test "SourceRegistry — GenerateFlowFile factory returns null when content missing" {
+    var reg = SourceRegistry()
+    source.registerBuiltinSources(reg)
+
+    var cfg = Map<String, String>{}
+    cfg["pollIntervalMs"] = "500"
+    var store = MemoryContentStore()
+
+    var src, err = reg.create("GenerateFlowFile", "hb", cfg, store)
+    asserts.isTrue(t, err == null, "factory error must be null on skip")
+    asserts.isTrue(t, src == null, "factory must return null source on missing required key")
+}
+
+test "SourceRegistry — GetFile factory returns null when inputDir missing" {
+    var reg = SourceRegistry()
+    source.registerBuiltinSources(reg)
+
+    var cfg = Map<String, String>{}
+    var store = MemoryContentStore()
+
+    var src, err = reg.create("GetFile", "watch", cfg, store)
+    asserts.isTrue(t, err == null, "factory error must be null on skip")
+    asserts.isTrue(t, src == null, "factory must return null source on missing inputDir")
+}
+
+test "SourceRegistry — GetFile factory builds source from config" {
+    var reg = SourceRegistry()
+    source.registerBuiltinSources(reg)
+
+    var cfg = Map<String, String>{}
+    cfg["inputDir"] = t.TempDir()
+    cfg["pattern"] = "*.json"
+    var store = MemoryContentStore()
+
+    var src, err = reg.create("GetFile", "watch", cfg, store)
+    asserts.isTrue(t, err == null, "factory ok")
+    if (src == null) { t.Errorf("expected source, got null"); return }
+    asserts.equalString(t, src.getName(), "watch")
+    asserts.equalString(t, src.getSourceType(), "GetFile")
+}

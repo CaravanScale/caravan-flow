@@ -1,0 +1,70 @@
+// Source Registry — maps source-type names to factory functions.
+// Mirrors processor Registry / ProcessorInfo so main.zn can iterate
+// the `sources:` config block generically rather than hardcoding one
+// constructor call per type. Same lifecycle role as csharp's
+// SourceRegistry (Fabric/SourceRegistry.cs).
+//
+// A factory returns a null ConnectorSource? to signal "this instance
+// is not configured" — the loader skips it without raising. Mirrors
+// csharp's `return null` convention so a half-filled config (e.g. a
+// GetFile entry without inputDir) doesn't crash startup.
+
+import core
+
+// SourceFactory builds a ConnectorSource? from a name + flat config +
+// content store. Failable (`error` tail) so factories can surface bad
+// config without panicking. A `null, null` return means "skip" —
+// distinct from a non-nil error.
+type SourceFactory = Fn<(String, Map<String, String>, ContentStore), (ConnectorSource, error)>
+
+// SourceInfo describes a registered source type. Mirrors ProcessorInfo;
+// configKeys is the flat list a UI can render for an instance form.
+data SourceInfo(
+    String typeName,
+    String description,
+    List<String> configKeys
+)
+
+// SourceRegistry — factory map indexed by source type name. Multiple
+// instances per type are allowed (caller passes a unique `name` to
+// each Create), since the fabric stores sources by instance name.
+class SourceRegistry {
+    var factories = Map<String, SourceFactory>{}
+    var info = Map<String, SourceInfo>{}
+
+    init() {}
+
+    pub void register(SourceInfo sinfo, SourceFactory factory) {
+        factories[sinfo.typeName] = factory
+        info[sinfo.typeName] = sinfo
+    }
+
+    // create instantiates a source by type name. Returns
+    // (ConnectorSource, error) — a null source with null error means
+    // "factory said skip" (e.g., required config missing). A non-null
+    // error means a hard config problem the loader should surface.
+    pub (ConnectorSource, error) create(String typeName, String name,
+        Map<String, String> config, ContentStore store) {
+        var factory = factories[typeName]
+        return factory(name, config, store)
+    }
+
+    pub bool has(String typeName) {
+        return factories.containsKey(typeName)
+    }
+
+    pub List<SourceInfo> list() {
+        var result = List<SourceInfo>[]
+        for (n in info.keys()) {
+            result = append(result, info[n])
+        }
+        return result
+    }
+
+    pub (SourceInfo, bool) getInfo(String typeName) {
+        if (info.containsKey(typeName)) {
+            return info[typeName], true
+        }
+        return SourceInfo("", "", List<String>[]), false
+    }
+}

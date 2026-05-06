@@ -1,0 +1,62 @@
+// Builtin source registrations. Mirrors csharp BuiltinSources.RegisterAll
+// (Fabric/Sources.cs:35). Each factory returns null when its required
+// config keys are absent so an operator can leave a `sources:` entry
+// stubbed without breaking startup.
+
+import core
+import fabric/registry
+import strconv
+
+pub void registerBuiltinSources(SourceRegistry reg) {
+    reg.register(
+        SourceInfo("GenerateFlowFile",
+            "Timer-driven FlowFile generator for heartbeats and load tests.",
+            List<String>["content", "contentType", "attributes", "batchSize", "pollIntervalMs"]),
+        GenerateFlowFileFactory)
+
+    reg.register(
+        SourceInfo("GetFile",
+            "Polls a directory; emits one FlowFile per file landing in it.",
+            List<String>["inputDir", "pattern", "moveSubdir"]),
+        GetFileFactory)
+}
+
+(ConnectorSource, error) GenerateFlowFileFactory(String name, Map<String, String> config, ContentStore store) {
+    var content = ""
+    if (config.containsKey("content")) { content = config["content"] }
+    if (content == "") {
+        // Required-key omission: factory returns null source + null
+        // error so the loader skips this instance (parity with csharp).
+        return null, null
+    }
+    var contentType = ""
+    if (config.containsKey("contentType")) { contentType = config["contentType"] }
+    var attrs = ""
+    if (config.containsKey("attributes")) { attrs = config["attributes"] }
+    var batchSize = 1
+    if (config.containsKey("batchSize") && config["batchSize"] != "") {
+        batchSize = strconv.Atoi(config["batchSize"]) or { 1 }
+    }
+    var pollMs = 1000
+    if (config.containsKey("pollIntervalMs") && config["pollIntervalMs"] != "") {
+        pollMs = strconv.Atoi(config["pollIntervalMs"]) or { 1000 }
+    }
+    return GenerateFlowFile(name, pollMs, content, contentType, attrs, batchSize), null
+}
+
+(ConnectorSource, error) GetFileFactory(String name, Map<String, String> config, ContentStore store) {
+    var dir = ""
+    if (config.containsKey("inputDir")) { dir = config["inputDir"] }
+    if (dir == "") {
+        return null, null
+    }
+    var pattern = "*"
+    if (config.containsKey("pattern") && config["pattern"] != "") {
+        pattern = config["pattern"]
+    }
+    var moveSubdir = ".processed"
+    if (config.containsKey("moveSubdir") && config["moveSubdir"] != "") {
+        moveSubdir = config["moveSubdir"]
+    }
+    return GetFile(name, dir, moveSubdir, pattern), null
+}
