@@ -1,0 +1,95 @@
+// VersionControlProvider — git-wrapping provider. Tests use a real
+// `git` binary against a temporary repo, since the provider's whole
+// surface is shelling out. Skipped when git isn't on PATH.
+
+import core
+import stdlib/asserts
+import os
+import os/exec
+
+bool gitAvailable() {
+    var _, err = exec.LookPath("git")
+    return err == null
+}
+
+// runGit runs a git subcommand inside dir.
+(error) runGit(String dir, List<String> args) {
+    var cmd = exec.Command("git", args...)
+    cmd.Dir = dir
+    var _, err = cmd.CombinedOutput()
+    return err
+}
+
+// makeRepo creates an isolated temp repo with one initial commit.
+// Temp dir leaks under /tmp on test exit; the OS cleans /tmp eventually.
+(String, error) makeRepo() {
+    var dir = os.MkdirTemp("", "zinc-vc-test-") or { return "", err }
+    runGit(dir, List<String>["init", "--initial-branch=main", "--quiet"]) or { return "", err }
+    runGit(dir, List<String>["config", "user.email", "test@example.com"]) or { return "", err }
+    runGit(dir, List<String>["config", "user.name", "Zinc Test"]) or { return "", err }
+    os.WriteFile(dir + "/README.md", "hello".toBytes(), 0o644) or { return "", err }
+    runGit(dir, List<String>["add", "README.md"]) or { return "", err }
+    runGit(dir, List<String>["commit", "-m", "initial", "--quiet"]) or { return "", err }
+    return dir, null
+}
+
+test "VersionControlProvider — disabled provider reports provider disabled" {
+    var vc = VersionControlProvider("/tmp", "git", "origin", "main")
+    asserts.isTrue(t, !vc.isEnabled(), "starts disabled")
+    var status = vc.getStatus()
+    asserts.isTrue(t, !status.enabled, "status reflects disabled")
+    asserts.equalString(t, status.errorMsg, "provider disabled")
+}
+
+test "VersionControlProvider — enabled provider reports clean status on a fresh repo" {
+    if (!gitAvailable()) { t.Skip("git not available"); return }
+    var dir = makeRepo() or { t.Fatalf("setup: %v", err); return }
+    var vc = VersionControlProvider(dir, "git", "origin", "main")
+    vc.enable()
+    var status = vc.getStatus()
+    asserts.isTrue(t, status.enabled, "enabled")
+    asserts.isTrue(t, status.clean, "fresh-commit repo is clean")
+    asserts.equalString(t, status.branch, "main")
+}
+
+test "VersionControlProvider — dirty working tree reports clean=false" {
+    if (!gitAvailable()) { t.Skip("git not available"); return }
+    var dir = makeRepo() or { t.Fatalf("setup: %v", err); return }
+    os.WriteFile(dir + "/extra.txt", "untracked".toBytes(), 0o644)
+
+    var vc = VersionControlProvider(dir, "git", "origin", "main")
+    vc.enable()
+    var status = vc.getStatus()
+    asserts.isTrue(t, !status.clean, "untracked file → not clean")
+}
+
+test "VersionControlProvider — commit with empty message returns error" {
+    if (!gitAvailable()) { t.Skip("git not available"); return }
+    var dir = makeRepo() or { t.Fatalf("setup: %v", err); return }
+    var vc = VersionControlProvider(dir, "git", "origin", "main")
+    vc.enable()
+    var res = vc.commit("", "")
+    asserts.isTrue(t, !res.ok, "empty message rejected")
+    asserts.equalString(t, res.stderr, "commit message must not be blank")
+}
+
+test "VersionControlProvider — commit succeeds, status reverts to clean" {
+    if (!gitAvailable()) { t.Skip("git not available"); return }
+    var dir = makeRepo() or { t.Fatalf("setup: %v", err); return }
+    os.WriteFile(dir + "/note.txt", "hello".toBytes(), 0o644)
+
+    var vc = VersionControlProvider(dir, "git", "origin", "main")
+    vc.enable()
+    asserts.isTrue(t, !vc.getStatus().clean, "pre-commit dirty")
+    var res = vc.commit("note.txt", "add note")
+    asserts.isTrue(t, res.ok, "commit ok: ${res.stderr}")
+    asserts.isTrue(t, vc.getStatus().clean, "post-commit clean")
+}
+
+test "VersionControlProvider — defaults fill in for empty constructor args" {
+    var vc = VersionControlProvider("", "", "", "")
+    asserts.equalString(t, vc.repo, ".")
+    asserts.equalString(t, vc.gitBinary, "git")
+    asserts.equalString(t, vc.remote, "origin")
+    asserts.equalString(t, vc.branch, "main")
+}

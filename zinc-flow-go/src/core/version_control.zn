@@ -1,0 +1,129 @@
+// VersionControlProvider — wraps `git` against a configured working
+// tree. Backs the dashboard's GET /api/vc/status endpoint plus the
+// commit/push management actions a UI uses to publish flow-config
+// changes back to a repo.
+//
+// Mirrors csharp VersionControlProvider (Providers.cs:355).
+
+import os/exec
+import strconv
+import strings
+
+// CommandResult — outcome of one subprocess call. Stable shape across
+// the three exposed methods (run, commit, push) so callers don't need
+// per-method error decoding.
+data CommandResult(bool ok, int exitCode, String stdout, String stderr)
+
+// VcStatus — public shape of GET /api/vc/status.
+data VcStatus(bool enabled, bool clean, int ahead, int behind, String branch, String errorMsg)
+
+class VersionControlProvider : Provider {
+    String providerName
+    ComponentState state
+    pub String repo
+    pub String gitBinary
+    pub String remote
+    pub String branch
+
+    init(String repo, String gitBinary, String remote, String branch) {
+        this.providerName = "version_control"
+        this.state = DISABLED
+        this.repo = repo
+        if (repo == "") {
+            this.repo = "."
+        }
+        this.gitBinary = gitBinary
+        if (gitBinary == "") {
+            this.gitBinary = "git"
+        }
+        this.remote = remote
+        if (remote == "") {
+            this.remote = "origin"
+        }
+        this.branch = branch
+        if (branch == "") {
+            this.branch = "main"
+        }
+    }
+
+    pub String getName() { return providerName }
+    pub String getType() { return "VersionControlProvider" }
+    pub ComponentState getState() { return state }
+    pub void enable() { state = ENABLED }
+    pub void disable(int drainTimeoutSeconds) { state = DISABLED }
+    pub void shutdown() { state = DISABLED }
+    pub bool isEnabled() { return state == ENABLED }
+
+    // run executes an arbitrary command in the configured working tree
+    // and returns the combined stdout/stderr as a CommandResult.
+    pub CommandResult run(List<String> command) {
+        if (len(command) == 0) {
+            return CommandResult(false, -1, "", "empty command")
+        }
+        var cmd = exec.Command(command[0], command[1:len(command)]...)
+        cmd.Dir = repo
+        var output = cmd.CombinedOutput() or {
+            return CommandResult(false, -1, "", err.Error())
+        }
+        return CommandResult(true, 0, string(output), "")
+    }
+
+    // getStatus runs the three git probes the dashboard needs:
+    // current branch, working-tree cleanliness, and ahead/behind counts
+    // relative to the remote tracking branch. Probe failures surface as
+    // a non-empty errorMsg rather than throwing — the API path needs a
+    // shape it can JSON-marshal even when git is broken.
+    pub VcStatus getStatus() {
+        if (!isEnabled()) {
+            return VcStatus(false, false, 0, 0, "", "provider disabled")
+        }
+        var branchRes = run(List<String>[gitBinary, "rev-parse", "--abbrev-ref", "HEAD"])
+        var currentBranch = branch
+        if (branchRes.ok) {
+            currentBranch = strings.TrimSpace(branchRes.stdout)
+        }
+
+        var dirty = run(List<String>[gitBinary, "status", "--porcelain"])
+        var clean = dirty.ok && strings.TrimSpace(dirty.stdout) == ""
+
+        var revList = run(List<String>[
+            gitBinary, "rev-list", "--left-right", "--count",
+            "HEAD..." + remote + "/" + currentBranch
+        ])
+        var ahead = 0
+        var behind = 0
+        if (revList.ok) {
+            var parts = strings.Fields(strings.TrimSpace(revList.stdout))
+            if (len(parts) >= 2) {
+                ahead = strconv.Atoi(parts[0]) or { 0 }
+                behind = strconv.Atoi(parts[1]) or { 0 }
+            }
+        }
+        return VcStatus(true, clean, ahead, behind, currentBranch, "")
+    }
+
+    // commit stages relPath (or `.`) and creates a commit with the
+    // given message. Empty message → error (matches csharp).
+    pub CommandResult commit(String relPath, String message) {
+        if (!isEnabled()) {
+            return CommandResult(false, -1, "", "provider disabled")
+        }
+        if (message == "") {
+            return CommandResult(false, -1, "", "commit message must not be blank")
+        }
+        var path = relPath
+        if (path == "") { path = "." }
+        var add = run(List<String>[gitBinary, "add", path])
+        if (!add.ok) { return add }
+        return run(List<String>[gitBinary, "commit", "-m", message])
+    }
+
+    // push pushes the configured branch to the configured remote.
+    pub CommandResult push() {
+        if (!isEnabled()) {
+            return CommandResult(false, -1, "", "provider disabled")
+        }
+        return run(List<String>[gitBinary, "push", remote, branch])
+    }
+}
+
