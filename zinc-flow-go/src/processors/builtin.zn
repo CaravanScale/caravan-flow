@@ -76,6 +76,11 @@ pub void registerBuiltins(Registry reg) {
         PutFileFactory
     )
     reg.register(
+        ProcessorInfo("PutHTTP", "POSTs FlowFile content to an HTTP endpoint with retries",
+            List<String>["endpoint", "format", "retries", "retryInitialDelayMs", "retryMaxDelayMs"]),
+        PutHTTPFactory
+    )
+    reg.register(
         ProcessorInfo("ConvertAvroToRecord", "Parses Avro binary content into a record",
             List<String>["schemaName", "fieldDefs"]),
         codec.ConvertAvroToRecordFactory

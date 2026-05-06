@@ -1,0 +1,137 @@
+// PutHTTP — verifies the success and 429-backpressure paths against a
+// real httptest server. Mirrors csharp's PutHTTP behavioral contract.
+
+import core
+import processors
+import stdlib/asserts
+import net/http
+import net/http/httptest
+import io
+
+class okHandler {
+    init() {}
+    pub void serve(http.ResponseWriter w, http.Request r) {
+        w.WriteHeader(200)
+    }
+}
+
+class rateLimitHandler {
+    init() {}
+    pub void serve(http.ResponseWriter w, http.Request r) {
+        w.WriteHeader(429)
+    }
+}
+
+class internalErrorHandler {
+    pub int callCount
+    init() { this.callCount = 0 }
+    pub void serve(http.ResponseWriter w, http.Request r) {
+        callCount = callCount + 1
+        w.WriteHeader(500)
+    }
+}
+
+test "PutHTTP — success path sets delivery.status and delivery.endpoint" {
+    var h = okHandler()
+    var server = httptest.NewServer(http.HandlerFunc(h.serve))
+    var endpoint = server.URL
+
+    var ff = createFlowFile("payload".toBytes(), Map<String, String>{})
+    var proc = processors.PutHTTP(endpoint, "raw", MemoryContentStore(), 0, 50, 100)
+    var result = proc.process(ff)
+
+    server.Close()
+
+    match (result) {
+        case Single(out) {
+            asserts.equalString(t, out.attributes["delivery.status"], "200")
+            asserts.equalString(t, out.attributes["delivery.endpoint"], endpoint)
+        }
+        case _ { t.Errorf("expected Single, got %v", result) }
+    }
+}
+
+// captureHandler exercises the multi-statement lambda fix: its
+// http.HandlerFunc closure does several things (record method,
+// record content-type, walk headers, drain body) before responding.
+test "PutHTTP — forwards user attrs as X-Flow-* and drops http.* attrs" {
+    var capturedMethod = ""
+    var capturedContentType = ""
+    var capturedFilename = ""
+    var capturedHasHttpHeader = false
+    var capturedBody = ""
+
+    var server = httptest.NewServer(http.HandlerFunc((http.ResponseWriter w, http.Request r) -> {
+        capturedMethod = r.Method
+        capturedContentType = r.Header.Get("Content-Type")
+        capturedFilename = r.Header.Get("X-Flow-filename")
+        if (r.Header.Get("X-Flow-content.type") != "") {
+            capturedHasHttpHeader = true
+        }
+        var b, _ = io.ReadAll(r.Body)
+        capturedBody = string(b)
+        w.WriteHeader(200)
+    }))
+    var endpoint = server.URL
+
+    var attrs = Map<String, String>{}
+    attrs["filename"] = "ord-1.bin"
+    attrs["http.content.type"] = "application/json"
+    var ff = createFlowFile('{"hello":"world"}'.toBytes(), attrs)
+    var proc = processors.PutHTTP(endpoint, "raw", MemoryContentStore(), 0, 50, 100)
+    var result = proc.process(ff)
+
+    server.Close()
+
+    match (result) {
+        case Single(_) {}
+        case _ { t.Errorf("expected Single, got %v", result) }
+    }
+
+    asserts.equalString(t, capturedMethod, "POST")
+    asserts.equalString(t, capturedContentType, "application/json")
+    asserts.equalString(t, capturedFilename, "ord-1.bin")
+    asserts.isTrue(t, !capturedHasHttpHeader, "http.* attrs must NOT forward as X-Flow-*")
+    asserts.equalString(t, capturedBody, '{"hello":"world"}')
+}
+
+test "PutHTTP — 429 yields Failure with backpressure prefix" {
+    var h = rateLimitHandler()
+    var server = httptest.NewServer(http.HandlerFunc(h.serve))
+    var endpoint = server.URL
+
+    var ff = createFlowFile("payload".toBytes(), Map<String, String>{})
+    var proc = processors.PutHTTP(endpoint, "raw", MemoryContentStore(), 0, 50, 100)
+    var result = proc.process(ff)
+
+    server.Close()
+
+    match (result) {
+        case Failure(msg, _) {
+            asserts.isTrue(t, len(msg) >= 12 && msg[0:12] == "backpressure",
+                "message must start with backpressure, got: ${msg}")
+        }
+        case _ { t.Errorf("expected Failure, got %v", result) }
+    }
+}
+
+test "PutHTTP — 5xx triggers retries before giving up" {
+    var h = internalErrorHandler()
+    var server = httptest.NewServer(http.HandlerFunc(h.serve))
+    var endpoint = server.URL
+
+    var ff = createFlowFile("payload".toBytes(), Map<String, String>{})
+    // retries=2 → up to 3 attempts (initial + 2 retries).
+    var proc = processors.PutHTTP(endpoint, "raw", MemoryContentStore(), 2, 10, 50)
+    var result = proc.process(ff)
+
+    server.Close()
+
+    match (result) {
+        case Failure(msg, _) {
+            asserts.equalInt(t, h.callCount, 3)
+            asserts.isTrue(t, len(msg) > 0, "non-empty failure message expected")
+        }
+        case _ { t.Errorf("expected Failure, got %v", result) }
+    }
+}

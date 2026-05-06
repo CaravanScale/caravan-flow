@@ -1,0 +1,168 @@
+// PutHTTP — POSTs FlowFile content to an external HTTP endpoint.
+//
+// Mirrors csharp ZincFlow.StdLib.PutHTTP (Processors.cs:216). Config:
+//   endpoint           — destination URL.
+//   format             — "v3" wraps as NiFi FlowFile V3 (sets
+//                        Content-Type to application/octet-stream); any
+//                        other value sends raw bytes with Content-Type
+//                        from the http.content.type attribute (default
+//                        application/octet-stream).
+//   retries            — 3xx/4xx-bad-but-not-429 are non-retryable;
+//                        429 + 5xx + network errors retry up to N times
+//                        with exponential backoff (default 3).
+//   retryInitialDelayMs — first backoff delay (default 200).
+//   retryMaxDelayMs    — backoff ceiling (default 5000).
+//
+// Attribute forwarding: every attribute whose key does NOT start with
+// "http." is sent as an X-Flow-<key> header (matching csharp). On 2xx
+// the FlowFile gets `delivery.status` and `delivery.endpoint` attrs and
+// is returned as Single(...). On terminal failure (post-retries) the
+// processor returns Failure(...) — for 429 the message is prefixed with
+// "backpressure: " so downstream rules can distinguish rate-limit from
+// generic 5xx.
+
+import core
+import fabric/registry
+import fabric/model
+import net/http
+import bytes
+import io
+import time
+import strings
+
+class PutHTTP : ProcessorFn {
+    String endpoint
+    String format
+    ContentStore store
+    int retries
+    int retryInitialDelayMs
+    int retryMaxDelayMs
+
+    init(String endpoint, String format, ContentStore store,
+         int retries, int retryInitialDelayMs, int retryMaxDelayMs) {
+        this.endpoint = endpoint
+        this.format = format
+        this.store = store
+        this.retries = retries
+        if (retries < 0) { this.retries = 0 }
+        this.retryInitialDelayMs = retryInitialDelayMs
+        if (retryInitialDelayMs <= 0) { this.retryInitialDelayMs = 200 }
+        this.retryMaxDelayMs = retryMaxDelayMs
+        if (retryMaxDelayMs <= 0) { this.retryMaxDelayMs = 5000 }
+    }
+
+    pub ProcessorResult process(FlowFile ff) {
+        var client = http.Client{Timeout: 30 * time.Second}
+
+        var resolved = resolve(store, ff.content)
+        if (resolved.errorMsg != "") {
+            return Failure(resolved.errorMsg, ff)
+        }
+
+        var data = resolved.data
+        var contentType = "application/octet-stream"
+        if (format == "v3") {
+            data = packFlowFile(ff, data)
+        } else {
+            if (ff.attributes.containsKey("http.content.type")) {
+                contentType = ff.attributes["http.content.type"]
+            }
+        }
+
+        var lastError = ""
+        var lastStatus = 0
+        var delayMs = retryInitialDelayMs
+        var attempt = 0
+        while (attempt <= retries) {
+            // Build a fresh request per attempt — http.Client.Do consumes
+            // the body Reader, so retries need a new one.
+            var req = NewRequest("POST", endpoint, NewBuffer(data)) or {
+                return Failure("delivery setup failed: ${err.Error()}", ff)
+            }
+            req.Header.Set("Content-Type", contentType)
+            for (k, v in ff.attributes) {
+                if (strings.HasPrefix(k, "http.")) { continue }
+                req.Header.Set("X-Flow-" + k, v)
+            }
+
+            var resp = client.Do(req) or {
+                lastError = "delivery failed: ${err.Error()}"
+                lastStatus = 0
+                if (attempt < retries) {
+                    time.Sleep(time.Duration(delayMs) * time.Millisecond)
+                    delayMs = nextDelay(delayMs, retryMaxDelayMs)
+                    attempt = attempt + 1
+                    continue
+                }
+                break
+            }
+
+            // Always drain + close to free the connection for reuse.
+            io.Copy(io.Discard, resp.Body)
+            resp.Body.Close()
+
+            lastStatus = resp.StatusCode
+            if (resp.StatusCode >= 200 && resp.StatusCode < 300) {
+                lastError = ""
+                break
+            }
+
+            lastError = "HTTP ${str(resp.StatusCode)}: ${resp.Status}"
+            if (resp.StatusCode == 429 || resp.StatusCode >= 500) {
+                if (attempt < retries) {
+                    time.Sleep(time.Duration(delayMs) * time.Millisecond)
+                    delayMs = nextDelay(delayMs, retryMaxDelayMs)
+                    attempt = attempt + 1
+                    continue
+                }
+            }
+            break
+        }
+
+        if (lastError != "") {
+            if (lastStatus == 429) {
+                return Failure("backpressure: HTTP 429", ff)
+            }
+            return Failure(lastError, ff)
+        }
+
+        var delivered = withAttribute(ff, "delivery.status", str(lastStatus))
+        delivered = withAttribute(delivered, "delivery.endpoint", endpoint)
+        return Single(delivered)
+    }
+}
+
+// nextDelay doubles the current delay, capped at the configured max.
+int nextDelay(int current, int max) {
+    var doubled = current * 2
+    if (doubled > max) { return max }
+    return doubled
+}
+
+pub (ProcessorFn, error) PutHTTPFactory(ScopedContext ctx, Map<String, String> config) {
+    var endpoint = ""
+    if (config.containsKey("endpoint")) { endpoint = config["endpoint"] }
+    var format = "raw"
+    if (config.containsKey("format") && config["format"] != "") {
+        format = config["format"]
+    }
+    var retries = 3
+    if (config.containsKey("retries") && config["retries"] != "") {
+        retries = parseIntOr(config["retries"], 3)
+    }
+    var retryInitialDelayMs = 200
+    if (config.containsKey("retryInitialDelayMs") && config["retryInitialDelayMs"] != "") {
+        retryInitialDelayMs = parseIntOr(config["retryInitialDelayMs"], 200)
+    }
+    var retryMaxDelayMs = 5000
+    if (config.containsKey("retryMaxDelayMs") && config["retryMaxDelayMs"] != "") {
+        retryMaxDelayMs = parseIntOr(config["retryMaxDelayMs"], 5000)
+    }
+
+    var p = ctx.getProvider("content") or {
+        return PutHTTP(endpoint, format, MemoryContentStore(), retries, retryInitialDelayMs, retryMaxDelayMs)
+    }
+    var cp = p as ContentProvider
+    return PutHTTP(endpoint, format, cp.getStore(), retries, retryInitialDelayMs, retryMaxDelayMs)
+}
+
