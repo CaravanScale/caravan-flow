@@ -62,7 +62,7 @@ class VersionControlProvider : Provider {
         }
         var cmd = exec.Command(command[0], command[1:len(command)]...)
         cmd.Dir = repo
-        var output = cmd.CombinedOutput() or {
+        var output = cmd.CombinedOutput() catch {
             return CommandResult(false, -1, "", err.Error())
         }
         return CommandResult(true, 0, string(output), "")
@@ -95,8 +95,8 @@ class VersionControlProvider : Provider {
         if (revList.ok) {
             var parts = strings.Fields(strings.TrimSpace(revList.stdout))
             if (len(parts) >= 2) {
-                ahead = strconv.Atoi(parts[0]) or { 0 }
-                behind = strconv.Atoi(parts[1]) or { 0 }
+                ahead = strconv.Atoi(parts[0]) catch { 0 }
+                behind = strconv.Atoi(parts[1]) catch { 0 }
             }
         }
         return VcStatus(true, clean, ahead, behind, currentBranch, "")

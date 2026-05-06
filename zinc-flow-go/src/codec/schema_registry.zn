@@ -125,7 +125,7 @@ class SchemaRegistry {
     // existing id without bumping the version. Fails only when canonical
     // JSON emission rejects the schema.
     pub (int, error) register(String subject, core.Schema schema) {
-        var canonical = emitSchemaJson(schema) or {
+        var canonical = emitSchemaJson(schema) catch {
             return 0, errors.ConfigError("schema canonicalization failed: ${err.Error()}")
         }
         lock (mu) {
@@ -213,7 +213,7 @@ class SchemaRegistry {
                 if (!filepath.IsAbs(file) && configDir != "") {
                     path = filepath.Join(configDir, file)
                 }
-                var data = os.ReadFile(path) or {
+                var data = os.ReadFile(path) catch {
                     logging.warn("schema-registry: file not found",
                         "subject", subject, "path", path, "err", err.Error())
                     continue

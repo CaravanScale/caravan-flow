@@ -88,7 +88,7 @@ class UnpackageFlowFileV3 : ProcessorFn {
 }
 
 pub (ProcessorFn, error) PackageFlowFileV3Factory(ScopedContext ctx, Map<String, String> config) {
-    var p = ctx.getProvider("content") or {
+    var p = ctx.getProvider("content") catch {
         return PackageFlowFileV3(MemoryContentStore())
     }
     var cp = p as ContentProvider
@@ -96,7 +96,7 @@ pub (ProcessorFn, error) PackageFlowFileV3Factory(ScopedContext ctx, Map<String,
 }
 
 pub (ProcessorFn, error) UnpackageFlowFileV3Factory(ScopedContext ctx, Map<String, String> config) {
-    var p = ctx.getProvider("content") or {
+    var p = ctx.getProvider("content") catch {
         return UnpackageFlowFileV3(MemoryContentStore())
     }
     var cp = p as ContentProvider

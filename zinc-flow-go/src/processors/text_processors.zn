@@ -42,7 +42,7 @@ class ReplaceText : ProcessorFn {
         if (resolved.errorMsg != "") {
             return Failure(resolved.errorMsg, ff)
         }
-        var re = regexp.Compile(pattern) or {
+        var re = regexp.Compile(pattern) catch {
             return Failure("invalid regex: ${pattern}", ff)
         }
         var text = string(resolved.data)
@@ -103,7 +103,7 @@ class ExtractText : ProcessorFn {
         if (resolved.errorMsg != "") {
             return Failure(resolved.errorMsg, ff)
         }
-        var re = regexp.Compile(pattern) or {
+        var re = regexp.Compile(pattern) catch {
             return Failure("invalid regex: ${pattern}", ff)
         }
         var text = string(resolved.data)
@@ -167,7 +167,7 @@ class SplitText : ProcessorFn {
         if (resolved.errorMsg != "") {
             return Failure(resolved.errorMsg, ff)
         }
-        var re = regexp.Compile(delimiter) or {
+        var re = regexp.Compile(delimiter) catch {
             return Failure("invalid delimiter regex: ${delimiter}", ff)
         }
         var text = string(resolved.data)
@@ -230,7 +230,7 @@ pub (ProcessorFn, error) SplitTextFactory(ScopedContext ctx, Map<String, String>
 // --- shared helpers ---
 
 ContentStore resolveStore(ScopedContext ctx) {
-    var p = ctx.getProvider("content") or { return MemoryContentStore() }
+    var p = ctx.getProvider("content") catch { return MemoryContentStore() }
     var cp = p as ContentProvider
     return cp.getStore()
 }

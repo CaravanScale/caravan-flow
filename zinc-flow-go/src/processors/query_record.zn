@@ -104,9 +104,9 @@ Map<String, Object> recordToMap(GenericRecord rec) {
 // we ignore them — the per-record predicate shape is what
 // QueryRecord supports today.
 void extractIdx(Object hit, Map<int, bool> keepIdx) {
-    var asMap = hit as Map<String, Object> or { return }
+    var asMap = hit as Map<String, Object> catch { return }
     if (!asMap.containsKey("_idx")) { return }
-    var idx = asMap["_idx"] as int or { return }
+    var idx = asMap["_idx"] as int catch { return }
     keepIdx[idx] = true
 }
 
@@ -119,7 +119,7 @@ pub (ProcessorFn, error) QueryRecordFactory(ScopedContext ctx, Map<String, Strin
     if (query == "$" || query == "$[*]") {
         return QueryRecord(query, true, default(ojgJp.Expr)), null
     }
-    var expr = ojgJp.ParseString(query) or {
+    var expr = ojgJp.ParseString(query) catch {
         return QueryRecord(query, false, default(ojgJp.Expr)),
             errors.ConfigError("QueryRecord: bad JSONPath '${query}': ${err.Error()}")
     }

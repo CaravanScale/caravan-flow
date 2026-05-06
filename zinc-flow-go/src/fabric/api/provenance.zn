@@ -21,7 +21,7 @@ class ProvenanceApiHandler {
         var n = 100
         var limit = r.URL.Query().Get("limit")
         if (limit != "") {
-            n = strconv.Atoi(limit) or { 100 }
+            n = strconv.Atoi(limit) catch { 100 }
         }
         writeJson(w, eventsToJson(provenance.getRecent(n)))
     }
@@ -41,7 +41,7 @@ class ProvenanceApiHandler {
         var n = 50
         var nStr = r.URL.Query().Get("n")
         if (nStr != "") {
-            n = strconv.Atoi(nStr) or {
+            n = strconv.Atoi(nStr) catch {
                 w.WriteHeader(400)
                 w.Write(('{"error":"query param n is not an integer: ' + nStr + '"}').toBytes())
                 return

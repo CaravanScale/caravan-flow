@@ -182,7 +182,7 @@ pub (ProcessorFn, error) UpdateRecordFactory(ScopedContext ctx, Map<String, Stri
             return UpdateRecord(List<String>[], List<CompiledExpression>[]),
                 errors.ConfigError("UpdateRecord: empty expression for field '${field}'")
         }
-        var c = expressions.compile(exprSrc) or {
+        var c = expressions.compile(exprSrc) catch {
             return UpdateRecord(List<String>[], List<CompiledExpression>[]),
                 errors.ConfigError("UpdateRecord: field '${field}' has invalid expression '${exprSrc}': ${err.Error()}")
         }

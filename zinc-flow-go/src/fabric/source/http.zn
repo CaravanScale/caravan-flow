@@ -30,7 +30,7 @@ class HttpSource {
 
         var body = byte[0]
         using (var rc = r.Body) {
-            body = ReadAll(rc) or {
+            body = ReadAll(rc) catch {
                 w.WriteHeader(400)
                 w.Write('{"error":"failed to read body"}'.toBytes())
                 return

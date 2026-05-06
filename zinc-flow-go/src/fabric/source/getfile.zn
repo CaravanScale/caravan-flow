@@ -80,12 +80,12 @@ class GetFile : ConnectorSource {
     pub void start(IngestFn ingest) {
         this.ingestFn = ingest
 
-        os.MkdirAll(directory, 0o755) or {
+        os.MkdirAll(directory, 0o755) catch {
             logging.error("getfile: cannot create watch dir", "dir", directory, "err", err.Error())
             return
         }
         var movePath = filepath.Join(directory, moveSubdir)
-        os.MkdirAll(movePath, 0o755) or {
+        os.MkdirAll(movePath, 0o755) catch {
             logging.error("getfile: cannot create move subdir", "dir", movePath, "err", err.Error())
             return
         }
@@ -96,7 +96,7 @@ class GetFile : ConnectorSource {
             ingestFile(path)
         }
 
-        var w = fsnotify.NewWatcher() or {
+        var w = fsnotify.NewWatcher() catch {
             logging.error("getfile: fsnotify.NewWatcher failed", "err", err.Error())
             return
         }
@@ -158,7 +158,7 @@ class GetFile : ConnectorSource {
         var emitted = List<FlowFile>[]
         var paths = scanExisting()
         for (path in paths) {
-            var data = os.ReadFile(path) or {
+            var data = os.ReadFile(path) catch {
                 continue
             }
             var ff = buildFlowFile(path, data)
@@ -181,13 +181,13 @@ class GetFile : ConnectorSource {
         if (!matchesPattern(path)) {
             return
         }
-        var info = os.Stat(path) or {
+        var info = os.Stat(path) catch {
             return
         }
         if (info.IsDir()) {
             return
         }
-        var data = os.ReadFile(path) or {
+        var data = os.ReadFile(path) catch {
             logging.warn("getfile: read failed", "path", path, "err", err.Error())
             return
         }
@@ -213,12 +213,12 @@ class GetFile : ConnectorSource {
         // having ever fired (tests, admin tooling). MkdirAll is no-op
         // when the dir already exists.
         var moveDir = filepath.Join(directory, moveSubdir)
-        os.MkdirAll(moveDir, 0o755) or {
+        os.MkdirAll(moveDir, 0o755) catch {
             os.Remove(path)
             return
         }
         var dest = filepath.Join(moveDir, filepath.Base(path))
-        os.Rename(path, dest) or {
+        os.Rename(path, dest) catch {
             // Cross-device move can fail with "invalid cross-device link".
             // The FlowFile already carries the bytes, so just delete the
             // source and let the pipeline carry on.
@@ -228,7 +228,7 @@ class GetFile : ConnectorSource {
 
     List<String> scanExisting() {
         var out = List<String>[]
-        var entries = os.ReadDir(directory) or {
+        var entries = os.ReadDir(directory) catch {
             return out
         }
         for (e in entries) {
@@ -254,7 +254,7 @@ class GetFile : ConnectorSource {
         if (pattern == "" || pattern == "*") {
             return true
         }
-        var matched = filepath.Match(pattern, filepath.Base(path)) or {
+        var matched = filepath.Match(pattern, filepath.Base(path)) catch {
             return false
         }
         return matched

@@ -41,11 +41,11 @@ pub void registerBuiltinSources(SourceRegistry reg) {
     if (config.containsKey("attributes")) { attrs = config["attributes"] }
     var batchSize = 1
     if (config.containsKey("batchSize") && config["batchSize"] != "") {
-        batchSize = strconv.Atoi(config["batchSize"]) or { 1 }
+        batchSize = strconv.Atoi(config["batchSize"]) catch { 1 }
     }
     var pollMs = 1000
     if (config.containsKey("pollIntervalMs") && config["pollIntervalMs"] != "") {
-        pollMs = strconv.Atoi(config["pollIntervalMs"]) or { 1000 }
+        pollMs = strconv.Atoi(config["pollIntervalMs"]) catch { 1000 }
     }
     return GenerateFlowFile(name, pollMs, content, contentType, attrs, batchSize), null
 }
@@ -53,7 +53,7 @@ pub void registerBuiltinSources(SourceRegistry reg) {
 (ConnectorSource, error) ListenHTTPFactory(String name, Map<String, String> config, ContentStore store) {
     var port = 0
     if (config.containsKey("port") && config["port"] != "") {
-        port = strconv.Atoi(config["port"]) or { 0 }
+        port = strconv.Atoi(config["port"]) catch { 0 }
     }
     if (port <= 0) {
         // No port = disabled. Operators must opt in; we never default to
@@ -66,7 +66,7 @@ pub void registerBuiltinSources(SourceRegistry reg) {
     }
     var maxBytes = 16 * 1024 * 1024
     if (config.containsKey("maxBodyBytes") && config["maxBodyBytes"] != "") {
-        maxBytes = strconv.Atoi(config["maxBodyBytes"]) or { 16 * 1024 * 1024 }
+        maxBytes = strconv.Atoi(config["maxBodyBytes"]) catch { 16 * 1024 * 1024 }
     }
     return ListenHTTP(name, port, path, maxBytes), null
 }

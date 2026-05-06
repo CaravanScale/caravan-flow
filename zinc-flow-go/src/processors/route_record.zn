@@ -152,7 +152,7 @@ pub (ProcessorFn, error) RouteRecordFactory(ScopedContext ctx, Map<String, Strin
             return RouteRecord(List<RouteRule>[]),
                 errors.ConfigError("RouteRecord: 'unmatched' is reserved for records that match no route")
         }
-        var c = expressions.compile(exprSrc) or {
+        var c = expressions.compile(exprSrc) catch {
             return RouteRecord(List<RouteRule>[]),
                 errors.ConfigError("RouteRecord: route '${name}' has invalid expression '${exprSrc}': ${err.Error()}")
         }

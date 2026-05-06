@@ -76,7 +76,7 @@ class PutHTTP : ProcessorFn {
         while (attempt <= retries) {
             // Build a fresh request per attempt — http.Client.Do consumes
             // the body Reader, so retries need a new one.
-            var req = NewRequest("POST", endpoint, NewBuffer(data)) or {
+            var req = NewRequest("POST", endpoint, NewBuffer(data)) catch {
                 return Failure("delivery setup failed: ${err.Error()}", ff)
             }
             req.Header.Set("Content-Type", contentType)
@@ -85,7 +85,7 @@ class PutHTTP : ProcessorFn {
                 req.Header.Set("X-Flow-" + k, v)
             }
 
-            var resp = client.Do(req) or {
+            var resp = client.Do(req) catch {
                 lastError = "delivery failed: ${err.Error()}"
                 lastStatus = 0
                 if (attempt < retries) {
@@ -162,7 +162,7 @@ pub (ProcessorFn, error) PutHTTPFactory(ScopedContext ctx, Map<String, String> c
         retryMaxDelayMs = parseIntOr(config["retryMaxDelayMs"], 5000)
     }
 
-    var p = ctx.getProvider("content") or {
+    var p = ctx.getProvider("content") catch {
         return PutHTTP(endpoint, format, MemoryContentStore(), retries, retryInitialDelayMs, retryMaxDelayMs)
     }
     var cp = p as ContentProvider

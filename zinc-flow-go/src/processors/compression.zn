@@ -35,12 +35,12 @@ class CompressContent : ProcessorFn {
         var data = resolved.data
         var compressed = byte[0]
         if (algorithm == "gzip") {
-            var out = gzipCompress(data, level) or {
+            var out = gzipCompress(data, level) catch {
                 return Failure("compress failed: ${err.Error()}", ff)
             }
             compressed = out
         } else if (algorithm == "zstd") {
-            var out = zstdCompress(data, level) or {
+            var out = zstdCompress(data, level) catch {
                 return Failure("compress failed: ${err.Error()}", ff)
             }
             compressed = out
@@ -81,12 +81,12 @@ class DecompressContent : ProcessorFn {
         }
         var decompressed = byte[0]
         if (alg == "gzip") {
-            var out = gzipDecompress(data) or {
+            var out = gzipDecompress(data) catch {
                 return Failure("decompress failed: ${err.Error()}", ff)
             }
             decompressed = out
         } else if (alg == "zstd") {
-            var out = zstdDecompress(data) or {
+            var out = zstdDecompress(data) catch {
                 return Failure("decompress failed: ${err.Error()}", ff)
             }
             decompressed = out
@@ -151,7 +151,7 @@ pub (ProcessorFn, error) CompressContentFactory(ScopedContext ctx, Map<String, S
     if (config.containsKey("level")) {
         level = config["level"]
     }
-    var p = ctx.getProvider("content") or {
+    var p = ctx.getProvider("content") catch {
         return CompressContent(algorithm, level, MemoryContentStore()), null
     }
     var cp = p as ContentProvider
@@ -163,7 +163,7 @@ pub (ProcessorFn, error) DecompressContentFactory(ScopedContext ctx, Map<String,
     if (config.containsKey("algorithm")) {
         algorithm = config["algorithm"]
     }
-    var p = ctx.getProvider("content") or {
+    var p = ctx.getProvider("content") catch {
         return DecompressContent(algorithm, MemoryContentStore()), null
     }
     var cp = p as ContentProvider

@@ -25,7 +25,7 @@ class SchemaRegistryApiHandler {
     // --- GET /schemas/ids/{id} → {"schema":"..."} ---
     pub void getByIdHandler(ResponseWriter w, Request r) {
         var idStr = r.PathValue("id")
-        var id = strconv.Atoi(idStr) or {
+        var id = strconv.Atoi(idStr) catch {
             writeSrError(w, 400, 40000, "id must be an integer")
             return
         }
@@ -34,7 +34,7 @@ class SchemaRegistryApiHandler {
             writeSrError(w, 404, 40403, "schema id ${id} not found")
             return
         }
-        var schemaJson = emitSchemaJson(entry.schema) or {
+        var schemaJson = emitSchemaJson(entry.schema) catch {
             writeSrError(w, 500, 50001, "schema emit failed: ${err.Error()}")
             return
         }
@@ -69,7 +69,7 @@ class SchemaRegistryApiHandler {
                 return
             }
         } else {
-            var v = strconv.Atoi(version) or {
+            var v = strconv.Atoi(version) catch {
                 writeSrError(w, 400, 40000, "version must be an integer or 'latest'")
                 return
             }
@@ -79,7 +79,7 @@ class SchemaRegistryApiHandler {
                 return
             }
         }
-        var schemaJson = emitSchemaJson(entry.schema) or {
+        var schemaJson = emitSchemaJson(entry.schema) catch {
             writeSrError(w, 500, 50001, "schema emit failed: ${err.Error()}")
             return
         }
@@ -95,7 +95,7 @@ class SchemaRegistryApiHandler {
         var subject = r.PathValue("subject")
         var body = byte[0]
         using (var rc = r.Body) {
-            body = ReadAll(rc) or {
+            body = ReadAll(rc) catch {
                 writeSrError(w, 400, 40000, "failed to read body")
                 return
             }
@@ -105,11 +105,11 @@ class SchemaRegistryApiHandler {
             writeSrError(w, 422, 42201, "request body missing 'schema' string field")
             return
         }
-        var schema = parseSchemaJson(schemaJson) or {
+        var schema = parseSchemaJson(schemaJson) catch {
             writeSrError(w, 422, 42202, "invalid Avro schema: ${err.Error()}")
             return
         }
-        var id = registry.register(subject, schema) or {
+        var id = registry.register(subject, schema) catch {
             writeSrError(w, 500, 50001, "register failed: ${err.Error()}")
             return
         }
@@ -132,7 +132,7 @@ class SchemaRegistryApiHandler {
     pub void deleteVersionHandler(ResponseWriter w, Request r) {
         var subject = r.PathValue("subject")
         var versionStr = r.PathValue("version")
-        var v = strconv.Atoi(versionStr) or {
+        var v = strconv.Atoi(versionStr) catch {
             writeSrError(w, 400, 40000, "version must be an integer")
             return
         }

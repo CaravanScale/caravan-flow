@@ -41,7 +41,7 @@ data EvalValue(int kind, long longVal, double doubleVal, String stringVal, bool 
             return 0.0
         }
         if (kind == KIND_STRING) {
-            var d = strconv.ParseFloat(stringVal, 64) or { return 0.0 }
+            var d = strconv.ParseFloat(stringVal, 64) catch { return 0.0 }
             return d
         }
         return 0.0
@@ -55,7 +55,7 @@ data EvalValue(int kind, long longVal, double doubleVal, String stringVal, bool 
             return long(0)
         }
         if (kind == KIND_STRING) {
-            var l = strconv.ParseInt(stringVal, 10, 64) or { return long(0) }
+            var l = strconv.ParseInt(stringVal, 10, 64) catch { return long(0) }
             return l
         }
         return long(0)
@@ -116,11 +116,11 @@ pub EvalValue evalString(String v) {
 // anything else falls back to the toString form.
 pub EvalValue evalFromObject(Object v) {
     if (v == null) { return evalNull() }
-    var b = v as bool or {
-        var i = v as int or {
-            var l = v as long or {
-                var d = v as double or {
-                    var s = v as String or {
+    var b = v as bool catch {
+        var i = v as int catch {
+            var l = v as long catch {
+                var d = v as double catch {
+                    var s = v as String catch {
                         return evalString(str(v))
                     }
                     return evalString(s)

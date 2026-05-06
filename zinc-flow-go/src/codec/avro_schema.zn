@@ -32,11 +32,11 @@ pub (Schema, error) parseSchemaJson(String text) {
     var zero = Schema("", List<Field>[])
     var raw = Map<String, Object>{}
     var data = text.toBytes()
-    json.Unmarshal(data, &raw) or {
+    json.Unmarshal(data, &raw) catch {
         return zero, errors.ConfigError("invalid JSON: ${err.Error()}")
     }
 
-    var typeStr = raw["type"] as String or {
+    var typeStr = raw["type"] as String catch {
         return zero, errors.ConfigError("schema: missing or non-string 'type'")
     }
     if (typeStr != "record") {
@@ -45,7 +45,7 @@ pub (Schema, error) parseSchemaJson(String text) {
 
     var name = "root"
     if (raw.containsKey("name")) {
-        var n = raw["name"] as String or {
+        var n = raw["name"] as String catch {
             return zero, errors.ConfigError("'name' must be a string")
         }
         if (n != "") {
@@ -56,22 +56,22 @@ pub (Schema, error) parseSchemaJson(String text) {
     if (!raw.containsKey("fields")) {
         return zero, errors.ConfigError("record schema missing 'fields' array")
     }
-    var fieldList = raw["fields"] as JsonArray or {
+    var fieldList = raw["fields"] as JsonArray catch {
         return zero, errors.ConfigError("'fields' must be an array")
     }
 
     var fields = List<Field>[]
     for (item in fieldList) {
-        var fobj = item as JsonObject or {
+        var fobj = item as JsonObject catch {
             return zero, errors.ConfigError("each field must be an object")
         }
         if (!fobj.containsKey("name") || !fobj.containsKey("type")) {
             return zero, errors.ConfigError("field missing 'name' or 'type'")
         }
-        var fname = fobj["name"] as String or {
+        var fname = fobj["name"] as String catch {
             return zero, errors.ConfigError("field 'name' must be a string")
         }
-        var ftype = parseTypeToken(fobj["type"]) or {
+        var ftype = parseTypeToken(fobj["type"]) catch {
             return zero, errors.ConfigError("field '${fname}': ${err.Error()}")
         }
         fields = append(fields, Field(fname, ftype, null))
@@ -83,24 +83,24 @@ pub (Schema, error) parseSchemaJson(String text) {
 // annotated type object. Mirrors csharp's ParseTypeToken/ParseTypeObject.
 (FieldType, error) parseTypeToken(Object token) {
     // Primitive: bare string.
-    var s = token as String or {
+    var s = token as String catch {
         // Nullable-union: array form ["null", T].
-        var arr = token as JsonArray or {
+        var arr = token as JsonArray catch {
             // Annotated object: {"type": T, "logicalType": ...}.
-            var obj = token as JsonObject or {
+            var obj = token as JsonObject catch {
                 return STRING, errors.ConfigError("unsupported type token shape")
             }
             if (!obj.containsKey("type")) {
                 return STRING, errors.ConfigError("type object missing 'type'")
             }
-            var inner = obj["type"] as String or {
+            var inner = obj["type"] as String catch {
                 return STRING, errors.ConfigError("nested annotated type not supported")
             }
             return mapPrimitive(inner), null
         }
         // Walk the union; ignore "null", take first non-null.
         for (item in arr) {
-            var iname = item as String or {
+            var iname = item as String catch {
                 // Could be an annotated object inside the union — recurse.
                 var ft, e = parseTypeToken(item)
                 if (e == null) { return ft, null }
@@ -164,7 +164,7 @@ pub (String, error) emitSchemaJson(Schema s) {
     root["name"] = s.name
     root["fields"] = fieldArr
 
-    var out = json.Marshal(root) or {
+    var out = json.Marshal(root) catch {
         return "", err
     }
     return string(out), null

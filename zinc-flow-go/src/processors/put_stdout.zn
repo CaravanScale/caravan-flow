@@ -78,7 +78,7 @@ pub (ProcessorFn, error) PutStdoutFactory(ScopedContext ctx, Map<String, String>
     // Resolve content store via the scoped context; fall back to an
     // in-memory store so the processor works even without a configured
     // ContentProvider (useful for unit tests).
-    var p = ctx.getProvider("content") or {
+    var p = ctx.getProvider("content") catch {
         return PutStdout(format, MemoryContentStore())
     }
     var cp = p as ContentProvider

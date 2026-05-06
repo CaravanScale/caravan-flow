@@ -25,12 +25,12 @@ pub DeliveryResult deliverJson(String endpoint, FlowFile ff, ContentStore store)
     var jsonBody = '{"id":"' + ff.id + '","content_size":' + str(len(resolved.data)) + '}'
     var payload = jsonBody.toBytes()
 
-    var resp = Post(endpoint, "application/json", NewBuffer(payload)) or {
+    var resp = Post(endpoint, "application/json", NewBuffer(payload)) catch {
         return DeliveryResult(false, 0, byte[0], "http error")
     }
     var respBody = byte[0]
     using (var body = resp.Body) {
-        respBody = ReadAll(body) or {
+        respBody = ReadAll(body) catch {
             return DeliveryResult(false, resp.StatusCode, byte[0], "read error")
         }
     }
@@ -54,12 +54,12 @@ pub DeliveryResult deliverV3(String endpoint, FlowFile ff, ContentStore store) {
 
     var packed = packFlowFile(ff, resolved.data)
 
-    var resp = Post(endpoint, "application/octet-stream", NewBuffer(packed)) or {
+    var resp = Post(endpoint, "application/octet-stream", NewBuffer(packed)) catch {
         return DeliveryResult(false, 0, byte[0], "http error")
     }
     var respBody = byte[0]
     using (var body = resp.Body) {
-        respBody = ReadAll(body) or {
+        respBody = ReadAll(body) catch {
             return DeliveryResult(false, resp.StatusCode, byte[0], "read error")
         }
     }

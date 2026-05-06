@@ -92,7 +92,7 @@ pub (ProcessorFn, error) EvaluateExpressionFactory(ScopedContext ctx, Map<String
             return EvaluateExpression(List<String>[], List<CompiledExpression>[]),
                 errors.ConfigError("expression '${trimmed}' has empty target or body")
         }
-        var c = expressions.compile(exprSrc) or {
+        var c = expressions.compile(exprSrc) catch {
             return EvaluateExpression(List<String>[], List<CompiledExpression>[]),
                 errors.ConfigError("expression for '${target}': ${err.Error()}")
         }

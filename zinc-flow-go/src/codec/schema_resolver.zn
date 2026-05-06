@@ -136,35 +136,35 @@ pub Object promote(Object value, core.FieldType src, core.FieldType to) {
     if (value == null) { return null }
     if (src == to) { return value }
     if (src == core.INT && to == core.LONG) {
-        var i = value as int or { return value }
+        var i = value as int catch { return value }
         return long(i)
     }
     if (src == core.INT && to == core.FLOAT) {
-        var i = value as int or { return value }
+        var i = value as int catch { return value }
         return double(i)
     }
     if (src == core.INT && to == core.DOUBLE) {
-        var i = value as int or { return value }
+        var i = value as int catch { return value }
         return double(i)
     }
     if (src == core.LONG && to == core.FLOAT) {
-        var l = value as long or { return value }
+        var l = value as long catch { return value }
         return double(l)
     }
     if (src == core.LONG && to == core.DOUBLE) {
-        var l = value as long or { return value }
+        var l = value as long catch { return value }
         return double(l)
     }
     if (src == core.FLOAT && to == core.DOUBLE) {
-        var f = value as double or { return value }
+        var f = value as double catch { return value }
         return f
     }
     if (src == core.STRING && to == core.BYTES) {
-        var s = value as String or { return value }
+        var s = value as String catch { return value }
         return s.toBytes()
     }
     if (src == core.BYTES && to == core.STRING) {
-        var b = value as byte[] or { return value }
+        var b = value as byte[] catch { return value }
         return string(b)
     }
     return value

@@ -63,7 +63,7 @@ class ConvertCSVToRecord : ProcessorFn {
         if (len(delimiter) == 1) {
             reader.Comma = rune(delimiter[0])
         }
-        var rows = reader.ReadAll() or {
+        var rows = reader.ReadAll() catch {
             return Failure("csv parse failed: ${err.Error()}", ff)
         }
         if (len(rows) == 0) {
@@ -147,7 +147,7 @@ class ConvertRecordToCSV : ProcessorFn {
             for (f in schema.fields) {
                 header = append(header, f.name)
             }
-            writer.Write(header) or {
+            writer.Write(header) catch {
                 return Failure("csv header write failed: ${err.Error()}", ff)
             }
         }
@@ -158,7 +158,7 @@ class ConvertRecordToCSV : ProcessorFn {
                 var v = rec.getField(f.name)
                 row = append(row, anyToString(v))
             }
-            writer.Write(row) or {
+            writer.Write(row) catch {
                 return Failure("csv row write failed: ${err.Error()}", ff)
             }
         }
@@ -192,7 +192,7 @@ pub (ProcessorFn, error) ConvertCSVToRecordFactory(ScopedContext ctx, Map<String
     if (config.containsKey("hasHeader") && config["hasHeader"] == "false") {
         hasHeader = false
     }
-    var p = ctx.getProvider("content") or {
+    var p = ctx.getProvider("content") catch {
         return ConvertCSVToRecord(schemaName, delimiter, hasHeader, MemoryContentStore())
     }
     var cp = p as ContentProvider

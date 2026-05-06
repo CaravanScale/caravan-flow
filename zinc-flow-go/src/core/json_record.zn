@@ -27,10 +27,10 @@ class JsonRecordReader : RecordReader {
 
         var rawList = List<Map<String, Object>>[]
         if (firstChar == byte('[')) {
-            json.Unmarshal(data, &rawList) or { return List<GenericRecord>[] }
+            json.Unmarshal(data, &rawList) catch { return List<GenericRecord>[] }
         } else if (firstChar == byte('{')) {
             var single = Map<String, Object>{}
-            json.Unmarshal(data, &single) or { return List<GenericRecord>[] }
+            json.Unmarshal(data, &single) catch { return List<GenericRecord>[] }
             rawList = append(rawList, single)
         } else {
             return List<GenericRecord>[]
@@ -79,7 +79,7 @@ class JsonRecordWriter : RecordWriter {
         }
 
         // Serialize to JSON
-        var result = json.Marshal(rawList) or { return byte[0] }
+        var result = json.Marshal(rawList) catch { return byte[0] }
         return result
     }
 }

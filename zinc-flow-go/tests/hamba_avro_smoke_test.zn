@@ -24,13 +24,13 @@ data Person(@Avro("name") String name, @Avro("age") int age)
 
 test "hamba round-trip: Marshal/Unmarshal with explicit & on Unmarshal" {
     var schemaStr = `{"type":"record","name":"Person","fields":[{"name":"name","type":"string"},{"name":"age","type":"int"}]}`
-    var schema = hambaAvro.Parse(schemaStr) or {
+    var schema = hambaAvro.Parse(schemaStr) catch {
         asserts.fail(t, "schema parse failed: ${err}")
         return
     }
 
     var p = Person("alice", 30)
-    var data = hambaAvro.Marshal(schema, p) or {
+    var data = hambaAvro.Marshal(schema, p) catch {
         asserts.fail(t, "marshal failed: ${err}")
         return
     }
@@ -41,7 +41,7 @@ test "hamba round-trip: Marshal/Unmarshal with explicit & on Unmarshal" {
     // at runtime (the pre-`&` behavior the implicitPointerParams hack
     // papered over).
     var got = Person("", 0)
-    hambaAvro.Unmarshal(schema, data, &got) or {
+    hambaAvro.Unmarshal(schema, data, &got) catch {
         asserts.fail(t, "unmarshal failed: ${err}")
         return
     }
@@ -57,11 +57,11 @@ test "hamba/ocf round-trip: dec.Decode(&got) — method-call FFI seam" {
     var enc, eerr = hambaOcf.NewEncoder(schemaStr, buf)
     asserts.isTrue(t, eerr == nil, "ocf encoder construct")
     var p = Person("bob", 41)
-    enc.Encode(p) or {
+    enc.Encode(p) catch {
         asserts.fail(t, "encode failed: ${err}")
         return
     }
-    enc.Close() or {
+    enc.Close() catch {
         asserts.fail(t, "encoder close failed: ${err}")
         return
     }
@@ -74,7 +74,7 @@ test "hamba/ocf round-trip: dec.Decode(&got) — method-call FFI seam" {
     asserts.isTrue(t, dec.HasNext(), "decoder has next record")
 
     var got = Person("", 0)
-    dec.Decode(&got) or {
+    dec.Decode(&got) catch {
         asserts.fail(t, "ocf decode failed: ${err}")
         return
     }

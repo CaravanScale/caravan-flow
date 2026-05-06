@@ -82,7 +82,7 @@ class ProcessorConfig {
         if (!ok) {
             return defaultValue
         }
-        var n = parseInt(raw) or { return defaultValue }
+        var n = parseInt(raw) catch { return defaultValue }
         return n
     }
 

@@ -183,7 +183,7 @@ EvalValue negate(EvalValue v) {
     if (v.kind == KIND_LONG)   { return evalLong(-v.longVal) }
     if (v.kind == KIND_DOUBLE) { return evalDouble(-v.doubleVal) }
     if (v.kind == KIND_STRING) {
-        var d = strconv.ParseFloat(v.stringVal, 64) or { return evalNull() }
+        var d = strconv.ParseFloat(v.stringVal, 64) catch { return evalNull() }
         return evalDouble(-d)
     }
     return evalNull()
@@ -433,10 +433,10 @@ EvalValue callFunction(String name, List<EvalValue> args) {
 // compile parses an expression source into an executable form. Lift
 // out of the hot path when the same expression is used per-record.
 pub (CompiledExpression, error) compile(String expression) {
-    var tokens = tokenize(expression) or {
+    var tokens = tokenize(expression) catch {
         return CompiledExpression(List<Token>[]), err
     }
-    var rpn = toRpn(tokens) or {
+    var rpn = toRpn(tokens) catch {
         return CompiledExpression(List<Token>[]), err
     }
     return CompiledExpression(rpn), null
@@ -445,7 +445,7 @@ pub (CompiledExpression, error) compile(String expression) {
 // evaluate compiles and runs in one shot. For per-record loops use
 // compile() once and call .eval() per record to amortize parsing.
 pub (EvalValue, error) evaluate(String expression, ValueResolver context) {
-    var compiled = compile(expression) or {
+    var compiled = compile(expression) catch {
         return evalNull(), err
     }
     return compiled.eval(context), null
@@ -463,7 +463,7 @@ pub (EvalValue, error) evaluate(String expression, ValueResolver context) {
             continue
         }
         if (c >= byte(48) && c <= byte(57)) {
-            var nextI, tok = readNumber(src, i) or {
+            var nextI, tok = readNumber(src, i) catch {
                 return List<Token>[], err
             }
             tokens = append(tokens, tok)
@@ -471,7 +471,7 @@ pub (EvalValue, error) evaluate(String expression, ValueResolver context) {
             continue
         }
         if (c == byte(34) || c == byte(39)) {
-            var nextI, tok = readString(src, i) or {
+            var nextI, tok = readString(src, i) catch {
                 return List<Token>[], err
             }
             tokens = append(tokens, tok)
@@ -581,12 +581,12 @@ bool isAlnum(byte c) {
     }
     var text = src.substring(start, i)
     if (isDouble) {
-        var d = strconv.ParseFloat(text, 64) or {
+        var d = strconv.ParseFloat(text, 64) catch {
             return 0, tkBare(TK_NULL), errors.ConfigError("invalid number literal: ${text}")
         }
         return i, tkNumberDouble(d), null
     }
-    var l = strconv.ParseInt(text, 10, 64) or {
+    var l = strconv.ParseInt(text, 10, 64) catch {
         return 0, tkBare(TK_NULL), errors.ConfigError("invalid number literal: ${text}")
     }
     return i, tkNumberLong(l), null

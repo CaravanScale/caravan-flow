@@ -31,7 +31,7 @@ test "GetFile — pollOnce picks up existing files and moves them" {
     }
 
     // Files moved to .processed/, originals gone.
-    var afterEntries = os.ReadDir(dir) or {
+    var afterEntries = os.ReadDir(dir) catch {
         t.Errorf("could not read dir after poll")
         return
     }
@@ -43,7 +43,7 @@ test "GetFile — pollOnce picks up existing files and moves them" {
     }
     asserts.equalInt(t, topLevelFiles, 0)
 
-    var processedEntries = os.ReadDir(dir + "/.processed") or {
+    var processedEntries = os.ReadDir(dir + "/.processed") catch {
         t.Errorf("no .processed dir")
         return
     }

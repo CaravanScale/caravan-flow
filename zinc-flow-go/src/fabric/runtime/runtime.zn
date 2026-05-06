@@ -576,7 +576,7 @@ class Fabric {
         }
         var requires = g.getRequires(name)
         for (provName in requires) {
-            var prov = globalCtx.getProvider(provName) or {
+            var prov = globalCtx.getProvider(provName) catch {
                 logging.warn("cannot enable — provider missing",
                     "processor", name, "provider", provName)
                 return false
@@ -609,7 +609,7 @@ class Fabric {
     // --- Provider lifecycle ---
 
     pub bool enableProvider(String providerName) {
-        var prov = globalCtx.getProvider(providerName) or { return false }
+        var prov = globalCtx.getProvider(providerName) catch { return false }
         prov.enable()
         logging.info("provider enabled", "name", providerName)
         return true
@@ -619,7 +619,7 @@ class Fabric {
     // the provider itself. Prevents a processor from running against a
     // half-gone dependency.
     pub bool disableProvider(String providerName, int drainSecs) {
-        var prov = globalCtx.getProvider(providerName) or { return false }
+        var prov = globalCtx.getProvider(providerName) catch { return false }
         var dependents = globalCtx.getDependents(providerName)
         for (procName in dependents) {
             match (getProcessorState(procName)) {
@@ -755,12 +755,12 @@ class Fabric {
         if (len(requires) == 0) {
             var providerNames = globalCtx.listProviders()
             for (pn in providerNames) {
-                var p = globalCtx.getProvider(pn) or { continue }
+                var p = globalCtx.getProvider(pn) catch { continue }
                 scoped[pn] = p
             }
         } else {
             for (pn in requires) {
-                var p = globalCtx.getProvider(pn) or { continue }
+                var p = globalCtx.getProvider(pn) catch { continue }
                 scoped[pn] = p
             }
         }

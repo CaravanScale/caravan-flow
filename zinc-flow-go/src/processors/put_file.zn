@@ -103,7 +103,7 @@ pub (ProcessorFn, error) PutFileFactory(ScopedContext ctx, Map<String, String> c
     if (config.containsKey("format") && config["format"] != "") {
         format = config["format"]
     }
-    var p = ctx.getProvider("content") or {
+    var p = ctx.getProvider("content") catch {
         return PutFile(outputDir, namingAttr, prefix, suffix, format, MemoryContentStore())
     }
     var cp = p as ContentProvider

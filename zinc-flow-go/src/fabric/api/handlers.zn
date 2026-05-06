@@ -155,7 +155,7 @@ class ApiHandler {
             return
         }
         var req = Map<String, Object>{}
-        json.Unmarshal(body, &req) or {
+        json.Unmarshal(body, &req) catch {
             writeError(w, 400, "invalid json")
             return
         }
@@ -205,7 +205,7 @@ class ApiHandler {
             return
         }
         var req = Map<String, Object>{}
-        json.Unmarshal(body, &req) or {
+        json.Unmarshal(body, &req) catch {
             writeError(w, 400, "invalid json")
             return
         }
@@ -239,7 +239,7 @@ class ApiHandler {
             return
         }
         var req = Map<String, Object>{}
-        json.Unmarshal(body, &req) or {
+        json.Unmarshal(body, &req) catch {
             writeError(w, 400, "invalid json")
             return
         }
@@ -269,7 +269,7 @@ class ApiHandler {
             return
         }
         var req = Map<String, Object>{}
-        json.Unmarshal(body, &req) or {
+        json.Unmarshal(body, &req) catch {
             writeError(w, 400, "invalid json")
             return
         }
@@ -296,7 +296,7 @@ class ApiHandler {
             return
         }
         var req = Map<String, Object>{}
-        json.Unmarshal(body, &req) or {
+        json.Unmarshal(body, &req) catch {
             writeError(w, 400, "invalid json")
             return
         }
@@ -328,7 +328,7 @@ class ApiHandler {
             return
         }
         var req = Map<String, Object>{}
-        json.Unmarshal(body, &req) or {
+        json.Unmarshal(body, &req) catch {
             writeError(w, 400, "invalid json")
             return
         }
@@ -341,8 +341,8 @@ class ApiHandler {
         var config = Map<String, String>{}
         if (req.containsKey("config")) {
             var rawConfig = Map<String, String>{}
-            var configBytes = json.Marshal(req["config"]) or { byte[0] }
-            json.Unmarshal(configBytes, &rawConfig) or {}
+            var configBytes = json.Marshal(req["config"]) catch { byte[0] }
+            json.Unmarshal(configBytes, &rawConfig) catch {}
             var keys = rawConfig.keys()
             for (k in keys) {
                 config[k] = rawConfig[k]
@@ -370,7 +370,7 @@ class ApiHandler {
             return
         }
         var req = Map<String, Object>{}
-        json.Unmarshal(body, &req) or {
+        json.Unmarshal(body, &req) catch {
             writeError(w, 400, "invalid json")
             return
         }
@@ -400,7 +400,7 @@ class ApiHandler {
         for (name in names) {
             var entry = Map<String, Object>{}
             entry["name"] = name
-            var prov = ctx.getProvider(name) or {
+            var prov = ctx.getProvider(name) catch {
                 entry["state"] = "UNKNOWN"
                 result = append(result, entry)
                 continue
@@ -430,7 +430,7 @@ class ApiHandler {
             return
         }
         var req = Map<String, Object>{}
-        json.Unmarshal(body, &req) or {
+        json.Unmarshal(body, &req) catch {
             writeError(w, 400, "invalid json")
             return
         }
@@ -460,7 +460,7 @@ class ApiHandler {
             return
         }
         var req = Map<String, Object>{}
-        json.Unmarshal(body, &req) or {
+        json.Unmarshal(body, &req) catch {
             writeError(w, 400, "invalid json")
             return
         }
@@ -501,13 +501,13 @@ void writeError(ResponseWriter w, int status, String msg) {
     w.Header().Set("Content-Type", "application/json")
     w.WriteHeader(status)
     var result = Map<String, Object>{"error": msg}
-    var body = json.Marshal(result) or { '{"error":"unknown"}'.toBytes() }
+    var body = json.Marshal(result) catch { '{"error":"unknown"}'.toBytes() }
     w.Write(body)
 }
 
 // writeJson serializes data to JSON and writes it as the HTTP response.
 void writeJson(ResponseWriter w, Object data) {
-    var body = json.Marshal(data) or {
+    var body = json.Marshal(data) catch {
         w.WriteHeader(500)
         w.Write('{"error":"json marshal failed"}'.toBytes())
         return

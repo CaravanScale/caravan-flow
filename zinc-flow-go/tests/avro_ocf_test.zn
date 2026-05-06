@@ -191,7 +191,7 @@ test "OCF — registry-backed reader schema (latest) projects" {
         Field("id",   core.LONG,   null),
         Field("name", core.STRING, null)
     ])
-    reg.register("user-value", readerSchema) or { t.Errorf("seed register failed: %v", err) ; return }
+    reg.register("user-value", readerSchema) catch { t.Errorf("seed register failed: %v", err) ; return }
 
     match (encoded) {
         case Single(eff) {

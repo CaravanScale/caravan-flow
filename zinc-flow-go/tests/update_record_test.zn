@@ -44,7 +44,7 @@ test "UpdateRecord — adds new field via expression" {
                     asserts.equalInt(t, len(newSchema.fields), 3)
                     var taxVal = rows[0].getField("tax")
                     if (taxVal == null) { t.Errorf("tax missing"); return }
-                    var taxNum = taxVal as double or { t.Errorf("tax not double"); return }
+                    var taxNum = taxVal as double catch { t.Errorf("tax not double"); return }
                     asserts.isTrue(t, taxNum > 6.99 && taxNum < 7.01,
                         "expected tax≈7.00, got ${str(taxNum)}")
                 }
@@ -73,7 +73,7 @@ test "UpdateRecord — chained updates see earlier writes" {
                 case Records(_, rows) {
                     var totalVal = rows[0].getField("total")
                     if (totalVal == null) { t.Errorf("total missing"); return }
-                    var totalNum = totalVal as double or { t.Errorf("total not double"); return }
+                    var totalNum = totalVal as double catch { t.Errorf("total not double"); return }
                     asserts.isTrue(t, totalNum > 106.99 && totalNum < 107.01,
                         "expected total≈107.00, got ${str(totalNum)}")
                 }
@@ -102,11 +102,11 @@ test "UpdateRecord — overwrites existing field, original schema for untouched"
         case Single(out) {
             match (out.content) {
                 case Records(_, rows) {
-                    var r = rows[0].getField("region") as String or {
+                    var r = rows[0].getField("region") as String catch {
                         t.Errorf("region missing"); return
                     }
                     asserts.equalString(t, r, "US")
-                    var amt = rows[0].getField("amount") as double or {
+                    var amt = rows[0].getField("amount") as double catch {
                         t.Errorf("amount missing"); return
                     }
                     asserts.isTrue(t, amt == 50.0, "amount preserved")

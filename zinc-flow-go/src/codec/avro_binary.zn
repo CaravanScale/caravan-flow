@@ -71,22 +71,22 @@ class ConvertAvroToRecord : ProcessorFn {
         if (defs == "") {
             return Failure("ConvertAvroToRecord: no schema — set 'fieldDefs' config or 'avro.schema' attribute", ff)
         }
-        var schema = parseFieldDefs(schemaName, defs) or {
+        var schema = parseFieldDefs(schemaName, defs) catch {
             return Failure("ConvertAvroToRecord: ${err.Error()}", ff)
         }
         if (len(schema.fields) == 0) {
             return Failure("ConvertAvroToRecord: empty schema", ff)
         }
 
-        var schemaJson = emitSchemaJson(schema) or {
+        var schemaJson = emitSchemaJson(schema) catch {
             return Failure("ConvertAvroToRecord: schema emit failed: ${err.Error()}", ff)
         }
-        var hSchema = hambaAvro.Parse(schemaJson) or {
+        var hSchema = hambaAvro.Parse(schemaJson) catch {
             return Failure("ConvertAvroToRecord: hamba.Parse: ${err.Error()}", ff)
         }
 
         var target = Map<String, Object>{}
-        hambaAvro.Unmarshal(hSchema, data, &target) or {
+        hambaAvro.Unmarshal(hSchema, data, &target) catch {
             return Failure("ConvertAvroToRecord: decode failed: ${err.Error()}", ff)
         }
 
@@ -111,7 +111,7 @@ pub (ProcessorFn, error) ConvertAvroToRecordFactory(ScopedContext ctx, Map<Strin
     if (config.containsKey("fieldDefs")) {
         fieldDefs = config["fieldDefs"]
     }
-    var p = ctx.getProvider("content") or {
+    var p = ctx.getProvider("content") catch {
         return ConvertAvroToRecord(schemaName, fieldDefs, MemoryContentStore()), null
     }
     var cp = p as ContentProvider
@@ -134,17 +134,17 @@ class ConvertRecordToAvro : ProcessorFn {
                     return Failure("ConvertRecordToAvro: Records content has empty schema", ff)
                 }
 
-                var schemaJson = emitSchemaJson(schema) or {
+                var schemaJson = emitSchemaJson(schema) catch {
                     return Failure("ConvertRecordToAvro: schema emit failed: ${err.Error()}", ff)
                 }
-                var hSchema = hambaAvro.Parse(schemaJson) or {
+                var hSchema = hambaAvro.Parse(schemaJson) catch {
                     return Failure("ConvertRecordToAvro: hamba.Parse: ${err.Error()}", ff)
                 }
 
                 // Single-record only — the inverse processor reads one record
                 // per blob. Multi-record streams live in avro_ocf.zn.
                 var rec = records[0]
-                var bytes = hambaAvro.Marshal(hSchema, coerceForSchema(rec, schema)) or {
+                var bytes = hambaAvro.Marshal(hSchema, coerceForSchema(rec, schema)) catch {
                     return Failure("ConvertRecordToAvro: encode failed: ${err.Error()}", ff)
                 }
 
@@ -203,8 +203,8 @@ Map<String, Object> coerceForSchema(GenericRecord rec, core.Schema schema) {
 
 bool asBool(Object v) {
     if (v == null) { return false }
-    var b = v as bool or {
-        var s = v as String or { return false }
+    var b = v as bool catch {
+        var s = v as String catch { return false }
         return s == "true"
     }
     return b
@@ -212,9 +212,9 @@ bool asBool(Object v) {
 
 int asInt(Object v) {
     if (v == null) { return 0 }
-    var i = v as int or {
-        var l = v as long or {
-            var f = v as double or { return 0 }
+    var i = v as int catch {
+        var l = v as long catch {
+            var f = v as double catch { return 0 }
             return int(f)
         }
         return int(l)
@@ -224,9 +224,9 @@ int asInt(Object v) {
 
 long asLong(Object v) {
     if (v == null) { return long(0) }
-    var l = v as long or {
-        var i = v as int or {
-            var f = v as double or { return long(0) }
+    var l = v as long catch {
+        var i = v as int catch {
+            var f = v as double catch { return long(0) }
             return long(f)
         }
         return long(i)
@@ -236,9 +236,9 @@ long asLong(Object v) {
 
 double asDouble(Object v) {
     if (v == null) { return 0.0 }
-    var f = v as double or {
-        var i = v as int or {
-            var l = v as long or { return 0.0 }
+    var f = v as double catch {
+        var i = v as int catch {
+            var l = v as long catch { return 0.0 }
             return double(l)
         }
         return double(i)
@@ -255,13 +255,13 @@ double asFloat32(Object v) {
 
 String asString(Object v) {
     if (v == null) { return "" }
-    var s = v as String or { return "" }
+    var s = v as String catch { return "" }
     return s
 }
 
 byte[] asBytes(Object v) {
     if (v == null) { return byte[0] }
-    var s = v as String or { return byte[0] }
+    var s = v as String catch { return byte[0] }
     return s.toBytes()
 }
 
@@ -289,7 +289,7 @@ pub (core.Schema, error) parseFieldDefs(String name, String defs) {
         if (fname == "" || ftypeStr == "") {
             return core.Schema("", List<core.Field>[]), errors.ConfigError("malformed field def '${p}' — expected 'name:type'")
         }
-        var ft = fieldTypeFromName(ftypeStr) or {
+        var ft = fieldTypeFromName(ftypeStr) catch {
             return core.Schema("", List<core.Field>[]), errors.ConfigError("field '${fname}': ${err.Error()}")
         }
         fields = append(fields, core.Field(fname, ft, null))

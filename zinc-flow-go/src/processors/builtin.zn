@@ -186,7 +186,7 @@ pub void registerBuiltins(Registry reg) {
 }
 
 (ProcessorFn, error) FileSinkFactory(ScopedContext ctx, Map<String, String> config) {
-    var p = ctx.getProvider("content") or {
+    var p = ctx.getProvider("content") catch {
         return FileSink(config["outputDir"], MemoryContentStore())
     }
     var cp = p as ContentProvider
@@ -202,7 +202,7 @@ pub void registerBuiltins(Registry reg) {
     if (schemaName == "") {
         schemaName = "default"
     }
-    var p = ctx.getProvider("content") or {
+    var p = ctx.getProvider("content") catch {
         return ConvertJSONToRecord(schemaName, MemoryContentStore())
     }
     var cp = p as ContentProvider

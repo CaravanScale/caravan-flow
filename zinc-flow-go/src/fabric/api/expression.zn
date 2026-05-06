@@ -23,24 +23,24 @@ class ExpressionApiHandler {
     pub void parseHandler(ResponseWriter w, Request r) {
         var raw = byte[0]
         using (var rc = r.Body) {
-            raw = io.ReadAll(rc) or {
+            raw = io.ReadAll(rc) catch {
                 writeJson(w, errResp("body read failed: ${err.Error()}"))
                 return
             }
         }
         var body = Map<String, Object>{}
-        json.Unmarshal(raw, &body) or {
+        json.Unmarshal(raw, &body) catch {
             writeJson(w, errResp("body must be valid JSON"))
             return
         }
 
-        var expression = body["expression"] as String or { "" }
+        var expression = body["expression"] as String catch { "" }
         if (expression == "") {
             writeJson(w, errResp("expression must not be blank"))
             return
         }
 
-        var compiled = expressions.compile(expression) or {
+        var compiled = expressions.compile(expression) catch {
             writeJson(w, errResp(err.Error()))
             return
         }
@@ -49,12 +49,12 @@ class ExpressionApiHandler {
         // resolver — matches csharp's DictValueResolver shape so
         // dotted paths like `record.id` resolve.
         var merged = Map<String, Object>{}
-        var ctx = body["context"] as Map<String, Object> or { Map<String, Object>{} }
-        var attrs = ctx["attributes"] as Map<String, Object> or { Map<String, Object>{} }
+        var ctx = body["context"] as Map<String, Object> catch { Map<String, Object>{} }
+        var attrs = ctx["attributes"] as Map<String, Object> catch { Map<String, Object>{} }
         for (k, v in attrs) {
             merged[k] = v
         }
-        var rec = ctx["record"] as Map<String, Object> or { Map<String, Object>{} }
+        var rec = ctx["record"] as Map<String, Object> catch { Map<String, Object>{} }
         for (k, v in rec) {
             merged[k] = v
         }

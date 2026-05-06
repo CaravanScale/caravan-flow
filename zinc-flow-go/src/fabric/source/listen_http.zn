@@ -93,7 +93,7 @@ class ListenHTTP : ConnectorSource {
         var bytes = byte[0]
         using (var rc = r.Body) {
             var limited = io.LimitReader(rc, long(maxBodyBytes) + long(1))
-            bytes = io.ReadAll(limited) or {
+            bytes = io.ReadAll(limited) catch {
                 w.WriteHeader(500)
                 return
             }

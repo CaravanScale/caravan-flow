@@ -108,7 +108,7 @@ pub ValidateResult validateFlow(config.Config cfg, Registry reg) {
 
         // Try to construct. The factory may raise on missing required
         // keys, malformed regex/JSONPath/expressions, etc.
-        var _proc = reg.create(typeName, ctx, procConfig) or {
+        var _proc = reg.create(typeName, ctx, procConfig) catch {
             result.addError(prefix, "construction failed: ${err.Error()}")
             continue
         }
