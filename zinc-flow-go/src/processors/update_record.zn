@@ -1,0 +1,193 @@
+// UpdateRecord — applies a sequence of expression-driven writes to
+// every record in a RecordContent FlowFile. Each pair `field = expr`
+// computes a new value for `field` from the (possibly already-updated)
+// record fields. Updates execute left-to-right within a record, so
+// later expressions see earlier writes.
+//
+// Mirrors csharp ZincFlow.StdLib.UpdateRecord (ExpressionProcessors.cs:276).
+// Config:
+//   updates — semicolon-separated list of `field = expression` pairs.
+//
+// Behavior:
+//   • Non-Record content → pass-through Single.
+//   • Empty record list → pass-through Single (no schema rebuild).
+//   • Per-record evaluation errors (divide-by-zero, bad cast) surface
+//     as null for that field; the rest of the record still flows.
+//   • Output schema: unchanged fields keep their original FieldType;
+//     updated/new fields get an inferred type from the first record's
+//     value (NULL inference falls back to STRING for safety).
+//
+// Examples:
+//   "tax = amount * 0.07; total = amount + tax"
+//   "tier = if(score > 90, \"gold\", if(score > 70, \"silver\", \"bronze\"))"
+
+import stdlib/errors
+import strings
+import core
+import expressions
+import fabric/registry
+
+// RecordResolver — binds expression identifiers to record field values.
+// Updated values land in `staging` so chained updates within a single
+// record observe earlier writes (matches csharp DictValueResolver
+// semantics — same Dictionary instance threaded through every Eval).
+class RecordResolver : expressions.ValueResolver {
+    GenericRecord record
+    Map<String, Object> staging
+
+    init(GenericRecord record, Map<String, Object> staging) {
+        this.record = record
+        this.staging = staging
+    }
+
+    pub EvalValue resolve(String name) {
+        if (staging.containsKey(name)) {
+            return expressions.evalFromObject(staging[name])
+        }
+        var v = record.getField(name)
+        if (v == null) {
+            return expressions.evalNull()
+        }
+        return expressions.evalFromObject(v)
+    }
+}
+
+class UpdateRecord : ProcessorFn {
+    List<String> fields
+    List<CompiledExpression> compiled
+
+    init(List<String> fields, List<CompiledExpression> compiled) {
+        this.fields = fields
+        this.compiled = compiled
+    }
+
+    pub ProcessorResult process(FlowFile ff) {
+        match (ff.content) {
+            case Records(schema, records) {
+                if (len(records) == 0) {
+                    return Single(ff)
+                }
+                var updated = List<Map<String, Object>>[]
+                for (record in records) {
+                    var staging = Map<String, Object>{}
+                    // Seed staging with all of the record's existing values
+                    // so iteration over keys at output time stays stable
+                    // and produces a complete row (even when no expression
+                    // touches a given field).
+                    for (f in schema.fields) {
+                        staging[f.name] = record.getField(f.name)
+                    }
+                    var resolver = RecordResolver(record, staging)
+                    var i = 0
+                    while (i < len(fields)) {
+                        var v = compiled[i].eval(resolver)
+                        // Null result writes null — matches csharp's
+                        // try/catch returning null for runtime errors.
+                        staging[fields[i]] = expressions.evalToObject(v)
+                        i = i + 1
+                    }
+                    updated = append(updated, staging)
+                }
+
+                var newSchema = buildOutputSchema(schema, fields, updated[0])
+                var newRecords = List<GenericRecord>[]
+                for (m in updated) {
+                    var rec = GenericRecord(newSchema)
+                    for (f in newSchema.fields) {
+                        if (m.containsKey(f.name)) {
+                            rec.setField(f.name, m[f.name])
+                        }
+                    }
+                    newRecords = append(newRecords, rec)
+                }
+                var out = withContent(ff, Records(newSchema, newRecords))
+                return Single(out)
+            }
+            case _ {
+                return Single(ff)
+            }
+        }
+    }
+}
+
+// buildOutputSchema picks each field's FieldType: original schema wins
+// for fields that weren't touched by any expression; updated/new fields
+// get a type inferred from the first record's value.
+Schema buildOutputSchema(Schema orig, List<String> updatedFieldNames, Map<String, Object> firstRow) {
+    var origByName = Map<String, Field>{}
+    for (f in orig.fields) {
+        origByName[f.name] = f
+    }
+    var touched = Map<String, bool>{}
+    for (n in updatedFieldNames) {
+        touched[n] = true
+    }
+    var fields = List<Field>[]
+    // Preserve original field order; append new fields in insertion order.
+    for (f in orig.fields) {
+        if (touched.containsKey(f.name)) {
+            var ft = inferFieldTypeFor(firstRow[f.name])
+            fields = append(fields, Field(f.name, ft, null))
+        } else {
+            fields = append(fields, f)
+        }
+    }
+    for (n in updatedFieldNames) {
+        if (!origByName.containsKey(n)) {
+            var ft = inferFieldTypeFor(firstRow[n])
+            fields = append(fields, Field(n, ft, null))
+        }
+    }
+    return Schema(orig.name, fields)
+}
+
+// inferFieldTypeFor walks Go's reflection-light JSON-Unmarshal value
+// space and the boxed-numeric set the expression engine returns. NULL
+// falls back to STRING — matches csharp; a hard-typed null column is
+// rarely useful and breaks downstream serializers.
+FieldType inferFieldTypeFor(Object v) {
+    if (v == null) { return STRING }
+    match (v) {
+        case bool(_)    { return BOOLEAN }
+        case int(_)     { return INT }
+        case long(_)    { return LONG }
+        case float64(_) { return DOUBLE }
+        case String(_)  { return STRING }
+    }
+    return STRING
+}
+
+pub (ProcessorFn, error) UpdateRecordFactory(ScopedContext ctx, Map<String, String> config) {
+    var raw = ""
+    if (config.containsKey("updates")) {
+        raw = config["updates"]
+    }
+    var fields = List<String>[]
+    var compiled = List<CompiledExpression>[]
+    for (part in strings.Split(raw, ";")) {
+        var trimmed = strings.TrimSpace(part)
+        if (trimmed == "") { continue }
+        var eqIdx = strings.Index(trimmed, "=")
+        if (eqIdx <= 0) {
+            return UpdateRecord(List<String>[], List<CompiledExpression>[]),
+                errors.ConfigError("UpdateRecord: malformed pair '${trimmed}' — expected 'field = expression'")
+        }
+        var field = strings.TrimSpace(trimmed.substring(0, eqIdx))
+        var exprSrc = strings.TrimSpace(trimmed.substring(eqIdx + 1))
+        if (field == "") {
+            return UpdateRecord(List<String>[], List<CompiledExpression>[]),
+                errors.ConfigError("UpdateRecord: empty field name in '${trimmed}'")
+        }
+        if (exprSrc == "") {
+            return UpdateRecord(List<String>[], List<CompiledExpression>[]),
+                errors.ConfigError("UpdateRecord: empty expression for field '${field}'")
+        }
+        var c = expressions.compile(exprSrc) or {
+            return UpdateRecord(List<String>[], List<CompiledExpression>[]),
+                errors.ConfigError("UpdateRecord: field '${field}' has invalid expression '${exprSrc}': ${err.Error()}")
+        }
+        fields = append(fields, field)
+        compiled = append(compiled, c)
+    }
+    return UpdateRecord(fields, compiled), null
+}

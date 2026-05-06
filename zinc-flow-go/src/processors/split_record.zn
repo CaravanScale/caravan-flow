@@ -1,0 +1,74 @@
+// SplitRecord — fans out a RecordContent FlowFile into one FlowFile per
+// record. Each output carries the original attributes plus per-record
+// `split.index` and `split.total` attrs (zero-padded to the width of
+// the total count for lexical-sort friendliness).
+//
+// Mirrors csharp ZincFlow.StdLib.SplitRecord (ExpressionProcessors.cs:390).
+// Pair with RouteRecord to route on per-record fields, or with downstream
+// per-record processors that operate on a single row at a time.
+//
+// Behavior:
+//   • Non-Record content → pass-through Single(ff).
+//   • Empty record list → pass-through Single(ff).
+//   • Otherwise → Multiple([ff_0, ff_1, ..., ff_n-1]) where each child
+//     wraps a singleton RecordContent reusing the parent schema.
+
+import core
+import fabric/registry
+import strings
+
+class SplitRecord : ProcessorFn {
+    init() {}
+
+    pub ProcessorResult process(FlowFile ff) {
+        match (ff.content) {
+            case Records(schema, records) {
+                if (len(records) == 0) {
+                    return Single(ff)
+                }
+                var total = len(records)
+                var totalStr = str(total)
+                var width = len(totalStr)
+                var children = List<FlowFile>[]
+                var i = 0
+                while (i < total) {
+                    var singletons = List<GenericRecord>[]
+                    singletons = append(singletons, records[i])
+
+                    var childAttrs = Map<String, String>{}
+                    for (k, v in ff.attributes) {
+                        childAttrs[k] = v
+                    }
+                    childAttrs["split.index"] = padLeft(str(i), width, "0")
+                    childAttrs["split.total"] = totalStr
+
+                    var child = createFlowFileWithContent(
+                        Records(schema, singletons),
+                        childAttrs
+                    )
+                    children = append(children, child)
+                    i = i + 1
+                }
+                return Multiple(children)
+            }
+            case _ {
+                return Single(ff)
+            }
+        }
+    }
+}
+
+// padLeft pads s to the given width with the pad string. Width-of-pad-1
+// is the typical case (zero-pad), so we don't bother handling
+// multi-char pads here.
+String padLeft(String s, int width, String pad) {
+    var out = s
+    while (len(out) < width) {
+        out = pad + out
+    }
+    return out
+}
+
+pub (ProcessorFn, error) SplitRecordFactory(ScopedContext ctx, Map<String, String> config) {
+    return SplitRecord(), null
+}

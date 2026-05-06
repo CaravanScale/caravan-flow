@@ -1,0 +1,117 @@
+// SplitRecord — fans out one RecordContent FlowFile into one FlowFile
+// per record, each carrying split.index + split.total attrs.
+
+import core
+import processors
+import stdlib/asserts
+
+Schema usersSchema() {
+    return Schema("user", List<Field>[
+        Field("id", LONG, null),
+        Field("name", STRING, null)
+    ])
+}
+
+GenericRecord userRow(long id, String name) {
+    var rec = GenericRecord(usersSchema())
+    rec.setField("id", id)
+    rec.setField("name", name)
+    return rec
+}
+
+test "SplitRecord — fans 3 records into 3 FlowFiles, each singleton" {
+    var rs = List<GenericRecord>[
+        userRow(long(1), "Alice"),
+        userRow(long(2), "Bob"),
+        userRow(long(3), "Carol")
+    ]
+    var ff = createFlowFileWithContent(Records(usersSchema(), rs), Map<String, String>{})
+    var proc = processors.SplitRecord()
+    var result = proc.process(ff)
+
+    match (result) {
+        case Multiple(ffs) {
+            asserts.equalInt(t, len(ffs), 3)
+            // Each child is a singleton with the original schema
+            for (child in ffs) {
+                match (child.content) {
+                    case Records(s, recs) {
+                        asserts.equalString(t, s.name, "user")
+                        asserts.equalInt(t, len(recs), 1)
+                    }
+                    case _ { t.Errorf("child not Records: %v", child.content) }
+                }
+            }
+            asserts.equalString(t, ffs[0].attributes["split.index"], "0")
+            asserts.equalString(t, ffs[1].attributes["split.index"], "1")
+            asserts.equalString(t, ffs[2].attributes["split.index"], "2")
+            asserts.equalString(t, ffs[0].attributes["split.total"], "3")
+        }
+        case _ { t.Errorf("expected Multiple, got %v", result) }
+    }
+}
+
+test "SplitRecord — zero-pads split.index to total width" {
+    var rs = List<GenericRecord>[]
+    var i = 0
+    while (i < 12) {
+        rs = append(rs, userRow(long(i), "u"))
+        i = i + 1
+    }
+    var ff = createFlowFileWithContent(Records(usersSchema(), rs), Map<String, String>{})
+    var proc = processors.SplitRecord()
+    var result = proc.process(ff)
+    match (result) {
+        case Multiple(ffs) {
+            asserts.equalInt(t, len(ffs), 12)
+            // total = 12 → width 2 → indices "00".."11"
+            asserts.equalString(t, ffs[0].attributes["split.index"], "00")
+            asserts.equalString(t, ffs[9].attributes["split.index"], "09")
+            asserts.equalString(t, ffs[11].attributes["split.index"], "11")
+            asserts.equalString(t, ffs[0].attributes["split.total"], "12")
+        }
+        case _ { t.Errorf("expected Multiple") }
+    }
+}
+
+test "SplitRecord — preserves parent attributes on each child" {
+    var attrs = Map<String, String>{}
+    attrs["source"] = "ingest-1"
+    attrs["filename"] = "users.json"
+    var ff = createFlowFileWithContent(
+        Records(usersSchema(), List<GenericRecord>[userRow(long(1), "Alice")]),
+        attrs
+    )
+    var proc = processors.SplitRecord()
+    var result = proc.process(ff)
+    match (result) {
+        case Multiple(ffs) {
+            asserts.equalString(t, ffs[0].attributes["source"], "ingest-1")
+            asserts.equalString(t, ffs[0].attributes["filename"], "users.json")
+        }
+        case _ { t.Errorf("expected Multiple") }
+    }
+}
+
+test "SplitRecord — empty records list passes through" {
+    var ff = createFlowFileWithContent(
+        Records(usersSchema(), List<GenericRecord>[]),
+        Map<String, String>{}
+    )
+    var proc = processors.SplitRecord()
+    var result = proc.process(ff)
+    match (result) {
+        case Single(_) {}
+        case _ { t.Errorf("expected Single, got %v", result) }
+    }
+}
+
+test "SplitRecord — non-Record content passes through" {
+    var ff = createFlowFile("raw bytes".toBytes(), Map<String, String>{})
+    var proc = processors.SplitRecord()
+    var result = proc.process(ff)
+    match (result) {
+        case Single(_) {}
+        case _ { t.Errorf("expected Single, got %v", result) }
+    }
+}

@@ -1,0 +1,158 @@
+// UpdateRecord — expression-driven per-record field rewrite.
+// Mirrors csharp parity: chained writes within a record see prior
+// writes; non-Record content is pass-through; bad/empty expressions
+// surface as factory errors.
+
+import core
+import processors
+import stdlib/asserts
+
+GenericRecord orderRecord(double amount, String region) {
+    var schema = Schema("order", List<Field>[
+        Field("amount", DOUBLE, null),
+        Field("region", STRING, null)
+    ])
+    var rec = GenericRecord(schema)
+    rec.setField("amount", amount)
+    rec.setField("region", region)
+    return rec
+}
+
+Schema orderSchema() {
+    return Schema("order", List<Field>[
+        Field("amount", DOUBLE, null),
+        Field("region", STRING, null)
+    ])
+}
+
+test "UpdateRecord — adds new field via expression" {
+    var ctx = mkScopedContext()
+    var cfg = Map<String, String>{}
+    cfg["updates"] = "tax = amount * 0.07"
+    var proc, err = processors.UpdateRecordFactory(ctx, cfg)
+    if (err != null) { t.Errorf("factory: %v", err); return }
+
+    var schema = orderSchema()
+    var rec = orderRecord(100.0, "US")
+    var ff = createFlowFileWithContent(Records(schema, List<GenericRecord>[rec]), Map<String, String>{})
+    var result = proc.process(ff)
+
+    match (result) {
+        case Single(out) {
+            match (out.content) {
+                case Records(newSchema, rows) {
+                    asserts.equalInt(t, len(newSchema.fields), 3)
+                    var taxVal = rows[0].getField("tax")
+                    if (taxVal == null) { t.Errorf("tax missing"); return }
+                    var taxNum = taxVal as double or { t.Errorf("tax not double"); return }
+                    asserts.isTrue(t, taxNum > 6.99 && taxNum < 7.01,
+                        "expected tax≈7.00, got ${str(taxNum)}")
+                }
+                case _ { t.Errorf("expected Records, got %v", out.content) }
+            }
+        }
+        case _ { t.Errorf("expected Single, got %v", result) }
+    }
+}
+
+test "UpdateRecord — chained updates see earlier writes" {
+    var ctx = mkScopedContext()
+    var cfg = Map<String, String>{}
+    cfg["updates"] = "tax = amount * 0.07; total = amount + tax"
+    var proc, err = processors.UpdateRecordFactory(ctx, cfg)
+    if (err != null) { t.Errorf("factory: %v", err); return }
+
+    var schema = orderSchema()
+    var rec = orderRecord(100.0, "US")
+    var ff = createFlowFileWithContent(Records(schema, List<GenericRecord>[rec]), Map<String, String>{})
+    var result = proc.process(ff)
+
+    match (result) {
+        case Single(out) {
+            match (out.content) {
+                case Records(_, rows) {
+                    var totalVal = rows[0].getField("total")
+                    if (totalVal == null) { t.Errorf("total missing"); return }
+                    var totalNum = totalVal as double or { t.Errorf("total not double"); return }
+                    asserts.isTrue(t, totalNum > 106.99 && totalNum < 107.01,
+                        "expected total≈107.00, got ${str(totalNum)}")
+                }
+                case _ { t.Errorf("expected Records, got %v", out.content) }
+            }
+        }
+        case _ { t.Errorf("expected Single, got %v", result) }
+    }
+}
+
+test "UpdateRecord — overwrites existing field, original schema for untouched" {
+    var ctx = mkScopedContext()
+    var cfg = Map<String, String>{}
+    cfg["updates"] = "region = upper(region)"
+    var proc, err = processors.UpdateRecordFactory(ctx, cfg)
+    if (err != null) { t.Errorf("factory: %v", err); return }
+
+    var schema = orderSchema()
+    var ff = createFlowFileWithContent(
+        Records(schema, List<GenericRecord>[orderRecord(50.0, "us")]),
+        Map<String, String>{}
+    )
+    var result = proc.process(ff)
+
+    match (result) {
+        case Single(out) {
+            match (out.content) {
+                case Records(_, rows) {
+                    var r = rows[0].getField("region") as String or {
+                        t.Errorf("region missing"); return
+                    }
+                    asserts.equalString(t, r, "US")
+                    var amt = rows[0].getField("amount") as double or {
+                        t.Errorf("amount missing"); return
+                    }
+                    asserts.isTrue(t, amt == 50.0, "amount preserved")
+                }
+                case _ { t.Errorf("expected Records") }
+            }
+        }
+        case _ { t.Errorf("expected Single") }
+    }
+}
+
+test "UpdateRecord — empty record list passes through" {
+    var ctx = mkScopedContext()
+    var cfg = Map<String, String>{}
+    cfg["updates"] = "tax = amount * 0.07"
+    var proc, err = processors.UpdateRecordFactory(ctx, cfg)
+    if (err != null) { t.Errorf("factory: %v", err); return }
+
+    var ff = createFlowFileWithContent(
+        Records(orderSchema(), List<GenericRecord>[]),
+        Map<String, String>{}
+    )
+    var result = proc.process(ff)
+    match (result) {
+        case Single(_) {}
+        case _ { t.Errorf("expected Single, got %v", result) }
+    }
+}
+
+test "UpdateRecord — non-Record content passes through unchanged" {
+    var ctx = mkScopedContext()
+    var cfg = Map<String, String>{}
+    cfg["updates"] = "x = 1"
+    var proc, _ = processors.UpdateRecordFactory(ctx, cfg)
+    var ff = createFlowFile("not records".toBytes(), Map<String, String>{})
+    var result = proc.process(ff)
+    match (result) {
+        case Single(_) {}
+        case _ { t.Errorf("expected Single, got %v", result) }
+    }
+}
+
+test "UpdateRecord — malformed pair returns config error" {
+    var ctx = mkScopedContext()
+    var cfg = Map<String, String>{}
+    cfg["updates"] = "no_equals_here"
+    var _, err = processors.UpdateRecordFactory(ctx, cfg)
+    asserts.isTrue(t, err != null, "expected factory error for missing '='")
+}

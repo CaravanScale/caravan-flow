@@ -81,6 +81,16 @@ pub void registerBuiltins(Registry reg) {
         PutHTTPFactory
     )
     reg.register(
+        ProcessorInfo("UpdateRecord", "Updates record fields using typed expressions (field = expr; ...)",
+            List<String>["updates"]),
+        UpdateRecordFactory
+    )
+    reg.register(
+        ProcessorInfo("SplitRecord", "Fans out RecordContent into one FlowFile per record",
+            List<String>[]),
+        SplitRecordFactory
+    )
+    reg.register(
         ProcessorInfo("ConvertAvroToRecord", "Parses Avro binary content into a record",
             List<String>["schemaName", "fieldDefs"]),
         codec.ConvertAvroToRecordFactory
