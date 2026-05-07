@@ -102,10 +102,15 @@ def diff_shapes(csharp: Any, go: Any, path: str = "") -> list[str]:
             diffs.extend(diff_shapes(csharp[k], go[k], f"{path}.{k}"))
         return diffs
     if isinstance(csharp, list):
-        if not csharp and not go:
+        # shape() encodes empty list as ["empty"] (sentinel string in slot 0)
+        # and non-empty list as [shape(first)]. Treat empty as wildcard
+        # against any populated list — the dashboard iterates zero times
+        # over an empty list, so structural divergence inside element shape
+        # only matters when both sides have data.
+        cs_empty = csharp == ["empty"]
+        go_empty = go == ["empty"]
+        if cs_empty or go_empty:
             return []
-        if not csharp or not go:
-            return [f"{path or '<root>'}[]: csharp={csharp} go={go}"]
         return diff_shapes(csharp[0], go[0], f"{path}[0]")
     if csharp != go:
         return [f"{path or '<root>'}: csharp={csharp!r} go={go!r}"]

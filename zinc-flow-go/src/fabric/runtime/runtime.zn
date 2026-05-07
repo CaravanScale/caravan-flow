@@ -157,6 +157,14 @@ class Fabric {
     // addConnection, updateProcessorConfig, etc). Cleared by clearDirty()
     // on /api/reload and /api/flow/save success. Read by /api/flow/status.
     var dirty = false
+    // mutationCounter increments on every markDirty call so the dashboard
+    // can render an "unsaved changes" badge whose value advances with
+    // each runtime edit. lastSavedCounter snapshots mutationCounter at
+    // the moment of save; lastSavedAtMs is the wall-clock time of save
+    // (0 when never saved). Mirrors csharp's Fabric.GetDirtyState tuple.
+    var mutationCounter = 0
+    var lastSavedCounter = 0
+    long lastSavedAtMs
 
     // Config-time defs, for introspection. Kept alongside the graph so
     // API handlers can report "what was this processor configured as?"
@@ -183,6 +191,11 @@ class Fabric {
         this.dlqStore = DLQ()
         this.maxHops = 50
         this.samplesPerProcessor = 16
+        // Treat fabric construction as the implicit "saved" point — keeps
+        // /api/flow/status's lastSavedAgoMs as a positive int from boot
+        // (matches csharp; the dashboard's "saved Ns ago" badge always
+        // wants a number, not null).
+        this.lastSavedAtMs = time.Now().UnixMilli()
     }
 
     // --- Graph snapshot helpers ---
@@ -653,9 +666,9 @@ class Fabric {
     pub Map<String, int> getStats() {
         var stats = Map<String, int>{}
         stats["processed"] = int(totalProcessed.Load())
-        stats["active"] = int(activeExecutions.Load())
+        stats["activeExecutions"] = int(activeExecutions.Load())
         stats["processors"] = len(graph.getProcessorNames())
-        stats["dlq"] = dlqStore.count()
+        stats["sources"] = len(sources)
         return stats
     }
 
@@ -953,9 +966,25 @@ class Fabric {
 
     // --- Dirty bit ---
 
-    pub void markDirty() { dirty = true }
-    pub void clearDirty() { dirty = false }
+    pub void markDirty() {
+        dirty = true
+        mutationCounter = mutationCounter + 1
+    }
+    pub void clearDirty() {
+        dirty = false
+        lastSavedCounter = mutationCounter
+        lastSavedAtMs = time.Now().UnixMilli()
+    }
     pub bool isDirty() { return dirty }
+    pub int getMutationCounter() { return mutationCounter }
+    pub int getLastSavedCounter() { return lastSavedCounter }
+    // getLastSavedAgoMs returns ms since last save, or -1 when never saved.
+    // The negative-sentinel encoding lets the API layer emit `null` for
+    // unsaved fabrics (matches csharp's nullable long).
+    pub long getLastSavedAgoMs() {
+        if (lastSavedAtMs == long(0)) { return long(-1) }
+        return time.Now().UnixMilli() - lastSavedAtMs
+    }
 
     // --- Connection mutation ---
 

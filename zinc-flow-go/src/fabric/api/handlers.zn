@@ -16,12 +16,31 @@ String encodeBase64(byte[] data) {
     return base64.StdEncoding.EncodeToString(data)
 }
 
+// stateString renders a ComponentState as the upper-case label the
+// dashboard / csharp expect ("ENABLED" / "DRAINING" / "DISABLED").
+String stateString(ComponentState s) {
+    match (s) {
+        case ENABLED { return "ENABLED" }
+        case DRAINING { return "DRAINING" }
+        case DISABLED { return "DISABLED" }
+    }
+    return "UNKNOWN"
+}
+
 // ApiHandler holds a reference to the fabric for serving API requests.
+// `sreg` is the source registry — used by /api/registry to surface
+// source types alongside processor types in a single palette feed.
+// Pass null to skip source-registry merging (tests / minimal harness).
 class ApiHandler {
     Fabric fab
+    SourceRegistry sreg
 
     init(Fabric fab) {
         this.fab = fab
+    }
+
+    pub void setSourceRegistry(SourceRegistry sreg) {
+        this.sreg = sreg
     }
 
     // GET /api/stats — aggregate processing statistics
@@ -36,7 +55,14 @@ class ApiHandler {
         writeJson(w, names)
     }
 
-    // GET /api/registry — list available processor types
+    // GET /api/registry — palette feed for the dashboard. Merges processor
+    // types and source types into one list, tagged with `kind` so the UI
+    // dispatches drops to the right add endpoint. Mirrors csharp
+    // ApiHandler.RegistryList: each entry exposes name/description/category/
+    // kind/wizardComponent/configKeys/parameters. The Go track doesn't yet
+    // ship rich Parameter metadata (label/required/default/choices/...);
+    // emits an empty parameters list so wizards can render a generic form
+    // off configKeys until per-processor parameter schemas are populated.
     pub void registryHandler(ResponseWriter w, Request r) {
         var reg = fab.getRegistry()
         var infos = reg.list()
@@ -45,22 +71,95 @@ class ApiHandler {
             var entry = Map<String, Object>{}
             entry["name"] = info.name
             entry["description"] = info.description
+            entry["category"] = "Processor"
+            entry["kind"] = "processor"
+            entry["wizardComponent"] = null
             entry["configKeys"] = info.configKeys
+            entry["parameters"] = List<Map<String, Object>>[]
             result = append(result, entry)
+        }
+        if (sreg != null) {
+            for (s in sreg.list()) {
+                var entry = Map<String, Object>{}
+                entry["name"] = s.typeName
+                entry["description"] = s.description
+                entry["category"] = "Source"
+                entry["kind"] = "source"
+                entry["wizardComponent"] = null
+                entry["configKeys"] = s.configKeys
+                entry["parameters"] = List<Map<String, Object>>[]
+                result = append(result, entry)
+            }
         }
         writeJson(w, result)
     }
 
-    // GET /api/flow — full flow graph (processors + connections + stats).
-    // Replaces the old `/api/routes` view — in the direct-pipeline model
-    // routing lives on processor connections ("success"/"failure"/...),
-    // not in a standalone rules engine. Attribute-predicate routing is
-    // the RouteOnAttribute processor's responsibility (Phase 3).
+    // GET /api/flow — full flow graph: processors (with type/state/
+    // stats/connections per node), sources, providers, aggregate stats.
+    // Mirrors csharp ApiHandler.Flow (Fabric/ApiHandler.cs:221).
     pub void flowHandler(ResponseWriter w, Request r) {
+        var procStats = fab.getProcessorStats()
+        var allConns = fab.getConnections()
+        var procs = List<Map<String, Object>>[]
+        for (name in fab.getProcessorNames()) {
+            var entry = Map<String, Object>{}
+            entry["name"] = name
+            entry["type"] = fab.getProcessorType(name)
+            entry["state"] = stateString(fab.getProcessorState(name))
+            if (procStats.containsKey(name)) {
+                entry["stats"] = procStats[name]
+            } else {
+                entry["stats"] = Map<String, int>{}
+            }
+            if (allConns.containsKey(name)) {
+                entry["connections"] = allConns[name]
+            } else {
+                entry["connections"] = Map<String, List<String>>{}
+            }
+            procs = append(procs, entry)
+        }
+
+        var srcs = List<Map<String, Object>>[]
+        var srcConns = fab.getSourceConnections()
+        var srcCfgs = fab.getSourceConfigs()
+        for (s in fab.getSources()) {
+            var entry = Map<String, Object>{}
+            entry["name"] = s["name"]
+            entry["type"] = s["type"]
+            entry["running"] = s["running"] == "true"
+            if (srcConns.containsKey(s["name"])) {
+                entry["connections"] = srcConns[s["name"]]
+            } else {
+                entry["connections"] = Map<String, List<String>>{}
+            }
+            if (srcCfgs.containsKey(s["name"])) {
+                entry["config"] = srcCfgs[s["name"]]
+            } else {
+                entry["config"] = Map<String, String>{}
+            }
+            srcs = append(srcs, entry)
+        }
+
+        var ctx = fab.getContext()
+        var provs = List<Map<String, Object>>[]
+        for (name in ctx.listProviders()) {
+            var entry = Map<String, Object>{}
+            entry["name"] = name
+            var prov = ctx.getProvider(name) catch {
+                entry["type"] = "unknown"
+                entry["state"] = "UNKNOWN"
+                provs = append(provs, entry)
+                continue
+            }
+            entry["type"] = prov.getType()
+            entry["state"] = stateString(prov.getState())
+            provs = append(provs, entry)
+        }
+
         var flow = Map<String, Object>{}
-        flow["processors"] = fab.getProcessorNames()
-        flow["entry_points"] = fab.getEntryPoints()
-        flow["connections"] = fab.getConnections()
+        flow["processors"] = procs
+        flow["sources"] = srcs
+        flow["providers"] = provs
         flow["stats"] = fab.getStats()
         writeJson(w, flow)
     }
@@ -628,12 +727,16 @@ class ApiHandler {
         writeJson(w, body)
     }
 
-    // GET /api/flow/status — { dirty: bool, processors: int, sources: int }.
+    // GET /api/flow/status — dirty bit + mutation/save counters that
+    // drive the dashboard's "unsaved changes" badge. Mirrors csharp
+    // ApiHandler.FlowStatus: lastSavedAgoMs is null when never saved,
+    // otherwise milliseconds since the last save.
     pub void flowStatusHandler(ResponseWriter w, Request r) {
         var body = Map<String, Object>{}
         body["dirty"] = fab.isDirty()
-        body["processors"] = len(fab.getProcessorNames())
-        body["sources"] = len(fab.getSources())
+        body["mutationCounter"] = fab.getMutationCounter()
+        body["lastSavedCounter"] = fab.getLastSavedCounter()
+        body["lastSavedAgoMs"] = fab.getLastSavedAgoMs()
         writeJson(w, body)
     }
 }

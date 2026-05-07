@@ -11,7 +11,7 @@
 # Exits 0 when shapes match across every endpoint, 1 on any divergence.
 # Writes a per-endpoint report to ./out/report.txt.
 
-set -euo pipefail
+set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CSHARP_BIN="$ROOT/zinc-flow-csharp/build/ZincFlow"
@@ -24,13 +24,14 @@ GO_PORT=19092
 mkdir -p "$WORK"
 rm -rf "$WORK"/*.log "$WORK"/csharp.cwd "$WORK"/go.cwd "$WORK"/report.txt
 
-# --- Build go binary if missing or stale -------------------------------------
+# --- Build go binary -----------------------------------------------------------
+# Stale-bin detection by mtime is unreliable across all .zn files in the
+# tree; just rebuild every run. zinc build + go build are both fast enough
+# (< 5s combined on a warm cache) that the simplicity is worth it.
 GO_BIN="$WORK/zinc-flow-go.bin"
-if [[ ! -x "$GO_BIN" ]] || [[ "$GO_SRC/src/main.zn" -nt "$GO_BIN" ]]; then
-    echo "[parity] building zinc-flow-go..."
-    (cd "$GO_SRC" && /tmp/zinc build >/dev/null)
-    (cd "$GO_SRC/zinc-out" && go build -o "$GO_BIN" .)
-fi
+echo "[parity] building zinc-flow-go..."
+(cd "$GO_SRC" && /tmp/zinc build >/dev/null)
+(cd "$GO_SRC/zinc-out" && go build -o "$GO_BIN" .)
 if [[ ! -x "$CSHARP_BIN" ]]; then
     echo "[parity] csharp binary missing at $CSHARP_BIN — build with"
     echo "         dotnet publish -c Release -r linux-x64 --self-contained true"
@@ -57,8 +58,9 @@ echo "[parity] starting go on :$GO_PORT"
 GO_PID=$!
 
 cleanup() {
-    kill "$CSHARP_PID" "$GO_PID" 2>/dev/null || true
-    wait "$CSHARP_PID" "$GO_PID" 2>/dev/null || true
+    kill "$CSHARP_PID" "$GO_PID" 2>/dev/null
+    # Don't wait — children can hang on SIGTERM (Go panic stack, csharp
+    # graceful drain) and we don't need their exit codes; let the OS reap.
 }
 trap cleanup EXIT
 
@@ -78,7 +80,36 @@ wait_ready "$CSHARP_PORT" csharp || { echo "[parity] csharp logs:"; tail -40 "$W
 wait_ready "$GO_PORT"     go     || { echo "[parity] go logs:";     tail -40 "$WORK/go.log";     exit 1; }
 
 # --- Diff endpoint shapes ------------------------------------------------------
+DIFF_RC=0
 python3 "$HARNESS_DIR/parity_diff.py" \
     --csharp "http://127.0.0.1:$CSHARP_PORT" \
     --go     "http://127.0.0.1:$GO_PORT" \
-    --report "$WORK/report.txt"
+    --report "$WORK/report.txt" || DIFF_RC=$?
+
+# --- Binary size + perf measurement -------------------------------------------
+# Reported alongside the shape diff so the report doubles as an "is the Go
+# track actually meeting its AOT pitch?" snapshot. csharp ships a
+# self-contained linux-x64 build (.NET runtime bundled); Go ships a single
+# stripped ELF. Boot time is ready-when /readyz returns 200; we time it from
+# spawn to first 200, but since both are already running here we measure
+# latency-to-first-flow plus a simple req/sec on /api/flow.
+{
+    echo ""
+    echo "=== Binary size ==="
+    CS_SIZE=$(stat -c '%s' "$CSHARP_BIN")
+    GO_SIZE=$(stat -c '%s' "$GO_BIN")
+    CS_MB=$(awk "BEGIN { printf \"%.1f\", $CS_SIZE/1048576 }")
+    GO_MB=$(awk "BEGIN { printf \"%.1f\", $GO_SIZE/1048576 }")
+    printf "csharp  %10d bytes (%5s MB)\n" "$CS_SIZE" "$CS_MB"
+    printf "go      %10d bytes (%5s MB)\n" "$GO_SIZE" "$GO_MB"
+    echo ""
+    echo "=== /api/flow throughput (5s sequential GETs) ==="
+} >> "$WORK/report.txt"
+
+python3 "$HARNESS_DIR/parity_perf.py" \
+    --csharp "http://127.0.0.1:$CSHARP_PORT" \
+    --go     "http://127.0.0.1:$GO_PORT" \
+    --report "$WORK/report.txt" || true
+
+cat "$WORK/report.txt"
+exit "$DIFF_RC"
