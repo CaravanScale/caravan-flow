@@ -13,13 +13,6 @@ import core
 import stdlib/config
 import fabric/runtime
 
-// writeConfigToDisk wraps Config.writeConfigAs in a same-package thrower
-// so the call site can use `catch` cleanly. See compiler note in
-// flowSaveHandler for the void-thrower-on-cross-pkg-class detection gap.
-error writeConfigToDisk(config.Config c, String path) {
-    return c.writeConfigAs(path)
-}
-
 class LifecycleApiHandler {
     Fabric fab
     String configName
@@ -78,7 +71,7 @@ class LifecycleApiHandler {
         fresh.load(configName, configType, configDir)
         fab.exportToConfig(fresh)
         var path = configDir + "/" + configName + "." + configType
-        writeConfigToDisk(fresh, path) catch {
+        fresh.writeConfigAs(path) catch {
             w.WriteHeader(500)
             w.Write(('{"error":"' + err.Error() + '"}').toBytes())
             return
