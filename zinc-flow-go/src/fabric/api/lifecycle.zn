@@ -13,6 +13,22 @@ import core
 import stdlib/config
 import fabric/runtime
 
+// layerInfo stat-checks a candidate config file and returns a
+// {role, path, present, size} entry for the /api/overlays response.
+Map<String, Object> layerInfo(String role, String path) {
+    var entry = Map<String, Object>{}
+    entry["role"] = role
+    entry["path"] = path
+    var info = os.Stat(path) catch {
+        entry["present"] = false
+        entry["size"] = 0
+        return entry
+    }
+    entry["present"] = true
+    entry["size"] = info.Size()
+    return entry
+}
+
 class LifecycleApiHandler {
     Fabric fab
     String configName
@@ -83,6 +99,32 @@ class LifecycleApiHandler {
         out["processors"] = len(fab.getProcessorNames())
         out["sources"] = len(fab.getSources())
         writeJson(w, out)
+    }
+
+    // GET /api/overlays — config overlay introspection. Reports the
+    // candidate layer files (base + local + secrets), each tagged with
+    // present/size, plus the effective merged-down settings. Mirrors
+    // csharp ApiHandler.Overlays. Provenance (which key came from which
+    // layer) is left as an empty map on the Go track — Viper doesn't
+    // expose per-key origin, and operators primarily care about
+    // "did this file get loaded?" + "what's the merged view?".
+    pub void overlaysHandler(ResponseWriter w, Request r) {
+        var basePath = configDir + "/" + configName + "." + configType
+        var layers = List<Map<String, Object>>[]
+        layers = append(layers, layerInfo("base", basePath))
+        layers = append(layers, layerInfo("local", configDir + "/" + configName + ".local." + configType))
+        layers = append(layers, layerInfo("secrets", configDir + "/secrets." + configType))
+
+        var fresh = config.Config()
+        fresh.load(configName, configType, configDir)
+        var effective = fresh.allSettings()
+
+        var body = Map<String, Object>{}
+        body["base"] = basePath
+        body["layers"] = layers
+        body["effective"] = effective
+        body["provenance"] = Map<String, Object>{}
+        writeJson(w, body)
     }
 
     // GET /api/layout — return positions JSON, or {positions:{}} if the

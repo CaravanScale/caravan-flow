@@ -1,0 +1,39 @@
+server:
+  port: 9091
+  host: 127.0.0.1
+
+logging:
+  level: WARN
+  handler: text
+  output: stdout
+
+content:
+  threshold: 262144
+  dir: /tmp/zinc-flow-parity/content
+
+defaults:
+  backpressure:
+    max_count: 10000
+    max_retries: 5
+    drain_timeout: 60
+
+# Minimal flow that both impls accept under strict config validation.
+# Two UpdateAttribute processors wired success → success → terminal.
+# No file/network sources — keeps the run sealed to the management API
+# surface area, which is what the parity harness diffs.
+flow:
+  processors:
+    tag-env:
+      type: UpdateAttribute
+      config:
+        key: env
+        value: parity
+      connections:
+        success:
+          - tag-source
+
+    tag-source:
+      type: UpdateAttribute
+      config:
+        key: source
+        value: harness

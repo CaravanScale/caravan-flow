@@ -161,7 +161,7 @@ void main() {
     HandleFunc("/api/processors/remove", api.removeProcessorHandler)
     HandleFunc("/api/registry", api.registryHandler)
     HandleFunc("/api/stats", api.statsHandler)
-    HandleFunc("/api/stats/processors", api.processorStatsHandler)
+    HandleFunc("/api/processor-stats", api.processorStatsHandler)
     HandleFunc("/api/dlq", api.dlqHandler)
     HandleFunc("/api/dlq/replay", api.dlqReplayHandler)
     HandleFunc("/api/dlq/replay-all", api.dlqReplayAllHandler)
@@ -221,6 +221,7 @@ void main() {
     var lifeApi = fabric.api.LifecycleApiHandler(fab, "config", "yaml", ".")
     HandleFunc("POST /api/reload", lifeApi.reloadHandler)
     HandleFunc("POST /api/flow/save", lifeApi.flowSaveHandler)
+    HandleFunc("GET /api/overlays", lifeApi.overlaysHandler)
     HandleFunc("GET /api/layout", lifeApi.getLayoutHandler)
     HandleFunc("POST /api/layout", lifeApi.saveLayoutHandler)
 
