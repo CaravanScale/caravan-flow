@@ -13,6 +13,13 @@ import core
 import stdlib/config
 import fabric/runtime
 
+// writeConfigToDisk wraps Config.writeConfigAs in a same-package thrower
+// so the call site can use `catch` cleanly. See compiler note in
+// flowSaveHandler for the void-thrower-on-cross-pkg-class detection gap.
+error writeConfigToDisk(config.Config c, String path) {
+    return c.writeConfigAs(path)
+}
+
 class LifecycleApiHandler {
     Fabric fab
     String configName
@@ -56,12 +63,33 @@ class LifecycleApiHandler {
         writeJson(w, out)
     }
 
-    // POST /api/flow/save — placeholder. The Go track does not yet ship
-    // a YAML emitter; the route returns 501 with a hint pointing at
-    // /api/reload as the workflow alternative.
+    // POST /api/flow/save — persist the live runtime graph back to
+    // config.yaml. The handler builds a fresh viper-backed Config
+    // from current state (so we don't mutate the long-lived defaults
+    // on the boot config), exports the graph + sources into it, then
+    // writes via WriteConfigAs. Mirrors csharp ApiHandler.FlowSave.
     pub void flowSaveHandler(ResponseWriter w, Request r) {
-        w.WriteHeader(501)
-        w.Write(('{"error":"flow save is not implemented on the Go track — edit config.yaml on disk and POST /api/reload"}').toBytes())
+        if (r.Method != "POST") {
+            w.WriteHeader(405)
+            w.Write('{"error":"method not allowed"}'.toBytes())
+            return
+        }
+        var fresh = config.Config()
+        fresh.load(configName, configType, configDir)
+        fab.exportToConfig(fresh)
+        var path = configDir + "/" + configName + "." + configType
+        writeConfigToDisk(fresh, path) catch {
+            w.WriteHeader(500)
+            w.Write(('{"error":"' + err.Error() + '"}').toBytes())
+            return
+        }
+        fab.clearDirty()
+        var out = Map<String, Object>{}
+        out["status"] = "saved"
+        out["path"] = path
+        out["processors"] = len(fab.getProcessorNames())
+        out["sources"] = len(fab.getSources())
+        writeJson(w, out)
     }
 
     // GET /api/layout — return positions JSON, or {positions:{}} if the

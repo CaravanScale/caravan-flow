@@ -250,6 +250,38 @@ test "DELETE /api/sources/remove — unknown name returns 404" {
     asserts.equalInt(t, w.Code, 404)
 }
 
+test "GET /api/processors/{name}/samples — empty when none recorded" {
+    var reg = Registry()
+    processors.registerBuiltins(reg)
+    var fab = Fabric(reg, ProcessorContext())
+    var apiH = api.ApiHandler(fab)
+
+    var req = httptest.NewRequest("GET", "/api/processors/foo/samples", null)
+    req.SetPathValue("name", "foo")
+    var w = httptest.NewRecorder()
+    apiH.processorSamplesHandler(w, req)
+    asserts.equalInt(t, w.Code, 200)
+    var got = Map<String, Object>{}
+    json.Unmarshal(w.Body.Bytes(), &got) catch { t.Errorf("decode: %v", err); return }
+    asserts.equalString(t, got["name"] as String catch { "" }, "foo")
+    var arr = got["samples"] as List<Object> catch { List<Object>[] }
+    asserts.equalInt(t, len(arr), 0)
+}
+
+test "recordSample — populates ring, getSamples returns shape" {
+    var reg = Registry()
+    processors.registerBuiltins(reg)
+    var fab = Fabric(reg, ProcessorContext())
+
+    var ff = createFlowFile("hello world".toBytes(), Map<String, String>{"k": "v"})
+    fab.recordSample("tag-env", ff)
+    fab.recordSample("tag-env", ff)
+    var got = fab.getSamples("tag-env")
+    asserts.equalInt(t, len(got), 2)
+    asserts.equalString(t, got[0].contentType, "bytes")
+    asserts.equalString(t, got[0].attributes["k"], "v")
+}
+
 test "POST /api/connections — missing fields returns 400" {
     var reg = Registry()
     processors.registerBuiltins(reg)

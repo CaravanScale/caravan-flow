@@ -57,6 +57,7 @@ void loadSources(config.Config cfg, SourceRegistry sreg, Fabric fab, ContentStor
             continue
         }
         fab.addSource(src)
+        fab.setSourceConfig(sourceName, instCfg)
         logging.info("source registered", "name", sourceName, "type", typeName)
     }
 }
@@ -214,6 +215,7 @@ void main() {
     HandleFunc("PUT /api/processors/{name}/config", api.updateProcessorConfigHandler)
     HandleFunc("PUT /api/providers/{name}/config", api.updateProviderConfigHandler)
     HandleFunc("GET /api/flow/status", api.flowStatusHandler)
+    HandleFunc("GET /api/processors/{name}/samples", api.processorSamplesHandler)
 
     // Lifecycle: hot reload, flow save (501 stub), layout sidecar.
     var lifeApi = fabric.api.LifecycleApiHandler(fab, "config", "yaml", ".")

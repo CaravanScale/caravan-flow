@@ -4,9 +4,17 @@
 import net/http
 import io
 import encoding/json
+import encoding/base64
 import core
 import fabric/runtime
 import fabric/registry
+
+// encodeBase64 returns the standard base64 encoding of `data`. Wraps
+// the stdlib codec at the call site so the handler doesn't repeat the
+// import incantation per use.
+String encodeBase64(byte[] data) {
+    return base64.StdEncoding.EncodeToString(data)
+}
 
 // ApiHandler holds a reference to the fabric for serving API requests.
 class ApiHandler {
@@ -592,6 +600,32 @@ class ApiHandler {
         var config = extractStringMap(req, "config")
         var res = fab.updateProviderConfig(name, config)
         writeEdit(w, res, Map<String, Object>{"status": "updated", "name": name})
+    }
+
+    // GET /api/processors/{name}/samples — recent FlowFile samples for
+    // the named processor, mirroring csharp ApiHandler.ProcessorSamples.
+    // Each entry carries timestamp, flowfile id, contentType, base64
+    // preview, and the attribute map. Drives the drawer "samples" tab.
+    pub void processorSamplesHandler(ResponseWriter w, Request r) {
+        var name = r.PathValue("name")
+        if (name == "") { writeError(w, 400, "name required"); return }
+        var entries = fab.getSamples(name)
+        var shaped = List<Map<String, Object>>[]
+        for (s in entries) {
+            var entry = Map<String, Object>{}
+            entry["timestamp"] = s.timestamp
+            entry["flowfile"] = "ff-" + s.flowfile
+            entry["contentType"] = s.contentType
+            entry["preview"] = string(s.preview)
+            entry["previewBase64"] = encodeBase64(s.preview)
+            entry["attributes"] = s.attributes
+            shaped = append(shaped, entry)
+        }
+        var body = Map<String, Object>{}
+        body["name"] = name
+        body["sampling"] = fab.isSamplingEnabled()
+        body["samples"] = shaped
+        writeJson(w, body)
     }
 
     // GET /api/flow/status — { dirty: bool, processors: int, sources: int }.

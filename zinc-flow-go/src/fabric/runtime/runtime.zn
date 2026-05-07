@@ -48,6 +48,55 @@ data WorkItem(FlowFile ff, String processor, int hops)
 // `ok=false,reason=<msg>` is a failure the API layer maps to 400/404.
 data EditResult(bool ok, String reason)
 
+// SampleEntry — one frame in a per-processor sample ring. Mirrors
+// csharp Fabric.SampleEntry (Fabric.cs:553). The dashboard's drawer
+// "samples" tab pulls these via GET /api/processors/{name}/samples.
+data SampleEntry(
+    long timestamp,
+    String flowfile,
+    String contentType,
+    byte[] preview,
+    Map<String, String> attributes
+)
+
+// SampleRing — bounded ring of recent samples for a single processor.
+// Push is O(1) under the per-ring mutex; snapshot copies oldest-first.
+class SampleRing {
+    int capacity
+    sync.Mutex mu
+    var entries = List<SampleEntry>[]
+
+    init(int capacity) {
+        this.capacity = capacity
+    }
+
+    pub void push(SampleEntry e) {
+        lock (mu) {
+            entries = append(entries, e)
+            if (len(entries) > capacity) {
+                // Drop oldest. List slicing rebuilds a smaller list;
+                // capacity is small (csharp default 16) so the cost
+                // is negligible vs ring-arithmetic on a fixed array.
+                var trimmed = List<SampleEntry>[]
+                var i = len(entries) - capacity
+                while (i < len(entries)) {
+                    trimmed = append(trimmed, entries[i])
+                    i = i + 1
+                }
+                entries = trimmed
+            }
+        }
+    }
+
+    pub List<SampleEntry> snapshot() {
+        lock (mu) {
+            var out = List<SampleEntry>[]
+            for (e in entries) { out = append(out, e) }
+            return out
+        }
+    }
+}
+
 EditResult editOk() { return EditResult(true, "") }
 EditResult editFail(String reason) { return EditResult(false, reason) }
 
@@ -79,6 +128,13 @@ class Fabric {
     // beyond the lock the rest of the runtime already holds.
     var edgeCounters = Map<String, long>{}
 
+    // sourceConfigs — original config maps used to instantiate each
+    // source. Tracked so /api/flow/save can round-trip the source
+    // section of config.yaml without losing operator intent. Updated
+    // by setSourceConfig (called from addSource paths) and by
+    // replaceSource on PUT /api/sources/{name}/config.
+    var sourceConfigs = Map<String, Map<String, String>>{}
+
     // sourceConnections — per-source explicit downstream routing.
     // Shape: sourceConnections[sourceName][relationship] = [targets].
     // When a source has any entry here, ingestAndExecute fans the FlowFile
@@ -87,6 +143,15 @@ class Fabric {
     // no entries the behaviour falls back to entry points so existing
     // configs keep working.
     var sourceConnections = Map<String, Map<String, List<String>>>{}
+
+    // samples — per-processor bounded ring of recent FlowFile samples.
+    // Populated by recordSample after each successful processor execution
+    // (when samplingEnabled is true) and read by the GET /api/processors/{name}/samples
+    // endpoint that backs the drawer "samples" tab.
+    var samples = Map<String, SampleRing>{}
+    sync.Mutex samplesMu
+    var samplingEnabled = true
+    int samplesPerProcessor
 
     // dirty — set true on any runtime graph mutation (addProcessor,
     // addConnection, updateProcessorConfig, etc). Cleared by clearDirty()
@@ -117,6 +182,7 @@ class Fabric {
         this.graph = PipelineGraph()
         this.dlqStore = DLQ()
         this.maxHops = 50
+        this.samplesPerProcessor = 16
     }
 
     // --- Graph snapshot helpers ---
@@ -290,18 +356,22 @@ class Fabric {
 
             match (result) {
                 case Single(out) {
+                    recordSample(item.processor, out)
                     work = pushDownstream(work, g, out, item.processor, "success", item.hops + 1)
                 }
                 case Multiple(outs) {
                     for (out in outs) {
+                        recordSample(item.processor, out)
                         work = pushDownstream(work, g, out, item.processor, "success", item.hops + 1)
                     }
                 }
                 case Routed(route, out) {
+                    recordSample(item.processor, out)
                     work = pushDownstream(work, g, out, item.processor, route, item.hops + 1)
                 }
                 case MultiRouted(outputs) {
                     for (entry in outputs) {
+                        recordSample(item.processor, entry.ff)
                         work = pushDownstream(work, g, entry.ff, item.processor, entry.route, item.hops + 1)
                     }
                 }
@@ -408,6 +478,21 @@ class Fabric {
         }
     }
 
+    // setSourceConfig records the config map used to instantiate
+    // `name`. Called by main/loadSources and by /api/sources/add so
+    // that flow-save can emit the original key/value pairs back to
+    // disk. Handlers call this after addSource; tests that only want
+    // the runtime side may skip it (export will simply omit config).
+    pub void setSourceConfig(String name, Map<String, String> cfg) {
+        var copy = Map<String, String>{}
+        for (k in cfg.keys()) { copy[k] = cfg[k] }
+        sourceConfigs[name] = copy
+    }
+
+    pub Map<String, Map<String, String>> getSourceConfigs() {
+        return sourceConfigs
+    }
+
     pub bool startSource(String name) {
         if (!sources.containsKey(name)) {
             return false
@@ -441,6 +526,8 @@ class Fabric {
             src.stop()
         }
         sources.delete(name)
+        sourceConfigs.delete(name)
+        sourceConnections.delete(name)
         logging.info("source removed", "name", name)
         return true
     }
@@ -805,6 +892,65 @@ class Fabric {
         return ScopedContext(scoped)
     }
 
+    // --- Sampling ---
+
+    pub bool isSamplingEnabled() { return samplingEnabled }
+    pub void setSamplingEnabled(bool on) { samplingEnabled = on }
+    pub void setSamplesPerProcessor(int n) { samplesPerProcessor = n }
+
+    // recordSample captures a small preview of `ff` against the named
+    // processor's ring buffer. Raw content slices to the first 256B;
+    // Records / Claim variants emit synthetic preview tags so the UI
+    // can render them differently. No-op when sampling is disabled
+    // (keeps the hot path branch-light).
+    pub void recordSample(String procName, FlowFile ff) {
+        if (!samplingEnabled) { return }
+        var ring = SampleRing(0)
+        lock (samplesMu) {
+            if (!samples.containsKey(procName)) {
+                samples[procName] = SampleRing(samplesPerProcessor)
+            }
+            ring = samples[procName]
+        }
+        var contentType = "bytes"
+        var preview = byte[0]
+        match (ff.content) {
+            case Raw(bytes) {
+                contentType = "bytes"
+                var max = 256
+                if (len(bytes) <= max) {
+                    preview = bytes
+                } else {
+                    var i = 0
+                    while (i < max) {
+                        preview = append(preview, bytes[i])
+                        i = i + 1
+                    }
+                }
+            }
+            case Records(_, rows) {
+                contentType = "records"
+                preview = ('{"rows":' + str(len(rows)) + '}').toBytes()
+            }
+            case Claim(claimId, size) {
+                contentType = "claim"
+                preview = ('{"claim":"' + claimId + '","size":' + str(size) + '}').toBytes()
+            }
+        }
+        var attrs = Map<String, String>{}
+        for (k in ff.attributes.keys()) { attrs[k] = ff.attributes[k] }
+        ring.push(SampleEntry(time.Now().UnixMilli(), ff.id, contentType, preview, attrs))
+    }
+
+    pub List<SampleEntry> getSamples(String procName) {
+        lock (samplesMu) {
+            if (!samples.containsKey(procName)) {
+                return List<SampleEntry>[]
+            }
+            return samples[procName].snapshot()
+        }
+    }
+
     // --- Dirty bit ---
 
     pub void markDirty() { dirty = true }
@@ -995,7 +1141,7 @@ class Fabric {
     // replaceSource swaps a registered source for a freshly-built one,
     // stopping the old instance first and starting the new one if the
     // fabric is running. Used by the API layer for PUT /api/sources/{name}/config.
-    pub EditResult replaceSource(ConnectorSource newSrc) {
+    pub EditResult replaceSource(ConnectorSource newSrc, Map<String, String> cfg) {
         var name = newSrc.getName()
         if (!sources.containsKey(name)) {
             return editFail("source '" + name + "' not found")
@@ -1003,6 +1149,7 @@ class Fabric {
         var old = sources[name]
         if (old.isRunning()) { old.stop() }
         sources[name] = newSrc
+        setSourceConfig(name, cfg)
         if (running) {
             newSrc.start((FlowFile ff) -> ingestAndExecute(ff))
         }
@@ -1028,6 +1175,86 @@ class Fabric {
         return editFail(
             "provider '" + name + "' (" + prov.getType()
             + ") does not support runtime config edits — edit config.yaml and POST /api/reload")
+    }
+
+    // --- Flow export ---
+
+    // exportToConfig walks the live runtime and writes its shape into
+    // the supplied Config object via cfg.set. Mirrors csharp
+    // Fabric.ExportToConfig — the result, when written through
+    // viper.WriteConfigAs, round-trips the canvas back to YAML.
+    //
+    // Layout (top-level):
+    //   flow.processors.<name>.{type, config?, requires?, connections?}
+    //   sources.<name>.{type, config?, connections?}
+    pub void exportToConfig(config.Config cfg) {
+        var g = snapshotGraph()
+        var allConns = g.getConnections()
+
+        // Processors
+        for (name in g.getProcessorNames()) {
+            if (!processorDefs.containsKey(name)) { continue }
+            var def = processorDefs[name]
+            var procEntry = Map<String, Object>{}
+            procEntry["type"] = def.typeName
+            if (len(def.config) > 0) {
+                var cfgCopy = Map<String, String>{}
+                for (k in def.config.keys()) { cfgCopy[k] = def.config[k] }
+                procEntry["config"] = cfgCopy
+            }
+            if (len(def.requires) > 0) {
+                var reqCopy = List<String>[]
+                for (r in def.requires) { reqCopy = append(reqCopy, r) }
+                procEntry["requires"] = reqCopy
+            }
+            if (allConns.containsKey(name)) {
+                var rels = allConns[name]
+                var relMap = Map<String, Object>{}
+                for (rel in rels.keys()) {
+                    var targets = rels[rel]
+                    if (len(targets) > 0) {
+                        var copy = List<String>[]
+                        for (t in targets) { copy = append(copy, t) }
+                        relMap[rel] = copy
+                    }
+                }
+                if (len(relMap.keys()) > 0) {
+                    procEntry["connections"] = relMap
+                }
+            }
+            cfg.set("flow.processors." + name, procEntry)
+        }
+
+        // Sources — first-class graph nodes; live at the config root.
+        for (sname in sources.keys()) {
+            var src = sources[sname]
+            var srcEntry = Map<String, Object>{}
+            srcEntry["type"] = src.getSourceType()
+            if (sourceConfigs.containsKey(sname)) {
+                var scfg = sourceConfigs[sname]
+                if (len(scfg) > 0) {
+                    var cfgCopy = Map<String, String>{}
+                    for (k in scfg.keys()) { cfgCopy[k] = scfg[k] }
+                    srcEntry["config"] = cfgCopy
+                }
+            }
+            if (sourceConnections.containsKey(sname)) {
+                var rels = sourceConnections[sname]
+                var relMap = Map<String, Object>{}
+                for (rel in rels.keys()) {
+                    var targets = rels[rel]
+                    if (len(targets) > 0) {
+                        var copy = List<String>[]
+                        for (t in targets) { copy = append(copy, t) }
+                        relMap[rel] = copy
+                    }
+                }
+                if (len(relMap.keys()) > 0) {
+                    srcEntry["connections"] = relMap
+                }
+            }
+            cfg.set("sources." + sname, srcEntry)
+        }
     }
 
     // --- Flow reload ---

@@ -93,6 +93,7 @@ class SourcesApiHandler {
             return
         }
         fab.addSource(src)
+        fab.setSourceConfig(name, cfg)
         w.WriteHeader(201)
         var out = Map<String, Object>{}
         out["status"] = "added"
@@ -187,7 +188,7 @@ class SourcesApiHandler {
             w.Write('{"error":"factory returned null — required config likely missing"}'.toBytes())
             return
         }
-        var res = fab.replaceSource(newSrc)
+        var res = fab.replaceSource(newSrc, cfg)
         if (!res.ok) {
             w.WriteHeader(400)
             w.Write(('{"error":"' + res.reason + '"}').toBytes())
